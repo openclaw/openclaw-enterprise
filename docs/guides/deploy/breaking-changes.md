@@ -13,6 +13,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-14: every model selection must use the Harness provider
+
+**What breaks.** On Kubernetes Compute, Agent create and update and deployment
+refuse a model selection on another provider than the Agent's primary model:
+fallbacks, Agent entries, `subagents.model`, `imageModel`, `pdfModel` and the
+other `*Model` settings, `models` policy keys, hook models and
+`channels.modelByChannel`. Dedicated Codex also refuses an `apiKey` on any
+`models.providers` entry, and a `models` policy key without a provider.
+
+**Who is affected.** Configurations that select a second provider anywhere, or
+set a provider `apiKey` for Dedicated Codex.
+
+**How to tell.** The refusal names the setting: `... must select
+<provider>/<model>, the provider of the Agent's Harness authentication binding`,
+`... must be provider/model references`, or `models.providers.<name>.apiKey
+must be unset`.
+
+**Steps.** Select the primary model's provider (bare aliases still pass) and
+remove the provider `apiKey`, then save and deploy again.
+
 ## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
 
 **What breaks.** Profile preflight refuses an uppercase letter in the repository
@@ -287,41 +307,3 @@ the duplicate or reserved policy.
 **Steps.** Rename or merge duplicate `policy.networkPolicies` names. Rename a
 policy called `workspace-node-enrollment`. Keep each policy's binaries and
 endpoints. _untested_ against a live Installation.
-
-## 2026-10-13: OpenShell `openai` credential sources need replacing
-
-**What breaks.** Each OpenShell credential source now owns its provider profile.
-An `openai` source registered by an earlier build points its provider at the
-shared `oce-openai` profile, so OCC no longer treats that provider as the
-source's. A deployment that lists the source fails. Deleting the source through
-OCC leaves it `deleting` until its provider is removed by hand.
-
-**Who is affected.** Installations with OpenShell `openai` credential sources.
-`bearer-token` and OAuth2 sources already owned their profiles and are
-unaffected.
-
-**How to tell.** The source's `status` is `failed`, with "The OpenShell
-provider is not owned by this source."
-
-**Steps.** After upgrading, replace each such source, _untested_:
-
-1. Register a replacement `openai` source from the same Secret. It gets its own
-   profile.
-2. For each Agent bound to the old source:
-   - Grant the Agent's service principal `operate` on the replacement.
-   - Update the Agent so that `credentialSources` lists the replacement instead
-     of the old source, and `harnessAuth.sourceId` names the replacement.
-   - Deploy it, and wait until the new revision is active.
-
-   OCC refuses to delete a source with `409` while an Agent, its active
-   revision, or a pending deployment still references it.
-
-3. In the Namespace's OpenShell Workspace, delete each old source's provider:
-   the one labeled `openclaw.dev/credential-source-id` with the source's ID.
-   OpenShell refuses while a Sandbox still lists it, so the old revision's
-   Sandbox must be gone. Then delete the old source through OCC. A `404` while
-   `GET` shows `deleting` means the provider remains; a
-   `409 CREDENTIAL_WITHDRAWAL_IN_PROGRESS` means retry after withdrawal work
-   finishes.
-4. Once no old `openai` provider remains, delete the `oce-openai` profile.
-   OpenShell refuses while a provider still uses it.

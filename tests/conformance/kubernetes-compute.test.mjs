@@ -9163,18 +9163,27 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
       assert.throws(check, { name: "ConfigurationHarnessError", message });
     }
   }
-  for (const selection of [
-    { primary: model, fallbacks: ["openai/gpt-5"] },
-    { primary: "openai/gpt-5", fallbacks: [model] },
-    "codex/gpt-5",
-    "ollama/llama3.2",
+  // A fallback on another provider names its setting (finding 1291).
+  for (const [selection, refusal] of [
+    [
+      { primary: model, fallbacks: ["openai/gpt-5"] },
+      "Configuration setting agents.defaults.model.fallbacks must select anthropic/<model>, the provider of the Agent's Harness authentication binding.",
+    ],
+    [
+      { primary: "openai/gpt-5", fallbacks: [model] },
+      "Configuration setting agents.defaults.model.fallbacks must select openai/<model>, the provider of the Agent's Harness authentication binding.",
+    ],
+    ["codex/gpt-5", /compatible model provider/i],
+    ["ollama/llama3.2", /compatible model provider/i],
   ]) {
     assert.throws(
       () =>
         driver.validateHarnessAuth(embedded, apiKeyAuth, {
           agents: { defaults: { model: selection } },
         }),
-      /compatible model provider/i,
+      typeof refusal === "string"
+        ? { name: "ConfigurationHarnessError", message: refusal }
+        : refusal,
     );
   }
   assert.throws(
@@ -9254,6 +9263,190 @@ test("a Preset header name that waits on a variable is checked once filled", () 
       name: "ConfigurationHarnessError",
       message: invalidName,
     });
+  }
+});
+
+test("every model selection uses the Harness binding's provider (finding 1291)", () => {
+  const driver = createKubernetesComputeDriver(options());
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const catalog = (provider, ids) => ({
+    [provider]: {
+      baseUrl: "http://127.0.0.1:9",
+      api: "openai-responses",
+      models: ids.map((id) => ({ id, name: id })),
+    },
+  });
+  const requirement = (provider) =>
+    `${provider}/<model>, the provider of the Agent's Harness authentication binding`;
+  const refused = (setting, rule) => ({
+    name: "ConfigurationHarnessError",
+    message: `Configuration setting ${setting} ${rule}.`,
+  });
+  // Agent save (null bindings) and deployment admission.
+  const admissions = (harness, configuration) => [
+    () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration, null),
+    () => driver.validateHarnessAuth(harness, apiKeyAuth, configuration),
+  ];
+  const refuses = (harness, configuration, expected, label) => {
+    for (const admit of admissions(harness, configuration)) {
+      assert.throws(admit, expected, label);
+    }
+  };
+  // B: mixed providers across defaults and an Agent entry.
+  refuses(
+    codex,
+    {
+      agents: {
+        ownership: "explicit",
+        defaults: { model: "openai/gpt-5" },
+        entries: { main: {}, reviewer: { model: "codex/gpt-5-codex" } },
+      },
+      models: {
+        providers: { ...catalog("openai", ["gpt-5"]), ...catalog("codex", ["gpt-5-codex"]) },
+      },
+    },
+    refused("agents.entries.reviewer.model", `must select ${requirement("openai")}`),
+    "B",
+  );
+  // C: a subagent on another provider, and that provider's inline key wherever it is configured.
+  refuses(
+    codex,
+    {
+      agents: {
+        defaults: { model: "codex/gpt-5", subagents: { model: "anthropic/claude-opus-4" } },
+      },
+      models: {
+        providers: {
+          ...catalog("codex", ["gpt-5"]),
+          anthropic: { baseUrl: "https://api.anthropic.com", models: [{ id: "claude-opus-4" }] },
+        },
+      },
+    },
+    refused("agents.defaults.subagents.model", `must select ${requirement("codex")}`),
+    "C",
+  );
+  refuses(
+    codex,
+    {
+      agents: { defaults: { model: "codex/gpt-5" } },
+      models: {
+        providers: {
+          ...catalog("codex", ["gpt-5"]),
+          anthropic: { baseUrl: "https://api.anthropic.com", apiKey: "sk-fixture-unselected" },
+        },
+      },
+    },
+    refused(
+      "models.providers.anthropic.apiKey",
+      "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+    ),
+    "C: unselected provider key",
+  );
+  // D: a models policy key the Codex projection cannot qualify.
+  refuses(
+    codex,
+    {
+      agents: { defaults: { model: "codex/gpt-5", models: { codex: {} } } },
+      models: { providers: catalog("codex", ["gpt-5"]) },
+    },
+    refused("agents.defaults.models", `keys must select ${requirement("codex")}`),
+    "D",
+  );
+  // E: fallbacks that are not model references, named instead of failing at deployment.
+  for (const [scope, setting] of [
+    ["model", "agents.defaults.model.fallbacks"],
+    ["subagents", "agents.defaults.subagents.model.fallbacks"],
+  ]) {
+    const selection = { primary: "codex/gpt-5", fallbacks: ["codex/gpt-5-mini", 7] };
+    refuses(
+      codex,
+      {
+        agents: {
+          defaults:
+            scope === "model"
+              ? { model: selection }
+              : { model: "codex/gpt-5", subagents: { model: selection } },
+        },
+        models: { providers: catalog("codex", ["gpt-5"]) },
+      },
+      refused(setting, "must be provider/model references"),
+      `E: ${scope}`,
+    );
+  }
+  // Every other selection the pinned Gateway honors, on Codex and embedded OpenClaw alike.
+  for (const [values, setting] of [
+    [{ agents: { defaults: { imageModel: "x/m" } } }, "agents.defaults.imageModel"],
+    [
+      { agents: { defaults: { pdfModel: { primary: "x/m" } } } },
+      "agents.defaults.pdfModel.primary",
+    ],
+    [{ agents: { defaults: { voiceModel: "x/m" } } }, "agents.defaults.voiceModel"],
+    [
+      { agents: { defaults: { mediaModels: { video: "x/m" } } } },
+      "agents.defaults.mediaModels.video",
+    ],
+    [{ agents: { defaults: { utilityModel: "x/m" } } }, "agents.defaults.utilityModel"],
+    [{ agents: { defaults: { decisionModel: "x/m" } } }, "agents.defaults.decisionModel"],
+    [{ agents: { defaults: { heartbeat: { model: "x/m" } } } }, "agents.defaults.heartbeat.model"],
+    [
+      { agents: { defaults: { compaction: { memoryFlush: { model: "x/m" } } } } },
+      "agents.defaults.compaction.memoryFlush.model",
+    ],
+    [
+      { agents: { defaults: { embeddedAgent: { cyberFailover: { model: "x/m" } } } } },
+      "agents.defaults.embeddedAgent.cyberFailover.model",
+    ],
+    [
+      { agents: { entries: { main: { tools: { exec: { reviewer: { model: "x/m" } } } } } } },
+      "agents.entries.main.tools.exec.reviewer.model",
+    ],
+    [
+      { agents: { entries: { main: { tts: { summaryModel: "x/m" } } } } },
+      "agents.entries.main.tts.summaryModel",
+    ],
+    [{ agents: { defaults: { models: { "x/m": {} } } } }, "agents.defaults.models"],
+    [
+      { tools: { exec: { reviewer: { model: { fallbacks: ["x/m"] } } } } },
+      "tools.exec.reviewer.model.fallbacks",
+    ],
+    [{ hooks: { mappings: [{}, { model: "x/m" }] } }, "hooks.mappings.1.model"],
+    [{ hooks: { gmail: { model: "x/m" } } }, "hooks.gmail.model"],
+    [{ channels: { modelByChannel: { slack: { C1: "x/m" } } } }, "channels.modelByChannel.slack"],
+  ]) {
+    for (const [harness, model, provider] of [
+      [codex, "codex/gpt-5", "codex"],
+      [embedded, "openai/gpt-5", "openai"],
+    ]) {
+      const agents = values.agents ?? {};
+      refuses(
+        harness,
+        { ...values, agents: { ...agents, defaults: { ...agents.defaults, model } } },
+        refused(
+          setting,
+          `${setting === "agents.defaults.models" ? "keys " : ""}must select ${requirement(provider)}`,
+        ),
+        `${harness.id}: ${setting}`,
+      );
+    }
+  }
+  // F, G, M: Codex selections under the source provider keep their native ID namespace, aliases
+  // and synthesized catalog rows (docs/flows/harness-execution-topology.md), so they still save.
+  for (const subagents of [
+    { model: "codex/openai/gpt-5" },
+    { model: "codex/o3-pro" },
+    { model: "codex/openai-compatible/gpt-5" },
+    { model: { primary: "codex/gpt-5", fallbacks: ["codex"] } },
+  ]) {
+    for (const admit of admissions(codex, {
+      agents: {
+        defaults: { model: "codex/gpt-5", models: { "codex/*": {} }, subagents, decisionModel: "" },
+      },
+      channels: { modelByChannel: { slack: { C1: "codex/gpt-5" } } },
+      models: { providers: catalog("codex", ["gpt-5"]) },
+    })) {
+      assert.doesNotThrow(admit, JSON.stringify(subagents));
+    }
   }
 });
 

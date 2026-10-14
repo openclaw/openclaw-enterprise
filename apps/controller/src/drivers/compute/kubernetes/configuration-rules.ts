@@ -140,34 +140,160 @@ const MODEL_CREDENTIAL_ENVIRONMENT =
 const credentialHeaderRequirement = (name: string): string =>
   `must not set the credential header ${quotedSettingKey(name, 40)} (its name marks a credential): ${HARNESS_BINDING}`;
 
+/** A model selection OpenClaw honors: the setting that holds it and its value as written. */
+interface ModelSelection {
+  readonly setting: string;
+  readonly reference: unknown;
+  /** A key of an `agents.*.models` policy map (the `/model` allowlist and alias targets). */
+  readonly policy?: true;
+}
+
+// Settings under agents.defaults and each agents.entries entry that select a model in the pinned
+// OpenClaw Gateway's config schema. The Gateway refuses the ones an entry does not accept.
+const AGENT_MODEL_SETTINGS: readonly (readonly string[])[] = [
+  ["model"],
+  ["utilityModel"],
+  ["decisionModel"],
+  ["imageModel"],
+  ["voiceModel"],
+  ["pdfModel"],
+  ["mediaModels", "image"],
+  ["mediaModels", "video"],
+  ["mediaModels", "music"],
+  ["subagents", "model"],
+  ["heartbeat", "model"],
+  ["compaction", "model"],
+  ["compaction", "memoryFlush", "model"],
+  ["embeddedAgent", "cyberFailover", "model"],
+  ["tools", "exec", "reviewer", "model"],
+  ["tts", "summaryModel"],
+];
+const ROOT_MODEL_SETTINGS: readonly (readonly string[])[] = [
+  ["tools", "exec", "reviewer", "model"],
+  ["tts", "summaryModel"],
+  ["hooks", "gmail", "model"],
+];
+
+const settingValue = (record: Record<string, unknown> | undefined, keys: readonly string[]) =>
+  keys.reduce<unknown>((value, key) => asRecord(value)?.[key], record);
+
 /**
- * Providers of the model references in agents.defaults.model and agents.entries.*.model.
- * The credential rules below walk every configured provider instead: OpenClaw also reaches
- * providers through imageModel, pdfModel, subagents, channels.modelByChannel and `/model`
- * switches, which an unset model allowlist leaves open to any configured provider.
+ * Every model selection in the Configuration: the agents.defaults and agents.entries.* model
+ * settings (model, subagents, image, PDF, voice, media, utility, decision, heartbeat,
+ * compaction, reviewer and TTS summary models), their `models` policy keys, hook models and
+ * channels.modelByChannel. A primary/fallbacks object yields its primary and each fallback; a
+ * value of another shape is yielded as written, so a rule can refuse it by name.
+ */
+function modelSelections(configuration: Readonly<OpenClawConfigurationDocument>): ModelSelection[] {
+  const selections: ModelSelection[] = [];
+  const add = (setting: string, value: unknown): void => {
+    if (value === undefined || value === null) {
+      return;
+    }
+    const selection = asRecord(value);
+    if (typeof value === "string" || selection === undefined) {
+      selections.push({ setting, reference: value });
+      return;
+    }
+    if (selection.primary !== undefined) {
+      selections.push({ setting: `${setting}.primary`, reference: selection.primary });
+    }
+    // Fallbacks that are not a list are yielded as null: no list item is a reference.
+    const fallbacks = selection.fallbacks;
+    for (const reference of Array.isArray(fallbacks)
+      ? fallbacks
+      : [fallbacks === undefined ? undefined : null]) {
+      if (reference !== undefined) {
+        selections.push({ setting: `${setting}.fallbacks`, reference });
+      }
+    }
+  };
+  const agents = asRecord(configuration.agents);
+  const scopes: [string, Record<string, unknown> | undefined][] = [
+    ["agents.defaults", asRecord(agents?.defaults)],
+    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
+      ([id, entry]): [string, Record<string, unknown> | undefined] => [
+        keyedSettingPath("agents.entries", id),
+        asRecord(entry),
+      ],
+    ),
+  ];
+  for (const [path, scope] of scopes) {
+    for (const keys of AGENT_MODEL_SETTINGS) {
+      add([path, ...keys].join("."), settingValue(scope, keys));
+    }
+    for (const reference of Object.keys(asRecord(scope?.models) ?? {})) {
+      selections.push({ setting: `${path}.models`, reference, policy: true });
+    }
+  }
+  const root = configuration as Record<string, unknown>;
+  for (const keys of ROOT_MODEL_SETTINGS) {
+    add(keys.join("."), settingValue(root, keys));
+  }
+  const mappings = asRecord(configuration.hooks)?.mappings;
+  (Array.isArray(mappings) ? mappings : []).forEach((mapping, index) =>
+    add(`hooks.mappings.${index}.model`, asRecord(mapping)?.model),
+  );
+  const byChannel = asRecord(asRecord(configuration.channels)?.modelByChannel) ?? {};
+  for (const [channel, models] of Object.entries(byChannel)) {
+    const path = keyedSettingPath("channels.modelByChannel", channel);
+    for (const value of Object.values(asRecord(models) ?? {})) {
+      add(path, value);
+    }
+  }
+  return selections;
+}
+
+/**
+ * Providers of every model selection (`modelSelections`). The credential rules below walk
+ * every configured provider instead, since `/model` switches with an unset model allowlist
+ * reach any configured provider.
  */
 export function selectedModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
 ): Set<string> {
-  const agents = asRecord(configuration.agents);
-  const selections = [
-    asRecord(agents?.defaults)?.model,
-    ...Object.values(asRecord(agents?.entries) ?? {}).map((entry) => asRecord(entry)?.model),
-  ];
   const providers = new Set<string>();
-  for (const selection of selections) {
-    const value = asRecord(selection);
-    const models =
-      typeof selection === "string"
-        ? [selection]
-        : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
-    for (const model of models) {
-      if (typeof model === "string") {
-        providers.add(splitModelRef(model).provider);
-      }
+  for (const { reference } of modelSelections(configuration)) {
+    if (typeof reference === "string") {
+      providers.add(splitModelRef(reference).provider);
     }
   }
   return providers;
+}
+
+/**
+ * Every model selection names `provider`, the one the Agent's Harness authentication binding
+ * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
+ * directly. A bare name is an alias or the default provider's model, so it passes, except as a
+ * policy key where `qualifiedPolicyKeys` (Dedicated Codex qualifies each key) asks for
+ * provider/model. Refusals name the setting, never the reference.
+ */
+export function requireSelectedModelProvider(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  provider: string,
+  qualifiedPolicyKeys: boolean,
+  createError: SettingError,
+): void {
+  const requirement = `${provider}/<model>, the provider of the Agent's Harness authentication binding`;
+  for (const { setting, reference, policy } of modelSelections(configuration)) {
+    if (typeof reference !== "string") {
+      throw createError(setting, "must be provider/model references");
+    }
+    const separator = reference.indexOf("/");
+    if (separator < 0 && !(policy && qualifiedPolicyKeys)) {
+      continue;
+    }
+    if (
+      separator < 0 ||
+      reference.slice(0, separator) !== provider ||
+      separator === reference.length - 1
+    ) {
+      throw createError(
+        setting,
+        policy ? `keys must select ${requirement}` : `must select ${requirement}`,
+      );
+    }
+  }
 }
 
 /**
@@ -179,7 +305,7 @@ export function selectedModelProviders(
  * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked with a
  * stand-in for it, matched as a credential header as the text around it, and checked again once
  * filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
- * Harness authentication admission, on selected providers only.)
+ * Harness authentication admission: every provider on Dedicated Codex, selected ones on OpenClaw.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,

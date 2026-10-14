@@ -145,6 +145,7 @@ import {
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
   requireHarnessCredentialBinding,
+  requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
   selectedModelProviders,
   usesGatewayPasswordEnvironment,
@@ -3495,6 +3496,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         : [value?.primary, ...(Array.isArray(value?.fallbacks) ? value.fallbacks : [])];
     });
     const authentication = harnessModelAuthentication(configuration);
+    // Every model selection (fallbacks, subagents, image, PDF, per-channel, ...) and every Agent
+    // entry uses the primary model's provider, named by the setting (finding 1291). Dedicated
+    // Codex qualifies each models policy key, so a bare one cannot deploy. Whether that
+    // provider suits the topology is the rule below.
+    requireSelectedModelProvider(
+      configuration,
+      authentication.providerId,
+      codex,
+      callerSettingError,
+    );
     const prefixes = embedded
       ? [`${authentication.providerId}/`]
       : native
@@ -3537,8 +3548,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
+    // Dedicated Codex refuses an apiKey on every provider, selected or not: the Gateway makes no
+    // model request of its own (finding 1291).
     const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-    for (const provider of selectedModelProviders(configuration)) {
+    for (const provider of openclaw
+      ? selectedModelProviders(configuration)
+      : Object.keys(providers)) {
       const config = asRecord(providers[provider]);
       if (config?.apiKey === undefined) {
         continue;
