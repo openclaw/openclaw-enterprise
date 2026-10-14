@@ -33,6 +33,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
+  allowNativeProvider,
   openCreateSecretDialog,
   createModelCredentialSecret,
   enterManualModel,
@@ -886,6 +887,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await allowNativeProvider(page, "openai");
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Recovered Repository Agent");
 
@@ -1073,6 +1075,7 @@ test("Agent creation does not expose recovery actions after an unknown admission
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await allowNativeProvider(page, "openai");
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Unknown Outcome Agent");
 
@@ -1123,6 +1126,7 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await repositoryCheckbox(page, "example/application").click();
   await page.locator("#repository-default-git-read").check();
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await allowNativeProvider(page, "openai");
   const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository policy removed");
   fixture.policy.restrictions.push({
@@ -2385,6 +2389,9 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Harness", { exact: true }).selectOption(harness);
+    if (harness === "openclaw") {
+      await allowNativeProvider(page, "openai");
+    }
     if (harness === "openclaw" && mode === "dedicated") {
       await page.locator(".launch-runtime:not([open]) > summary").click();
       await page.getByLabel("Execution mode").selectOption(mode);
@@ -2418,6 +2425,10 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
       password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
     });
     assert.deepEqual(configuration.data.values.gateway.controlUi, STARTER_CONTROL_UI);
+    assert.deepEqual(
+      configuration.data.values.plugins.allow,
+      harness === "codex" ? ["codex"] : ["codex", "openai"],
+    );
     if (harness === "codex") {
       assert.equal(
         configuration.data.values.plugins.entries.codex.config.appServer.authToken,
