@@ -30,12 +30,14 @@ the gateway keeps refreshing that source against the stored `token_url`, and
 rotating it does too. DNS names, including
 in-cluster Service names such as `keycloak.idp.svc.cluster.local`, stay
 accepted. Names that reach the gateway Pod itself are refused too: a Pod DNS
-name (`10-42-0-5.idp.pod.cluster.local`), and, when the OpenShell Backend's
+name (`10-42-0-5.idp.pod.cluster.local`), also with extra leading labels or
+without the cluster domain (`x.10-42-0-5.idp.pod`), and, when the OpenShell Backend's
 `endpoint` or `serviceName` names the gateway's namespace, any name in that
 namespace (`openshell-gateway.openshell-system.svc`,
 `openshell-gateway-0.openshell-gateway-peer`). OCC now stores `token_url` in
 normalized form (`https://Login.Example.test:443/token` becomes
-`https://login.example.test/token`).
+`https://login.example.test/token`). A `bearer-token` or OAuth2 `host` ending in a
+numeric or `0x` label (`0x7f.0x1`, `example.123`) is refused as an IP address.
 
 **Who is affected.** Installations with OAuth2 credential sources whose issuer
 is addressed by IP address, a `localhost` name, a single-label name, a Pod DNS

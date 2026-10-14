@@ -16,7 +16,12 @@ import {
   CredentialSourceRevisionError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  isNonEmptyString,
+  numericLastLabel,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
@@ -142,9 +147,13 @@ const OAUTH2_CONFIG = Object.freeze([
   }),
 ]);
 
-/** A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. */
+/**
+ * A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. A decimal or `0x` last
+ * label (`0xa000005`, `0x7f.0x1`, `example.123`) is an IPv4 address to the URL parser and to
+ * `inet_aton`-style resolvers, so it is refused too (finding 1360).
+ */
 function exactDnsName(host: string): boolean {
-  return HOST.test(host) && !/^[0-9.]+$/.test(host);
+  return HOST.test(host) && !/^[0-9.]+$/.test(host) && !numericLastLabel(host);
 }
 
 /**
@@ -187,7 +196,10 @@ function tokenUrlHostMessage(type: string): string {
  *   `<x>.<y>.<namespace>`, and `<x>.<gateway Service>[-*]` (its peer Service).
  * Always refused: a `pod` zone name (`<a-b-c-d>.<namespace>.pod...`), which CoreDNS's default
  * `pods insecure` answers with the written address in any namespace, the Pod's own included.
- * In-cluster issuers in other namespaces keep their Service names.
+ * CoreDNS also answers it behind one or two leading labels (an endpoint, or a port and protocol)
+ * and ignores them, so any `pod` label after the second is refused, whatever precedes it and
+ * whatever cluster domain follows (finding 1359). In-cluster issuers in other namespaces keep
+ * their Service names.
  */
 function tokenUrlHostOutsideGateway(
   tokenUrl: string,
@@ -197,7 +209,7 @@ function tokenUrlHostOutsideGateway(
     return false;
   }
   const labels = new URL(tokenUrl).hostname.split(".");
-  if (labels[2] === "pod") {
+  if (labels.slice(2).includes("pod")) {
     return false;
   }
   if (gateway === undefined) {

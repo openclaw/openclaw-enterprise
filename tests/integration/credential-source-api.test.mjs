@@ -441,6 +441,71 @@ test("credential source endpoints require an exact DNS host name", async (t) => 
   );
 });
 
+test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", async (t) => {
+  const f = await fixture(t, { toolSources: true });
+  const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
+  const oauth = {
+    env_var: "TOOL_TOKEN",
+    token_url: "https://issuer.example.test/token",
+    client_id: "occ",
+  };
+  // The URL parser and inet_aton-style resolvers (glibc's, the Sandbox proxy's) read a host whose
+  // last label is a decimal or 0x number as an IPv4 address (finding 1360).
+  const refused = [
+    "0xa000005",
+    "0xa.0.0.5",
+    "10.0x0.0.5",
+    "0x7f.0x1",
+    "0xa9.0xfe.0xa9.0xfe",
+    "example.123",
+    "example.0x",
+    "api.example.0x10",
+  ];
+  const accepted = ["api.example.com", "a1.example.com", "0xdead.example.com", "123.example.com"];
+  for (const [type, secretField] of [
+    ["bearer-token", "token"],
+    ["oauth2-client-credentials", "client_secret"],
+  ]) {
+    for (const host of refused) {
+      const response = await f.request("POST", f.path, {
+        body: {
+          name: "numeric-host",
+          type,
+          config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host },
+          secrets: { [secretField]: secret.ref },
+        },
+      });
+      assert.equal(response.status, 400, host + " " + JSON.stringify(response.body));
+      assert.deepEqual(
+        response.body.error.details,
+        [{ path: "/config/host", code: "INVALID_VALUE" }],
+        host,
+      );
+      assert.equal(
+        response.body.error.message,
+        `The ${type} host must be an exact DNS name.`,
+        host,
+      );
+    }
+    for (const host of accepted) {
+      assert.doesNotThrow(
+        () =>
+          f.driver.validateSourceConfig({
+            type,
+            config: { ...(type === "bearer-token" ? { env_var: "TOOL_TOKEN" } : oauth), host },
+          }),
+        host,
+      );
+    }
+  }
+  assert.deepEqual((await f.request("GET", f.path)).data, []);
+  assert.equal(
+    f.secretDriver.calls.some(({ operation }) => operation === "withValue"),
+    false,
+  );
+  assert.deepEqual(f.mutations, []);
+});
+
 test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or localhost names", async (t) => {
   const f = await fixture(t, { toolSources: true });
   const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
@@ -642,6 +707,15 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
   const podNames = [
     "https://127-0-0-1.default.pod.cluster.local/token",
     "https://10-42-0-5.idp.pod/token",
+    // CoreDNS also answers one or two leading labels (an endpoint, or a port and protocol)
+    // before a Pod name and ignores them; the search list completes the short forms, and
+    // any cluster domain may follow (finding 1359).
+    "https://x.127-0-0-1.default.pod.cluster.local/token",
+    "https://a.b.127-0-0-1.default.pod.cluster.local/token",
+    "https://x.127-0-0-1.default.pod/token",
+    "https://a.b.127-0-0-1.default.pod/token",
+    "https://x.0--1.default.pod.cluster.local/token",
+    "https://x.169-254-169-254.idp.pod.k8s.example.internal/token",
   ];
   // Issuers in other namespaces, including the test and development Keycloaks, keep working.
   const accepted = [
@@ -653,6 +727,10 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://openshell-system.example/token",
     "https://login.openshell-gateway.example/token",
     "https://login.example.test/oauth2/token",
+    "https://example.com/token",
+    "https://pod.example.com/token",
+    "https://login.pod.example.com/token",
+    "https://keycloak.pod.svc.cluster.local/token",
   ];
   const message = (type) =>
     `The ${type} token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.`;
