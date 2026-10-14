@@ -1301,6 +1301,22 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       { agents: { defaults: { ...runtimeDefaults, pdfModel: "{{ vars.count }}" } } },
       setting("agents.defaults.pdfModel", "must be provider/model references"),
     ],
+    // As the standard Codex Preset, plus an apiKey Dedicated Codex never takes.
+    [
+      {
+        agents: {
+          defaults: {
+            model: "codex/{{ vars.model }}",
+            models: { "codex/{{ vars.model }}": { agentRuntime: { id: "codex" } } },
+          },
+        },
+        models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } },
+      },
+      setting(
+        "models.providers.codex.apiKey",
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+      ),
+    ],
   ];
   for (const [values, message] of refused) {
     const label = JSON.stringify(values);
