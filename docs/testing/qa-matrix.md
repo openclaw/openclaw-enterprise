@@ -9,12 +9,11 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-The suite calls `scripts/dev-up` for Compose OCC + Kubernetes compute and
-Kubernetes OCC + Kubernetes compute. Both use Sandbox Driver `none`. Each
-installation runs its two presets sequentially, selecting the appropriate Plugin
-Driver and stopping the prior agents before switching. It creates unique clusters,
-Compose projects, ports, and private state directories. It does not select an
-existing cluster or change the default kubeconfig.
+The suite calls `scripts/dev-up` for Compose OCC and Kubernetes OCC, both with
+Kubernetes compute and Sandbox Driver `none`. Each installation runs two presets
+sequentially, selecting their Plugin Drivers and stopping prior agents before
+switching. Clusters, Compose projects, ports, and private state directories are
+unique; existing clusters and the default kubeconfig remain unchanged.
 
 ## Parallel scenarios on shared setup
 
@@ -27,10 +26,9 @@ default. Each owns a fresh Agent, configuration, credentials, and workspace:
 - `calendar`: Codex Calendar reads and approval-policy transitions.
 - `git-read`: Codex read-only push denial and credential disposal.
 
-The steps inside each scenario stay sequential. Separate chat sessions on one
-Agent would still share its policy, deployment, and workspace. Calendar and Git
-therefore use different Agents. There is one browser scenario at a time, so the
-Compose TLS relay cannot switch targets during another browser test.
+Scenario steps stay sequential. Calendar and Git use separate Agents because chat
+sessions share an Agent's policy, deployment, and workspace. Only one browser
+scenario runs at a time, preventing Compose TLS relay target changes during a test.
 
 After those workers finish and stop their Agents, the Codex `slack` scenario
 runs on its own Agent. Slack setup can restart shared services; its Socket Mode
@@ -71,10 +69,8 @@ A selected check with missing credentials fails rather than becoming a skip.
 
 ## Coverage and applicability
 
-The named stages below are implemented in
-[`qa-matrix-real.test.mjs`](../../tests/integration/qa-matrix-real.test.mjs).
-Installation setup runs once before its two preset cells; the remaining stages
-run for each applicable cell.
+[`qa-matrix-real.test.mjs`](../../tests/integration/qa-matrix-real.test.mjs) runs
+installation setup once, then the remaining stages for each applicable preset cell.
 
 | Scenario                                                                           | Compose OpenClaw | Compose Codex | Kubernetes OpenClaw | Kubernetes Codex |
 | ---------------------------------------------------------------------------------- | ---------------- | ------------- | ------------------- | ---------------- |
@@ -294,13 +290,10 @@ are not claimed as runnable acceptance coverage.
 
 ## Automatic OpenShell coverage
 
-The [QA advisory workflow](../../.github/workflows/qa-advisory.yml) runs the full
-`openshell` lane on trusted same-repository PRs, alongside the Compose and
-Kubernetes Codex checks. Fork and Dependabot PRs require trusted execution.
-The OpenShell job uses GitHub Ubuntu with an early Landlock ABI check; the
-Blacksmith kernel cannot enforce its sandbox filesystem policy. It is outside
-`CI Required`: failures remain visible without
-blocking merges. Its result artifact is `qa-advisory-openshell`.
+The advisory `openshell` job uses GitHub Ubuntu with an early Landlock ABI check;
+the Blacksmith kernel cannot enforce its sandbox filesystem policy. Its result
+artifact is `qa-advisory-openshell`. The [CI rules above](#ci-evidence-and-recovery)
+cover trusted execution and advisory status.
 
 The [lane manifest](../../scripts/ci/test-suites/openshell.json) selects five
 real-runtime scenarios: installation with each control-plane mode, sandbox
