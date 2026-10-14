@@ -894,8 +894,9 @@ test("QA lane cleanup returns launcher images to the recorded start and reports 
   const inventoryPath = join(root, "inventory.json");
   const commandLog = join(root, "commands.log");
   const docker = join(root, "bin/docker");
-  // Rows are [repository, tag, digest, id]. Tag and rm edit the inventory like an engine;
-  // removing the migrate tag fails as it does while a retained container still uses it.
+  // Rows are [repository, tag, digest, id]. Tag and rm edit the inventory like an engine.
+  // Removing the migrate tag fails as it does while a retained container still uses it,
+  // and tagging an image the engine no longer has fails.
   await writeExecutable(
     docker,
     `#!${process.execPath}
@@ -905,11 +906,19 @@ const args = process.argv.slice(2);
 const rows = JSON.parse(readFileSync(inventoryPath, "utf8"));
 const split = (reference) => [reference.slice(0, reference.lastIndexOf(":")), reference.slice(reference.lastIndexOf(":") + 1)];
 if (args[0] === "image" && args[1] === "ls") {
+  // Only the exact listing yields full IDs, digest rows and the expected columns.
+  if (args.join(" ") !== "image ls --digests --no-trunc --format {{.Repository}}\\t{{.Tag}}\\t{{.Digest}}\\t{{.ID}}") {
+    process.stderr.write("unexpected listing: " + args.join(" ") + "\\n");
+    process.exit(2);
+  }
   process.stdout.write(rows.map((row) => row.join("\\t") + "\\n").join(""));
   process.exit(0);
 }
 appendFileSync(${JSON.stringify(commandLog)}, args.join(" ") + "\\n");
-if (args[0] === "tag") {
+if (args[0] === "tag" && !rows.some((row) => row[3] === args[1])) {
+  process.stderr.write("Error response from daemon: No such image: " + args[1] + "\\n");
+  process.exit(1);
+} else if (args[0] === "tag") {
   const [repository, tag] = split(args[2]);
   const kept = rows.filter((row) => row[0] !== repository || row[1] !== tag);
   writeFileSync(inventoryPath, JSON.stringify([...kept, [repository, tag, "<none>", args[1]]]));
@@ -928,6 +937,7 @@ if (args[0] === "tag") {
   const start = [
     ["localhost/openclaw-ci-main/runtime", "cfc5df9ad2b2", "<none>", id("a")],
     ["openclaw-enterprise-runtime", "kubernetes-quickstart", "<none>", id("1")],
+    ["openclaw-enterprise-repository-credentials", "kubernetes-quickstart", "<none>", id("6")],
     ["occ-dev-qa-c-11111111-controller", "latest", "<none>", id("0")],
     ["node", "<none>", nodeDigest, id("e")],
     ["<none>", "<none>", "<none>", id("f")],
@@ -956,7 +966,8 @@ if (args[0] === "tag") {
   assert.equal(prepared.status, 0, prepared.stderr);
 
   // The job rebuilds the fixed runtime tag, adds a controller tag and a Kubernetes QA
-  // installation's Compose images, and pulls an unrelated image.
+  // installation's Compose images, and pulls an unrelated image. The repository
+  // service tag and its image are gone, so it cannot be restored.
   await writeFile(
     inventoryPath,
     JSON.stringify([
@@ -975,6 +986,7 @@ if (args[0] === "tag") {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual((await readFile(commandLog, "utf8")).trim().split("\n"), [
     `tag ${id("1")} openclaw-enterprise-runtime:kubernetes-quickstart`,
+    `tag ${id("6")} openclaw-enterprise-repository-credentials:kubernetes-quickstart`,
     "image rm openclaw-enterprise-controller:kubernetes-quickstart",
     "image rm occ-dev-qa-k-22222222-controller:latest",
     "image rm occ-dev-qa-k-22222222-migrate:latest",
@@ -982,6 +994,10 @@ if (args[0] === "tag") {
   assert.match(
     result.stdout,
     /::warning::Lane image cleanup: remove occ-dev-qa-k-22222222-migrate:latest: .*conflict/,
+  );
+  assert.match(
+    result.stdout,
+    /::warning::Lane image cleanup: restore openclaw-enterprise-repository-credentials:kubernetes-quickstart: .*No such image/,
   );
   const report = JSON.parse(
     result.stdout.split("\n").find((line) => line.includes('"stage":"lane-images"')),
@@ -996,7 +1012,7 @@ if (args[0] === "tag") {
     ],
     added: ["occ-dev-qa-k-22222222-migrate:latest", "postgres:18.6"],
     changed: [],
-    missing: [],
+    missing: ["openclaw-enterprise-repository-credentials:kubernetes-quickstart"],
   });
   await assert.rejects(stat(statePath), { code: "ENOENT" });
 });

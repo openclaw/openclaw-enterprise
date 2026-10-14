@@ -90,17 +90,25 @@ function firstLine(error) {
     .slice(0, 300);
 }
 
-// Returns the job's image set to its recorded start for the owned names. A failed
-// tag or removal is reported, not thrown: it costs a store commit, not a result.
+// Returns the job's image set to its recorded start for the owned names. Engine
+// failures are reported, not thrown: a leftover image costs a store commit, not a
+// result.
 export async function restoreLaneImages(resource, { execFile, docker, log = console.log }) {
   assertLaneImagesResource(resource);
   const baseline = resource.images;
-  const current = await imageInventory({ execFile, docker });
+  let current;
+  try {
+    current = await imageInventory({ execFile, docker });
+  } catch (error) {
+    log(`::warning::Lane image cleanup skipped: ${firstLine(error)}`);
+    return { skipped: true };
+  }
   const restored = [];
   const removed = [];
   const warnings = [];
   for (const [reference, id] of Object.entries(baseline)) {
-    if (!ownedLaneImage(reference) || current[reference] === id) {
+    // Owned names are tags; a digest reference cannot be re-tagged.
+    if (!ownedLaneImage(reference) || reference.includes("@") || current[reference] === id) {
       continue;
     }
     // A rebuild moved this tag. Its starting image stays in the store, untagged,
@@ -123,8 +131,15 @@ export async function restoreLaneImages(resource, { execFile, docker, log = cons
       warnings.push(`remove ${reference}: ${firstLine(error)}`);
     }
   }
-  // What the store commit will still see, so a job that commits anyway names why.
-  const final = await imageInventory({ execFile, docker });
+  // What changed since preparation recorded the start, so a job that still commits
+  // names why. Images pulled before preparation (setup actions) are not in this view.
+  let final;
+  try {
+    final = await imageInventory({ execFile, docker });
+  } catch (error) {
+    warnings.push(`final inventory: ${firstLine(error)}`);
+    final = {};
+  }
   const added = Object.keys(final).filter((reference) => !Object.hasOwn(baseline, reference));
   const changed = Object.keys(final).filter(
     (reference) => Object.hasOwn(baseline, reference) && baseline[reference] !== final[reference],

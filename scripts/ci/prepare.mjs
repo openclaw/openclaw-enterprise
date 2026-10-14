@@ -3016,15 +3016,25 @@ async function prepareLane({ lane, statePath }) {
     case "qa-matrix":
       // On a hosted runner, record the starting images so cleanup can return the
       // shared image store to them (lane-images.mjs, finding 1345). A workstation's
-      // launcher tags are the developer's own and stay as the run leaves them.
+      // launcher tags are the developer's own and stay as the run leaves them. A
+      // failed inventory only skips that: the QA run itself does not need it.
       if (process.env.GITHUB_ACTIONS === "true") {
-        const images = await imageInventory({
-          execFile: (command, args) =>
-            execFile(command, args, { timeoutMs: imageCommandTimeoutMs }),
-          docker: process.env.OCC_DOCKER_BIN ?? "docker",
-        });
-        addResource(state, laneImagesResourceKind, { name, images, status: "ready" });
-        await writeState(resolvedStatePath, state);
+        let images;
+        try {
+          images = await imageInventory({
+            execFile: (command, args) =>
+              execFile(command, args, { timeoutMs: imageCommandTimeoutMs }),
+            docker: process.env.OCC_DOCKER_BIN ?? "docker",
+          });
+        } catch (error) {
+          console.log(
+            `::warning::QA image baseline skipped: ${String(error.message).split("\n")[0]}`,
+          );
+        }
+        if (images) {
+          addResource(state, laneImagesResourceKind, { name, images, status: "ready" });
+          await writeState(resolvedStatePath, state);
+        }
       }
       break;
     case "helper-timeout":
