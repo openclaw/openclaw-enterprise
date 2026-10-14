@@ -24,6 +24,7 @@ import {
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -4726,6 +4727,24 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ baseUrl: "HTTPS://999.1.2.3:8443" }, numericHost()],
     [{ models: [{ id: "m", baseUrl: "https://1.2.3.4.5/v1" }] }, numericHost("models/0/baseUrl")],
     [{ baseUrl: "https://0.0.0.08./v1" }, numericHost()],
+    // The hint finds the host as the URL parser does: any case of 0x and a bare 0x, edge spaces
+    // and C0 controls trimmed, backslashes as slashes, and userinfo skipped.
+    [{ baseUrl: "https://api.0X10/v1" }, numericHost()],
+    [{ baseUrl: "https://api.0x/v1" }, numericHost()],
+    [{ baseUrl: " \u0001https://api.123/v1" }, numericHost()],
+    [{ baseUrl: "https://api.123 \u0001" }, numericHost()],
+    [{ baseUrl: "https:\\\\api.123/v1" }, numericHost()],
+    [
+      {
+        baseUrl: syntheticCredentialUrl({
+          username: "user",
+          password: "secret",
+          host: "api.123",
+          pathname: "/v1",
+        }),
+      },
+      numericHost(),
+    ],
     // A URL that fails for another reason too keeps the general message.
     [{ baseUrl: "https://api.123:99999/v1" }, baseUrl()],
   ]) {
@@ -4750,6 +4769,8 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
     [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
     [{ p: { type: "string" } }, { baseUrl: "https://api.123/{{ vars.p }}" }, numericHost()],
+    // The last label can follow the variable: the hint reads the text around it, filled.
+    [{ h: { type: "string" } }, { baseUrl: "https://{{ vars.h }}.1.2.3.4/v1" }, numericHost()],
     [
       {},
       { models: [{ id: "m", baseUrl: "https://api.0x10/v1" }] },
