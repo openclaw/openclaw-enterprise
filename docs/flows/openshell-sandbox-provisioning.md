@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-14
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+last_updated_session: authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -170,9 +170,8 @@ mutation: the pinned API cannot preserve the exact ServiceAccount/token. The
 local profile disables it.
 
 For `credential_source`, Compute attaches provider names without a model Secret.
-For `CODEX_LOGIN_MODE=chatgptAuthTokens`, Compute supplies a placeholder and
-account metadata. OpenShell omits static `CODEX_ACCESS_TOKEN`; the supervisor
-injects its bound alias. Withdrawal then leaves it absent. Others use `api_key`.
+For `chatgptAuthTokens`, OpenShell omits static `CODEX_ACCESS_TOKEN`, keeping account
+metadata. Only the provider injects aliases. Others use `api_key`.
 Compute reads Codex's exact Agent transport Secret and
 passes only `APP_TOKEN_SHA`. It compiles the admitted plugin snapshot into
 `runtime.json`/`config.toml` workload files and removes their ConfigMap env paths.
@@ -351,6 +350,8 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
