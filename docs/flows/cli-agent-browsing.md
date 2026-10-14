@@ -85,7 +85,7 @@ Revision history pages hold summaries, newest first (`--limit`, `--cursor`),
 which carry no saved settings and so no `configurationReadError`. If the Agent
 is readable but one historical revision is not, that row's status read answers
 `503`: the CLI prints a notice naming the revision and leaves its status null.
-Healthy siblings retain their normal status reads. When older revisions exist,
+Healthy siblings retain their normal status reads. When a page is full,
 a notice prints the `--cursor` that continues the history.
 
 Neither branch treats missing settings as empty settings. The command retains

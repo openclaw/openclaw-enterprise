@@ -3472,31 +3472,47 @@ export class OpenClawController {
     agentId: string,
     page: { readonly before?: number; readonly limit: number } = { limit: 50 },
   ): Promise<Readonly<AgentRevisionSummaryPage>> {
-    if (!Number.isSafeInteger(page.limit) || page.limit < 1) {
+    if (!Number.isSafeInteger(page.limit) || page.limit < 1 || page.limit > 100) {
       throw new ScopeViolationError("The revision page size is invalid.");
     }
     if (page.before !== undefined && (!Number.isSafeInteger(page.before) || page.before < 1)) {
       throw new ScopeViolationError("The revision page cursor is invalid.");
     }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
+    // Read checks stay per revision. Scanning on past unreadable revisions keeps the cursor on
+    // a readable one, so a page never names a revision the caller cannot read.
     return this.read(async (state) => {
-      const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, page);
       const readable: Readonly<AgentRevisionSummary>[] = [];
-      for (const revision of listed.revisions) {
-        if (
-          await this.canRead(principalId, {
-            kind: "agent_revision",
-            id: revision.id,
-            namespaceId: agent.namespaceId,
-          })
-        ) {
+      let before = page.before;
+      for (;;) {
+        const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, {
+          ...(before === undefined ? {} : { before }),
+          limit: page.limit,
+        });
+        for (const [index, revision] of listed.revisions.entries()) {
+          if (
+            !(await this.canRead(principalId, {
+              kind: "agent_revision",
+              id: revision.id,
+              namespaceId: agent.namespaceId,
+            }))
+          ) {
+            continue;
+          }
           readable.push(revision);
+          if (readable.length === page.limit) {
+            const more = index < listed.revisions.length - 1 || listed.nextBefore !== undefined;
+            return Object.freeze({
+              revisions: Object.freeze(readable),
+              ...(more ? { nextBefore: revision.revision } : {}),
+            });
+          }
         }
+        if (listed.nextBefore === undefined) {
+          return Object.freeze({ revisions: Object.freeze(readable) });
+        }
+        before = listed.nextBefore;
       }
-      return Object.freeze({
-        revisions: Object.freeze(readable),
-        ...(listed.nextBefore === undefined ? {} : { nextBefore: listed.nextBefore }),
-      });
     });
   }
 

@@ -1075,13 +1075,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let latestDeploymentRecord = null;
   let versionRecord = null;
   const revisionsPromise = readRevisionPage(request, path);
-  // Older pages the viewer asked for, and the cursor for the next one (null once complete).
-  let olderRevisions = [];
+  // Every revision summary listed so far, from the newest page and from older pages the viewer
+  // asked for. Summaries never change, and a revision appears once however pages shift.
+  const listedRevisions = new Map();
+  // Whether an older page was loaded, and the cursor for the next one (null once complete).
+  let olderPageLoaded = false;
   let olderCursor = null;
   let olderLoading = false;
   let olderError = null;
   // The newest revision with its saved settings, read only when a check needs them.
   let latestRevisionDetail = null;
+  let latestRevisionDetailReading = null;
 
   function versionNotice() {
     return selected === "draft"
@@ -1404,9 +1408,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // List summaries omit the credential binding a revision was admitted with, so the
   // rejected-credential hint reads the newest revision once.
   async function readLatestRevisionDetail(revision) {
-    if (latestRevisionDetail?.id === revision.id) {
+    if (latestRevisionDetail?.id === revision.id || latestRevisionDetailReading === revision.id) {
       return;
     }
+    latestRevisionDetailReading = revision.id;
     try {
       const detail =
         viewedSnapshot?.id === revision.id
@@ -1419,6 +1424,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       refreshDeployControls();
     } catch {
       // Without the detail the hint stays generic; the deployment status still shows.
+    } finally {
+      if (latestRevisionDetailReading === revision.id) {
+        latestRevisionDetailReading = null;
+      }
     }
   }
 
@@ -1434,7 +1443,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (!context.isCurrent() || deleting) {
         return;
       }
-      olderRevisions = [...olderRevisions, ...page.revisions];
+      for (const revision of page.revisions) {
+        listedRevisions.set(revision.id, revision);
+      }
+      olderPageLoaded = true;
       olderCursor = page.nextCursor;
     } catch (error) {
       if (!context.isCurrent() || deleting) {
@@ -1456,14 +1468,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     latestRevisionResult = revisionResult;
     const newest = revisionResult.status === "fulfilled" ? revisionResult.value.revisions : [];
     // Until an older page is loaded, the newest page's cursor says whether older ones exist.
-    if (olderRevisions.length === 0 && revisionResult.status === "fulfilled") {
+    // After that the older pages' own cursor continues, so a refresh never loses the place.
+    if (!olderPageLoaded && revisionResult.status === "fulfilled") {
       olderCursor = revisionResult.value.nextCursor;
     }
-    // A refreshed newest page keeps the older pages already shown; a revision appears once.
-    const listed = new Map(
-      [...newest, ...olderRevisions].map((revision) => [revision.id, revision]),
-    );
-    const revisions = [...listed.values()].sort((a, b) => b.revision - a.revision);
+    for (const revision of newest) {
+      listedRevisions.set(revision.id, revision);
+    }
+    const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     renderCurrentVersion();

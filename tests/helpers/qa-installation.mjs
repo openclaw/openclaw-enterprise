@@ -660,7 +660,11 @@ export async function prepareQaPreset(f, presetName) {
 
 export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
-  const preset = f.presets.find((value) => value.name === `Standard ${presetName}`);
+  // The Preset list returns summaries; the exact Preset carries the template.
+  const preset = await f.api(
+    "GET",
+    `/namespaces/${f.defaultNamespace.id}/presets/${f.presets.find((value) => value.name === `Standard ${presetName}`).id}`,
+  );
   const codex = presetName === "Codex";
   const credential = await protectedText(
     process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],

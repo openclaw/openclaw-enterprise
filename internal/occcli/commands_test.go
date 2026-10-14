@@ -826,10 +826,12 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	if !strings.Contains(out, testRevision2ID) || strings.Contains(out, testRevision1ID) {
 		t.Fatalf("expected only the page's revision:\n%s", out)
 	}
-	if !strings.Contains(notices, "occ agent revisions "+testAgentID+" --cursor v1.2") {
-		t.Fatalf("expected a next-page hint: %q", notices)
+	if !strings.Contains(notices, "occ agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
+		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
 	}
-	if _, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "101"); err == nil {
-		t.Fatal("--limit above 100 must be refused locally")
+	for _, limit := range []string{"0", "101"} {
+		if _, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", limit); err == nil {
+			t.Fatalf("--limit %s must be refused locally", limit)
+		}
 	}
 }

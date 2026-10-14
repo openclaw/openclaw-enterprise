@@ -391,7 +391,12 @@ test(
         // the console. Its native startup turn must complete against the deterministic
         // Responses fixture using a synthetic Secret; this is not live model inference.
         const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
-        const preset = presets.data.find(({ name }) => name === "Standard Codex");
+        // The Preset list returns summaries; the exact Preset carries the template.
+        const preset = (
+          await request(
+            `/namespaces/${namespace.id}/presets/${presets.data.find(({ name }) => name === "Standard Codex").id}`,
+          )
+        ).data;
         const rendered = renderPresetTemplate(preset.template, {
           name: "Local sandbox proof",
           model: "gpt-6-astra",

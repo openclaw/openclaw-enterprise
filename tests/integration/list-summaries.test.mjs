@@ -199,6 +199,7 @@ test("revision pages run newest first and a cursor continues below a deploy betw
     "?limit=-1",
     "?limit=1.5",
     "?cursor=v1.0",
+    "?cursor=v1.9999999999999999",
     "?cursor=v2.4",
     "?cursor=4",
     "?cursor=v1.4&extra=1",
@@ -232,15 +233,19 @@ test("a revision page leaves out revisions the caller cannot read and still cont
     }
   });
   const session = await fixture.signIn(reader.credentials);
-  // Revisions 5 and 4 are unreadable: the page is empty but names where to continue, so a
-  // client follows nextCursor until it is null rather than stopping at an empty page.
-  const hidden = await page("?limit=2", { session });
-  assert.deepEqual([hidden.numbers, hidden.nextCursor], [[], "v1.4"]);
-  const partial = await page(`?limit=2&cursor=${hidden.nextCursor}`, { session });
-  assert.deepEqual([partial.numbers, partial.nextCursor], [[3], "v1.2"]);
-  assert.equal(partial.data[0].id, third.id);
-  const last = await page(`?limit=2&cursor=${partial.nextCursor}`, { session });
+  // Revisions 5, 4 and 2 are unreadable. A page scans past them, so it fills with readable
+  // revisions and its cursor names only a readable one: nothing about the hidden revisions,
+  // not even their numbers, reaches the caller.
+  const both = await page("?limit=2", { session });
+  assert.deepEqual([both.numbers, both.nextCursor], [[3, 1], null]);
+  const newest = await page("?limit=1", { session });
+  assert.deepEqual([newest.numbers, newest.nextCursor], [[3], "v1.3"]);
+  assert.equal(newest.data[0].id, third.id);
+  const last = await page(`?limit=1&cursor=${newest.nextCursor}`, { session });
   assert.deepEqual([last.numbers, last.nextCursor], [[1], null]);
+  // Below the oldest revision the page is empty and ends the walk.
+  const afterLast = await page("?limit=1&cursor=v1.1", { session });
+  assert.deepEqual([afterLast.numbers, afterLast.nextCursor], [[], null]);
   assert.equal(second.revision, 2);
   // The unreadable revision stays refused on its exact read as well.
   const refused = await fixture.request(

@@ -233,8 +233,9 @@ export const AgentRuntimeLogsQuery = Type.Object(
 
 /**
  * Query strings are not coerced; `limit` is exact decimal text. The cursor holds only the
- * revision number the next page starts below, so it needs no signature: every listed revision
- * is still authorized one by one.
+ * revision number the next page starts below (at most 15 digits, so always a safe integer). It
+ * needs no signature: every listed revision is still authorized one by one, and the server only
+ * issues a cursor naming a revision the caller can read.
  */
 export const AgentRevisionListQuery = Type.Object(
   {
@@ -247,7 +248,7 @@ export const AgentRevisionListQuery = Type.Object(
     cursor: Type.Optional(
       Type.String({
         maxLength: 32,
-        pattern: "^v1\\.[1-9][0-9]{0,15}$",
+        pattern: "^v1\\.[1-9][0-9]{0,14}$",
         description: "Opaque cursor from `meta.nextCursor` of the previous page.",
       }),
     ),

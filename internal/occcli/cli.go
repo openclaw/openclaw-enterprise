@@ -798,7 +798,7 @@ func (app *application) agentCommand() *cobra.Command {
 		Short: "List an Agent's immutable revisions (deployment IDs), newest first, one page at a time",
 		Args:  idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
-			if revisionLimit < 0 || revisionLimit > 100 {
+			if command.Flags().Changed("limit") && (revisionLimit < 1 || revisionLimit > 100) {
 				return fmt.Errorf("--limit must be between 1 and 100")
 			}
 			namespace, client, err := app.namespaceClient()
@@ -817,7 +817,11 @@ func (app *application) agentCommand() *cobra.Command {
 				return err
 			}
 			if page.NextCursor != "" {
-				noticef(command.ErrOrStderr(), "notice: older revisions exist; run \"occ agent revisions %s --cursor %s\"", args[0], page.NextCursor)
+				limit := ""
+				if command.Flags().Changed("limit") {
+					limit = fmt.Sprintf(" --limit %d", revisionLimit)
+				}
+				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ agent revisions %s%s --cursor %s\"", args[0], limit, page.NextCursor)
 			}
 			return nil
 		},

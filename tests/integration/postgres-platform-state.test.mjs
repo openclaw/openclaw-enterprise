@@ -1364,6 +1364,11 @@ test(
     );
     assert.ok(revisionPage.ms < 1_000, `revision summary page took ${revisionPage.ms} ms`);
     assert.ok(presetSummaries.ms < 1_000, `Preset summaries took ${presetSummaries.ms} ms`);
+    // Later starts in this database seed default Presets, which reads full templates.
+    await pool.query(
+      "DELETE FROM occ.presets WHERE namespace_id = $1 AND name LIKE 'Heavy preset %'",
+      [fixture.namespace.id],
+    );
   },
 );
 

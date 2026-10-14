@@ -4059,7 +4059,7 @@ List authorized immutable revision summaries for one exact Agent, newest first
 | Name | In | Type | Required | Constraints |
 | --- | --- | --- | --- | --- |
 | `limit` | query | `string` | No | pattern: `^(?:[1-9][0-9]?\|100)$` |
-| `cursor` | query | `string` | No | max length: 32; pattern: `^v1\.[1-9][0-9]{0,15}$` |
+| `cursor` | query | `string` | No | max length: 32; pattern: `^v1\.[1-9][0-9]{0,14}$` |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4093,7 +4093,7 @@ List authorized immutable revision summaries for one exact Agent, newest first
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].revision` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
-| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions; `null` on the last page. A page can hold fewer than `limit` revisions, even none, when some are not readable to the caller. |
+| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions; `null` when no older revision is readable. A full page carries a cursor, so the page after it can be empty. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}`
