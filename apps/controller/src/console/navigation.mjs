@@ -3,6 +3,7 @@ export const pages = Object.freeze({
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",
+  "cli-login": "Sign in to occ",
 });
 
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {

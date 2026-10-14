@@ -4,6 +4,8 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
+    "tests/integration/cli-login-approval.test.mjs",
+    "tests/integration/cli-sign-in-admission.test.mjs",
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
@@ -105,6 +107,12 @@
     "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
   },
   "files": [
+    {
+      "path": "tests/integration/cli-login-approval.test.mjs"
+    },
+    {
+      "path": "tests/integration/cli-sign-in-admission.test.mjs"
+    },
     {
       "path": "tests/integration/tls-peer-certificate.test.mjs"
     },

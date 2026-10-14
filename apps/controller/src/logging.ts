@@ -24,7 +24,7 @@ const SAFE_PATH = /^\/[ -~]{0,1023}$/;
 // Token shapes: a bearer credential, an OpenAI, GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
 // `github_pat_`) or Slack key, a private key, or an AWS access key ID.
 const SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b/i;
+  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|\bxox[abeoprs]-[A-Za-z0-9-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bocccli_[A-Za-z0-9_-]{8,}/i;
 // Case-sensitive token shapes. A JWT (`eyJ` header and payload). A basic credential: a base64
 // token of 8 or more characters with a digit, `+` or `=`, or with two uppercase letters after
 // its first character, so prose ("Basic authentication", "basic OpenShell") passes.

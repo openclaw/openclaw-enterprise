@@ -4,7 +4,11 @@ import {
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
 } from "./auth/configuration.ts";
-import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
+import {
+  cliSessionSettings,
+  clientAddressConfiguration,
+  humanLoginConfiguration,
+} from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
@@ -258,12 +262,15 @@ function configuration() {
   // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
   const humanLogin = humanLoginConfiguration(process.env);
   const clientAddress = clientAddressConfiguration(process.env);
+  // RFC-0019 `occ login`: OCC_AUTH_CLI_SESSIONS and OCC_AUTH_CLI_SESSION_MAX_LIFETIME_SECONDS.
+  const cliSessions = cliSessionSettings(process.env);
   if (mode === "production") {
     return Object.freeze({
       ...settings,
       authSecret: requiredEnvironment("OCC_AUTH_SECRET"),
       authBaseURL,
       ...humanLogin,
+      cliSessions,
       ...(clientAddress === undefined ? {} : { clientAddress }),
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
       ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
@@ -290,6 +297,7 @@ function configuration() {
     authSecret,
     authBaseURL,
     ...humanLogin,
+    cliSessions,
     ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
     ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
     agentRuntimeLogsEnabled,

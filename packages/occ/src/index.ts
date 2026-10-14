@@ -418,6 +418,19 @@ export {
 } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
+  CLI_DEVICE_AUTHORIZATION_SECONDS,
+  CLI_SESSIONS_PER_PARENT,
+  PostgresCliSessions,
+} from "./state/cli-sessions.ts";
+export type {
+  CliDeviceAuthorization,
+  CliDeviceAuthorizationStart,
+  CliSession,
+  CliSessionApprover,
+  CliSessionExchange,
+  PostgresCliSessionsOptions,
+} from "./state/cli-sessions.ts";
+export {
   PostgresHumanAuthentication,
   UserAlreadyExistsError,
   knownDeviceAccountState,

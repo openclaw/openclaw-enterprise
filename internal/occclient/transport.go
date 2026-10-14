@@ -18,11 +18,15 @@ import (
 )
 
 // Config contains connection, authentication, and TLS settings for an OCC client.
+// At most one credential is set: ServiceKeyFile wins over CLISessionToken. A client
+// with neither sends no credential (occ login's start and poll requests).
 type Config struct {
 	URL            string
 	ServiceKeyFile string
-	CABundle       string
-	Timeout        time.Duration
+	// CLISessionToken is an occ login session (RFC-0019), sent as x-occ-cli-session.
+	CLISessionToken string
+	CABundle        string
+	Timeout         time.Duration
 	// Context cancels in-flight requests, for example on Ctrl-C. Nil means no cancellation.
 	Context context.Context
 }
@@ -32,8 +36,12 @@ type Client struct {
 	ctx        context.Context
 	baseURL    *url.URL
 	serviceKey string
+	cliSession string
 	http       *http.Client
 }
+
+// CLISessionHeader carries an occ login session token.
+const CLISessionHeader = "x-occ-cli-session"
 
 type serviceKeyEnvelope struct {
 	Data struct {
@@ -109,9 +117,17 @@ func New(config Config) (*Client, error) {
 		return nil, fmt.Errorf("OCC timeout must be positive")
 	}
 
-	serviceKey, err := readServiceKey(config.ServiceKeyFile)
-	if err != nil {
-		return nil, err
+	var serviceKey, cliSession string
+	if config.ServiceKeyFile != "" {
+		serviceKey, err = readServiceKey(config.ServiceKeyFile)
+		if err != nil {
+			return nil, err
+		}
+	} else if config.CLISessionToken != "" {
+		if strings.ContainsAny(config.CLISessionToken, "\r\n") {
+			return nil, fmt.Errorf("invalid CLI session token")
+		}
+		cliSession = config.CLISessionToken
 	}
 	transport, err := httpTransport(config.CABundle)
 	if err != nil {
@@ -127,6 +143,7 @@ func New(config Config) (*Client, error) {
 		ctx:        ctx,
 		baseURL:    baseURL,
 		serviceKey: serviceKey,
+		cliSession: cliSession,
 		http: &http.Client{
 			Transport: transport,
 			Timeout:   config.Timeout,
@@ -206,7 +223,13 @@ func (client *Client) executeQuery(
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("failed to create OCC request: %w", err)
 	}
-	request.Header.Set("x-api-key", client.serviceKey)
+	// Each credential goes only to the configured origin: redirects are never followed.
+	switch {
+	case client.serviceKey != "":
+		request.Header.Set("x-api-key", client.serviceKey)
+	case client.cliSession != "":
+		request.Header.Set(CLISessionHeader, client.cliSession)
+	}
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
 	}

@@ -1633,6 +1633,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCliSessions"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1894,6 +1895,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCliSessions"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1975,6 +1977,7 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
+      [53, "preCliSessions"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -1990,7 +1993,7 @@ test(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${prefix >= 50 ? "GRANT" : prefix >= 41 ? "ALTER TABLE" : prefix >= 38 ? "CREATE FUNCTION" : prefix >= 36 ? "CREATE INDEX" : prefix >= 31 ? "ALTER TABLE" : prefix >= 27 ? "CREATE FUNCTION" : "ALTER FUNCTION"}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${prefix >= 53 ? "CREATE TRIGGER" : prefix >= 50 ? "GRANT" : prefix >= 41 ? "ALTER TABLE" : prefix >= 38 ? "CREATE FUNCTION" : prefix >= 36 ? "CREATE INDEX" : prefix >= 31 ? "ALTER TABLE" : prefix >= 27 ? "CREATE FUNCTION" : "ALTER FUNCTION"}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
         assert.deepEqual(await historyReceipts(db.migrator), before.receipts);

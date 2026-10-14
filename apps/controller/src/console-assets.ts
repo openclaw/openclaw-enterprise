@@ -18,6 +18,7 @@ const CONSOLE_ASSETS = new Map([
       "navigation.mjs",
       "shell.mjs",
       "runtime-images.mjs",
+      "cli-login.mjs",
       "agents/list.mjs",
       "agents/logs.mjs",
       "agents/logs-view.mjs",
@@ -80,6 +81,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/backends",
   "/console/namespaces",
   "/console/settings",
+  "/console/cli-login",
 ]);
 
 export const CONSOLE_CONTENT_SECURITY_POLICY = [

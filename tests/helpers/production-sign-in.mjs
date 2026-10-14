@@ -7,6 +7,7 @@ import pg from "pg";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import {
+  cliSessionSettings,
   clientAddressConfiguration,
   humanLoginConfiguration,
 } from "../../apps/controller/src/auth/index.ts";
@@ -228,6 +229,8 @@ export async function composeProductionSignIn(
   const { installation } = runtime;
   const humanLogin = humanLoginConfiguration(environment);
   const clientAddress = clientAddressConfiguration(environment);
+  // As server.mjs reads OCC_AUTH_CLI_SESSIONS*.
+  const cliSessions = cliSessionSettings(environment);
   const nativeAdminEnabled = environment.OCC_AGENT_NATIVE_ADMIN_ENABLED === "true";
   return composeProduction({
     mode: "production",
@@ -237,6 +240,7 @@ export async function composeProductionSignIn(
     authBaseURL: environment.OCC_AUTH_BASE_URL,
     ...(environment.OCC_GATEWAY_API_KEY_PATH === undefined ? {} : { gatewayApiKeyPath: keyFile }),
     ...humanLogin,
+    cliSessions,
     ...(clientAddress === undefined ? {} : { clientAddress }),
     ...(nativeAdminEnabled
       ? {
