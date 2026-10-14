@@ -41,6 +41,16 @@ function isModelReference(selected: unknown): selected is string {
   );
 }
 
+// OpenClaw's `openrouter:auto` or `openrouter:free`, which `splitModelRef` reads as the openrouter
+// provider's, though it has no slash.
+function isOpenRouterSelector(selected: unknown): selected is string {
+  return (
+    isNonEmptyString(selected) &&
+    !selected.includes("/") &&
+    splitModelRef(selected).id !== undefined
+  );
+}
+
 // A fallback keeps the primary model's provider. Named, never echoed (finding 1298).
 function requirePrimaryProvider(models: readonly string[], setting: SelectionMessage): void {
   const primaryProvider = splitModelRef(models[0]!).provider;
@@ -66,20 +76,27 @@ export function requireFallbackProviders(
   const agents = asRecord(values.agents);
   const selections: [unknown, readonly string[], SelectionMessage][] = [
     [asRecord(agents?.defaults)?.model, ["agents", "defaults", "model"], defaultModelMessage],
-    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
-      ([key, entry]): [unknown, readonly string[], SelectionMessage] => [
-        asRecord(entry)?.model,
-        ["agents", "entries", key, "model"],
-        entryModelMessage(key),
-      ],
-    ),
   ];
+  // An entry without its own model has nothing to check here; skipping it keeps a large roster
+  // cheap (finding 1321).
+  for (const [key, entry] of Object.entries(asRecord(agents?.entries) ?? {})) {
+    const model = asRecord(entry)?.model;
+    if (model !== undefined) {
+      selections.push([model, ["agents", "entries", key, "model"], entryModelMessage(key)]);
+    }
+  }
+  // OpenClaw's `openrouter:auto` and `openrouter:free` selectors name the openrouter provider
+  // without a slash (`splitModelRef`), so they are checked as the other references are (finding
+  // 1320), as a fallback and as the primary.
   const writtenProvider = (
     selected: unknown,
     path: readonly (string | number)[],
   ): selected is string => {
     const literals = unresolved?.(path);
-    return isModelReference(selected) && (literals === undefined || literals[0]!.includes("/"));
+    return (
+      (isModelReference(selected) || isOpenRouterSelector(selected)) &&
+      (literals === undefined || literals[0]!.includes("/"))
+    );
   };
   for (const [value, at, setting] of selections) {
     const selection = asRecord(value);

@@ -1753,6 +1753,93 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
   });
 });
 
+test("Configuration and Preset saves check an OpenRouter compatibility selector as a model fallback or primary", async (t) => {
+  // Finding 1320: the fallback rule kept only references with a slash, so OpenClaw's
+  // openrouter:auto and openrouter:free were never checked. A Codex primary with an
+  // openrouter:auto fallback saved and deployment refused it with a message that named no
+  // setting, and any fallback under an openrouter:auto primary saved unchecked. Both read as the
+  // openrouter provider's models now (finding 1310), so the rule names the setting at save.
+  const root = await mkdtemp(join(tmpdir(), "occ-openrouter-fallbacks-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    computeDriver: kubernetesRules("compute-openrouter-fallbacks", ...configurationRules),
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const codex = {
+    model: "codex/gpt-5",
+    models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+  };
+  const withModel = (model, defaults = codex) => ({
+    agents: { defaults: { ...defaults, model } },
+  });
+  const fallbacks = (path) =>
+    `Configuration setting ${path}.model.fallbacks must use the primary model's provider.`;
+  const refused = [
+    [withModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
+    [withModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
+    [
+      {
+        agents: {
+          defaults: codex,
+          entries: { main: { model: { primary: codex.model, fallbacks: ["openrouter:free"] } } },
+        },
+      },
+      "agents.entries.main",
+    ],
+    // An openrouter:auto primary keeps its fallbacks on openrouter.
+    [withModel({ primary: "openrouter:auto", fallbacks: ["codex/gpt-5"] }), "agents.defaults"],
+    [withModel({ primary: "openrouter:free", fallbacks: ["openai/gpt-5"] }), "agents.defaults"],
+  ];
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: withModel(codex.model) },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  for (const [index, [values, path]] of refused.entries()) {
+    const label = JSON.stringify(values);
+    const message = fallbacks(path);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(rejected.body.error.message, message, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, `${label}: ${JSON.stringify(replaced.body)}`);
+    assert.equal(replaced.body.error.message, message, label);
+    const preset = await request(context.app, "POST", presets, {
+      body: { name: `OpenRouter-${index}`, template: { configuration: { values } } },
+    });
+    assert.equal(preset.status, 400, `${label}: ${JSON.stringify(preset.body)}`);
+    assert.equal(preset.body.error.message, message, label);
+    // Named, never echoed.
+    for (const body of [rejected.body, replaced.body, preset.body]) {
+      assert.doesNotMatch(body.error.message, /openrouter:|gpt-5/i, label);
+    }
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // Fallbacks on the primary model's provider save, a compatibility selector among them.
+  const accepted = [
+    withModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
+    withModel({ primary: "openrouter:auto", fallbacks: ["openrouter:free", "openrouter/meta/m"] }),
+    withModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
+  ];
+  for (const [index, values] of accepted.entries()) {
+    const label = JSON.stringify(values);
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    const preset = await request(context.app, "POST", presets, {
+      body: { name: `OpenRouter-accepted-${index}`, template: { configuration: { values } } },
+    });
+    assert.equal(preset.status, 201, `${label}: ${JSON.stringify(preset.body)}`);
+  }
+});
+
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
   const { namespace, collection, ...context } = await fixture();
   const ids = [];
@@ -3417,6 +3504,77 @@ test("Configuration save refuses a document too large to store before its conten
   assert.deepEqual(
     configurationDriver.storedConfigurations().map(({ values }) => values),
     [{}],
+  );
+});
+
+test("Configuration save checks a large agents roster in step with its size", async () => {
+  // Finding 1321: a valid Configuration of 60,000 agents.entries without their own settings
+  // (710 KB, under the 1 MiB cap) held the controller's event loop for 7-8 s at save, so every
+  // tenant's requests waited. The Kubernetes Configuration Driver's credential rules and the
+  // Kubernetes Compute model rules built each setting's name for every entry, set or not, and
+  // listed the roster once per setting. They now skip a setting an entry does not hold, and the
+  // two take about 100 ms on this document at two CPUs, under the 300 ms bound (over 500 ms
+  // before).
+  const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
+  const compute = createTestKubernetesComputeDriver("compute-large-roster");
+  let checking = 0;
+  const timed =
+    (rule) =>
+    (...args) => {
+      const started = performance.now();
+      try {
+        return rule(...args);
+      } finally {
+        checking += performance.now() - started;
+      }
+    };
+  const configurationDriver = {
+    ...createConfigurationBackend(),
+    validate: timed((configuration) => kubernetes.validate(configuration)),
+    validateSize: (values) => kubernetes.validateSize(values),
+  };
+  const { collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: createReadyComputeDriver("compute-large-roster", {
+      implementation: "integration-compute-substrate",
+      ...Object.fromEntries(
+        configurationRules.map((rule) => [rule, (...args) => compute[rule](...args)]),
+      ),
+      validateConfiguration: timed((...args) => compute.validateConfiguration(...args)),
+    }),
+  });
+  const codex = {
+    model: "codex/gpt-5",
+    models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: { agents: { defaults: codex } } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const values = {
+    agents: {
+      defaults: codex,
+      ownership: "explicit",
+      entries: Object.fromEntries(Array.from({ length: 60_000 }, (_, index) => [`a${index}`, {}])),
+    },
+  };
+  assert.ok(JSON.stringify(values).length > 700_000);
+  checking = 0;
+  const saved = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
+    body: { values },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body).slice(0, 500));
+  assert.equal(Object.keys(saved.body.data.values.agents.entries).length, 60_000);
+  assert.ok(checking < 300, `the content rules took ${checking.toFixed(0)} ms`);
+  // A setting an entry does hold is still checked, and named.
+  values.agents.entries.a59999 = { sandbox: { ssh: { identityData: "synthetic-literal-key" } } };
+  const refused = await request(context.app, "PATCH", `${collection}/${created.body.data.id}`, {
+    body: { values },
+  });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body).slice(0, 500));
+  assert.equal(
+    refused.body.error.message,
+    "Configuration field /agents/entries/a59999/sandbox/ssh/identityData holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef.",
   );
 });
 

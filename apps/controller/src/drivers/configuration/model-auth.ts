@@ -653,11 +653,30 @@ export function validateModelCredentialReferences(
     }
     // TTS blocks: the Gateway's, each Agent's, Discord voice's (and its accounts'), voice-call's
     // and its numbers'. Each holds `providers` and personas that hold them too.
-    const keyed = (path: readonly string[], each: readonly string[]): [SettingPath, unknown][] =>
-      Object.entries(at(values, path) ?? {}).map(([key, settings]) => [
-        [...path, key, ...each],
-        get(settings, each),
-      ]);
+    // The entries of the keyed map at `path`, listed once: several rules below read each Agent in
+    // agents.entries, and a large roster must not be listed for each (finding 1321).
+    const listed = new Map<string, [string, unknown][]>();
+    const children = (path: readonly string[]): [string, unknown][] => {
+      const name = path.join(".");
+      let found = listed.get(name);
+      if (found === undefined) {
+        found = Object.entries(at(values, path) ?? {});
+        listed.set(name, found);
+      }
+      return found;
+    };
+    // Each key's setting at `each`. A key without one has nothing to check and is skipped, so a
+    // large roster of Agents without the setting costs a lookup each (finding 1321).
+    const keyed = (path: readonly string[], each: readonly string[]): [SettingPath, unknown][] => {
+      const found: [SettingPath, unknown][] = [];
+      for (const [key, settings] of children(path)) {
+        const value = get(settings, each);
+        if (value !== undefined) {
+          found.push([[...path, key, ...each], value]);
+        }
+      }
+      return found;
+    };
     const voiceCall = ["plugins", "entries", "voice-call", "config"];
     const discord = ["channels", "discord"];
     const tts: [SettingPath, unknown][] = [
@@ -798,8 +817,11 @@ export function validateModelCredentialReferences(
     // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
     // Docker sandbox's (default and per Agent) and the install policy's exec check.
     const keyedEnvironments = (path: readonly string[], each: readonly string[]) => {
-      for (const [key, settings] of Object.entries(at(values, path) ?? {})) {
-        environments.push([[...path, key, ...each], at(settings, each)]);
+      for (const [key, settings] of children(path)) {
+        const environment = at(settings, each);
+        if (environment !== undefined) {
+          environments.push([[...path, key, ...each], environment]);
+        }
       }
     };
     keyedEnvironments(["skills", "entries"], ["env"]);

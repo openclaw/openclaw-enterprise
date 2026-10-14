@@ -199,8 +199,12 @@ const ROOT_MODEL_SETTINGS: readonly (readonly string[])[] = [
   ["hooks", "gmail", "model"],
 ];
 
-const settingValue = (record: Record<string, unknown> | undefined, keys: readonly string[]) =>
-  keys.reduce<unknown>((value, key) => asRecord(value)?.[key], record);
+// The keys of an agents.defaults or agents.entries entry under which a model setting sits.
+const SCOPE_MODEL_KEYS: ReadonlySet<string> = new Set([
+  ...[...AGENT_MODEL_SETTINGS, ...AGENT_CAPABILITY_MODEL_SETTINGS].map(([key]) => key!),
+  "models",
+  "modelPolicy",
+]);
 
 /** Where a selection sits in the document, so a projection can replace it. */
 type Assign = (value: unknown) => void;
@@ -298,41 +302,39 @@ function modelSelections(
     keys: readonly string[],
     capability = false,
   ) => {
-    const parent = asRecord(settingValue(record, keys.slice(0, -1)));
+    // The object that holds the setting. An absent setting yields nothing (`add`): it is skipped
+    // before its names are built, so a large roster of Agents without it stays cheap (finding
+    // 1321).
+    let parent = asRecord(record);
+    for (let index = 0; parent !== undefined && index < keys.length - 1; index += 1) {
+      parent = asRecord(parent[keys[index]!]);
+    }
+    const owner = parent;
     const key = keys[keys.length - 1];
-    if (parent !== undefined && key !== undefined) {
+    const value = key === undefined ? undefined : owner?.[key];
+    if (owner !== undefined && key !== undefined && value !== undefined && value !== null) {
       const setting = [path, ...keys].filter(Boolean).join(".");
       add(
         setting,
         [...at, ...keys],
-        parent[key],
-        (value) => {
-          parent[key] = value;
+        value,
+        (next) => {
+          owner[key] = next;
         },
         capability ? setting : undefined,
       );
     }
   };
-  const agents = asRecord(configuration.agents);
-  const scopes: [string, SettingLocation, Record<string, unknown> | undefined][] = [
-    ["agents.defaults", ["agents", "defaults"], asRecord(agents?.defaults)],
-    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
-      ([id, entry]): [string, SettingLocation, Record<string, unknown> | undefined] => [
-        keyedSettingPath("agents.entries", id),
-        ["agents", "entries", id],
-        asRecord(entry),
-      ],
-    ),
-  ];
-  for (const [path, at, scope] of scopes) {
+  // The model settings of agents.defaults or one agents.entries entry, `scope`.
+  const addScope = (path: string, at: SettingLocation, scope: Record<string, unknown>): void => {
     for (const keys of AGENT_MODEL_SETTINGS) {
       addAt(path, at, scope, keys);
     }
     for (const keys of AGENT_CAPABILITY_MODEL_SETTINGS) {
       addAt(path, at, scope, keys, true);
     }
-    const policies = asRecord(scope?.models);
-    if (scope !== undefined && policies !== undefined) {
+    const policies = asRecord(scope.models);
+    if (policies !== undefined) {
       const keys = Object.keys(policies);
       const next = keys.map((reference) =>
         visit({
@@ -349,7 +351,7 @@ function modelSelections(
       }
     }
     // OpenClaw's explicit allowlist for /model, session overrides and --model (finding 1306).
-    const modelPolicy = asRecord(scope?.modelPolicy);
+    const modelPolicy = asRecord(scope.modelPolicy);
     const allow = modelPolicy?.allow;
     const allowSetting = `${path}.modelPolicy.allow`;
     const allowAt = [...at, "modelPolicy", "allow"];
@@ -363,6 +365,19 @@ function modelSelections(
     } else if (allow !== undefined) {
       // An allowlist that is not a list is yielded as null, as fallbacks are.
       visit({ setting: allowSetting, path: allowAt, reference: null, policy: "allow" });
+    }
+  };
+  const agents = asRecord(configuration.agents);
+  const defaults = asRecord(agents?.defaults);
+  if (defaults !== undefined) {
+    addScope("agents.defaults", ["agents", "defaults"], defaults);
+  }
+  for (const [id, entry] of Object.entries(asRecord(agents?.entries) ?? {})) {
+    const scope = asRecord(entry);
+    // An entry that holds no model setting yields nothing. It is skipped before its names are
+    // built, so a large roster of Agents without one stays cheap (finding 1321).
+    if (scope !== undefined && Object.keys(scope).some((key) => SCOPE_MODEL_KEYS.has(key))) {
+      addScope(keyedSettingPath("agents.entries", id), ["agents", "entries", id], scope);
     }
   }
   const root = configuration as Record<string, unknown>;
