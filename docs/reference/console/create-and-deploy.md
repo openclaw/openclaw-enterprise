@@ -74,10 +74,10 @@ still block initial workspace files and Secret-backed environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning stays pending until the first deployment activates or fails.
-   Success opens Agent details. Failure links to the same Agent and revision;
-   correct its cause and deploy again through **Deployment activity**. If the
-   first deployment was stopped, no repair is needed before deploying again.
+   Provisioning stays pending until the first deployment activates, is superseded,
+   stops, or fails. Activation or supersession opens Agent details. A Stop or
+   failure links to the same Agent and revision. For other failures, correct the
+   cause before deploying again through **Deployment activity**.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no

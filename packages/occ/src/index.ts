@@ -3619,7 +3619,15 @@ export class OpenClawController {
         throw new DependencyUnavailableError("The initial deployment work is unavailable.");
       }
       const status = controllerWorkDeploymentStatus(work, this.clock());
-      if (status === "succeeded") {
+      const deploymentError = deploymentErrorForWork(work);
+      // A later deploy that superseded the first one owns the Agent's lifecycle now, so the
+      // handoff is complete even though this revision never activated.
+      if (
+        status === "succeeded" ||
+        (status === "failed" &&
+          (deploymentError?.code === "REVISION_SUPERSEDED" ||
+            deploymentError?.code === "REPOSITORY_REVISION_SUPERSEDED"))
+      ) {
         await this.commitProvisioningCheckpoint(state, claim, {
           completedPhase: "handoff",
           status: "succeeded",
@@ -3628,7 +3636,6 @@ export class OpenClawController {
         });
         return Object.freeze({ outcome: "succeeded" as const, revisionId });
       }
-      const deploymentError = deploymentErrorForWork(work);
       // Stopping the first rollout is the owner's choice, not a fault to correct.
       const error =
         deploymentError?.code === "REVISION_STOPPED"

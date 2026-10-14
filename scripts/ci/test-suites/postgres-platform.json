@@ -143,6 +143,8 @@
         "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",
+        "initial provisioning settles when a deploy interrupts its first deployment",
+        "initial provisioning settles when a deploy interrupts its first deployment under exclusive replacement",
         "initial provisioning settles when a stop interrupts its first deployment",
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
         "a provisioning failure takes the Namespace lock before its claimed work row",
