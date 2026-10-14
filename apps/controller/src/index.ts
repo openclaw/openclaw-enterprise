@@ -278,7 +278,7 @@ function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
 const SAFE_JSON_VALUE_ID = "SafeJsonValue";
 const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
 
-function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
+export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
   const buildSerializerCompiler = SerializerSelector();
   // Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
   // content. A different schema registered under that $id keeps its own serializer.
