@@ -108,7 +108,9 @@
         "PostgreSQL native IAM rolls back policy mutations when transaction audit fails",
         "PostgreSQL native IAM authorizes Namespace-local service identities without Agent ownership",
         "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
-        "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets"
+        "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
+        "native IAM reads the policy once per unit of work and never across units",
+        "listing 2000 Agents reads the policy once for the whole list"
       ]
     },
     {

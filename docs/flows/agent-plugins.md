@@ -244,6 +244,9 @@ behavior. Provider-owned Harnesses keep their existing startup path.
 After verification, runtime exposes private startup status. Kubernetes Compute
 validates workload, revision, startup instance, selection keys, and warning
 codes for readiness; restart recomputes status.
+Docker Codex healthchecks fail immediately when a plugin or runtime status
+response is interrupted after its headers. Plugin-status failures retain the
+transport code; interrupted status enrichment preserves the original reason.
 
 Dedicated Codex runs separately and receives runtime-binary reads even without
 plugins. Startup symlinks
@@ -345,6 +348,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 17:46: Preserve Docker Codex readiness reasons and transport codes when a loopback status response is interrupted. (issue-2403 - 944068b35b5a9bd86a3b1cf7361038a12b3de71a)
 
 - 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
 
