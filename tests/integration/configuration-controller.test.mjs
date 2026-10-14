@@ -3353,8 +3353,9 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
 test("Configuration save refuses a document too large to store before its content rules", async () => {
   // Finding 1317: the Kubernetes Driver's 1 MiB ConfigMap cap ran after OCC's content rules, so
   // the rules walked any document up to the 6.2 MiB request limit. OCC now asks the Driver
-  // first. The real Kubernetes Driver checks the values here; the simple substrate stands in for
-  // its ConfigMap storage.
+  // first, and HTTP names the limit instead of calling the document invalid, so the user knows
+  // to shrink it. The real Kubernetes Driver checks the values here; the simple substrate stands
+  // in for its ConfigMap storage.
   const kubernetes = new KubernetesConfigurationDriver({ authentication: { mode: "inCluster" } });
   const configurationDriver = {
     ...createConfigurationBackend(),
@@ -3375,6 +3376,8 @@ test("Configuration save refuses a document too large to store before its conten
     );
     return values;
   };
+  const sizeRefusal =
+    "Configuration values are too large: stored as JSON they must be smaller than 1 MiB. Remove or shorten settings, then save again.";
   const limit = 1_048_576;
   const under = document(limit - 1);
   const over = document(limit);
@@ -3389,14 +3392,15 @@ test("Configuration save refuses a document too large to store before its conten
   assert.equal(named.body.error.message, contentRefusal);
   const oversized = await save("POST", collection, over);
   assert.equal(oversized.status, 400, JSON.stringify(oversized.body));
-  assert.equal(oversized.body.error.message, "The supplied configuration is invalid.");
+  assert.equal(oversized.body.error.code, "INVALID_REQUEST");
+  assert.equal(oversized.body.error.message, sizeRefusal);
   await assert.rejects(
     context.controller.createConfiguration(context.principal.id, {
       namespaceId: namespace.id,
       kind: "agent",
       values: over,
     }),
-    { message: "Configuration exceeds the Kubernetes ConfigMap size limit." },
+    { name: "ConfigurationSizeError", message: sizeRefusal },
   );
 
   // An update is checked in the same order.
@@ -3408,7 +3412,8 @@ test("Configuration save refuses a document too large to store before its conten
   assert.equal(renamed.body.error.message, contentRefusal);
   const replaced = await save("PATCH", item, over);
   assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
-  assert.equal(replaced.body.error.message, "The supplied configuration is invalid.");
+  assert.equal(replaced.body.error.code, "INVALID_REQUEST");
+  assert.equal(replaced.body.error.message, sizeRefusal);
   assert.deepEqual(
     configurationDriver.storedConfigurations().map(({ values }) => values),
     [{}],

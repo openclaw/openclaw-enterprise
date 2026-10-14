@@ -394,6 +394,32 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
+const MEBIBYTE = 1024 * 1024;
+
+const byteSize = (bytes: number): string =>
+  bytes % MEBIBYTE === 0
+    ? `${bytes / MEBIBYTE} MiB`
+    : bytes % 1024 === 0
+      ? `${bytes / 1024} KiB`
+      : `${bytes} bytes`;
+
+/**
+ * Configuration values whose stored JSON reaches the Configuration Driver's size limit. The
+ * message names the limit and never the content, so HTTP returns it.
+ */
+export class ConfigurationSizeError extends Error {
+  readonly limitBytes: number;
+
+  /** `limitBytes` is the first refused size: stored JSON must be smaller. */
+  constructor(limitBytes: number) {
+    super(
+      `Configuration values are too large: stored as JSON they must be smaller than ${byteSize(limitBytes)}. Remove or shorten settings, then save again.`,
+    );
+    this.name = "ConfigurationSizeError";
+    this.limitBytes = limitBytes;
+  }
+}
+
 const inlineCredentialMessage =
   (instead: string) =>
   (path: string): string =>

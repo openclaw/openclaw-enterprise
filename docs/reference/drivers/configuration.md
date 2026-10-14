@@ -46,7 +46,9 @@ Preset writes containing `configuration.values` with dependency unavailable.
 `validateSize?(values)` refuses values too large to store, as `validate` would.
 OCC calls it before its content rules on Configuration create and update and
 Agent provisioning, so no content rule walks a document the Driver would refuse. The
-bundled Kubernetes Driver implements it with its ConfigMap size limit.
+bundled Kubernetes Driver implements it with its ConfigMap size limit. A Driver
+throws OCC's `ConfigurationSizeError` with its limit in bytes, which the API
+returns as `400 INVALID_REQUEST` with a message naming the limit.
 
 ## IAM
 

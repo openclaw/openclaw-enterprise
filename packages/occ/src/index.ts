@@ -288,6 +288,7 @@ export {
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
+  ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,

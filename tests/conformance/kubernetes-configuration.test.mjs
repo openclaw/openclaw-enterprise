@@ -998,10 +998,10 @@ test("Kubernetes Configuration stores a document up to one byte under 1 MiB of U
     stored,
   );
   for (const values of [atLimit, wide]) {
-    await assert.rejects(
-      driver.validate({ ...configuration, values }),
-      /exceeds the Kubernetes ConfigMap size limit/,
-    );
+    await assert.rejects(driver.validate({ ...configuration, values }), {
+      name: "ConfigurationSizeError",
+      limitBytes: limit,
+    });
     await assert.rejects(
       driver.checkedConfiguration(
         driver.manifest({ ...configuration, values }, "tenant"),

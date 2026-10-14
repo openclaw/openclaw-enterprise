@@ -1942,6 +1942,7 @@ export interface ConfigurationDriver extends Driver {
   /**
    * Refuses values too large to store, as `validate` would. OCC calls it before its content
    * rules on Configuration create and update and Agent provisioning, so no rule walks them.
+   * Throw OCC's `ConfigurationSizeError` so the API names the limit to the caller.
    */
   validateSize?(values: OpenClawConfigurationDocument): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;

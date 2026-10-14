@@ -20,7 +20,8 @@ SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. The Configuration Driver stores the native document. The
 bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
-must serialize to less than 1 MiB. Configuration POST/PATCH bodies allow six
+must serialize to less than 1 MiB; a save over that is refused with
+`400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH bodies allow six
 times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the envelope in
 six-byte JSON escapes; a caller without the create or update grant is refused
 before the body is read. Reviewed
