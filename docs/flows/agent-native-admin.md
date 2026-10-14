@@ -1,6 +1,6 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-13"
+updated: "2026-10-14"
 last_updated_session: "01a13783-3cb5-7f53-8668-b2e3affa2b12"
 ---
 
@@ -137,8 +137,9 @@ the caller identity. The status and proxy paths reuse that result to check
 expiry and attribute access, without a second session lookup. Each WebSocket
 lease runs admission again against current session state. The shared resolver also
 rechecks both Compute owner fields. A mismatch retains the existing `403` refusal
-for Agent-host HTTP and WebSocket admission; a failed lease closes the existing
-sockets. Stopped, replacing and unsupported-configuration branches still precede
+for Agent-host HTTP. WebSocket admission destroys the client socket without an
+HTTP response, before gateway-key lookup or connection. A failed lease closes
+existing sockets. Stopped, replacing and unsupported-configuration branches still precede
 the ownership comparison.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
@@ -207,6 +208,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 
 - 2026-10-13 23:57: Documented the active revision Compute-owner comparison and status/proxy refusal before gateway effects. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 

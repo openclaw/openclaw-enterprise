@@ -42,9 +42,10 @@ Changing the selected Compute Driver does not migrate existing revisions. After
 lifecycle and native-configuration checks, OCC compares the selected Driver's ID
 and implementation with the active revision's recorded owner. A mismatch returns
 `503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
-private gateway-key lookup or transport. Agent-host HTTP and WebSocket admission
-retain their existing `403` refusal; a mismatch during a WebSocket lease closes
-the connection through the existing failed-lease path. Matching ownership retains
+private gateway-key lookup or transport. Agent-host HTTP retains its existing
+`403` refusal. WebSocket admission destroys the client socket without an HTTP
+response, before gateway-key lookup or connection; a mismatch during a WebSocket
+lease closes the connection through the existing failed-lease path. Matching ownership retains
 normal access. Earlier stopped, replacing and unsupported-configuration outcomes
 keep their precedence.
 
@@ -122,6 +123,8 @@ device state, plugins, or other persistent gateway data.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 
 - 2026-10-13 23:57: Documented native-admin refusal when selected Compute ownership differs from the active revision. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 
