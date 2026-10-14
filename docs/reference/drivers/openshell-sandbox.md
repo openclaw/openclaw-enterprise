@@ -221,6 +221,11 @@ Compute requires every attachment to report `ready` before activation.
 
 ## Dedicated Codex runtime provider
 
+For external ChatGPT authentication, the Sandbox stores account metadata but
+omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
+its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
+Harness holds its authentication failure without starting Codex or using cached state.
+
 Compute emits bounded, nonsecret `runtime.json` and `config.toml`; a
 revision-owned provider exposes them read-only and supplies their paths through
 `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and `OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`.

@@ -170,9 +170,10 @@ mutation: the pinned API cannot preserve the exact ServiceAccount/token. The
 local profile disables it.
 
 For `credential_source`, Compute attaches provider names without a model Secret.
-External ChatGPT sources also supply a placeholder and account metadata for
-`CODEX_LOGIN_MODE=chatgptAuthTokens`; others use `api_key`. OpenShell provisions
-the frozen revision. Compute reads Codex's exact Agent transport Secret and
+For `CODEX_LOGIN_MODE=chatgptAuthTokens`, Compute supplies a placeholder and
+account metadata. OpenShell omits static `CODEX_ACCESS_TOKEN`; the supervisor
+injects its bound alias. Withdrawal then leaves it absent. Others use `api_key`.
+Compute reads Codex's exact Agent transport Secret and
 passes only `APP_TOKEN_SHA`. It compiles the admitted plugin snapshot into
 `runtime.json`/`config.toml` workload files and removes their ConfigMap env paths.
 

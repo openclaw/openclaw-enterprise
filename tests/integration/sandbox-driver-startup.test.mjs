@@ -1683,6 +1683,26 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     backend: backendFor(gatewayClient),
   });
   const { context, revision, requirements } = codexSandboxFixture(driver);
+  const compute = new KubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+    { sandboxDriver: driver },
+  );
+  revision.harnessAuth = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    credentialGatewayId: "openshell-credentials",
+    sourceType: "codex-oauth",
+    loginMode: "chatgptAuthTokens",
+  };
+  requirements.credentialAttachments[0] = {
+    ...requirements.credentialAttachments[0],
+    sourceId: revision.harnessAuth.sourceId,
+    externalChatgptAuth: {
+      accessTokenPlaceholder: "openshell:resolve:env:CODEX_ACCESS_TOKEN",
+      accountId: "withdrawn-account",
+      planType: "business",
+    },
+  };
   const transportToken = "withdrawn-harness-transport";
   const port = await availablePort({ host: "0.0.0.0" });
   requirements.loginMode = "chatgptAuthTokens";
@@ -1690,10 +1710,7 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
   requirements.environment.push(
     { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
-    {
-      name: "OCE_CODEX_CHATGPT_ACCOUNT",
-      value: JSON.stringify({ accountId: "withdrawn-account", planType: "business" }),
-    },
+    ...compute.credentialSourceEnvironment(revision, requirements.credentialAttachments),
   );
   requirements.environment.find(({ name }) => name === "APP_SERVER_PORT").value = String(port);
   requirements.environment.find(({ name }) => name === "APP_TOKEN_SHA").value = createHash("sha256")
@@ -1720,8 +1737,10 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   await writeFile(authPath, previousAuth, { mode: 0o600 });
 
   // Exercise the actual Driver command and launcher. The upstream client only
-  // captures provisioning; an absent child credential models OpenShell's withdrawn
-  // provider environment. Private paths substitute for the Sandbox's writable mounts.
+  // captures provisioning. Compute supplies the normal generic placeholder, but
+  // a withdrawn OpenShell provider supplies no override. Retaining that placeholder
+  // in the Sandbox spec would make this real command exit before its held failure.
+  // Private paths substitute for the Sandbox's writable mounts.
   const environment = {
     ...sandbox.spec.environment,
     PATH: dirname(process.execPath),
@@ -1766,6 +1785,11 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   assert.equal(runtimeFailure.component, "agent");
   assert.equal(runtimeFailure.check, "login");
   assert.equal(runtimeFailure.code, "AUTHENTICATION_FAILED");
+  assert.equal(sandbox.spec.environment.CODEX_ACCESS_TOKEN, undefined);
+  assert.deepEqual(JSON.parse(sandbox.spec.environment.OCE_CODEX_CHATGPT_ACCOUNT), {
+    accountId: "withdrawn-account",
+    planType: "business",
+  });
   assert.equal(
     child.exitCode,
     null,

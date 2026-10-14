@@ -2255,6 +2255,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         new Set([
           WORKSPACE_NODE_SETUP_ENVIRONMENT,
           WORKSPACE_NODE_CA_ENVIRONMENT,
+          // Only the attached provider supplies its identity-bound credential alias.
+          // A static placeholder would survive withdrawal and shadow its absence.
+          ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
           ...Object.keys(runtimeCredentialMaterial.credentials),
         ]),
         runtimeCredentialMaterial.binding,
