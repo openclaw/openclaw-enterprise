@@ -229,7 +229,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return;
     }
     if (loggedComputeOwnerMismatches.size >= MAX_LOGGED_COMPUTE_OWNER_MISMATCHES) {
-      loggedComputeOwnerMismatches.clear();
+      // A Set iterates in insertion order: forget the oldest pair, not every live one.
+      const [oldest] = loggedComputeOwnerMismatches;
+      if (oldest !== undefined) {
+        loggedComputeOwnerMismatches.delete(oldest);
+      }
     }
     loggedComputeOwnerMismatches.add(key);
     app.log.warn(
@@ -244,7 +248,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         },
         selectedCompute: { id: compute.id, implementation: compute.implementation },
       },
-      "Native admin UI is refused: the active revision was recorded under another Compute Driver. Deploy the Agent again to record a revision under the selected Compute Driver.",
+      "Native admin UI is refused: the active revision was recorded under another Compute Driver. Select that Compute Driver again (same ID and implementation) to restore access; OCC does not move revisions between Compute Drivers.",
     );
   }
 

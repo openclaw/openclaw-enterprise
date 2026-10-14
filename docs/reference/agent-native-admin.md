@@ -50,9 +50,9 @@ normal access. Earlier stopped, replacing and unsupported-configuration outcomes
 keep their precedence.
 
 The mismatch is not transient, so refreshing does not clear it. Each API process
-writes one local `native_admin.compute_owner_mismatch` warning per revision and
-selected Driver, naming both Driver IDs and implementations. To recover, deploy the
-Agent again: the new revision is recorded under the selected Compute Driver.
+logs one `native_admin.compute_owner_mismatch` warning per revision and selected
+Driver, naming both Driver IDs and implementations. To restore access, select the
+revision's Compute Driver again, with the same ID and implementation.
 
 ## Agent host identity
 
@@ -129,7 +129,7 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
-- 2026-10-14 01:20: Documented the Compute-owner mismatch warning and recovery by redeploying. (fix-1287)
+- 2026-10-14 01:20: Documented the Compute-owner mismatch warning and how to restore access. (fix-1287)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 

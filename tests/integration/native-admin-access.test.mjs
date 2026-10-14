@@ -1015,7 +1015,7 @@ for (const changedField of [undefined, "id", "implementation"]) {
           selectedCompute: { id: compute.id, implementation: compute.implementation },
         },
       );
-      assert.match(logged.message, /Deploy the Agent again/);
+      assert.match(logged.message, /Select that Compute Driver again/);
       const text = logLines.join("\n");
       assert.ok(!text.includes(nativeGatewayApiKey), "the gateway key must not be logged");
       assert.ok(

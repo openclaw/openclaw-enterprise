@@ -212,7 +212,9 @@ of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
+carries none. `native_admin.compute_owner_mismatch` (native admin refused because the active
+revision belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
 `presets.default-refresh-skipped` (a default Preset copy kept because policy refused
@@ -283,6 +285,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 01:40: Export `native_admin.compute_owner_mismatch` with the Agent's IDs; the Compute Driver names stay local. (fix-1287)
 
 - 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 
