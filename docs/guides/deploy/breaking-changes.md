@@ -15,24 +15,25 @@ real Installation.
 
 ## 2026-10-14: every model selection must use the Harness provider
 
-**What breaks.** On Kubernetes Compute, Configuration save, Agent save and
-deployment refuse a model selection off the primary model's provider:
-fallbacks, Agent entries, `subagents.model`, `imageModel`, `pdfModel` and the
-other `*Model` settings, `models` policy keys, hook models and
-`channels.modelByChannel`, and an `apiKey` on another `models.providers` entry.
-Dedicated Codex refuses every `apiKey` and a `models` policy key without a
-provider. Every Compute refuses a fallback on another provider at save.
+**What breaks.** On Kubernetes Compute, Configuration, Preset and Agent saves
+and deployment refuse a model selection off the primary model's provider:
+fallbacks, Agent entries, `subagents.model` and the other `*Model` settings,
+`models` policy keys, hook models and `channels.modelByChannel`, and an
+`apiKey` on another `models.providers` entry. Dedicated Codex refuses every
+`apiKey` and unqualified `models` policy keys. Every Compute refuses
+another-provider fallbacks at save. A Preset variable's provider is checked at
+launch; a number or boolean model variable is refused.
 
-**Who is affected.** Configurations that select a second provider or give it
-an `apiKey`, or that set any provider `apiKey` for Dedicated Codex.
+**Who is affected.** Configurations and Presets that select a second provider
+or give it an `apiKey`, or set any `apiKey` for Dedicated Codex.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
 binding`, `... must use the primary model's provider`, `... must be
 provider/model references`, or `models.providers.<name>.apiKey must be unset`.
 
-**Steps.** Select only the primary model's provider and remove the other
-provider's `apiKey`, then save and deploy again.
+**Steps.** Use only the primary model's provider, remove the other provider's
+`apiKey`, then save and deploy again.
 
 ## 2026-10-14: observability URLs must not hide another host
 

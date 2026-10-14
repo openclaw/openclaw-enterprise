@@ -75,9 +75,10 @@ Agent that fails a check still reads; its next update must fix the pair.
   Harness refuses. Dedicated Codex takes none; OpenClaw takes `${NAME}` or an
   env SecretRef to the binding's variable, through an env provider that
   allows it or OpenClaw's default env alias. An inline key is left to the
-  Configuration Driver. A Preset save skips this rule: a model may wait on a
-  variable. A draft whose model policy selects no Harness is left to
-  deployment.
+  Configuration Driver. A Preset save runs this rule too, except on a reference
+  or provider key whose provider waits on a variable, or an `apiKey` whose
+  value or `secrets` source does: the launch checks them once filled. A draft
+  whose model policy selects no Harness is left to deployment.
 
 These close the credential slots in a provider's `headers` and `request`.
 The provider `apiKey` stays, checked against the Harness binding. The

@@ -1226,6 +1226,237 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   });
 });
 
+test("Preset save refuses a model selection or apiKey off the primary model's provider, as Configuration save does", async (t) => {
+  // Finding 1305: Preset saves skipped the rules of findings 1298 and 1299, so a Preset whose
+  // defaults selected another provider saved and was refused only when a launch created its
+  // Configuration. A provider that waits on an unfilled variable is checked once filled.
+  const root = await mkdtemp(join(tmpdir(), "occ-preset-model-provider-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { namespace, ...context } = await fixture({
+    configurationDriver: new FilesystemConfigurationDriver(root),
+    computeDriver: kubernetesRules("compute-model-provider-preset", ...configurationRules),
+  });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  const openai =
+    "must select openai/<model>, the provider of the Agent's Harness authentication binding";
+  const other = "anthropic/claude-opus-4";
+  const variables = {
+    model: { type: "string" },
+    provider: { type: "string" },
+    key: { type: "string" },
+    count: { type: "number" },
+  };
+  const inputs = { model: "gpt-5", provider: "openai", key: "OPENAI_API_KEY", count: 1 };
+  // The primary model's provider is written; its model waits on a variable.
+  const templated = {
+    model: "openai/{{ vars.model }}",
+    models: { "openai/{{ vars.model }}": { agentRuntime: { id: "openclaw" } } },
+  };
+  const refused = [
+    [
+      { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
+      setting("agents.defaults.imageModel", openai),
+    ],
+    [
+      {
+        agents: { defaults: { ...templated, subagents: { model: "anthropic/{{ vars.model }}" } } },
+      },
+      setting("agents.defaults.subagents.model", openai),
+    ],
+    [
+      {
+        agents: {
+          defaults: {
+            ...templated,
+            model: { primary: templated.model, fallbacks: ["anthropic/{{ vars.model }}"] },
+          },
+        },
+      },
+      setting("agents.defaults.model.fallbacks", "must use the primary model's provider"),
+    ],
+    [
+      {
+        ...runtimeSelected,
+        models: { providers: { anthropic: { apiKey: "${ANTHROPIC_API_KEY}" } } },
+      },
+      setting(
+        "models.providers.anthropic.apiKey",
+        "must be unset: the Agent's Harness authentication binding serves only openai models",
+      ),
+    ],
+    [
+      { agents: { defaults: templated }, models: { providers: { openai: { apiKey: "${KEY}" } } } },
+      setting(
+        "models.providers.openai.apiKey",
+        "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+      ),
+    ],
+    // A number variable that is the whole selection fills it with no string.
+    [
+      { agents: { defaults: { ...runtimeDefaults, pdfModel: "{{ vars.count }}" } } },
+      setting("agents.defaults.pdfModel", "must be provider/model references"),
+    ],
+    // A fallback and a policy key whose provider waits on a variable leave the rest checked.
+    [
+      {
+        agents: {
+          defaults: {
+            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+            models: {
+              ...templated.models,
+              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+            },
+            imageModel: other,
+          },
+        },
+      },
+      setting("agents.defaults.imageModel", openai),
+    ],
+    // So does an Agent entry whose model's provider waits on one.
+    [
+      {
+        agents: {
+          defaults: { ...templated, imageModel: other },
+          entries: { main: { model: "{{ vars.provider }}/{{ vars.model }}" } },
+        },
+      },
+      setting("agents.defaults.imageModel", openai),
+    ],
+    // A variable in another secrets source leaves the apiKey reference checked.
+    [
+      {
+        agents: { defaults: templated },
+        secrets: { providers: { other: { source: "env", allowlist: ["{{ vars.key }}"] } } },
+        models: {
+          providers: { openai: { apiKey: { source: "env", provider: "default", id: "KEY" } } },
+        },
+      },
+      setting(
+        "models.providers.openai.apiKey",
+        "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+      ),
+    ],
+    // As the standard Codex Preset, plus an apiKey Dedicated Codex never takes.
+    [
+      {
+        agents: {
+          defaults: {
+            model: "codex/{{ vars.model }}",
+            models: { "codex/{{ vars.model }}": { agentRuntime: { id: "codex" } } },
+          },
+        },
+        models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } },
+      },
+      setting(
+        "models.providers.codex.apiKey",
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+      ),
+    ],
+  ];
+  for (const [index, [values, message]] of refused.entries()) {
+    const label = JSON.stringify(values);
+    await t.test(`refuses Preset ${index}: ${message}`, async () => {
+      const template = { variables, configuration: { values } };
+      const saved = await request(context.app, "POST", presets, {
+        body: { name: "Refused", template },
+      });
+      assert.equal(saved.status, 400, `${label}: ${JSON.stringify(saved.body)}`);
+      assert.equal(saved.body.error.message, message, label);
+      assert.ok(!JSON.stringify(saved.body).includes("claude-opus-4"), label);
+      // The same message as the Configuration a launch would create.
+      const launched = await request(context.app, "POST", configurations, {
+        body: { kind: "agent", ...renderPresetTemplate(template, inputs).configuration },
+      });
+      assert.equal(launched.status, 400, `${label}: ${JSON.stringify(launched.body)}`);
+      assert.equal(launched.body.error.message, message, label);
+    });
+  }
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+
+  // A selection, fallback, provider key or apiKey whose provider (or key source) waits on a
+  // variable saves and is checked once filled; so is a primary whose provider does, which
+  // selects no supported provider yet.
+  await t.test("accepts a Preset whose provider waits on a variable", async () => {
+    const accepted = [
+      {
+        agents: {
+          defaults: {
+            ...templated,
+            imageModel: "{{ vars.provider }}/gpt-image-1",
+            subagents: { model: "{{ vars.model }}" },
+          },
+        },
+        models: {
+          providers: {
+            "{{ vars.provider }}": { apiKey: "${ANTHROPIC_API_KEY}" },
+            openai: { apiKey: { source: "env", provider: "default", id: "{{ vars.key }}" } },
+          },
+        },
+      },
+      {
+        agents: {
+          defaults: {
+            model: { primary: templated.model, fallbacks: ["{{ vars.provider }}/gpt-5-mini"] },
+            models: {
+              ...templated.models,
+              "{{ vars.provider }}/gpt-5-mini": { agentRuntime: { id: "openclaw" } },
+            },
+          },
+        },
+      },
+      {
+        agents: {
+          defaults: {
+            model: "{{ vars.provider }}/{{ vars.model }}",
+            models: {
+              "{{ vars.provider }}/{{ vars.model }}": { agentRuntime: { id: "openclaw" } },
+            },
+            imageModel: other,
+          },
+        },
+      },
+    ];
+    for (const [index, values] of accepted.entries()) {
+      const template = { variables, configuration: { values } };
+      const saved = await request(context.app, "POST", presets, {
+        body: { name: `Templated-${index}`, template },
+      });
+      assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+    }
+    // Filled with another provider, the launch's Configuration is refused by name.
+    const launched = await request(context.app, "POST", configurations, {
+      body: {
+        kind: "agent",
+        ...renderPresetTemplate({ variables, configuration: { values: accepted[2] } }, inputs)
+          .configuration,
+      },
+    });
+    assert.equal(launched.status, 400, JSON.stringify(launched.body));
+    assert.equal(launched.body.error.message, setting("agents.defaults.imageModel", openai));
+  });
+
+  // Every shipped Preset still saves.
+  await t.test("accepts every shipped Preset", async () => {
+    const files = [
+      ...(await readdir(new URL("../../deploy/presets/", import.meta.url)))
+        .filter((file) => file.endsWith(".json"))
+        .map((file) => new URL(`../../deploy/presets/${file}`, import.meta.url)),
+      new URL("../../deploy/examples/slack-team-preset.json", import.meta.url),
+    ];
+    assert.ok(files.length >= 5);
+    for (const file of files) {
+      const preset = JSON.parse(await readFile(file, "utf8"));
+      const saved = await request(context.app, "POST", presets, { body: preset });
+      assert.equal(saved.status, 201, `${file}: ${JSON.stringify(saved.body)}`);
+    }
+  });
+});
+
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
   const { namespace, collection, ...context } = await fixture();
   const ids = [];

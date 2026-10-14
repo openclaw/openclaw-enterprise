@@ -145,6 +145,7 @@ import {
   requireChannelTopology,
   type KubernetesHarnessTopology,
   kubernetesHarnessAuthMethods,
+  providerWaitsOnVariable,
   requireHarnessCredentialBinding,
   requireSelectedModelProvider,
   requireWorkspaceNodePlugins,
@@ -2158,19 +2159,23 @@ function harnessModels(configuration: OpenClawConfigurationDocument): readonly s
 // Every provider is checked, selected or not: a bare model name or a `/model` switch can still
 // reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
 // model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
-// binding's provider, referencing the binding's environment.
+// binding's provider, referencing the binding's environment. On a Preset save, a provider key
+// that waits on an unfilled variable is checked once filled, and so is an apiKey whose value or
+// `secrets` source does: only the rules that hold whatever fills it run here.
 function requireProviderApiKeys(
   configuration: Readonly<OpenClawConfigurationDocument>,
   openclaw: boolean,
   authentication: { readonly providerId: string; readonly environmentName: string },
   referencesOnly = false,
+  options?: ConfigurationValidationOptions,
 ): void {
   const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
   for (const [provider, value] of Object.entries(providers)) {
     const config = asRecord(value);
     if (
       config?.apiKey === undefined ||
-      (referencesOnly && config.apiKey !== null && !isCredentialReference(config.apiKey))
+      (referencesOnly && config.apiKey !== null && !isCredentialReference(config.apiKey)) ||
+      options?.unresolved?.(["models", "providers", provider], true) !== undefined
     ) {
       continue;
     }
@@ -2192,10 +2197,23 @@ function requireProviderApiKeys(
     }
     const ref = asRecord(config.apiKey);
     const secrets = asRecord(configuration.secrets);
+    const sources = asRecord(secrets?.providers);
+    // A string apiKey here is `${NAME}`, which holds no variable; a SecretRef, its secrets source
+    // and the default env alias may wait on one (a source key that does may become ref.provider).
+    if (
+      waitsOnVariable(ref, ["models", "providers", provider, "apiKey"], options) ||
+      waitsOnVariable(asRecord(secrets?.defaults)?.env, ["secrets", "defaults", "env"], options) ||
+      Object.keys(sources ?? {}).some(
+        (name) =>
+          options?.unresolved?.(["secrets", "providers", name], true) !== undefined ||
+          (name === ref?.provider &&
+            waitsOnVariable(sources?.[name], ["secrets", "providers", name], options)),
+      )
+    ) {
+      continue;
+    }
     const source =
-      typeof ref?.provider === "string"
-        ? asRecord(asRecord(secrets?.providers)?.[ref.provider])
-        : undefined;
+      typeof ref?.provider === "string" ? asRecord(sources?.[ref.provider]) : undefined;
     // OpenClaw reads an env ref on its default env provider alias (secrets.defaults.env, else
     // "default") from the process environment, unless that name is configured as an env provider
     // (isBuiltInDefaultSecretProviderRef), so such a ref needs no secrets.providers entry.
@@ -2227,6 +2245,30 @@ function requireProviderApiKeys(
   }
 }
 
+// Whether a Preset variable without a value fills any text (a string or an object key) in `value`,
+// which sits at `path` in the Configuration document.
+function waitsOnVariable(
+  value: unknown,
+  path: readonly (string | number)[],
+  options: ConfigurationValidationOptions | undefined,
+): boolean {
+  const unresolved = options?.unresolved;
+  if (unresolved === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return unresolved(path) !== undefined;
+  }
+  const entries = Array.isArray(value)
+    ? [...value.entries()]
+    : Object.entries(asRecord(value) ?? {});
+  return entries.some(
+    ([key, child]) =>
+      (typeof key === "string" && unresolved([...path, key], true) !== undefined) ||
+      waitsOnVariable(child, [...path, key], options),
+  );
+}
+
 // A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
 // (model-auth.ts); it refuses anything else but null as an inline credential, with its own message.
 function isCredentialReference(value: unknown): boolean {
@@ -2242,21 +2284,79 @@ function isCredentialReference(value: unknown): boolean {
 }
 
 /**
+ * The Configuration without the fallbacks and `models` policy keys whose provider waits on an
+ * unfilled Preset variable, which the Harness resolution would refuse as another provider
+ * (switching every rule off); the rules check the rest and the launch checks them once filled.
+ * An agents.entries model whose own provider does is dropped too: the entry must select the
+ * defaults' primary once filled, so it resolves as the defaults do.
+ */
+function withoutVariableProviders(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  options: ConfigurationValidationOptions | undefined,
+): Readonly<OpenClawConfigurationDocument> {
+  if (options?.unresolved === undefined) {
+    return configuration;
+  }
+  const copy = structuredClone(configuration) as OpenClawConfigurationDocument;
+  const agents = asRecord(copy.agents);
+  const scopes: [readonly string[], Record<string, unknown> | undefined][] = [
+    [["agents", "defaults"], asRecord(agents?.defaults)],
+    ...Object.entries(asRecord(agents?.entries) ?? {}).map(
+      ([id, entry]): [readonly string[], Record<string, unknown> | undefined] => [
+        ["agents", "entries", id],
+        asRecord(entry),
+      ],
+    ),
+  ];
+  for (const [at, scope] of scopes) {
+    if (
+      at[1] === "entries" &&
+      scope !== undefined &&
+      (providerWaitsOnVariable(options, [...at, "model"]) ||
+        providerWaitsOnVariable(options, [...at, "model", "primary"]))
+    ) {
+      delete scope.model;
+    }
+    const model = asRecord(scope?.model);
+    if (model !== undefined && Array.isArray(model.fallbacks)) {
+      model.fallbacks = model.fallbacks.filter(
+        (_: unknown, index: number) =>
+          !providerWaitsOnVariable(options, [...at, "model", "fallbacks", index]),
+      );
+    }
+    const policies = asRecord(scope?.models);
+    if (scope !== undefined && policies !== undefined) {
+      scope.models = Object.fromEntries(
+        Object.entries(policies).filter(
+          ([key]) => !providerWaitsOnVariable(options, [...at, "models", key], true),
+        ),
+      );
+    }
+  }
+  return copy;
+}
+
+/**
  * The model provider rules of finding 1291 depend only on the Configuration: the provider is
  * its primary model's (harnessModelAuthentication), and the Harness, Dedicated Codex or
  * OpenClaw, is the one its model policy selects. Every deployment applies them, so Configuration
  * save does too (finding 1299). A draft whose model policy selects no Harness (or no model), or
  * whose primary provider Kubernetes Compute does not support, is left to deployment, which
  * refuses it first; OCC's requireFallbackProviders still names a fallback on another provider.
+ * Preset defaults (`options.unresolved`) get the same rules (finding 1305): a primary provider
+ * that waits on a variable names no supported provider yet, so the Configuration a launch
+ * creates is checked instead, and so is any other setting whose provider waits on one.
  */
 function requireConfiguredModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
+  options?: ConfigurationValidationOptions,
 ): void {
   let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
-    harnessId = resolveConfiguredHarnessId(configuration);
-    authentication = harnessModelAuthentication(configuration);
+    const resolvable = withoutVariableProviders(configuration, options);
+    harnessId = resolveConfiguredHarnessId(resolvable);
+    authentication = harnessModelAuthentication(resolvable);
   } catch (error) {
     if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
@@ -2268,9 +2368,10 @@ function requireConfiguredModelProviders(
     authentication.providerId,
     harnessId === "codex",
     callerSettingError,
+    options,
   );
   // An inline key is left to the Configuration Driver, whose message says to use a Secret.
-  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true);
+  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true, options);
 }
 
 // The error contract caps the message a ConfigurationHarnessError becomes.
@@ -3693,19 +3794,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * model credentials only through the Harness authentication binding, and (not for Preset
-   * defaults) model selections and provider apiKeys on the primary model's provider.
+   * model credentials only through the Harness authentication binding, and model selections
+   * and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
     this.validateConfigurationContent(configuration, options);
-    // Preset defaults can leave a model reference waiting on a variable; the Configuration a
-    // launch creates is checked here.
-    if (options?.unresolved === undefined) {
-      requireConfiguredModelProviders(configuration);
-    }
+    requireConfiguredModelProviders(configuration, options);
   }
 
   // validateHarnessAuth runs these first and the model provider rules in its own order.

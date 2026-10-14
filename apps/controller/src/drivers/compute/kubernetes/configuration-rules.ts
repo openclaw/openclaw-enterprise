@@ -22,8 +22,7 @@ import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
  * Each error names the setting and what is accepted, never the submitted value.
  *
  * Rules that hold on every topology (`validateConfiguration`) also run when a Configuration is
- * saved, provisioned or set as Preset defaults (except the model provider rules, which skip
- * Preset defaults), so they refuse the content where it is written.
+ * saved, provisioned or set as Preset defaults, so they refuse the content where it is written.
  */
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -141,9 +140,14 @@ const MODEL_CREDENTIAL_ENVIRONMENT =
 const credentialHeaderRequirement = (name: string): string =>
   `must not set the credential header ${quotedSettingKey(name, 40)} (its name marks a credential): ${HARNESS_BINDING}`;
 
+/** A location in the Configuration document, as `options.unresolved` takes it. */
+type SettingLocation = readonly (string | number)[];
+
 /** A model selection OpenClaw honors: the setting that holds it and its value as written. */
 interface ModelSelection {
   readonly setting: string;
+  /** Where the reference sits (a policy key: the path ends in the key). */
+  readonly path: SettingLocation;
   readonly reference: unknown;
   /** A key of an `agents.*.models` policy map (the `/model` allowlist and alias targets). */
   readonly policy?: true;
@@ -208,28 +212,38 @@ function modelSelections(
     const next = rewrite(selection.reference, selection.policy === true);
     return next === selection.reference ? undefined : next;
   };
-  const add = (setting: string, value: unknown, assign: Assign): void => {
+  const add = (setting: string, at: SettingLocation, value: unknown, assign: Assign): void => {
     if (value === undefined || value === null) {
       return;
     }
     const selection = asRecord(value);
     if (typeof value === "string" || selection === undefined) {
-      const next = visit({ setting, reference: value });
+      const next = visit({ setting, path: at, reference: value });
       if (next !== undefined) {
         assign(next);
       }
       return;
     }
     if (selection.primary !== undefined) {
-      const next = visit({ setting: `${setting}.primary`, reference: selection.primary });
+      const next = visit({
+        setting: `${setting}.primary`,
+        path: [...at, "primary"],
+        reference: selection.primary,
+      });
       if (next !== undefined) {
         selection.primary = next;
       }
     }
     const fallbacks = selection.fallbacks;
     if (Array.isArray(fallbacks)) {
-      const next = fallbacks.map((reference: unknown) =>
-        reference === undefined ? undefined : visit({ setting: `${setting}.fallbacks`, reference }),
+      const next = fallbacks.map((reference: unknown, index) =>
+        reference === undefined
+          ? undefined
+          : visit({
+              setting: `${setting}.fallbacks`,
+              path: [...at, "fallbacks", index],
+              reference,
+            }),
       );
       if (next.some((reference) => reference !== undefined)) {
         selection.fallbacks = fallbacks.map(
@@ -238,35 +252,37 @@ function modelSelections(
       }
     } else if (fallbacks !== undefined) {
       // Fallbacks that are not a list are yielded as null: no list item is a reference.
-      visit({ setting: `${setting}.fallbacks`, reference: null });
+      visit({ setting: `${setting}.fallbacks`, path: [...at, "fallbacks"], reference: null });
     }
   };
   const addAt = (
     path: string,
+    at: SettingLocation,
     record: Record<string, unknown> | undefined,
     keys: readonly string[],
   ) => {
     const parent = asRecord(settingValue(record, keys.slice(0, -1)));
     const key = keys[keys.length - 1];
     if (parent !== undefined && key !== undefined) {
-      add([path, ...keys].filter(Boolean).join("."), parent[key], (value) => {
+      add([path, ...keys].filter(Boolean).join("."), [...at, ...keys], parent[key], (value) => {
         parent[key] = value;
       });
     }
   };
   const agents = asRecord(configuration.agents);
-  const scopes: [string, Record<string, unknown> | undefined][] = [
-    ["agents.defaults", asRecord(agents?.defaults)],
+  const scopes: [string, SettingLocation, Record<string, unknown> | undefined][] = [
+    ["agents.defaults", ["agents", "defaults"], asRecord(agents?.defaults)],
     ...Object.entries(asRecord(agents?.entries) ?? {}).map(
-      ([id, entry]): [string, Record<string, unknown> | undefined] => [
+      ([id, entry]): [string, SettingLocation, Record<string, unknown> | undefined] => [
         keyedSettingPath("agents.entries", id),
+        ["agents", "entries", id],
         asRecord(entry),
       ],
     ),
   ];
-  for (const [path, scope] of scopes) {
+  for (const [path, at, scope] of scopes) {
     for (const keys of AGENT_MODEL_SETTINGS) {
-      addAt(path, scope, keys);
+      addAt(path, at, scope, keys);
     }
     const policies = asRecord(scope?.models);
     if (scope === undefined || policies === undefined) {
@@ -274,7 +290,12 @@ function modelSelections(
     }
     const keys = Object.keys(policies);
     const next = keys.map((reference) =>
-      visit({ setting: `${path}.models`, reference, policy: true }),
+      visit({
+        setting: `${path}.models`,
+        path: [...at, "models", reference],
+        reference,
+        policy: true,
+      }),
     );
     if (next.some((reference) => reference !== undefined)) {
       scope.models = Object.fromEntries(
@@ -284,13 +305,14 @@ function modelSelections(
   }
   const root = configuration as Record<string, unknown>;
   for (const keys of ROOT_MODEL_SETTINGS) {
-    addAt("", root, keys);
+    addAt("", [], root, keys);
   }
   const mappings = asRecord(configuration.hooks)?.mappings;
   (Array.isArray(mappings) ? mappings : []).forEach((mapping, index) => {
     const record = asRecord(mapping);
     if (record !== undefined) {
-      add(`hooks.mappings.${index}.model`, record.model, (value) => {
+      const at = ["hooks", "mappings", index, "model"];
+      add(`hooks.mappings.${index}.model`, at, record.model, (value) => {
         record.model = value;
       });
     }
@@ -303,7 +325,7 @@ function modelSelections(
       continue;
     }
     for (const [key, model] of Object.entries(models)) {
-      add(path, model, (next) => {
+      add(path, ["channels", "modelByChannel", channel, key], model, (next) => {
         models[key] = next;
       });
     }
@@ -323,23 +345,45 @@ export function rewriteModelSelections(
 }
 
 /**
+ * Whether the provider of the model reference at `path` (a policy key: `key`) waits on an
+ * unfilled Preset variable: no `/` precedes the first one.
+ */
+export function providerWaitsOnVariable(
+  options: ConfigurationValidationOptions | undefined,
+  path: SettingLocation,
+  key = false,
+): boolean {
+  const literals = options?.unresolved?.(path, key);
+  return literals !== undefined && !literals[0]?.includes("/");
+}
+
+/**
  * Every model selection names `provider`, the one the Agent's Harness authentication binding
  * serves (finding 1291): a reference elsewhere would make the Gateway request another provider
  * directly. A bare name passes: OpenClaw resolves it through an alias on a policy key checked
  * here, or to a configured provider's model, whose apiKey Harness admission refuses. As a policy
  * key, `qualifiedPolicyKeys` (Dedicated Codex qualifies each key) asks for provider/model.
- * Refusals name the setting, never the reference.
+ * Refusals name the setting, never the reference. On a Preset save (`options.unresolved`), a
+ * reference whose provider waits on an unfilled variable is checked once filled, on the
+ * Configuration a launch creates; one whose provider is written is checked here.
  */
 export function requireSelectedModelProvider(
   configuration: Readonly<OpenClawConfigurationDocument>,
   provider: string,
   qualifiedPolicyKeys: boolean,
   createError: SettingError,
+  options?: ConfigurationValidationOptions,
 ): void {
   const requirement = `${provider}/<model>, the provider of the Agent's Harness authentication binding`;
-  for (const { setting, reference, policy } of modelSelections(configuration)) {
-    if (typeof reference !== "string") {
+  for (const { setting, path, reference, policy } of modelSelections(configuration)) {
+    // A number or boolean variable that is the whole reference fills it with no string, which
+    // every launch refuses (as finding 1257 for a baseUrl).
+    const type = policy ? undefined : options?.unresolvedType?.(path);
+    if (typeof reference !== "string" || (type !== undefined && type !== "string")) {
       throw createError(setting, "must be provider/model references");
+    }
+    if (providerWaitsOnVariable(options, path, policy === true)) {
+      continue;
     }
     const separator = reference.indexOf("/");
     if (separator < 0 && !(policy && qualifiedPolicyKeys)) {

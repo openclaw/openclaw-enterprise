@@ -4277,6 +4277,8 @@ export class OpenClawController {
       // written (finding 1214), even where it reads like a placeholder elsewhere (finding 1220).
       const options: ConfigurationValidationOptions = { unresolved, unresolvedType };
       validateModelProviderSettings(values, options);
+      // A fallback on another provider, named as Configuration save names it (finding 1305).
+      requireFallbackProviders(values, options);
       this.validateComputeConfiguration(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values, options);
