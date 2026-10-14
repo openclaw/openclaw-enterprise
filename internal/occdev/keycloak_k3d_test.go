@@ -638,7 +638,7 @@ func (f *fakeConsoleAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := json.UnmarshalRead(r.Body, &f.attachBody); err != nil {
 			f.t.Errorf("attach body: %v", err)
 		}
-		reply(200, `{"data":{"methodId":"m1","providerId":"oidc:abc"}}`)
+		reply(200, `{"data":{"userId":"user_admin1"}}`)
 	default:
 		f.t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		reply(404, `{"error":{"code":"NOT_FOUND"}}`)

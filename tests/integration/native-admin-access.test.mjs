@@ -10,9 +10,17 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { NoActiveAgentRevisionError, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import {
+  InMemoryPlatformState,
+  NoActiveAgentRevisionError,
+  OpenClawController,
+  ResourceConflictError,
+} from "../../packages/occ/src/index.ts";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -177,6 +185,7 @@ async function startNativeHttpsUpstream(t) {
 async function createNativeAdminFixture(t, options = {}) {
   const upstream = await startNativeHttpsUpstream(t);
   const fixture = await createConsoleAppFixture(t, {
+    ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     authCookieDomain: options.cookieDomain ?? cookieDomain,
@@ -877,3 +886,95 @@ test("sign-out requires the console origin for session requests", async (t) => {
   });
   assert.equal(allowed.statusCode, 200, allowed.body);
 });
+
+for (const changedField of [undefined, "id", "implementation"]) {
+  test(`native admin retains the revision Compute owner after restart: ${changedField ?? "matching"}`, async (t) => {
+    const state = new InMemoryPlatformState();
+    const context = await createNativeAdminFixture(t, { state });
+    const { fixture, upstream, namespace, agent, revision } = context;
+    trustLocalUpstreamCertificate(t, upstream.cert);
+    const originalCompute = fixture.controller.selectedDriver("compute");
+    assert.deepEqual(revision.compute, {
+      id: originalCompute.id,
+      implementation: originalCompute.implementation,
+    });
+
+    // Reopen the same committed revision with a fresh registry, as on controller restart.
+    // In particular, changing only implementation must not mutate a registered Driver.
+    const controller = new OpenClawController(fixture.controller.installation, {
+      state,
+      recordOperations: false,
+    });
+    controller.registerDriver(fixture.iamDriver);
+    controller.selectDriver("iam", fixture.iamDriver.id);
+    const calls = { endpoint: 0, key: 0 };
+    const compute = {
+      ...nativeComputeDriver(upstream.port),
+      ...(changedField === undefined ? {} : { [changedField]: `replacement-${changedField}` }),
+      getGatewayEndpoint(selectedRevision) {
+        calls.endpoint += 1;
+        assert.equal(selectedRevision.id, revision.id);
+        return originalCompute.getGatewayEndpoint(selectedRevision);
+      },
+    };
+    controller.registerDriver(compute);
+    controller.selectDriver("compute", compute.id);
+    const auth = createControllerAuth({
+      installationId: controller.installation.id,
+      mode: "development",
+      baseURL: authBaseURL,
+      secret: `native-restart-test-${randomUUID()}-${randomUUID()}`,
+      memoryDatabase: fixture.memoryDatabase,
+      sharedCookieDomain: cookieDomain,
+      secureCookies: true,
+    });
+    const app = createFastifyApp({
+      controller,
+      iamDriver: fixture.iamDriver,
+      auth,
+      auditSink: new InMemoryAuditSink(),
+      development: { enabled: false },
+      resolveHarness: resolveApprovedHarness,
+      publicOrigin,
+      nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+      nativeAdminGatewayApiKey: async () => {
+        calls.key += 1;
+        return nativeGatewayApiKey;
+      },
+    });
+    t.after(() => app.close());
+    const session = await signInToControllerApp(app, fixture.credentials);
+    const headers = { cookie: session.cookie, origin: publicOrigin };
+    const status = await injectJson(
+      { app },
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      { headers },
+    );
+    const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
+      .host;
+    const proxy = await injectJson({ app }, "GET", "/", {
+      headers: { ...headers, host, origin: `https://${host}` },
+    });
+    if (changedField === undefined) {
+      assert.equal(status.statusCode, 200);
+      assert.equal(status.json().data.status, "available");
+      assert.equal(proxy.statusCode, 200);
+      assert.equal(proxy.body, "native admin upstream\n");
+      assert.equal(calls.endpoint, 2);
+      assert.equal(calls.key, 1);
+      assert.equal(upstream.requests.length, 1);
+    } else {
+      assert.equal(status.statusCode, 503);
+      assert.equal(status.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      // Agent-host admission retains its existing non-disclosing refusal envelope.
+      assert.equal(proxy.statusCode, 403);
+      assert.deepEqual(calls, { endpoint: 0, key: 0 });
+      assert.equal(upstream.requests.length, 0);
+    }
+    const persisted = await state.read((view) =>
+      view.revisions.findRevision(namespace.id, agent.id, revision.id),
+    );
+    assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
+  });
+}

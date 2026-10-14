@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-11
-last_updated_session: fix-1118
+updated: 2026-10-13
+last_updated_session: fix-1276-1278
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -213,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-13 23:00: Configuration and Preset saves require references in MCP server credential headers, and read a `GIT_CONFIG_VALUE_<n>` or `GIT_CONFIG_PARAMETERS` value whose key names a git proxy as a proxy URL. (findings 1276, 1278)
 - 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
 - 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)
 - 2026-10-13 14:00: The credential header rule also matches any name ending in `key` or `keys` (not an idempotency or cache key), the words `bearer`, `credential`, `passcode`, `passphrase` and `signature`, and plurals; the Kubernetes message says "any key"; Configuration writes and Kubernetes Compute refuse a model provider `models` that is not a list, which hid its rows from the credential rules. (findings 1185-1186)

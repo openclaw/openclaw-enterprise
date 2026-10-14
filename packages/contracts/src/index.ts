@@ -1412,6 +1412,8 @@ export interface CredentialGatewayDriver extends Driver {
     use: (token: CredentialSourceToken) => Promise<T>,
   ): Promise<T>;
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
+  /** Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record. */
+  validateSourceConfig(input: Pick<CredentialSourceInput, "type" | "config">): void;
   registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,

@@ -189,8 +189,11 @@ same-repository PR. Compose and Kubernetes run in separate jobs. Failures remain
 visible, but these jobs are outside `CI Required` and must not be configured as
 required branch checks. New pushes cancel superseded runs. Fork and Dependabot
 PRs report that a trusted run is needed; they do not receive model credentials.
+The same workflow runs the `dev-up-k3d` local installation lane as a separate
+advisory job without a protected environment or provider credentials. Its six
+cases and result artifact are described in the [hosted local installation guide](README.md#run-the-hosted-local-installation-lane).
 
-The advisory workflow uses `integration-qa-pr`: no required reviewers, deployment
+The QA matrix jobs use `integration-qa-pr`: no required reviewers, deployment
 branch policies allowing `refs/pull/*/merge` and `main`, and only the
 `CODEX_ACCESS_TOKEN` secret. Set the Codex model and Calendar
 variables from the table above; the Codex account must have Calendar connected.

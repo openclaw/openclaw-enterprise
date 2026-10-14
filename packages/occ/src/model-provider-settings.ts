@@ -42,7 +42,7 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // `$${VAR}` escape renders a literal `${VAR}` and resolves nothing, so text that holds only
 // escapes is checked as written. This follows OpenClaw's `containsEnvVarReference`
 // (`src/config/env-substitution.ts`).
-const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
+export const environmentReference = /\$(\$)?\{[A-Z_][A-Z0-9_]*(?::-([^${}]*))?\}/g;
 
 const holdsEnvironmentReference = (value: unknown): boolean =>
   typeof value === "string" &&
@@ -74,6 +74,13 @@ function writesSchemeSlashes(literals: readonly string[]): boolean {
   const scheme = /^[\0- ]*https?:/i.exec(first);
   return scheme === null || /^[/\\]{2}(?![/\\])/.test(first.slice(scheme[0].length));
 }
+
+// Whether a baseUrl's text, as written up to its first variable, starts with an http(s) scheme
+// followed by one or no slash (`https:/v1`, `https:v1`, `https:${HOST}`, `https:{{ vars.host }}`),
+// so its refusal can say the `//` is missing (finding 1285). An empty authority (`https:///v1`)
+// keeps the general message.
+const missesSchemeSlashes = (first: string): boolean =>
+  /^[\0- ]*https?:(?![/\\]{2})/i.test(first.replaceAll(/[\t\n\r]/g, ""));
 
 // Where a variable sits in a baseUrl with a literal http(s) scheme, and the one token it stands
 // for there: a host name or number, an empty port (or `:port` after an IPv6 address), an IPv6
@@ -217,13 +224,20 @@ export function urlHoldsUserinfo(value: string, literals: readonly string[] = [v
 }
 
 // `literals` as the runtime may render its environment references: every reference set, every
-// fallback rendered, and each fallback alone with the rest set.
-function environmentRenderings(literals: readonly string[]): string[][] {
+// fallback rendered, and each of the first `alone` fallbacks alone with the rest set. Each
+// rendering reads the whole text, so all of them cost time quadratic in its length (finding 1265).
+// `writesSchemeSlashes` reads only the text before the first variable, which rendering a later
+// fallback alone leaves as when every reference is set (fallbacks are numbered in order), so it
+// needs only the first fallback alone (`alone` 1).
+function environmentRenderings(literals: readonly string[], alone = Infinity): string[][] {
   const { fallbacks } = splitEnvironmentReferences(literals, () => false);
   return [
     () => false,
     () => true,
-    ...Array.from({ length: fallbacks }, (_, only) => (index: number) => index === only),
+    ...Array.from(
+      { length: Math.min(fallbacks, alone) },
+      (_, only) => (index: number) => index === only,
+    ),
   ].map((fallback) => splitEnvironmentReferences(literals, fallback));
 }
 
@@ -310,12 +324,17 @@ function validateSettings(
     const literals = unresolved([...path, "baseUrl"]);
     if (
       environment(baseUrl)
-        ? !environmentRenderings(literals ?? [String(baseUrl)]).every(writesSchemeSlashes)
+        ? !environmentRenderings(literals ?? [String(baseUrl)], 1).every(writesSchemeSlashes)
         : literals === undefined
           ? !isRuntimeUrl(baseUrl)
           : !fillsAsRuntimeUrl(literals)
     ) {
-      throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
+      // A value that is not a string is refused for its type, whatever text it would make.
+      const [first = typeof baseUrl === "string" ? baseUrl : ""] = literals ?? [];
+      throw new ModelProviderSettingError(
+        pointer(...path, "baseUrl"),
+        missesSchemeSlashes(first) ? "baseUrlSlashes" : "baseUrl",
+      );
     }
   }
   // An api that waits on a variable names no adapter until it is filled.

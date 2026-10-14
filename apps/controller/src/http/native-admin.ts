@@ -562,6 +562,12 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     } catch {
       throw dependencyUnavailable();
     }
+    if (
+      compute.id !== revision.compute.id ||
+      compute.implementation !== revision.compute.implementation
+    ) {
+      throw dependencyUnavailable();
+    }
     const gatewayBase = nativeAdminGatewayHttpBase(compute.getGatewayEndpoint?.(revision) ?? "");
     if (gatewayBase === undefined) {
       return { status: "unsupported", agent, revision, target };

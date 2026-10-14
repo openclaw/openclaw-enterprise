@@ -1,7 +1,7 @@
 # Integration tests outside automatic CI
 
 These integrations have coverage outside automatic required CI. The QA matrix
-also has an [advisory PR selection](qa-matrix.md#ci-evidence-and-recovery).
+and `dev-up-k3d` also have an [advisory PR selection](qa-matrix.md#ci-evidence-and-recovery).
 A green `CI Required` check does not establish their coverage. This inventory describes workflow selection, not
 local or hosted test results.
 
@@ -33,7 +33,7 @@ Model/service lanes require configured credentials and infrastructure.
 
 | Lane               | Integration test file                                                                                                  | Coverage absent from automatic CI                                                                                                                                         |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `dev-up-k3d`       | [dev-up-k3d-real.test.mjs](../../tests/integration/dev-up-k3d-real.test.mjs)                                           | Six local installation cases, including Keycloak sign-in, second-pass API egress isolation, persistence and recovery. Explicit selection only; no provider credentials.   |
+| `dev-up-k3d`       | [dev-up-k3d-real.test.mjs](../../tests/integration/dev-up-k3d-real.test.mjs)                                           | Six installation cases: Keycloak sign-in, second-pass API egress isolation, persistence and recovery. Runs in advisory PR CI; no provider credentials.                    |
 | `qa-matrix`        | [qa-matrix-real.test.mjs](../../tests/integration/qa-matrix-real.test.mjs)                                             | [Four shipped installation/preset combinations](qa-matrix.md): full selection includes OpenClaw, Git/PR and Slack beyond the advisory Codex model/UI and Calendar checks. |
 | `docker-model`     | [docker-compute-real.test.mjs](../../tests/integration/docker-compute-real.test.mjs)                                   | Docker Compute networks, containers, workspace persistence, cleanup, and real model turns.                                                                                |
 | `k3d-model`        | [harness-topology-k3d-real.test.mjs](../../tests/integration/harness-topology-k3d-real.test.mjs)                       | Pod-replacement continuity, secret rotation/rejection, and startup-failure durability with real runtimes.                                                                 |

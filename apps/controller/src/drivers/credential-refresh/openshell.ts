@@ -203,6 +203,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     requestId: string,
   ): Promise<CredentialRefreshStatus> {
     const type = this.refreshType(context);
+    if ((await this.ownedProvider(context)) === undefined) {
+      throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
+    }
     const client = this.client(context);
     const workspace = openShellWorkspaceName(context.namespace);
     const provider = openShellProviderName(context.source.id);
@@ -252,6 +255,9 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
 
   async removeRefresh(context: CredentialSourceContext): Promise<void> {
     const type = this.refreshType(context);
+    if ((await this.ownedProvider(context)) === undefined) {
+      return;
+    }
     await this.client(context).deleteProviderRefresh(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
@@ -302,12 +308,26 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   private async codexProvider(
     context: CredentialSourceContext,
   ): Promise<OpenShellProviderResponse> {
+    if (context.source.type !== CODEX_OAUTH_TYPE) {
+      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
+    }
+    const provider = await this.ownedProvider(context);
+    if (provider === undefined) {
+      throw new ScopeViolationError(
+        "The OpenShell provider is not owned by this Codex OAuth source.",
+      );
+    }
+    return provider;
+  }
+
+  private async ownedProvider(
+    context: CredentialSourceContext,
+  ): Promise<OpenShellProviderResponse | undefined> {
     if (
-      context.source.type !== CODEX_OAUTH_TYPE ||
       context.source.driverId !== this.backend.drivers.credential_gateway ||
       context.source.namespaceId !== context.namespace.id
     ) {
-      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
+      throw new ScopeViolationError("The credential source is not owned by this gateway.");
     }
     const provider = await this.client(context).getProvider(
       openShellWorkspaceName(context.namespace),
@@ -315,13 +335,13 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       context.signal,
     );
     if (
-      !provider ||
-      provider.type !== openShellProviderName(context.source.id) ||
-      provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-      provider.labels["openclaw.dev/credential-source-id"] !== context.source.id
+      provider !== undefined &&
+      (provider.type !== openShellProviderName(context.source.id) ||
+        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
+        provider.labels["openclaw.dev/credential-source-id"] !== context.source.id)
     ) {
       throw new ScopeViolationError(
-        "The OpenShell provider is not owned by this Codex OAuth source.",
+        "The OpenShell provider is not owned by this credential source.",
       );
     }
     return provider;

@@ -136,9 +136,10 @@ The Full Integration `openshell` lane's refresh proof shares the pin, so run it 
 
 The `dev-up-k3d` lane owns two additional cases in
 [`dev-up-k3d-real.test.mjs`](../../tests/integration/dev-up-k3d-real.test.mjs).
-They run through the local lane or an explicit
-[manual hosted dispatch](README.md#run-the-hosted-local-installation-lane), outside automatic CI and `all`. Prepare the CLI and Chromium with the
-[local installation setup](kubernetes.md#local-kubernetes-installation) first.
+They run in advisory CI for trusted pull requests, or through the local lane or an
+explicit [hosted dispatch](README.md#run-the-hosted-local-installation-lane).
+`CI Required` and `all` do not select them. For local runs, prepare the CLI and
+Chromium with the [local installation setup](kubernetes.md#local-kubernetes-installation) first.
 
 ```sh
 OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs

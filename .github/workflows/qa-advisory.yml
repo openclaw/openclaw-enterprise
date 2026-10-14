@@ -24,8 +24,33 @@ jobs:
         run: |
           echo "trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
           if [[ "$TRUSTED" != true ]]; then
-            echo 'QA scenarios did not run: this PR requires an approved trusted run with model credentials.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'QA advisory jobs did not run: this PR requires a trusted run. The model and Calendar jobs also require model credentials.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  local-installation:
+    name: QA advisory (local installation)
+    needs: eligibility
+    if: needs.eligibility.outputs.trusted == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CI: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: dev-up-k3d
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory-local-installation
+          job-timeout-minutes: 180
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   qa:
     name: QA advisory (${{ matrix.installation }})

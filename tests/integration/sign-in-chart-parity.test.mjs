@@ -4,7 +4,10 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { refuseRewrittenIpv4Host } from "../../apps/controller/src/auth/configuration.ts";
+import {
+  refuseRewrittenIpv4Host,
+  refuseWrittenUserinfo,
+} from "../../apps/controller/src/auth/configuration.ts";
 import {
   clientAddressConfiguration,
   createControllerAuth,
@@ -1244,6 +1247,12 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           return false;
         }
         try {
+          refuseWrittenUserinfo("OCC_AUTH_BASE_URL", baseUrl);
+        } catch (error) {
+          assert.match(error.message, /^OCC_AUTH_BASE_URL must not contain user info/);
+          return false;
+        }
+        try {
           refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", baseUrl, parsed);
         } catch (error) {
           assert.match(
@@ -1288,6 +1297,10 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "https://admin@console.oce.example.internal",
             "https://admin:secret@console.oce.example.internal",
             "https://:secret@console.oce.example.internal",
+            // Node drops an empty user info and publishes the host alone; Go keeps it.
+            "https://@console.oce.example.internal",
+            "https://:@console.oce.example.internal",
+            "https:@console.oce.example.internal",
             "console.oce.example.internal",
             "//console.oce.example.internal",
             "ftp://console.oce.example.internal",
@@ -1514,17 +1527,20 @@ describe("sign-in chart parity", { concurrency: true }, () => {
         // The real entrypoint gets past configuration with the rendered value.
         await startsUp({ ...environment, OCC_AUTH_BASE_URL: baseUrl }, label);
       });
-      // The entrypoint's own code for a value it cannot parse, and its own refusal of a
-      // rewritten IPv4 host: apiAccepts copies refuseRewrittenIpv4Host, and the cases above
-      // start the entrypoint only for values the chart renders, so deleting the call in
-      // server.mjs leaves the rest of this test green.
-      const ownRefusals = ["console.oce.example.internal", "https://192.168.010.001"].map(
-        async (baseUrl) =>
-          assert.equal(
-            await startupCode({ ...environment, OCC_AUTH_BASE_URL: baseUrl }),
-            "AUTH_BASE_URL_INVALID",
-            baseUrl,
-          ),
+      // The entrypoint's own code for a value it cannot parse, and its own refusals of a
+      // rewritten IPv4 host and an empty user info: apiAccepts copies refuseRewrittenIpv4Host
+      // and refuseWrittenUserinfo, and the cases above start the entrypoint only for values the
+      // chart renders, so deleting a call in server.mjs leaves the rest of this test green.
+      const ownRefusals = [
+        "console.oce.example.internal",
+        "https://192.168.010.001",
+        "https://@console.oce.example.internal",
+      ].map(async (baseUrl) =>
+        assert.equal(
+          await startupCode({ ...environment, OCC_AUTH_BASE_URL: baseUrl }),
+          "AUTH_BASE_URL_INVALID",
+          baseUrl,
+        ),
       );
       await settle([...checks, ...ownRefusals]);
     },

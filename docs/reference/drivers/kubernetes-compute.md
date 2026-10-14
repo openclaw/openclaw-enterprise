@@ -127,9 +127,8 @@ generation.
 
 ## Configuration
 
-Select the Kubernetes Compute Driver in the Installation startup YAML. Set
-`OCC_CONFIG_PATH` to that file's absolute path for both the controller API and
-worker.
+Select Kubernetes Compute in Installation YAML; set both API and worker
+`OCC_CONFIG_PATH` to its absolute path.
 
 ```yaml
 drivers:
@@ -178,15 +177,23 @@ drivers:
         codexSeccompProfile: profiles/codex-0.160.0.json
 ```
 
-This is only the Compute Driver portion of the Installation configuration; the
-[complete production Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
-adds the other required Drivers and settings.
+This example configures only Compute. The [complete Installation example](../../guides/deploy/production-installation.md#configure-the-installation)
+supplies remaining required Drivers and settings.
 
 `runtime.nativeOpenClawSessionCapacity` accepts an integer from `1` through
 `1024` and defaults to `8`. It bounds retained native OpenClaw session workers
 in one AgentRevision Sandbox. Stopping a hosted session releases its slot; saved
 history does not consume capacity. OpenClaw does not yet retire idle paired-node
 workers, so size the limit against the Agent workload's CPU and memory limits.
+
+For dedicated Codex `api_key` authentication, `runtime.codexModelBaseUrl` selects
+an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1` (including `/api/v1`).
+Rejects hostname/path wildcards, port `0`, credentials, queries, and fragments.
+Omission retains OpenAI's default; OpenShell sources select their own endpoint.
+OAuth, account logins, and OpenClaw ignore this option. Only the Harness receives
+the key. Private Gateway configuration qualifies parent and subagent selections
+(strings or primary/fallback objects), preserving native IDs and admitted values.
+Transport uses the authenticated app server and fail-closed HTTP. See [Harness execution](../harness-execution.md).
 
 ### Authentication
 
@@ -265,25 +272,19 @@ absent.
 
 ### Plugin startup status
 
-Compute-owned embedded or dedicated OpenClaw and dedicated Codex runtimes publish a private
-current-startup result after attempting requested plugins and verifying effective
-configuration. It identifies the revision, runtime instance, successful
-selection IDs, and the [plugin warnings](../agent-plugins.md#lifecycle)
+Compute-owned OpenClaw and Codex runtimes publish private startup results after
+attempting plugins and verifying configuration: revision, runtime instance,
+successful selection IDs, and [warnings](../agent-plugins.md#lifecycle)
 (`PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`) for disabled selections.
+Compute reads the exact workload through the authenticated Pod proxy under
+tenant-local RBAC; workloads receive no Kubernetes write credentials. The endpoint
+is not public. Ownership, startup identity, selection keys, and warning codes
+must match; missing, malformed, or foreign status cannot establish readiness.
 
-Kubernetes Compute reads the exact owned workload's status endpoint through the
-authenticated Kubernetes Pod proxy, which tenant-local controller RBAC permits;
-workload ServiceAccounts receive no Kubernetes write credentials. The endpoint
-is not part of the public gateway API. Compute validates workload ownership,
-startup identity, admitted selection keys, and closed warning codes. Missing,
-malformed, or foreign status cannot establish readiness.
-
-For embedded OpenClaw, startup explicitly disables failed plugin entries and
-removes their managed tool allowances before starting the gateway. For dedicated
-Codex, the separate gateway applies the Agent's current result to its bridge
-configuration before serving and refreshes that configuration after a changed
-restart result. Failed-only Codex app bindings are disabled; successful selections
-retain their admitted policy, including shared app bindings they require.
+Embedded OpenClaw disables failed plugins and their managed tool allowances before
+Gateway startup. Dedicated Codex applies current results before serving and
+refreshes them after changed restart results. Failed-only app bindings are disabled;
+successful selections retain admitted policy and required shared bindings.
 
 The Codex app-server credential derives from the Agent's transport Secret,
 revision, and startup identity, so a gateway configured for the previous startup
@@ -291,11 +292,10 @@ cannot authenticate to a restarted Agent. Its supervisor obtains the new status,
 applies the matching exclusions, and respawns the gateway process with the new
 credential, closing the interval before its next status poll.
 
-The worker records warnings with successful deployment completion under its live
-claim; a runtime restart recomputes status instead of preserving the first
-failure. There are no plugin receipt ConfigMaps, Pod finalizers, failure latches,
-or post-commit acknowledgment steps. This behavior does not change requested revision
-selections, uninstall account-wide plugins, or promise rollback.
+The worker commits warnings with successful deployment under its live claim;
+restarts recompute status. No receipt ConfigMaps, finalizers, failure latches, or
+post-commit acknowledgments are used. Requested selections and account-wide
+installations remain unchanged; rollback is not promised.
 
 ### Current runtime diagnostics
 

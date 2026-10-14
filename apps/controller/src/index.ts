@@ -1542,6 +1542,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       !decision ||
       typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
       decision.driverId !== selected.id ||
       !validAuthorizationEvidence(decision.evidence)
     ) {

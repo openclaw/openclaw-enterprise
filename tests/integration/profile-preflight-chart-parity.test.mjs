@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { clientAddressConfiguration } from "../../apps/controller/src/auth/client-address.ts";
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 
 // Each case runs through the profile preflight and through `helm template`, so the
 // renderer cannot accept a value the chart then refuses (or refuse one it accepts).
@@ -314,6 +316,15 @@ fieldParity("directory proxy URLs get the same verdict from the preflight and th
     ["http://192.0.2.999:3128", false, /must contain valid IPv4 octets/],
     ["http://192.0.2.10:65536", false, /must contain a TCP port from 1 to 65535/],
     ["http://010.0.0.1:3128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    // Both edges of the octet and port ranges, port 0 or a leading zero, a path, and the
+    // unspecified host over HTTPS.
+    ["http://192.0.2.255:3128", true],
+    ["http://192.0.2.256:3128", false, /must contain valid IPv4 octets/],
+    ["http://192.0.2.10:65535", true],
+    ["http://192.0.2.10:0", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["http://192.0.2.10:03128", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["http://192.0.2.10:3128/path", false, /must be an HTTP\(S\) literal IPv4 endpoint/],
+    ["https://0.0.0.0:443", false, /must not use host 0\.0\.0\.0, which names no proxy address/],
   ],
   controlPlane: () => ({}),
   extraInput: (url) => ({ channels: { managedSlackProxy: false, directoryProxyUrl: url } }),
@@ -384,6 +395,25 @@ test(
       },
     ),
 );
+
+// The header name is at most 64 characters and starts with a letter or digit.
+fieldParity("trusted proxy client address header names get the same length and shape verdict", {
+  cases: [
+    [`x-${"a".repeat(62)}`, true],
+    [`x-${"a".repeat(63)}`, false],
+    ["-x-real-ip", false],
+  ],
+  controlPlane: (header) => ({
+    trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"], clientAddressHeader: header },
+  }),
+  values: (header) => ({
+    api: {
+      trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"], clientAddressHeader: header },
+    },
+  }),
+  chartError:
+    /api\.trustedProxy\.clientAddressHeader must be a single HTTP header name of at most 64 characters/,
+});
 
 // A Kubernetes Namespace name is a DNS label of at most 63 characters, with no dots.
 const namespaceCases = [
@@ -691,6 +721,13 @@ const controlPlaneImageCases = [
   ["registry.example.invalid/controller?tag", false],
   ["-registry.example.invalid/controller", false],
   ["_registry.example.invalid/controller", false],
+  // An uppercase registry host or tag is allowed, and so is an IPv6 registry host. A second @
+  // is refused, and so is a bracket after the first component.
+  ["Registry.Example.invalid/team/controller", true],
+  ["registry.example.invalid/team/controller:Release_1", true],
+  ["[fd00::1]:5000/team/controller", true],
+  ["registry.example.invalid/controller@extra", false],
+  ["registry.example.invalid/[fd00::1]/controller", false],
 ];
 
 fieldParity("controller image references get the same verdict from preflight and the chart", {
@@ -701,11 +738,136 @@ fieldParity("controller image references get the same verdict from preflight and
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
 });
 
+// Kubernetes refuses to pull an image whose repository path has an uppercase letter
+// (InvalidImageName). Preflight refuses it in every image field, the chart in the images it
+// renders, and Compute in runtime.image, which becomes its images.gateway and images.agent.
+test(
+  "images with an uppercase repository path fail preflight, the chart and Compute",
+  { skip: helmSkip },
+  () => {
+    const refusal = (field) => new RegExp(`${escape(field)} repository path must be lowercase`);
+    const fields = [
+      [
+        "controlPlane.controllerImage",
+        (image) => input({ controllerImage: image }),
+        "images.controller",
+        (image) => ({ images: { controller: image } }),
+      ],
+      ["runtime.image", (image) => ({ ...input({}), runtime: { ...input({}).runtime, image } })],
+      [
+        "repository.image",
+        (image) => ({ ...input({}), repository: { ...repositoryInput, image } }),
+        "repositoryCredentials.image",
+        (image) => ({ repositoryCredentials: { ...repositoryInput, image } }),
+      ],
+    ];
+    const names = [
+      "registry.example.invalid/Team/controller",
+      "registry.example.invalid:5000/team/Controller:release_1",
+      "Registry.Example.invalid/team/Controller",
+      // Without a registry host, the image is docker.io/library/Controller.
+      "Controller",
+    ];
+    return each(
+      fields.flatMap((field) => names.map((name) => [field, name])),
+      ([[field, profile, chartField, values], name]) => {
+        const image = `${name}@sha256:${"a".repeat(64)}`;
+        return withProfile(profile(image), async ({ directory, renderer }) => {
+          assert.equal(renderer.ok, false, `${field} ${name}: renderer\n${renderer.output}`);
+          assert.match(renderer.output, refusal(field), `${field} ${name}`);
+          assert.equal(existsSync(join(directory, "values.yaml")), false);
+          if (chartField === undefined) {
+            assertCompute(
+              { images: { gateway: image, agent: image, requireImmutableDigest: true } },
+              false,
+              /Gateway image repository path must be lowercase/,
+              name,
+            );
+            return;
+          }
+          const chart = await helmTemplate([
+            await baselineValues(),
+            writeOverride(directory, values(image)),
+          ]);
+          assert.equal(chart.ok, false, `${chartField} ${name}: helm template\n${chart.output}`);
+          assert.match(chart.output, refusal(chartField), `${chartField} ${name}`);
+        });
+      },
+    );
+  },
+);
+
+// Profiles take no Collector image: preflight refuses the field and writes none, so the chart
+// renders its default. An operator values file can still set logging.collector.image, and the
+// chart applies the images.* rule to it.
+test(
+  "logging.collector.image follows the images.* repository path rule; profiles leave the chart default",
+  { skip: helmSkip },
+  async () => {
+    const collector = { enabled: true, exporter: { cidr: "192.0.2.40/32" } };
+    await withProfile(
+      input({
+        loggingCollector: { ...collector, image: `otel/collector@sha256:${"d".repeat(64)}` },
+      }),
+      ({ renderer }) => {
+        assert.equal(renderer.ok, false, renderer.output);
+        assert.match(
+          renderer.output,
+          /controlPlane\.loggingCollector\.image is not supported by installation profiles/,
+        );
+      },
+    );
+    return withProfile(input({ loggingCollector: collector }), async ({ directory, renderer }) => {
+      assert.equal(renderer.ok, true, renderer.output);
+      const values = join(directory, "values.yaml");
+      assert.equal(loadYaml(readFileSync(values, "utf8")).logging.collector.image, undefined);
+      const chart = await helmTemplate([values]);
+      assert.equal(chart.ok, true, chart.output);
+      const chartDefault = loadYaml(
+        readFileSync(join(repository, "deploy/helm/openclaw-enterprise/values.yaml"), "utf8"),
+      ).logging.collector.image;
+      assert.ok(chart.output.includes(`image: ${JSON.stringify(chartDefault)}`), chartDefault);
+      await each(
+        [
+          ["registry.example.invalid/otel/collector", true],
+          ["Registry.Example.invalid/otel/collector:Release_1", true],
+          ["[fd00::1]:5000/otel/collector", true],
+          ["[FD00::1]:5000/otel/collector", true],
+          ["registry.example.invalid/Otel/collector", false],
+          ["registry.example.invalid:5000/otel/Collector:release_1", false],
+          ["Registry.Example.invalid/otel/Collector", false],
+          ["[fd00::1]:5000/otel/Collector", false],
+          // Without a registry host, the image is docker.io/library/Collector.
+          ["Collector", false],
+        ],
+        async ([name, accepted]) => {
+          const image = `${name}@sha256:${"d".repeat(64)}`;
+          const chart = await helmTemplate([
+            values,
+            writeOverride(mkdtempSync(join(directory, "case-")), {
+              logging: { collector: { image } },
+            }),
+          ]);
+          assert.equal(chart.ok, accepted, `${name}: helm template\n${chart.output}`);
+          if (accepted) {
+            assert.ok(chart.output.includes(`image: ${JSON.stringify(image)}`), name);
+          } else {
+            assert.match(
+              chart.output,
+              /logging\.collector\.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one/,
+              name,
+            );
+          }
+        },
+      );
+    });
+  },
+);
+
 // runtime.image never reaches the chart: it becomes Compute's images.gateway and
-// images.agent. Every reference preflight accepts, including an IPv6 registry host the
-// chart's control-plane rule would refuse, must reach Compute as written and start it.
-// Preflight also refuses whitespace and a second @, which no runtime pulls; Compute checks
-// only the trailing digest.
+// images.agent. Every reference preflight accepts, including an IPv6 registry host, must reach
+// Compute as written and start it. Both refuse whitespace and a second @, which no runtime
+// pulls.
 test("runtime image references get Compute's verdict in preflight", () =>
   each(
     [
@@ -713,6 +875,7 @@ test("runtime image references get Compute's verdict in preflight", () =>
       ["registry.example.invalid:5000/team/runtime:release_1", true],
       ["[fd00::1]:5000/openclaw-enterprise/runtime", true],
       ["[::1]:5000/runtime", true],
+      ["Registry.Example.invalid/team/runtime:Release_1", true],
       ["registry.example.invalid/run time", false],
       ["registry.example.invalid/runtime\n", false],
       ["registry.example.invalid/runtime@extra", false],
@@ -740,6 +903,112 @@ test("runtime image references get Compute's verdict in preflight", () =>
     },
   ));
 
+// Kubernetes refuses to pull a reference its parser refuses (InvalidImageName). Every image
+// field in preflight, Compute and the chart takes exactly the references Kubernetes accepts,
+// with a lowercase SHA-256 digest where the field requires one. tests/fixtures/image-reference-
+// cases.mjs holds Kubernetes' verdicts.
+function imageRefusal(field, image, problem) {
+  return problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/.test(image)
+    ? new RegExp(`${escape(field)} repository path must be lowercase`)
+    : new RegExp(
+        `${escape(field)} must be an (immutable|approved immutable SHA-256) image reference`,
+      );
+}
+
+test("image references get Kubernetes' verdict in preflight and Compute", () =>
+  each(imageReferenceCases, ([label, image, problem]) => {
+    // Compute without the immutable-image policy takes every reference Kubernetes accepts.
+    assertCompute(
+      { images: { gateway: image, agent: image, requireImmutableDigest: false } },
+      problem === undefined,
+      problem === "uppercase-repository"
+        ? /Gateway image repository path must be lowercase/
+        : /Gateway image must be a container image reference Kubernetes can pull/,
+      label,
+    );
+    const accepted = immutableImageAccepted(image, problem);
+    // One profile carries the reference in all three image fields; preflight refuses each.
+    return withProfile(
+      {
+        ...input({ controllerImage: image }),
+        runtime: { ...input({}).runtime, image },
+        repository: { ...repositoryInput, image },
+      },
+      ({ directory, renderer }) => {
+        assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
+        if (!accepted) {
+          for (const field of [
+            "controlPlane.controllerImage",
+            "runtime.image",
+            "repository.image",
+          ]) {
+            assert.match(
+              renderer.output,
+              imageRefusal(field, image, problem),
+              `${label}: ${field}`,
+            );
+          }
+          return;
+        }
+        const values = loadYaml(readFileSync(join(directory, "values.yaml"), "utf8"));
+        assert.equal(values.images.controller, image, label);
+        assert.equal(values.repositoryCredentials.image, image, label);
+        const installation = loadYaml(readFileSync(join(directory, "installation.yaml"), "utf8"));
+        const images = installation.drivers.compute.configuration.images;
+        assert.deepEqual(images, { gateway: image, agent: image, requireImmutableDigest: true });
+        assertCompute({ images }, true, undefined, label);
+      },
+    );
+  }));
+
+test(
+  "image references get Kubernetes' verdict in every chart image field",
+  { skip: helmSkip },
+  async () => {
+    // A profile with the Collector and repository credentials enabled, so every chart image
+    // field renders.
+    const baselineProfile = await renderProfile({
+      ...input({ loggingCollector: { enabled: true, exporter: { cidr: "192.0.2.40/32" } } }),
+      repository: repositoryInput,
+    });
+    try {
+      assert.equal(baselineProfile.renderer.ok, true, baselineProfile.renderer.output);
+      const baselineValuesFile = join(baselineProfile.directory, "values.yaml");
+      const fields = [
+        ["images.controller", (image) => ({ images: { controller: image } })],
+        ["repositoryCredentials.image", (image) => ({ repositoryCredentials: { image } })],
+        ["logging.collector.image", (image) => ({ logging: { collector: { image } } })],
+      ];
+      await each(imageReferenceCases, async ([label, image, problem]) => {
+        const directory = mkdtempSync(join(baselineProfile.directory, "case-"));
+        if (immutableImageAccepted(image, problem)) {
+          const chart = await helmTemplate([
+            baselineValuesFile,
+            writeOverride(
+              directory,
+              Object.assign({}, ...fields.map(([, values]) => values(image))),
+            ),
+          ]);
+          assert.equal(chart.ok, true, `${label}: helm template\n${chart.output}`);
+          // The controller, its Jobs, the Slack proxy, the repository broker and the Collector.
+          assert.ok(chart.output.includes(`image: ${JSON.stringify(image)}`), label);
+          return;
+        }
+        for (const [field, values] of fields) {
+          const chart = await helmTemplate([
+            baselineValuesFile,
+            writeOverride(mkdtempSync(join(directory, "field-")), values(image)),
+          ]);
+          assert.equal(chart.ok, false, `${label}: ${field}: helm template\n${chart.output}`);
+          assert.match(chart.output, imageRefusal(field, image, problem), `${label}: ${field}`);
+        }
+      });
+    } finally {
+      rmSync(baselineProfile.directory, { recursive: true, force: true });
+    }
+  },
+);
+
 // The chart checks the percent-decoded host for invisible characters that Node's host
 // parser drops.
 const invisibleHost = /auth\.baseUrl must not contain spaces, invisible characters, < or >/;
@@ -754,6 +1023,33 @@ fieldParity("auth base URLs get the same verdict from preflight and the chart", 
       (escaped) => [`https://ex${escaped}ample.com`, false, invisibleHost],
     ),
     ["https://ex%e2%80%8bample.com:8443", false, invisibleHost],
+    // A joiner may sit inside a label, encoded or not, but not at the start or end of the URL.
+    ["https://\u0915\u094d\u200d\u0937.example", true],
+    ["https://\u0915\u094d%E2%80%8D\u0937.example", true],
+    [
+      "https://example.\u0915\u094d\u200d",
+      false,
+      /auth\.baseUrl must not begin or end with Unicode spaces or invisible characters/,
+    ],
+    // Only ::ffff:0:0/96 is IPv4-mapped.
+    ["https://[::1:ffff:c000:201]", true],
+    // An uppercase scheme still gets the IPv4 and percent-escape checks.
+    ["HTTPS://192.0.2.10", true],
+    ["HTTPS://ex%61mple.com", false, /invalid URL escape "%61"/],
+    // Sprig urlParse refuses every ASCII escape in the host, in either hex case.
+    ["https://ex%7Eample.com", false, /invalid URL escape "%7E"/],
+    ["https://example.com%2E", false, /invalid URL escape "%2E"/],
+    // Node reads a backslash as a path separator; the chart refuses it in the host.
+    ["https://console.example.com\\auth", false, /invalid character "\\\\" in host name/],
+    // Node drops an empty user info and publishes the host alone; the chart refuses any @.
+    ["https://@console.example.com", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
+    ["https://:@console.example.com", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
+    ["https://@192.0.2.10", false, /auth\.baseUrl must be an absolute HTTP\(S\) origin/],
+    [
+      syntheticCredentialUrl({ username: "", password: "secret", host: "console.example.com" }),
+      false,
+      /auth\.baseUrl must be an absolute HTTP\(S\) origin/,
+    ],
   ],
   label: (url) => url,
   controlPlane: (url) => ({ authBaseUrl: url }),

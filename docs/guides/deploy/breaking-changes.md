@@ -13,6 +13,35 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
+
+**What breaks.** Profile preflight refuses an uppercase letter in the repository
+path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
+which Kubernetes refused to pull; an uppercase registry host or tag still
+passes. The chart (`images.*`, `repositoryCredentials.image`,
+`logging.collector.image`),
+`prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
+startup for the Compute gateway and Agent images refuse it too, and any other
+reference Kubernetes cannot parse (`..` or an empty path component, a tag over
+128 characters, non-ASCII letters); all of them accept an IPv6 registry host
+(`[fd00::1]:5000/...`). Preflight, the chart, API
+startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
+host (`https://@host`), which Node silently dropped; preflight refuses it in
+`controlPlane.observabilityUrl`, and API and worker startup in
+`observability.url`.
+
+**Who is affected.** Profiles, values, tool flags or Installation YAML that use
+those spellings.
+
+**How to tell.** Preflight, the chart and the tools report `... repository path
+must be lowercase`, the field's image reference message, or the URL field's
+absolute-URL message. API startup logs
+`AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` for
+any refused Gateway or Agent image, or `OBSERVABILITY_URL_INVALID`.
+
+**Steps.** Fix the image reference (lowercase its repository path, drop what
+Kubernetes cannot parse), or delete the `@`, then render or restart again.
+
 ## 2026-10-13: channel proxy hosts must name one proxy address
 
 **What breaks.** Startup refuses a channel proxy IPv4 host that is not four
@@ -115,13 +144,17 @@ or `request.proxy.url` whose host or port is a variable or `${VAR}` (or in its
 first header character by code point: `not one that starts with U+007B`. A
 Preset saved with one still reads but cannot launch: edit it. A later change
 refuses one in `proxy.proxyUrl`, a channel or channel account `proxy`, an MCP
-server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case; a
-`baseUrl` with an empty host (`https:///v1`, as an empty variable leaves it);
+server `url` and any URL in an `env` map (skill, hook, sandbox, ...),
+whatever the name (`HTTPS_PROXY`, `GOPROXY`); a `baseUrl` with an empty host
+(`https:///v1`, as an empty variable leaves it);
 and a number or boolean variable as the whole `baseUrl` or `api`. A later
 change refuses a `baseUrl` without exactly `//` after `http:` or `https:`
 (`https:/v1`, `https:${HOST}`, `https:{{ vars.host }}`), and a user name or
-password in an MCP server's `env` proxy variables, Codex's network proxy URLs
-and speech and Talk provider `proxy` settings.
+password in Codex's network proxy URLs and speech and Talk provider `proxy`
+settings. A later change applies the header rule to MCP server `headers`
+(also under `nodeHost`), and reads `GIT_CONFIG_VALUE_<n>` and
+`GIT_CONFIG_PARAMETERS` values as proxies when their key names one, such as
+`http.proxy`.
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
@@ -131,7 +164,8 @@ it is edited.
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,
 `Configuration field <field> carries a user name or password in the URL.`,
-or `... must be an absolute http or https URL.`
+`... must be an absolute http or https URL.`
+or `... must start with https:// or http:// (the // after the scheme is missing).`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from

@@ -55,7 +55,9 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' }}
     # The image lanes' runner, so the cache is written where they read it.
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 30
+    # Each image's build may take 20 min and its cache export 20 min more
+    # (prepare.mjs); the two images run side by side.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

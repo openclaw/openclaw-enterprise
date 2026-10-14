@@ -26,6 +26,10 @@ export function createDeviceCredentialDrivers({
     implementation: "test-external-device-service",
     calls,
     sources,
+    validateSourceConfig({ type, config }) {
+      assert.equal(type, "codex-device");
+      assert.deepEqual(config, {});
+    },
     async listSourceTypes() {
       return [
         {

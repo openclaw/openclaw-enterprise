@@ -87,6 +87,16 @@ test("Console device login completes through the paired OpenShell Refresh Driver
       operations.push("retrieve");
       return { value: managedAccess, expirationTime };
     },
+    async deleteProviderRefresh() {
+      operations.push("removeRefresh");
+    },
+    async deleteProvider(_workspace, name) {
+      operations.push("removeProvider");
+      providers.delete(name);
+    },
+    async deleteProviderProfile() {
+      operations.push("removeProfile");
+    },
     close() {},
   };
   const backend = createOpenShellBackend(
@@ -347,4 +357,72 @@ test("Console device login completes through the paired OpenShell Refresh Driver
     assert.equal(JSON.stringify([rejected.body, logs]).includes(privateText), false);
   }
   assert.equal(exchanges, 2, "failed starts must never acquire or redeem an authorization code");
+
+  const createCleanupSource = async () => {
+    const created = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: { name: "Abandoned device login", type: "codex-oauth" },
+      },
+    );
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const provider = [...providers.values()].find(
+      (candidate) => candidate.labels["openclaw.dev/credential-source-id"] === created.data.id,
+    );
+    assert.ok(provider);
+    // The registration fence must not obscure the provider ownership check or successful cleanup.
+    await clock.advance(71_000);
+    return {
+      provider,
+      path: `/namespaces/${namespace.id}/credential-sources/${created.data.id}`,
+    };
+  };
+  // Simulate out-of-band replacement in OpenShell. Ordinary OCE sources cannot select these
+  // names. Both real Drivers must refuse shared-authority mutations before sending an RPC.
+  for (const replacement of [
+    (provider) => ({
+      ...provider,
+      labels: { ...provider.labels, "app.kubernetes.io/managed-by": "other" },
+    }),
+    (provider) => ({
+      ...provider,
+      labels: { ...provider.labels, "openclaw.dev/credential-source-id": "other-source" },
+    }),
+    (provider) => ({ ...provider, type: "other-profile" }),
+  ]) {
+    const source = await createCleanupSource();
+    const foreign = replacement(source.provider);
+    providers.set(source.provider.name, foreign);
+    const before = operations.length;
+    const rotated = await fixture.request("POST", `${source.path}/rotate`);
+    const removed = await fixture.request("DELETE", source.path);
+    assert.equal(removed.status, 404, JSON.stringify(removed.body));
+    assert.equal(removed.body.error.code, "NOT_FOUND");
+    assert.deepEqual(
+      operations.slice(before),
+      [],
+      "a foreign provider must receive neither rotation nor destructive cleanup RPCs",
+    );
+    assert.equal(rotated.status, 404, JSON.stringify(rotated.body));
+    assert.equal(providers.get(source.provider.name), foreign);
+
+    // The failed removal retains its source record; restoring ownership allows the normal retry.
+    providers.set(source.provider.name, source.provider);
+    assert.equal((await fixture.request("DELETE", source.path)).status, 204);
+    assert.deepEqual(operations.slice(before), [
+      "removeRefresh",
+      "removeProvider",
+      "removeProfile",
+    ]);
+  }
+  const absent = await createCleanupSource();
+  providers.delete(absent.provider.name);
+  const beforeAbsent = operations.length;
+  assert.equal((await fixture.request("DELETE", absent.path)).status, 204);
+  assert.deepEqual(
+    operations.slice(beforeAbsent),
+    ["removeProfile"],
+    "an absent provider needs no refresh mutation; source profile cleanup still completes",
+  );
 });

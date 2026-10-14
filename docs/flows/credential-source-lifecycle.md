@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-13
+updated: 2026-10-14
 last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
@@ -8,12 +8,11 @@ last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 
 ## Overview
 
-OCC authorizes and records Namespace credential sources, binds them to Agents,
-and freezes their identities in revisions. The worker resolves those records
-for Compute; the paired Gateway/Sandbox attaches and injects credentials. OCC
-stores metadata and Secret references, never values. This flow also covers
-updates, withdrawal, deletion, and recovery; [refresh](credential-source-refresh.md)
-and [Sandbox provisioning](openshell-sandbox-provisioning.md) own their internal steps.
+OCC authorizes Namespace credential sources, binds them to Agents, and freezes
+identities in revisions. The worker resolves sources for paired Gateway/Sandbox
+attachment. OCC stores metadata and Secret references, never values. This flow
+covers registration through removal; [refresh](credential-source-refresh.md) and
+[Sandbox provisioning](openshell-sandbox-provisioning.md) own their internal steps.
 
 ## Entry Points
 
@@ -58,21 +57,26 @@ graph TD
 
 ## Execution Trace
 
-Registration and deletion reject active or inherited stale transaction contexts
-before effects. Each commits its intermediate record before external calls.
+Registration and deletion reject an active or stale inherited transaction from the same controller
+instance with `ResourceConflictError` before effects. OCC commits the
+intermediate State record before calling `registerSource` or `removeSource`.
 
 ### 1. Admit the registration request
 
 `apps/controller/src/http/credential-sources.ts:createCredentialSource`,
 `packages/occ/src/index.ts:createCredentialSource`
 
-The route accepts `name`, `type`, optional `config`, and optional lowercase-keyed
-`secrets`. One transaction locks the Namespace, authorizes
-`credential_source:create`, requires a selected gateway
-(`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`) and a `ready` Namespace, then calls
-`listSourceTypes`. Before credential I/O, an unoffered type raises
-`CredentialSourceTypeNotOfferedError` (`409`); unknown or missing fields raise
-`ScopeViolationError` (`404`).
+The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`.
+One transaction authorizes `credential_source:create`, locks a ready Namespace,
+requires a selected gateway (`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`), and reads
+`listSourceTypes`. Before effects, an unoffered type returns
+`CredentialSourceTypeNotOfferedError` (`409`); unknown/missing fields return
+`ScopeViolationError` (`404`). Side-effect-free `validateSourceConfig` rejects
+invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`).
+`apps/controller/src/drivers/openai-endpoint.ts:normalizeOpenAiBaseUrl` and
+OpenShell's `normalizedSourceBaseUrl` enforce the
+[endpoint restrictions](../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
+Registration/attachment validate endpoints; cleanup uses owned identity.
 
 ### 2. Read Secret values
 
@@ -90,101 +94,85 @@ Values remain in memory only for the authorized external call.
 `packages/occ/src/index.ts:abandonCredentialRegistration`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 
-OCC commits a `registering` source with Secret references before resolving
-Compute's Sandbox namespace and calling Gateway `registerSource` (30-second
-deadline). OpenShell creates the source-owned profile and labeled provider;
-replay requires matching ownership. Only the Refresh Driver receives refresh
-material; see the [refresh flow](credential-source-refresh.md).
+OCC commits `registering` with Secret references, resolves Compute's Sandbox
+namespace, and calls `registerSource` with a 30-second deadline. OpenShell checks
+provider ownership before changing the source-owned profile, creates the labeled
+provider, and rechecks creation collisions. These calls are not atomic. Only the
+Refresh Driver receives refresh material.
 
 A definitive failed/absent result triggers cleanup and record deletion; failed
-cleanup leaves `deleting`. A thrown call may still take effect, so cleanup always
-retains `deleting` for a later DELETE. Success commits `ready` and mutation audit
-atomically. A failed commit leaves `registering`, which blocks binding/admission
-but permits deletion. If concurrent DELETE already won, OCC removes the external
-copy again and returns `409`.
+cleanup retains `deleting`. Thrown calls may still take effect, so cleanup retains
+`deleting` for another DELETE. Success commits `ready` and audit atomically. A
+failed commit leaves `registering`: binding/admission fail, deletion remains
+possible. If concurrent DELETE won, OCC repeats remote cleanup and returns `409`.
 
 ### Device authorization and configuration
 
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-Device authorization registers the source before the paired Refresh Driver
-receives issuer material. OCC fences the private session and returns only the
-ready source reference. Gateway `withSourceToken` supplies access credentials to
-an authorized callback and may trigger external refresh. The
-[refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
-owns exchange, handoff, retrieval, and cancellation boundaries.
+Device authorization registers an empty source, then paired Refresh start/poll
+fences the private session. Gateway `withSourceToken` may refresh for an authorized
+callback.
+The [refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
+owns exchange, retrieval, and cancellation.
 
 ### 4. Bind the source to an Agent
 
 `packages/occ/src/index.ts:authorizeHarnessAuthSource`
 
-PATCH authorizes `credential_source:operate` on already-bound sources without
-lookup (`authorizeBoundCredentialSources`), allowing removal after gateway
-changes. Create and PATCH authorize requested sources, then reject a missing
-gateway with `CredentialGatewayNotConfiguredError` (`409`) before lookups.
-Sources must be `ready`, in the exact Namespace, and owned by the selected
-gateway. The foreign key on `agents.harness_auth_credential_source_id` prevents
-deleting a draft's Harness source.
+PATCH authorizes `credential_source:operate` on existing bindings without lookup
+(`authorizeBoundCredentialSources`), allowing removal after gateway changes.
+Create/PATCH authorize requested sources before requiring a selected gateway
+(`CredentialGatewayNotConfiguredError`, `409`). Sources must be ready, in the
+exact Namespace, and owned by that gateway. The
+`agents.harness_auth_credential_source_id` foreign key prevents source deletion.
 
-Every entry of `credentialSources` follows the same checks
-(`packages/occ/src/index.ts:authorizeAgentCredentialSources`), which also
-requires a credential-source `harnessAuth` to name a listed entry
-(`assertHarnessSourceListed`, `AgentCredentialSourceBindingError`, `400`). That
-rule runs after every source check, so a caller without `operate` gets `403`
-first. The list is stored in
-`agents.credential_sources`; the constraint
-`agents_harness_credential_source_listed` enforces the same rule, and the trigger
-`agent_credential_sources_are_synchronized` mirrors the list into
-`agent_credential_sources`, whose foreign key restricts source deletion.
+`authorizeAgentCredentialSources` applies those checks to every `credentialSources`
+entry. Afterwards `assertHarnessSourceListed` requires a credential-source
+`harnessAuth` to appear in the list (`AgentCredentialSourceBindingError`, `400`);
+a caller lacking `operate` gets `403` first. The list persists in
+`agents.credential_sources`. Constraint `agents_harness_credential_source_listed`
+enforces membership; trigger `agent_credential_sources_are_synchronized` mirrors
+it into `agent_credential_sources`, whose foreign key restricts deletion.
 
 ### 5. Admit the deployment
 
 `packages/occ/src/index.ts:deployAgent`, `packages/occ/src/index.ts:admitHarnessAuth`
 
-`assertCredentialGatewayDelivery` rejects `api_key` and `codex_pat` with `409` while a gateway is selected. For
-`credential_source`, `admitHarnessAuth` authorizes the Agent service principal's
-`operate`, requires a `ready` source, and reads its catalog type, which must
-declare `harnessAuth`. The frozen snapshot is `{ method, sourceId,
-credentialGatewayId, sourceType, loginMode }`. `admittedCredentialSourceType`
-requires a selected Sandbox, and Compute `validateHarnessAuth` requires
-a dedicated Codex or native OpenClaw Harness, the paired Sandbox and gateway,
-and an `openai`/`api_key` type. Dedicated Codex also accepts an
-`openai`/`chatgptAuthTokens` type from a Driver implementing the external-auth
-contract. Compute renders no model Secret for either Harness and passes the
-resolved source to Sandbox provisioning.
-`admitCredentialSources` refuses a list without a selected Sandbox Driver
-(`409` with its message), rechecks the caller's binding grants, then authorizes
-the Agent principal's `operate` on every listed source, including the Harness source, checks each type against the
-catalog, and freezes `{ sourceId, credentialGatewayId, sourceType }` entries in
-the revision's `credential_sources`.
+With a gateway selected, `assertCredentialGatewayDelivery` rejects `api_key` and
+`codex_pat` (`409`). For `credential_source`, `admitHarnessAuth` authorizes Agent
+principal `operate`, requires a ready source whose catalog type declares
+`harnessAuth`, and freezes `{ method, sourceId, credentialGatewayId, sourceType,
+loginMode }`. `admittedCredentialSourceType` requires Sandbox selection;
+Compute `validateHarnessAuth` requires dedicated Codex or native OpenClaw, paired
+Drivers, and `openai`/`api_key`. Codex also accepts `openai`/`chatgptAuthTokens`
+from an external-auth Driver. Compute projects no model Secret.
+
+`admitCredentialSources` requires a Sandbox (`409`), rechecks caller binding
+grants, authorizes Agent principal `operate` on every listed source including
+the Harness source, checks catalog types, and freezes `{ sourceId,
+credentialGatewayId, sourceType }` in revision `credential_sources`.
 
 ### 6. Resolve the source at dispatch
 
 `apps/controller/src/worker.ts:authorizeRevision`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks `credential_source:operate` for the deploying actor and the
-service principal; a denial ends the work item with `AUTHORIZATION_DENIED`. It
-then compares the snapshot's gateway ID with its selected Driver
-(`CREDENTIAL_GATEWAY_MISMATCH` on a difference) and loads the current record. A
-missing or `deleting` source, or one whose Driver or type differs, returns
-`HARNESS_AUTH_SOURCE_UNAVAILABLE`. Otherwise it passes the snapshot plus the
-record to Compute, which rechecks the match in `harnessAuthForRevision`. It
-loads each other listed source the same way, skips the Harness source and any
-source withdrawn from the revision, and returns `CREDENTIAL_SOURCE_UNAVAILABLE`
-for one that is missing or changed.
-Compute checks the list in `credentialSourcesForRevision` and attaches it after
-the model source. The next owner is the [OpenShell Sandbox provisioning flow](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+The worker rechecks deploying-actor and Agent-principal `credential_source:operate`
+(`AUTHORIZATION_DENIED` on denial). A selected gateway differing from the snapshot
+returns `CREDENTIAL_GATEWAY_MISMATCH`; a missing/deleting source or changed Driver/type
+returns `HARNESS_AUTH_SOURCE_UNAVAILABLE`. Compute rechecks the snapshot and live
+record through `harnessAuthForRevision`. Other listed sources use the same checks,
+skipping the Harness and withdrawn sources; missing/changed records return
+`CREDENTIAL_SOURCE_UNAVAILABLE`. Compute's `credentialSourcesForRevision` validates
+the list before [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
-For `chatgptAuthTokens`, Gateway `attachForRevision` returns the placeholder and
-trusted account metadata. Compute's `credentialSourceEnvironment` passes them to
-the native entrypoint, which writes ephemeral external-token `auth.json` before
-the model probe and app-server startup. No refresh token reaches Codex.
-OpenShell's `sandboxCommand` wraps the stable placeholder as a JWT alias; the
-upstream injector preserves credential identity across rotations. See the
+For `chatgptAuthTokens`, `credentialSourceEnvironment` forwards trusted metadata
+and a placeholder into ephemeral `auth.json`. OpenShell's `sandboxCommand` wraps
+it as a stable JWT alias; upstream injection preserves identity across rotation.
+Neither refresh tokens nor legacy bundles reach Codex. See the
 [external-auth contract](../reference/drivers/credential-gateway.md#external-chatgpt-authentication).
-No legacy Agent refresh bundle is imported.
 
 ### 7. Delete the source
 
@@ -198,7 +186,9 @@ owning Driver returns `503`. It moves `registering` or `ready` to `deleting`;
 triggers forbid leaving that state or returning to `registering`. Outside the
 transaction, OCC removes refresh state through the Refresh Driver, then Gateway
 `removeSource` confirms provider deletion and removes its source-owned profile.
-Failure retains `deleting` and returns `503`.
+Unknown types, unverifiable ownership, and gateway read failures never count
+as absence. Cleanup uses source identity even when the endpoint is invalid.
+Failure retains `deleting`: ownership refusal returns `404`, dependency failure `503`.
 
 Even after removal, OCC retains the record and returns `503` until `CREDENTIAL_REGISTRATION_FENCE_MS`
 (70 seconds after `createdAt`): late registration effects and Backend calls each
@@ -282,6 +272,10 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   validation, grants, registration compensation and recovery, audit, deletion,
   Namespace gating, admission snapshots, and Secret-backed method rejection,
   with an in-process gateway double.
+- `node --test tests/integration/credential-source-api.test.mjs` exercises
+  Fastify/IAM/OCC/OpenShell Driver validation, deletion recovery, profile isolation
+  and endpoint lifecycle. Gateway storage and Compute placement are doubles,
+  not runtime proof.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
   provider, profile, update, detach, and recheck RPCs against the independent `v0.1.3-pre.2`
   wire fixture.
@@ -319,11 +313,19 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
+
+- 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
+
+- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
+
+- 2026-10-10 04:53: Reconcile credential refresh; report invalid offered-source values as field-specific 400 before effects. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
+
+- 2026-10-09 20:27: Integrate main lifecycle, native workspace and readiness contracts without dropping endpoint safeguards. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
+
 - 2026-10-13 18:56: Use source-owned OpenShell profiles for Codex OAuth. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - af184d6224af7c60b81027ca307097ecfc5007cc)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
-
-- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 
 - 2026-10-09 20:28: Retain external Harness authentication alongside explicit Agent source-list admission. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
 
@@ -342,13 +344,20 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
 - 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
 - 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
+- 2026-10-08 11:42: Reconciled binding and withdrawal behavior with endpoint validation; trimmed repeated lifecycle detail. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 1eceea5dfb864ff469dce04a42fe3cce9c7f5f75)
+
 - 2026-10-08 10:00: Replays take over stranded withdrawals; withdrawn sources skip the grant recheck. (fix-787-788)
 - 2026-10-08 09:30: Agent PATCH needs only `operate` on already-bound sources. (fix-782)
 - 2026-10-08 09:00: Deploying listed sources without a Sandbox Driver returns `409` with its message, not the generic "already exists". (fix-786)
 - 2026-10-08 08:30: Agent binding reports a missing Credential Gateway as `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` and an unlisted Harness source as `400`, after the caller's `operate` checks. (fix-783-784)
+
+- 2026-10-08 04:40: Reconciled OpenAI endpoint validation with the new tool-token source lifecycle. (authoring-run/02228d02-e16c-4a55-9a43-16b9efb35ebe - 31b1b6a9ab59f219d0fbe3d44b1550f8c8f2fe4a)
+
 - 2026-10-07 18:00: Unified binding: one `credentialSources` list holds every source, and a credential-source `harnessAuth` names a listed entry. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - ee950468c)
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 - 2026-10-06 21:30: Keep tool-withdrawal recovery scheduled after model revocation without preparing the revision again. (pr-851-rebase - bb6c7449b)
+- 2026-10-06 16:12: Reject normalized hostname stars, zero ports, and OpenShell bracket hosts before credential-source persistence. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 129b9b98812a861cfbdcec386daf5258902ebba8)
+- 2026-10-05 11:36: Validate source configuration before persistence and recover invalid rows without guessing remote ownership. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 9958ef0412565864efba7b13995536d7c2a51d22)
 
 - 2026-10-07 17:36: Trace source-owned device authorization and warm configuration discovery; remove legacy OAuth fallback. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
 

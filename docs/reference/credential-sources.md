@@ -45,13 +45,19 @@ gateway `status`, never credential values. Request fields:
 - `type`: required; a type from the gateway catalog. A type the selected gateway
   does not offer fails with `409 RESOURCE_CONFLICT` and a message naming the
   fix, before any gateway call.
-- `config`: optional nonsecret strings keyed by catalog field name.
+- `config`: optional nonsecret strings keyed by catalog field name. For the
+  OpenShell `openai` type, `base_url` selects an HTTPS OpenAI-compatible `/v1`
+  endpoint and defaults to `https://api.openai.com/v1`. Codex requires the
+  OpenAI Responses API. The endpoint is immutable source configuration; register
+  a new source to change it. Invalid endpoint values return `400 INVALID_REQUEST`
+  before OCC reads Secrets or stores a source record.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with
   `400 INVALID_REQUEST` before any Secret is read, and a reference to a Secret
   the Namespace does not hold fails with `404`.
 
-OCC rejects unknown or missing required fields before reading Secrets through
+OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
+before reading Secrets through
 the Secret Driver. It passes values to the owning Gateway or Refresh Driver and
 stores only references, recording `registering` before the call. After rejection, OCC deletes any copy and
 the record. An uncertain result, such as a timeout, leaves the record `deleting`
@@ -219,8 +225,9 @@ requires exact `delete` and returns `204`:
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
 - It marks the record `deleting` before it asks the gateway to remove its copy.
-  A gateway failure returns `503` and leaves the record `deleting`. Send the same
-  request again; an already-removed copy counts as deleted.
+  A dependency failure returns `503`; an OpenShell provider ownership mismatch
+  returns `404`. Both retain `deleting`. Resolve ownership drift before retrying;
+  an already-removed copy counts as deleted.
 - Within 70 seconds of registration, deletion removes the copy but returns `503`
   and keeps the record, because a timed-out registration could still create a
   copy. Retry after that window.
@@ -248,7 +255,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 | Status                                  | Meaning                                                                                                                                                                                                                                                |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `400 INVALID_REQUEST`                   | The body or a field name is malformed, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                                                 |
+| `400 INVALID_REQUEST`                   | The body, field name, or configuration value is invalid, a Secret reference names another Namespace, or a credential-source `harnessAuth` is not listed.                                                                                               |
 | `403 FORBIDDEN`                         | A required `credential_source` or `secret` permission is missing.                                                                                                                                                                                      |
 | `404 NOT_FOUND`                         | The source or Secret is not in the exact Namespace, or a catalog field is invalid; or the Agent's active revision does not use the source or has no withdrawal for it.                                                                                 |
 | `409 NAMESPACE_NOT_READY`               | The Namespace is not `ready`.                                                                                                                                                                                                                          |

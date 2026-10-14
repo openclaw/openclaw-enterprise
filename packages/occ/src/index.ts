@@ -291,6 +291,7 @@ export {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
@@ -394,7 +395,10 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { imageReferenceProblem } from "./image-reference.ts";
+export type { ImageReferenceProblem } from "./image-reference.ts";
 export {
+  environmentReference,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
@@ -4456,6 +4460,7 @@ export class OpenClawController {
         const type = await this.credentialSourceType(selected, input.type);
         credentialSourceFieldsMatch("config", type.config, config);
         credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+        selected.validateSourceConfig({ type: type.type, config });
         const refreshDriver =
           type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
         if (
@@ -8123,6 +8128,7 @@ export class OpenClawController {
     const restrictionIds = snapshotIds(evidence?.restrictionIds);
     if (
       typeof allowed !== "boolean" ||
+      typeof reason !== "string" ||
       !isNonEmptyString(driverId) ||
       !evidence ||
       (identityId !== undefined && !isNonEmptyString(identityId)) ||

@@ -430,6 +430,9 @@ export class GatewayPasswordValueError extends ModelCredentialValueError {
 const modelProviderSettingMessages = {
   baseUrl: (path: string): string =>
     `Configuration field ${path} must be an absolute http or https URL.`,
+  // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
+  baseUrlSlashes: (path: string): string =>
+    `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;
@@ -885,6 +888,17 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/** A Driver rejected nonsecret source configuration before registration. */
+export class CredentialSourceConfigError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceConfigError";
+    this.field = field;
   }
 }
 

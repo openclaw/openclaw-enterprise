@@ -36,7 +36,7 @@ import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
-import { refuseRewrittenIpv4Host } from "../auth/configuration.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import { createExternalDriver, loadDriverPackage } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
@@ -278,6 +278,8 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
       "observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.",
     );
   }
+  // URL parsing drops an empty user info (http://@host), which profile preflight refuses.
+  refuseWrittenUserinfo("observability.url", raw);
   // Other IPv4 spellings parse as a different address, so startup must not store url.href.
   refuseRewrittenIpv4Host("observability.url", raw, url);
   return Object.freeze({ url: url.href });

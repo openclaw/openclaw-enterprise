@@ -1,4 +1,4 @@
-import { refuseRewrittenIpv4Host } from "./auth/configuration.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -59,8 +59,19 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
-  if (/observability\.url IPv4 host must be four decimal octets/.test(message)) {
+  if (
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must be an absolute HTTP)/.test(
+      message,
+    )
+  ) {
     return "OBSERVABILITY_URL_INVALID";
+  }
+  if (
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
+      message,
+    )
+  ) {
+    return "RUNTIME_IMAGE_INVALID";
   }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
@@ -231,6 +242,7 @@ function configuration() {
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
+  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
   refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
   if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {

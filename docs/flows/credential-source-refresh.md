@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-13
-last_updated_session: authoring-run/0754f915-95b1-457f-b261-5b1474f1dfe1
+updated: 2026-10-14
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Credential source refresh Flow
@@ -108,8 +108,10 @@ failure class, never provider messages, response bodies, or nested causes.
 performs the Codex exchange, configures OpenShell with refresh material, and
 stores trusted account metadata. Before acquiring a code, its issuer polling
 returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
-the handle and its polling interval. Cancellation still aborts, and failures
-from code acquisition onward close the session without replay. OpenShell owns
+the handle and its polling interval. An aborted initial poll, including OCC's
+internal timeout, closes the session and requires a fresh login; it is not
+retried as pending. Failures from code acquisition onward likewise close the
+session without replay. OpenShell owns
 future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
 pending, while a persistent uncertain marker needs operator inspection.
 Ready confirms a usable token. Later revisions attach the existing provider
@@ -167,8 +169,14 @@ whose outcome is unknown records neither event.
 `packages/occ/src/index.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
-which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
-`removeSource`. A failure leaves the record `deleting` for retry.
+then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
+`apps/controller/src/drivers/credential-refresh/openshell.ts:ownedProvider`
+checks the exact source Namespace and paired Gateway ID, then the current
+provider's manager/source labels and profile identity. A missing provider is
+already clean; a foreign provider or failed lookup refuses cleanup. The deletion
+RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. The check protects against
+out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
+the record `deleting` for retry.
 
 ## Debugging and Verification
 
@@ -195,6 +203,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 01:13: Check current provider ownership before refresh mutation and retain fresh-login recovery after a poll timeout. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 
 - 2026-10-13 19:42: Restore issuer-connectivity diagnostics at the Refresh-owned device-login boundary. (authoring-run/0754f915-95b1-457f-b261-5b1474f1dfe1 - 70431971c6b1e9157634d36a9d911480ad6d833f)
 
