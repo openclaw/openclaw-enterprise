@@ -1,5 +1,7 @@
 # OpenShell tests
 
+## Overview
+
 Use these tests to check OpenShell setup and real Agent execution. Run commands
 from the repository root.
 

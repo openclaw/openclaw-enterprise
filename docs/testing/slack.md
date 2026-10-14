@@ -1,5 +1,7 @@
 # Slack and ChatGPT service-account tests
 
+## Overview
+
 Run live Slack and ChatGPT service-account integration checks. Both need the [Kubernetes runtime](kubernetes.md#kubernetes-model-turns-and-secrets) and a [private environment file](README.md#requirements-and-credentials).
 
 ## Slack

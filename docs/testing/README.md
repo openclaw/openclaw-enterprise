@@ -1,9 +1,9 @@
 # Testing
 
+## Overview
+
 Run tests from the repository root. This page lists the test suites and links to
 setup for suites that need external services.
-
-## Overview
 
 | Test                  | Purpose                                               | Location                                                                    |
 | --------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |

@@ -1,6 +1,8 @@
 # Local, browser, and metrics tests
 
-Start with the [requirements](README.md#requirements-and-credentials).
+## Overview
+
+Run local checks, browser suites, and metrics and observability tests. Start with the [requirements](README.md#requirements-and-credentials).
 
 ## Local checks
 

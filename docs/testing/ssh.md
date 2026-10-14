@@ -1,5 +1,7 @@
 # SSH host tests
 
+## Overview
+
 Verify the SSH Compute Driver against a disposable Linux host with real
 OpenClaw and systemd. The default real-host run checks readiness only; the model selector below adds provider execution.
 

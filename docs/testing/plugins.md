@@ -1,6 +1,8 @@
 # Agent plugin testing
 
-Run these commands from the repository root. The [plugin reference](../reference/agent-plugins.md) describes supported behavior.
+## Overview
+
+Run Agent plugin tests for API, Driver, persistence, and runtime behavior from the repository root. The [plugin reference](../reference/agent-plugins.md) describes supported behavior.
 
 ## Local and integration suites
 

@@ -1,6 +1,8 @@
 # Compose fixtures and readable scenarios
 
-Keep each test's input, action, and expected observation visible. See the
+## Overview
+
+Build test fixtures and write scenarios with clear inputs, actions, and expected results. See the
 [test audit](../../.agents/skills/test-audit/SKILL.md) for coverage selection.
 
 ## Build inputs without deciding expectations

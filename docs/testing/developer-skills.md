@@ -1,5 +1,11 @@
 # Developer skills
 
+## Overview
+
+Find the developer skill for your task and check how it is maintained.
+
+## Choose a skill
+
 | Task                            | Skill                                                                            |
 | ------------------------------- | -------------------------------------------------------------------------------- |
 | Design review                   | [design-review](../../.agents/skills/design-review/SKILL.md)                     |

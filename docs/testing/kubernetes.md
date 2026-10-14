@@ -1,6 +1,8 @@
 # Kubernetes tests
 
-Use a disposable local k3d cluster with enforcing NetworkPolicies. The fixture suite excludes a real gateway and model. The runtime suite includes them.
+## Overview
+
+Run Kubernetes installation and runtime tests on a disposable local k3d cluster with enforcing NetworkPolicies. The fixture suite excludes a real gateway and model. The runtime suite includes them.
 
 ## Local Kubernetes installation
 

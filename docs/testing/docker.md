@@ -1,13 +1,15 @@
 # Docker, image, and Helm tests
 
-Compose supports control-plane startup and Namespace operations. The Docker
-Compute Driver rejects Agent harness authentication bindings, so the retained
-real Agent model and TUI tests fail at admission. Use [Kubernetes](kubernetes.md)
-for an authenticated Agent journey. Image and Helm checks require Node 24+,
-installed dependencies, and Docker unless stated otherwise. They use local
-images and make no model calls.
+## Overview
+
+Run Compose startup, container image, and Helm checks. Use [Kubernetes](kubernetes.md)
+for an authenticated Agent journey: the Docker Compute Driver rejects Agent
+harness authentication bindings, so the retained real Agent model and TUI tests
+fail at admission.
 
 ## Verify Compose startup
+
+Compose supports control-plane startup and Namespace operations.
 
 Follow the [quickstart](../guides/quickstart.md), or run the host/startup cases:
 
@@ -83,6 +85,9 @@ loopback registry. It checks publication against that registry, not GHCR access
 or GitHub permissions. It skips without the selector.
 
 ## Images and Helm
+
+Image and Helm checks require Node 24+, installed dependencies, and Docker
+unless stated otherwise. They use local images and make no model calls.
 
 ### Check published images
 

@@ -1,5 +1,11 @@
 # Review changes with autoreview
 
+## Overview
+
+Use autoreview to get an independent review of local changes or a committed branch.
+
+## Run a review
+
 When independent review is requested, follow the [shared skill setup](../../.agents/skills/autoreview/SKILL.md)
 and read the installed skill. From the repository root:
 

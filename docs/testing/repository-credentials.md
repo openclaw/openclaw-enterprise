@@ -4,6 +4,8 @@ doc-schema-version: 1
 
 # Repository credential tests
 
+## Overview
+
 Use these checks to verify repository credential changes at the source, package,
 container, platform, or live-provider boundary. Run commands from the repository
 root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.

@@ -1,5 +1,9 @@
 # Analyze module dependencies
 
+## Overview
+
+Check package imports and dependency cycles against repository policy, then inspect and fix reported violations.
+
 ## Check repository dependency policy
 
 With workspace dependencies prepared, run:

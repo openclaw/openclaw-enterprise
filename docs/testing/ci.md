@@ -1,5 +1,9 @@
 # GitHub Actions testing
 
+## Overview
+
+This page explains which tests GitHub Actions runs and how to run additional integration lanes. It also shows where to find results and failure evidence.
+
 ## GitHub Actions
 
 [CI](../../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, merge groups, and manual dispatch. `CI Required` checks the selected lanes and their results at the same source commit. Docs-only changes run static checks without product tests; test-only changes select affected CI lanes. Other changes and unverifiable selection evidence use full CI. See the [CI flow](../flows/github-actions-testing.md) for selection and result accounting.
