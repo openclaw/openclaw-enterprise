@@ -1379,6 +1379,7 @@ test(
       `64 x 0.9 MB: revision summary page ${measured(revisionPage)}, Preset summaries ${measured(presetSummaries)}`,
     );
     // Less than one stored document: neither list may carry a single snapshot or template.
+    // PostgreSQL's jsonb text is longer than the compact `large`, so one document exceeds this.
     assert.ok(
       revisionPage.bytes > 0 && revisionPage.bytes < large.length,
       `revision summary page received ${measured(revisionPage)}`,
