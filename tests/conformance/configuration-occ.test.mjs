@@ -738,10 +738,11 @@ test("Harness resolution stays in step with the size of the model selections and
   const count = 50_000;
   const fallbacks = Array.from({ length: count }, (_, index) => `openai/m${index + 1}`);
   // The bound is relative to a structured clone of the same document, so a slow or busy runner
-  // does not fail it (finding 1326). At two CPUs resolution takes 1-6 clones, and up to 18 with
+  // does not fail it (finding 1326). At two CPUs resolution takes 1-6 clones, and up to 20 with
   // four copies of the test sharing them; before, the first shape took about 2 minutes, about
-  // 5,800 clones (and about 300 at 2,000 models). The two are timed in turn up to three times,
-  // each at its best; a miss far past the bound is not noise and is not timed again.
+  // 5,800 clones (and about 320 with 2,000 models instead of 50,000). The two are timed in turn
+  // up to three times, keeping each one's best, until resolution is under the bound; a miss far
+  // past it is not noise and is not timed again.
   const timed = (values, expected) => {
     const timings = { resolving: Infinity, cloning: Infinity };
     for (let round = 0; round < 3; round += 1) {
