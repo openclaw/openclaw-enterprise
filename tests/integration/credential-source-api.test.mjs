@@ -706,6 +706,17 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
   ]) {
     assert.deepEqual(placement(configuration, "oce-0123456789abcde"), named, configuration);
   }
+  // A Service name, with or without a port and protocol, is kept as written.
+  for (const endpoint of [
+    "https://openshell-gateway-peer.openshell-system.svc:8080",
+    "https://_grpc._tcp.openshell-gateway-peer.openshell-system.svc:8080",
+  ]) {
+    assert.deepEqual(
+      placement({ endpoint }),
+      { service: "openshell-gateway-peer", namespace: "openshell-system" },
+      endpoint,
+    );
+  }
   // Only a trailing `-peer` names the peer Service of the gateway Service.
   assert.deepEqual(
     placement({ endpoint: "https://gateway-0.gateway-peering.openshell-system.svc:8080" }),
@@ -779,9 +790,12 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     // Three labels ending in another Service name the gateway's namespace only through a
     // Service the OpenShell chart does not create there, and never the gateway itself.
     "https://a.b.keycloak/token",
+    // A Service that only shares the gateway Service's name as a prefix, without the `-` its
+    // peer Service adds.
     "https://grpc.tcp.openshell-gateway2/token",
     // CoreDNS answers at most two labels before a Service name, so four labels ending in the
-    // gateway Service name it only after `svc` completion, as a Service in another namespace.
+    // gateway Service resolve only through the `svc.<zone>` search entry, as Service `c` in a
+    // namespace named after the last label, never the gateway's.
     "https://a.b.c.openshell-gateway/token",
     "https://a.b.c.openshell-gateway-peer/token",
     "https://kubernetes.default.svc/token",

@@ -116,7 +116,8 @@ export class OpenShellGateway {
 /**
  * `<service>.<namespace>.svc[...]`, a StatefulSet Pod's `<pod>.<service>-peer.<namespace>.svc[...]`
  * or a port's `<port>.<protocol>.<service>.<namespace>.svc[...]`, which CoreDNS answers like the
- * Service (an `_` before the port and protocol is optional).
+ * Service (an `_` before the port and protocol is optional). A Service or namespace named `svc` is
+ * read as the first form that fits.
  */
 function serviceDnsPlacement(host: string): OpenShellGatewayPlacement | undefined {
   const labels = host.toLowerCase().split(".");
