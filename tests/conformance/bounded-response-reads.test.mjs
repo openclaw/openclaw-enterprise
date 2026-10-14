@@ -68,7 +68,7 @@ function settled(promise, ms) {
       (value) => ({ value }),
       (error) => ({ error }),
     ),
-    delay(ms).then(() => ({ pending: true })),
+    delay(ms, undefined, { ref: false }).then(() => ({ pending: true })),
   ]);
 }
 
@@ -100,7 +100,7 @@ test("SSH executor drops output past its limit while the child ignores SIGTERM (
   const ssh = join(dir, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nprocess.on("SIGTERM", () => {});\nprocess.stdin.resume();\nconst chunk = "x".repeat(64 * 1024);\nconst pump = () => { while (process.stdout.write(chunk)) {} process.stdout.once("drain", pump); };\npump();\n`,
+    `#!${process.execPath}\nprocess.on("SIGTERM", () => {});\nprocess.stdin.resume();\nconst chunk = "x".repeat(1024 * 1024);\nconst pump = () => { while (process.stdout.write(chunk)) {} process.stdout.once("drain", pump); };\npump();\n`,
   );
   await chmod(ssh, 0o755);
   const executor = new URL(

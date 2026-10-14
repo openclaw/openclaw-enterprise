@@ -1158,7 +1158,10 @@ const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
 
 class RuntimeStatusOversized extends Error {}
 
-/** Reads a Pod proxy response up to the status limit instead of buffering all of it. */
+/**
+ * Reads a Pod proxy response up to the status limit instead of buffering all of it.
+ * Error bodies are capped too: the client reads them unbounded for its exception.
+ */
 async function limitRuntimeStatusBody(response: ResponseContext): Promise<ResponseContext> {
   const stream = response.body.stream();
   if (stream !== null) {
