@@ -329,7 +329,8 @@ function validateSettings(
           ? !isRuntimeUrl(baseUrl)
           : !fillsAsRuntimeUrl(literals)
     ) {
-      const [first = String(baseUrl)] = literals ?? [];
+      // A value that is not a string is refused for its type, whatever text it would make.
+      const [first = typeof baseUrl === "string" ? baseUrl : ""] = literals ?? [];
       throw new ModelProviderSettingError(
         pointer(...path, "baseUrl"),
         missesSchemeSlashes(first) ? "baseUrlSlashes" : "baseUrl",

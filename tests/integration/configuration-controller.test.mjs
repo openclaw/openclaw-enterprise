@@ -2924,6 +2924,8 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     // the scheme, so the general message stays.
     [{ baseUrl: "${MODEL_URL:-https:/models.example.test/v1}" }, baseUrl()],
     [{ baseUrl: "https://${MODEL_HOST:-}/v1" }, baseUrl()],
+    // A value that is not a string is refused for its type.
+    [{ baseUrl: ["https:/v1"] }, baseUrl()],
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway(settings) },
