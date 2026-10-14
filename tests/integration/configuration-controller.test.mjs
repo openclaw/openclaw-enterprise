@@ -2896,11 +2896,15 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   const gateway = (settings) => ({ models: { providers: { gateway: settings } } });
   const baseUrl = (field = "baseUrl") =>
     `Configuration field /models/providers/gateway/${field} must be an absolute http or https URL.`;
+  // Finding 1285: a scheme followed by one or no slash names the missing `//`.
+  const slashes = (field = "baseUrl") =>
+    `Configuration field /models/providers/gateway/${field} must start with https:// or http:// (the // after the scheme is missing).`;
   const api =
     "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.";
 
   // An empty written authority, however it is spelled, is refused on Configuration create, and
-  // so is one or no slash after the scheme (finding 1259), which the URL parser accepts.
+  // so is one or no slash after the scheme (finding 1259), which the URL parser accepts. Only the
+  // latter says the `//` is missing (finding 1285).
   for (const [settings, message] of [
     [{ baseUrl: "https:///v1" }, baseUrl()],
     [{ baseUrl: " HTTP:\\\\\\v1" }, baseUrl()],
@@ -2909,13 +2913,15 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
       { models: [{ id: "m", baseUrl: "http:////models.example.test/v1" }] },
       baseUrl("models/0/baseUrl"),
     ],
-    [{ baseUrl: "https:/models.example.test/v1" }, baseUrl()],
-    [{ baseUrl: "https:v1" }, baseUrl()],
-    [{ baseUrl: " \tHTTPS:/models.example.test" }, baseUrl()],
-    [{ baseUrl: "https:\\models.example.test" }, baseUrl()],
-    [{ baseUrl: "https:${MODEL_HOST}/v1" }, baseUrl()],
-    [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, baseUrl("models/0/baseUrl")],
-    // The runtime renders a fallback when its variable is unset.
+    [{ baseUrl: "https:/models.example.test/v1" }, slashes()],
+    [{ baseUrl: "https:v1" }, slashes()],
+    [{ baseUrl: "http:/models.example.test" }, slashes()],
+    [{ baseUrl: " \tHTTPS:/models.example.test" }, slashes()],
+    [{ baseUrl: "https:\\models.example.test" }, slashes()],
+    [{ baseUrl: "https:${MODEL_HOST}/v1" }, slashes()],
+    [{ models: [{ id: "m", baseUrl: "http:/${MODEL_HOST}" }] }, slashes("models/0/baseUrl")],
+    // The runtime renders a fallback when its variable is unset. The value does not start with
+    // the scheme, so the general message stays.
     [{ baseUrl: "${MODEL_URL:-https:/models.example.test/v1}" }, baseUrl()],
     [{ baseUrl: "https://${MODEL_HOST:-}/v1" }, baseUrl()],
   ]) {
@@ -2935,8 +2941,8 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     // An empty default is a literal empty host.
     [{ h: { type: "string", default: "" } }, hostVariable, baseUrl()],
     // A variable cannot supply the slashes (finding 1259).
-    [{ h: { type: "string" } }, { baseUrl: "https:{{ vars.h }}" }, baseUrl()],
-    [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, baseUrl()],
+    [{ h: { type: "string" } }, { baseUrl: "https:{{ vars.h }}" }, slashes()],
+    [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, slashes()],
     [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
     [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
     [{ n: { type: "number" } }, { api: "{{ vars.n }}" }, api],
@@ -2976,7 +2982,7 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
   assert.equal(empty.body.error.message, baseUrl());
   const oneSlash = await launch({ h: "models.example.test", n: 1000, u: "https:/v1" });
   assert.equal(oneSlash.status, 400, JSON.stringify(oneSlash.body));
-  assert.equal(oneSlash.body.error.message, baseUrl("models/0/baseUrl"));
+  assert.equal(oneSlash.body.error.message, slashes("models/0/baseUrl"));
 
   // Two slashes or backslashes after any spelling of the scheme, and references beside them, save.
   for (const value of [
