@@ -9,6 +9,58 @@ import { join } from "node:path";
 import test from "node:test";
 import { protectedText } from "../helpers/qa-secrets.mjs";
 
+test("QA Agent reads the selected Preset in its Namespace", async (t) => {
+  const { createQaAgent } = await import("../helpers/qa-installation.mjs");
+  function fixture(namespaceId, presetNamespaceId = namespaceId) {
+    const calls = [];
+    const stopped = new Error("stop after Preset lookup");
+    return {
+      calls,
+      stopped,
+      installation: {
+        retained: false,
+        defaultNamespace: { id: "ns-default" },
+        namespace: { id: namespaceId },
+        presets: [{ id: "pre-codex", namespaceId: presetNamespaceId, name: "Standard Codex" }],
+        async api(method, path) {
+          calls.push({ method, path });
+          throw stopped;
+        },
+      },
+    };
+  }
+
+  for (const namespaceId of ["ns-default", "ns-compose"]) {
+    await t.test(`fetches the selected Preset in ${namespaceId}`, async () => {
+      const { calls, stopped, installation } = fixture(namespaceId);
+      // Stop after the lookup, before credential reads or Agent creation.
+      await assert.rejects(createQaAgent(installation, "Codex"), (error) => error === stopped);
+      assert.deepEqual(calls, [
+        { method: "GET", path: `/namespaces/${namespaceId}/presets/pre-codex` },
+      ]);
+    });
+  }
+
+  await t.test("refuses a Preset summary from another Namespace", async () => {
+    const { calls, installation } = fixture("ns-compose", "ns-other");
+    await assert.rejects(
+      createQaAgent(installation, "Codex"),
+      /Preset must belong to the QA Namespace/,
+    );
+    assert.deepEqual(calls, []);
+  });
+
+  await t.test("reports a missing Standard Preset before making a request", async () => {
+    const { calls, installation } = fixture("ns-compose");
+    installation.presets = [];
+    await assert.rejects(
+      createQaAgent(installation, "Codex"),
+      /Standard Codex Preset must be available/,
+    );
+    assert.deepEqual(calls, []);
+  });
+});
+
 test("QA credentials require a private regular file and reject symlink substitution", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "qa-credential-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
