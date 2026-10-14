@@ -159,7 +159,9 @@ a non-object `agents`, `agents.defaults`, `agents.entries` or entry; any
 `agents.list` except an empty one beside an empty roster; an Agent ID OpenClaw
 rejects, or two it normalizes to one; an entry's `default`; `agents.ownership`
 other than `explicit`; more than one entry without it; or `explicit` with no
-entry. The message names the setting and the rule. A Configuration saved before
+entry. The message names the setting and the rule. Preset saves refuse them
+too; an Agent ID or `agents.ownership` that waits on a variable is checked as
+far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
 Rules that depend on the topology stay at deployment, because a Configuration

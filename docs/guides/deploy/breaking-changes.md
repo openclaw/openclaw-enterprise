@@ -18,19 +18,21 @@ real Installation.
 **What breaks.** On Kubernetes Compute, Configuration, Preset and Agent saves
 and deployment refuse a model selection off the primary model's provider:
 fallbacks, Agent entries, `subagents.model` and the other `*Model` settings,
-`models` policy keys, hook models and `channels.modelByChannel`, and an
-`apiKey` on another `models.providers` entry. Dedicated Codex refuses every
-`apiKey` and unqualified `models` policy keys. Every Compute refuses
-another-provider fallbacks at save. A Preset variable's provider is checked at
-launch; a number or boolean model variable is refused.
+`models` policy keys, `modelPolicy.allow`, hook models,
+`channels.modelByChannel`, and an `apiKey` on another `models.providers`
+entry. Dedicated Codex refuses every `apiKey`, `mediaModels` and `voiceModel`,
+and unqualified policy entries. Every Compute refuses another-provider
+fallbacks at save. A Preset variable's provider is checked at launch; a number
+or boolean model variable is refused. Preset saves also check `agents` rosters.
 
 **Who is affected.** Configurations and Presets that select a second provider
-or give it an `apiKey`, or set any `apiKey` for Dedicated Codex.
+or give it an `apiKey`, or set an `apiKey`, media or voice model for Dedicated
+Codex.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
 binding`, `... must use the primary model's provider`, `... must be
-provider/model references`, or `models.providers.<name>.apiKey must be unset`.
+provider/model references`, or `... must be unset`.
 
 **Steps.** Use only the primary model's provider, remove the other provider's
 `apiKey`, then save and deploy again.

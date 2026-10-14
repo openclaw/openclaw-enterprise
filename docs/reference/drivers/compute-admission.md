@@ -70,9 +70,12 @@ Agent that fails a check still reads; its next update must fix the pair.
   checked again once filled.
   A `models` that is not a list is refused too: it would hide its rows.
 - once the Configuration's model policy selects a Harness and its primary
-  model a supported provider: a model selection or
-  `models.providers.<name>.apiKey` off that provider, and an `apiKey` that
-  Harness refuses. Dedicated Codex takes none; OpenClaw takes `${NAME}` or an
+  model a supported provider: a model selection (including a `models` key or
+  `modelPolicy.allow` entry) or `models.providers.<name>.apiKey` off that
+  provider, and an `apiKey` that Harness refuses. Dedicated Codex also refuses
+  a policy entry without a provider, `mediaModels.*` and `voiceModel`: OpenClaw
+  calls media and voice models directly, and Codex serves only chat models.
+  Dedicated Codex takes no `apiKey`; OpenClaw takes `${NAME}` or an
   env SecretRef to the binding's variable, through an env provider that
   allows it or OpenClaw's default env alias. An inline key is left to the
   Configuration Driver. A Preset save runs this rule too, except on a reference
