@@ -83,8 +83,9 @@ NetworkPolicy does not police (finding 1356):
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
   registration and attach know it; registration's profile check refuses the
-  name before any gateway write. An IP address, node address or other
-  `endpoint` host names no namespace, and only Pod names are refused.
+  name before any gateway write. An IP address, node address, two-label
+  `<service>.<namespace>` or other `endpoint` host names no namespace, and only
+  Pod names are refused.
 
 Issuers in other namespaces keep their Service names. OCC stores `token_url` as
 the controller's URL parser serializes it (`new URL(token_url).href`), so the

@@ -69,26 +69,23 @@ export class OpenShellGateway {
   /**
    * Where the gateway runs, when the configuration names it (finding 1356). A bare Service name
    * runs in each tenant `namespace`, so it needs one. A dotted Service name, or an endpoint host
-   * `<service>.<namespace>.svc[.<cluster domain>]`, names one namespace. An IP address, a node
-   * address or any other host names none.
+   * `<service>.<namespace>.svc[.<cluster domain>]` or one Pod's `<pod>.<service>-peer.<namespace>.svc[...]`,
+   * names one namespace. An IP address, a node address or any other host names none.
    */
   placement(namespace?: string): OpenShellGatewayPlacement | undefined {
     const { endpoint, serviceName } = this.configuration;
     if (endpoint !== undefined) {
-      const labels = new URL(endpoint.includes("://") ? endpoint : `http://${endpoint}`).hostname
-        .toLowerCase()
-        .split(".");
-      return labels.length >= 3 && labels[2] === "svc"
-        ? { service: labels[0]!, namespace: labels[1]! }
-        : undefined;
+      return serviceDnsPlacement(
+        new URL(endpoint.includes("://") ? endpoint : `http://${endpoint}`).hostname,
+      );
     }
     const labels = (serviceName as string).toLowerCase().split(".");
     if (labels.length === 1) {
       return namespace === undefined ? undefined : { service: labels[0]!, namespace };
     }
-    return labels.length === 2 || labels[2] === "svc"
+    return labels.length === 2
       ? { service: labels[0]!, namespace: labels[1]! }
-      : undefined;
+      : serviceDnsPlacement(serviceName as string);
   }
 
   close(): void {
@@ -112,6 +109,17 @@ export class OpenShellGateway {
         : { rootCertificatePath: configuration.rootCertificatePath }),
     };
   }
+}
+
+/** `<service>.<namespace>.svc[...]`, or a StatefulSet Pod's `<pod>.<service>-peer.<namespace>.svc[...]`. */
+function serviceDnsPlacement(host: string): OpenShellGatewayPlacement | undefined {
+  const labels = host.toLowerCase().split(".");
+  if (labels[2] === "svc") {
+    return { service: labels[0]!, namespace: labels[1]! };
+  }
+  return labels[3] === "svc"
+    ? { service: labels[1]!.replace(/-peer$/, ""), namespace: labels[2]! }
+    : undefined;
 }
 
 function serviceEndpoint(configuration: OpenShellBackendConfiguration, namespace: string): string {

@@ -597,8 +597,10 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
     { endpoint: "https://openshell-gateway.openshell-system.svc:8080" },
     { endpoint: "http://openshell-gateway.openshell-system.svc.cluster.local:8080" },
     { endpoint: "openshell-gateway.openshell-system.svc.example.internal:8080" },
+    { endpoint: "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc:8080" },
     { serviceName: "openshell-gateway.openshell-system" },
     { serviceName: "openshell-gateway.openshell-system.svc.cluster.local" },
+    { serviceName: "openshell-gateway-0.openshell-gateway-peer.openshell-system.svc" },
   ]) {
     assert.deepEqual(placement(configuration, "oce-0123456789abcde"), named, configuration);
   }
@@ -719,7 +721,7 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://openshell-gateway-0.openshell-gateway-peer/token",
   ];
   const secret = await f.createSecret(f.namespace.id, "tool-material", "synthetic-tool-material");
-  for (const token_url of tenantOwn) {
+  for (const [index, token_url] of tenantOwn.entries()) {
     assert.doesNotThrow(() =>
       f.driver.validateSourceConfig({
         type: "oauth2-client-credentials",
@@ -728,13 +730,16 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     );
     const response = await f.request("POST", f.path, {
       body: {
-        name: "issuer",
+        // A refused registration leaves its record deleting, so each attempt takes a new name.
+        name: `issuer-${index}`,
         type: "oauth2-client-credentials",
         config: { ...config, token_url },
         secrets: { client_secret: secret.ref },
       },
     });
-    assert.notEqual(response.status, 201, token_url + " " + JSON.stringify(response.body));
+    // The profile check's ScopeViolationError, which the API reports without detail.
+    assert.equal(response.status, 404, token_url + " " + JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "NOT_FOUND", token_url);
   }
   // Refused before the profile or provider is written, so no refresh is configured either.
   assert.deepEqual(

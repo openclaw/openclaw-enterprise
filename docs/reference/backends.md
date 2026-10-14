@@ -155,7 +155,10 @@ Its closed `configuration` accepts:
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
-  `rootCertificatePath` is set.
+  `rootCertificatePath` is set. OAuth2 credential sources refuse `token_url`
+  hosts in the gateway's namespace only when OCE knows it: from a bare or
+  `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
+  `<service>.<namespace>.svc[.<cluster domain>]`.
 - `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound

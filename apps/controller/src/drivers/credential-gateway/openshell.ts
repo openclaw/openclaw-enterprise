@@ -735,6 +735,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
+    // Without the gateway placement: ensureProfile below checks it and throws ScopeViolationError,
+    // which OCC passes through; a CredentialSourceConfigError here would surface as a 503.
     type.validate(input.config);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
