@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-10
-last_updated_session: fix-987-988
+updated: 2026-10-14
+last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
 ---
 
 # Agent Plugin Deployment Flow
@@ -242,8 +242,11 @@ discovery failures, and policy failures retain ordinary startup failure
 behavior. Provider-owned Harnesses keep their existing startup path.
 
 After verification, runtime exposes private startup status. Kubernetes Compute
-validates workload, revision, startup instance, selection keys, and warning
-codes for readiness; restart recomputes status.
+caps every runtime-status response body at 65,536 bytes while streaming, cancels overflow,
+and fails without retry: `Runtime status returned oversized data.` In-limit
+404/503 mean not serving; oversized 404/503 fail. Readiness validates
+workload, revision, startup instance, selection keys, and warning codes; restart
+recomputes status.
 Docker Codex healthchecks fail immediately when a plugin or runtime status
 response is interrupted after its headers. Plugin-status failures retain the
 transport code; interrupted status enrichment preserves the original reason.
@@ -348,6 +351,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
 - 2026-10-14 17:46: Preserve Docker Codex readiness reasons and transport codes when a loopback status response is interrupted. (issue-2403 - 944068b35b5a9bd86a3b1cf7361038a12b3de71a)
 
