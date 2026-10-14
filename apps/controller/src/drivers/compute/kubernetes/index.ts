@@ -1164,6 +1164,8 @@ class RuntimeStatusRedirected extends Error {}
  * undici's refusal of an interim answer the request never asked for: a `100 Continue`
  * ("bad response") or a `101` without an upgrade request ("bad upgrade"). The peer chose that
  * answer, so unlike a dropped or reset connection, a retry gets the same one (finding 1355).
+ * The texts are undici's (`lib/dispatcher/client-h1.js` `onHeadersComplete`, undici 8.11.2):
+ * recheck them when undici changes, or these answers fall back to the generic retry.
  */
 function unsolicitedInterimResponse(error: unknown): boolean {
   let current = error;

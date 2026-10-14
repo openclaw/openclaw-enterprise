@@ -21,9 +21,9 @@ real Installation.
 `oauth2-refresh-token` credential source refuses a `token_url` whose host is an
 IP address in any spelling (`10.0.0.5`, `0x7f000001`, `127.1`, `[::1]`), a
 `localhost` name, a name ending in `.localdomain`, `.localdomain4` or
-`.localdomain6`, or a single-label name (`keycloak`, `ip6-localhost`,
-`localhost6`): the gateway Pod's `/etc/hosts` maps such names to the Pod
-itself. The OpenShell gateway posts the source's client secret and
+`.localdomain6`, or a single-label name (`keycloak`, `ip6-localhost`). Those
+are the shapes of the loopback, link-local and own-hostname aliases in the
+gateway Pod's `/etc/hosts`. The OpenShell gateway posts the source's client secret and
 refresh token to that URL from its own network position. A deployment that
 binds an existing source with such a `token_url` fails. Until it is deleted,
 the gateway keeps refreshing that source against the stored `token_url`, and
@@ -36,7 +36,7 @@ is addressed by IP address, a `localhost` name or a single-label name.
 
 **How to tell.** Creation returns `400` for `/config/token_url` with `... token_url
 host must be a DNS name with at least two labels, not an IP address or a
-localhost name.` A deployment that binds such a source fails with the same
+localhost or localdomain name.` A deployment that binds such a source fails with the same
 message, or with `... token_url port must be 1 to 65535.` for a stored port `0`. `GET` on the source shows
 its stored `config.token_url`.
 

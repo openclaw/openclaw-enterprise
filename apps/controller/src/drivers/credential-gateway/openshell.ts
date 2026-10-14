@@ -152,10 +152,10 @@ const LOOPBACK_LAST_LABELS = new Set(["localhost", "localdomain", "localdomain4"
  * client secret and refresh token there from its own network position, so the parsed hostname
  * follows the protected host's DNS-name rule (no IP address in any spelling the URL parser
  * accepts) and is not a `localhost` name (finding 1348). The gateway resolves it through its
- * Pod's `/etc/hosts` first, where the kubelet maps single-label names (`ip6-localhost`,
- * `ip6-loopback`, the Pod's own hostname) to the Pod itself, so a single-label host is refused
- * too; in-cluster issuers keep their Service names (`keycloak.idp.svc.cluster.local`)
- * (finding 1354).
+ * Pod's `/etc/hosts` first, whose loopback, link-local and own-hostname aliases are single-label
+ * names (`ip6-localhost`, `ip6-allnodes`, the Pod's hostname) or end in `localdomain`, so those
+ * shapes are refused too; in-cluster issuers keep their Service names
+ * (`keycloak.idp.svc.cluster.local`) (finding 1354).
  */
 function tokenUrlHostAllowed(tokenUrl: string): boolean {
   if (!URL.canParse(tokenUrl)) {
@@ -167,7 +167,7 @@ function tokenUrlHostAllowed(tokenUrl: string): boolean {
 }
 
 function tokenUrlHostMessage(type: string): string {
-  return `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost name.`;
+  return `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost or localdomain name.`;
 }
 
 /** Like the protected endpoint's port: 0 names no endpoint. */

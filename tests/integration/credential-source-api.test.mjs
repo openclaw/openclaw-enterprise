@@ -504,7 +504,7 @@ test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or 
       );
       assert.equal(
         response.body.error.message,
-        `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost name.`,
+        `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost or localdomain name.`,
         token_url,
       );
     }
