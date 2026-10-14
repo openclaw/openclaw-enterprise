@@ -79,8 +79,9 @@ binary keeps access; to cut it at once, withdraw the source or delete it. During
 a controller rollout, replicas with different lists may rewrite a profile in
 turn; the last write wins. Removing `toolBinaries` entirely blocks
 registrations, updates, deployments, and repairs of `bearer-token` sources,
-because OpenShell treats an empty binary list as any binary. Those requests
-then answer `409 RESOURCE_CONFLICT` naming the fix. Existing providers
+because OpenShell treats an empty binary list as any binary. Registration,
+update, and deployment requests then answer `409 RESOURCE_CONFLICT` naming the
+fix. Existing providers
 and profiles stay until you withdraw or delete them; status and deletion keep
 working.
 
@@ -115,11 +116,11 @@ reads or persistence:
 - `host` is an exact lowercase DNS name, not an IP address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
 - `path` is an absolute path pattern and defaults to `/**`.
-- `env_var` names the Sandbox variable holding the placeholder. It is upper
-  case and cannot be `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, or
-  `LANG`, or start with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
+- `env_var` is the upper-case Sandbox variable holding the placeholder, not
+  `OPENAI_API_KEY`, `PATH`, `HOME`, `USER`, `SHELL`, `LANG`, or a name starting
+  with `CODEX_`, `OCE_`, `OPENCLAW_`, or `OPENSHELL_`.
 - `token_url` is an `https` URL without credentials, query, or fragment. Its
-  parsed host follows the `host` rule, has a dot, and is not a `localhost` or
+  host follows the `host` rule, has a dot, and is not a `localhost` or
   `localdomain` name.
 - `client_id` is 1 to 256 visible characters; `scope` is space-separated
   OAuth2 scopes.
@@ -138,7 +139,8 @@ Registration rejects provider types outside this catalog.
 OpenShell's gateway mints the OAuth2 types' access tokens itself and replaces
 each one before it expires. The Sandbox's placeholder never changes, so a
 running Harness presents the new token without a restart. The bundled
-Credential Refresh Driver sets up refresh on this gateway's provider:
+Credential Refresh Driver sets up that refresh on the provider this gateway
+registers:
 
 - **Profile.** The source's profile declares the refresh strategy,
   `token_url`, and refresh-material names on its `access_token` credential.
@@ -154,12 +156,13 @@ Credential Refresh Driver sets up refresh on this gateway's provider:
   `/etc/ssl/certs/ca-certificates.crt` and trusts only that file. For a private
   CA, put the public roots and that CA in one ConfigMap bundle and mount it over
   that path with the OpenShell chart's `server.extraVolumes` and
-  `server.extraVolumeMounts`; other files in `/etc/ssl/certs` are ignored.
+  `server.extraVolumeMounts`. A file added elsewhere in `/etc/ssl/certs` is
+  ignored.
 - **Request IDs.** Configure and rotate calls carry a UUID that OpenShell
   replays for 24 hours, so a retried call is not applied twice.
 
 The supervisor picks up re-minted tokens on its provider poll (every 10 seconds
-by default). Reconfiguring refresh material
+by default); running processes then present them. Reconfiguring refresh material
 starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeholders.
 
 ## How sources map to OpenShell
