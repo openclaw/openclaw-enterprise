@@ -47,26 +47,72 @@ function databaseDropTimeoutMs() {
 
 function execFile(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
+    const processGroup = process.platform !== "win32";
     const child = spawn(command, args, {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
       stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
+      // Only this command and descendants that stay in its group receive signals.
+      detached: processGroup,
     });
+    let signalError;
+    let killSent = false;
+    const signalCommand = (signal) => {
+      if (signal === "SIGKILL") {
+        killSent = true;
+      }
+      try {
+        if (processGroup && child.pid > 1) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          signalError ??= error;
+        }
+      }
+    };
+    // Detached groups no longer receive the caller's terminal signals.
+    const forwarders = processGroup
+      ? ["SIGINT", "SIGTERM"].map((signal) => [
+          signal,
+          () => {
+            stopForwardingSignals();
+            signalCommand(signal);
+            process.kill(process.pid, signal);
+          },
+        ])
+      : [];
+    function stopForwardingSignals() {
+      for (const [signal, handler] of forwarders) {
+        process.removeListener(signal, handler);
+      }
+    }
+    for (const [signal, handler] of forwarders) {
+      process.once(signal, handler);
+    }
     const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
+    const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
     let timedOut = false;
+    let settled = false;
     let killTimer;
+    let abandonTimer;
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(
-        () => child.kill("SIGKILL"),
-        positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000),
-      );
+      signalCommand("SIGTERM");
+      killTimer = setTimeout(() => {
+        signalCommand("SIGKILL");
+        // A descendant can escape the group while retaining these pipes. Bound
+        // their lifetime without signalling processes outside our owned group.
+        abandonTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish(child.exitCode, child.signalCode);
+        }, graceMs);
+      }, graceMs);
     }, timeoutMs);
-    const settle = () => {
-      clearTimeout(timeoutTimer);
-      clearTimeout(killTimer);
-    };
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -75,22 +121,48 @@ function execFile(command, args, options = {}) {
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", (error) => {
-      settle();
-      reject(error);
-    });
-    // "exit", not "close": a descendant holding the output pipes cannot delay the result.
-    child.on("exit", (code, signal) => {
-      settle();
+    function finish(code, signal, spawnError) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      stopForwardingSignals();
+      clearTimeout(timeoutTimer);
+      clearTimeout(killTimer);
+      clearTimeout(abandonTimer);
+      // Close can precede the grace timer if surviving descendants closed their
+      // output. They still belong to the timed-out command and must be stopped.
+      if (timedOut && !killSent) {
+        signalCommand("SIGKILL");
+      }
+      let error = spawnError;
       if (timedOut) {
-        reject(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`));
-      } else if (code === 0) {
-        resolvePromise({ stdout, stderr });
-      } else {
+        error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
+      } else if (!error && code !== 0) {
         const message = stderr.trim() || stdout.trim() || signal || String(code);
-        reject(new Error(`${command} ${args.join(" ")} failed: ${message}`));
+        error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
+      }
+      if (error) {
+        Object.assign(error, { stdout, stderr });
+        if (signalError) {
+          error.cause = signalError;
+        }
+        reject(error);
+      } else {
+        resolvePromise({ stdout, stderr });
+      }
+    }
+    child.on("error", (error) => {
+      if (child.pid === undefined) {
+        finish(null, null, error);
+      } else {
+        // A failed kill is not a failed spawn: keep the pipe-abandonment bound.
+        signalError ??= error;
       }
     });
+    // Exit precedes pipe drain. Keep the deadline and escalation alive until
+    // close, even when the wrapper has exited but its descendants have not.
+    child.on("close", (code, signal) => finish(code, signal));
   });
 }
 
