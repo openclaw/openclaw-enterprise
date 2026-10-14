@@ -1044,7 +1044,7 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
   }
 });
 
-test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async () => {
+test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
   // Findings 1298 and 1299: these saved and failed only at deployment, which named no setting
   // for a fallback. The rules depend only on the Configuration, so no Agent is consulted.
   const configurationDriver = createConfigurationBackend();
@@ -1105,93 +1105,107 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       fallback,
     ],
   ];
+  // One subtest per refusal, so each stands on its own.
   for (const [values, message] of offProvider) {
     const label = JSON.stringify(values);
-    const rejected = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values },
+    await t.test(message, async () => {
+      const rejected = await request(context.app, "POST", collection, {
+        body: { kind: "agent", values },
+      });
+      assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+      assert.equal(rejected.body.error.message, message, label);
+      // The console's Save Configuration sends this PATCH.
+      const replaced = await request(context.app, "PATCH", item, { body: { values } });
+      assert.equal(replaced.status, 400, `${label}: ${JSON.stringify(replaced.body)}`);
+      assert.equal(replaced.body.error.message, message, label);
+      assert.ok(!replaced.body.error.message.includes("claude-opus-4"), label);
+      const unchanged = await request(context.app, "GET", item);
+      assert.deepEqual(unchanged.body.data, created.body.data, label);
     });
-    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
-    assert.equal(rejected.body.error.message, message, label);
-    // The console's Save Configuration sends this PATCH.
-    const replaced = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(replaced.status, 400, `${label}: ${JSON.stringify(replaced.body)}`);
-    assert.equal(replaced.body.error.message, message, label);
-    assert.ok(!replaced.body.error.message.includes("claude-opus-4"), label);
-    const unchanged = await request(context.app, "GET", item);
-    assert.deepEqual(unchanged.body.data, created.body.data, label);
   }
 
   // A row stored before the fallback rule still reads; Agent save and deployment name it.
-  await writePastOcc(configurationDriver, configurationId, offProvider.at(-1)[0]);
-  const agentSaved = await request(context.app, "PATCH", agentPath, { body: { configurationId } });
-  assert.equal(agentSaved.status, 400, JSON.stringify(agentSaved.body));
-  assert.equal(agentSaved.body.error.message, fallback);
-  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.message, fallback);
-  await writePastOcc(configurationDriver, configurationId, valid);
+  await t.test("a stored fallback on another provider", async () => {
+    await writePastOcc(configurationDriver, configurationId, offProvider.at(-1)[0]);
+    const agentSaved = await request(context.app, "PATCH", agentPath, {
+      body: { configurationId },
+    });
+    assert.equal(agentSaved.status, 400, JSON.stringify(agentSaved.body));
+    assert.equal(agentSaved.body.error.message, fallback);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+    assert.equal(deployed.body.error.message, fallback);
+    await writePastOcc(configurationDriver, configurationId, valid);
+  });
 
   // A Configuration whose model policy selects the Codex Harness runs as Dedicated Codex, which
   // takes no provider apiKey at all.
-  const codexValues = {
-    agents: {
-      defaults: {
-        model: "codex/gpt-5",
-        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+  await t.test("a provider apiKey on Dedicated Codex", async () => {
+    const codexValues = {
+      agents: {
+        defaults: {
+          model: "codex/gpt-5",
+          models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+        },
       },
-    },
-  };
-  const codex = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: codexValues },
+    };
+    const codex = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values: codexValues },
+    });
+    assert.equal(codex.status, 201, JSON.stringify(codex.body));
+    const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
+      body: {
+        values: {
+          ...codexValues,
+          models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } },
+        },
+      },
+    });
+    assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
+    assert.equal(
+      codexKey.body.error.message,
+      setting(
+        "models.providers.codex.apiKey",
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+      ),
+    );
   });
-  assert.equal(codex.status, 201, JSON.stringify(codex.body));
-  const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
-    body: {
-      values: { ...codexValues, models: { providers: { codex: { apiKey: "${OPENAI_API_KEY}" } } } },
-    },
-  });
-  assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
-  assert.equal(
-    codexKey.body.error.message,
-    setting(
-      "models.providers.codex.apiKey",
-      "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-    ),
-  );
 
   // Oracle: a caller who may update Configurations but not read Agents gets the same answer for
   // the Configuration an Agent uses as for one no Agent uses, and nothing names the Agent.
-  const unused = await request(context.app, "POST", collection, {
-    body: { kind: "agent", values: valid },
-  });
-  assert.equal(unused.status, 201, JSON.stringify(unused.body));
-  const role = context.roles.find(({ id }) => id === "role-configuration-integration");
-  const answers = async (values) => {
-    const responses = [];
-    for (const path of [item, `${collection}/${unused.body.data.id}`]) {
-      const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
-      responses.push({ status, error: body.error });
+  await t.test("a caller who cannot read the Agent learns nothing about it", async () => {
+    const unused = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values: valid },
+    });
+    assert.equal(unused.status, 201, JSON.stringify(unused.body));
+    const role = context.roles.find(({ id }) => id === "role-configuration-integration");
+    const answers = async (values) => {
+      const responses = [];
+      for (const path of [item, `${collection}/${unused.body.data.id}`]) {
+        const { status, body } = await request(context.app, "PATCH", path, { body: { values } });
+        responses.push({ status, error: body.error });
+      }
+      assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
+      return responses[0];
+    };
+    role.permissions = [
+      { action: "read", resourceKind: "configuration" },
+      { action: "update", resourceKind: "configuration" },
+    ];
+    const memberAgentRead = await request(context.app, "GET", agentPath);
+    assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
+    const refused = await answers(offProvider[1][0]);
+    assert.equal(refused.status, 400);
+    assert.equal(refused.error.message, offProvider[1][1]);
+    assert.equal((await answers(valid)).status, 200);
+    // A zero-grant member gets the uniform 403, whatever the values.
+    role.permissions = [];
+    for (const values of [valid, offProvider[1][0]]) {
+      const denied = await answers(values);
+      assert.equal(denied.status, 403);
+      assert.equal(denied.error.code, "FORBIDDEN");
     }
-    assert.deepEqual(responses[0], responses[1], JSON.stringify(values));
-    return responses[0];
-  };
-  role.permissions = [
-    { action: "read", resourceKind: "configuration" },
-    { action: "update", resourceKind: "configuration" },
-  ];
-  const memberAgentRead = await request(context.app, "GET", agentPath);
-  assert.equal(memberAgentRead.status, 403, JSON.stringify(memberAgentRead.body));
-  const refused = await answers(offProvider[1][0]);
-  assert.equal(refused.status, 400);
-  assert.equal(refused.error.message, offProvider[1][1]);
-  assert.equal((await answers(valid)).status, 200);
-  // A zero-grant member gets the uniform 403, whatever the values.
-  role.permissions = [];
-  for (const values of [valid, offProvider[1][0]]) {
-    const denied = await answers(values);
-    assert.equal(denied.status, 403);
-    assert.equal(denied.error.code, "FORBIDDEN");
-  }
+  });
 });
 
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
