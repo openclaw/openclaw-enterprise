@@ -5,6 +5,7 @@ main can refuse or break an Installation that an older build created. Each
 change like that gets an entry here: what breaks, who is affected, how to tell,
 and the steps. Before an upgrade, read every entry dated after the source commit
 you run now, here, in the [earlier notices](breaking-changes-archive.md), in the
+[notices before 2026-10-12](breaking-changes-before-2026-10-12.md), in the
 [notices before 2026-10-11](breaking-changes-before-2026-10-11.md) and in the
 [notices before 2026-10-10](breaking-changes-before-2026-10-10.md),
 then follow the [upgrade checklist](upgrade-checklist.md) and
@@ -22,18 +23,25 @@ fallbacks, Agent entries, `subagents.model` and the other `*Model` settings,
 `apiKey` on another `models.providers` entry. Dedicated Codex refuses every
 `apiKey` and unqualified `models` policy keys. Every Compute refuses
 another-provider fallbacks at save. A Preset variable's provider is checked at
-launch; a number or boolean model variable is refused.
+launch; a number or boolean model variable is refused. On every Compute,
+Configuration and Preset saves and deployment also refuse a literal key in
+`memory.search.remote` (also per Agent), `tools.media` requests, speech and Talk
+provider `apiKey`s, web fetch and OpenTelemetry credential headers, skill
+`apiKey`s and `cron.webhookToken`.
 
 **Who is affected.** Configurations and Presets that select a second provider
-or give it an `apiKey`, or set any `apiKey` for Dedicated Codex.
+or give it an `apiKey`, set any `apiKey` for Dedicated Codex, or hold a
+literal key in one of those slots.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
 binding`, `... must use the primary model's provider`, `... must be
-provider/model references`, or `models.providers.<name>.apiKey must be unset`.
+provider/model references`, `models.providers.<name>.apiKey must be unset`, or
+`... holds a credential value inline, where a reference is required`.
 
 **Steps.** Use only the primary model's provider, remove the other provider's
-`apiKey`, then save and deploy again.
+`apiKey`, make each literal key a `${NAME}` reference or a SecretRef, then save
+and deploy again.
 
 ## 2026-10-14: observability URLs must not hide another host
 
@@ -309,19 +317,3 @@ disabled execution cluster is not checked.
 
 **Steps.** Replace `0.0.0.0/0` or `::/0` with the execution API addresses you
 mean to allow. Rewrite `010.44.0.2/32` as `10.44.0.2/32`. Upgrade again.
-
-## 2026-10-13: OpenShell gateway readiness requires timeoutMs
-
-**What breaks.** Controller startup fails when `gateway.readiness` is set and
-`timeoutMs` is omitted. That configuration starts today. The field must be a
-positive safe integer. Omitted readiness is unchanged.
-
-**Who is affected.** Installations, and the real k3d helper, that set
-`gateway.readiness` with only `serviceName` and `podSelector`.
-
-**How to tell.** Startup logs `startup-error` with code `STARTUP_FAILED`. The
-Installation loader reports `OpenShell gateway readiness timeout must be a
-positive safe integer.` The message does not name `timeoutMs`.
-
-**Steps.** Set `gateway.readiness.timeoutMs` to a positive millisecond window.
-The real helper uses 120000. Then start again.
