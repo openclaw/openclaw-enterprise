@@ -195,10 +195,10 @@ For custom endpoints, `gatewayConfigurationDocument` calls
 to clone the admitted document. It qualifies every selection the Harness model rule
 checks (`configuration-rules.ts:rewriteModelSelections`), primary/fallback objects and
 catalog IDs, then drops an `openai` source's provider block. Selections enter the
-projected catalog; aliases and omitted selectors retain their meaning. Full declared refs preserve native ID
-namespaces, including `codex/`. OpenClaw separates the explicit provider for thread
-start, resume, and turns; the Harness probe keeps the native ID. The admitted
-Configuration remains unchanged.
+projected catalog; aliases and omitted selectors retain their meaning. Full declared
+refs preserve native ID namespaces, including `codex/`. OpenClaw separates the
+explicit provider for thread start, resume, and turns; the Harness probe keeps the
+native ID. The admitted Configuration remains unchanged.
 
 Kubelet probes private `/readyz` on runtime-backed workloads. Gates remain:
 Gateway plugin/native status, Codex plugin state and authenticated app-server

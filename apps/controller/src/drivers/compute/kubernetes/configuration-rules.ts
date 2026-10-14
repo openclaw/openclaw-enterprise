@@ -198,11 +198,14 @@ function modelSelections(
   rewrite?: ModelSelectionRewrite,
 ): ModelSelection[] {
   const selections: ModelSelection[] = [];
-  const visit = (selection: ModelSelection): unknown => {
+  // The reference that replaces a string one `rewrite` changes; undefined keeps the value.
+  const visit = (selection: ModelSelection): string | undefined => {
     selections.push(selection);
-    return typeof selection.reference === "string" && rewrite !== undefined
-      ? rewrite(selection.reference, selection.policy === true)
-      : selection.reference;
+    if (rewrite === undefined || typeof selection.reference !== "string") {
+      return undefined;
+    }
+    const next = rewrite(selection.reference, selection.policy === true);
+    return next === selection.reference ? undefined : next;
   };
   const add = (setting: string, value: unknown, assign: Assign): void => {
     if (value === undefined || value === null) {
@@ -211,24 +214,26 @@ function modelSelections(
     const selection = asRecord(value);
     if (typeof value === "string" || selection === undefined) {
       const next = visit({ setting, reference: value });
-      if (next !== value) {
+      if (next !== undefined) {
         assign(next);
       }
       return;
     }
     if (selection.primary !== undefined) {
       const next = visit({ setting: `${setting}.primary`, reference: selection.primary });
-      if (next !== selection.primary) {
+      if (next !== undefined) {
         selection.primary = next;
       }
     }
     const fallbacks = selection.fallbacks;
     if (Array.isArray(fallbacks)) {
       const next = fallbacks.map((reference: unknown) =>
-        reference === undefined ? reference : visit({ setting: `${setting}.fallbacks`, reference }),
+        reference === undefined ? undefined : visit({ setting: `${setting}.fallbacks`, reference }),
       );
-      if (next.some((reference, index) => reference !== fallbacks[index])) {
-        selection.fallbacks = next;
+      if (next.some((reference) => reference !== undefined)) {
+        selection.fallbacks = fallbacks.map(
+          (reference: unknown, index) => next[index] ?? reference,
+        );
       }
     } else if (fallbacks !== undefined) {
       // Fallbacks that are not a list are yielded as null: no list item is a reference.
@@ -270,9 +275,9 @@ function modelSelections(
     const next = keys.map((reference) =>
       visit({ setting: `${path}.models`, reference, policy: true }),
     );
-    if (next.some((reference, index) => reference !== keys[index])) {
+    if (next.some((reference) => reference !== undefined)) {
       scope.models = Object.fromEntries(
-        keys.map((key, index) => [String(next[index]), policies[key]]),
+        keys.map((key, index) => [next[index] ?? key, policies[key]]),
       );
     }
   }
@@ -293,9 +298,12 @@ function modelSelections(
   for (const [channel, value] of Object.entries(byChannel)) {
     const path = keyedSettingPath("channels.modelByChannel", channel);
     const models = asRecord(value);
-    for (const [key, model] of Object.entries(models ?? {})) {
+    if (models === undefined) {
+      continue;
+    }
+    for (const [key, model] of Object.entries(models)) {
       add(path, model, (next) => {
-        (models as Record<string, unknown>)[key] = next;
+        models[key] = next;
       });
     }
   }

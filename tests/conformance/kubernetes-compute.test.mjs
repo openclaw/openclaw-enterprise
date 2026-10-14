@@ -1523,6 +1523,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
     const nonPrimary = {
       imageModel: { primary: ref("image"), fallbacks: [ref("image-fallback"), "small"] },
       pdfModel: ref("pdf"),
+      utilityModel: ref("utility"),
       heartbeat: { model: ref("small") },
       compaction: { model: ref("small"), memoryFlush: { model: ref("flush") } },
       mediaModels: { image: ref("media-image") },
@@ -1539,9 +1540,16 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
             models: { [ref("small")]: { alias: "small" } },
             ...structuredClone(nonPrimary),
           },
-          entries: { main: { heartbeat: { model: ref("entry-heartbeat") } } },
+          entries: {
+            main: {
+              heartbeat: { model: ref("entry-heartbeat") },
+              models: { [ref("entry-policy")]: {}, [ref("small")]: { alias: "entry-small" } },
+            },
+          },
         },
         tools: { exec: { reviewer: { model: ref("reviewer") } } },
+        hooks: { gmail: { model: ref("gmail") }, mappings: [{ model: ref("hook") }] },
+        channels: { modelByChannel: { slack: { C1: ref("channel") } } },
         models: {
           providers: {
             [sourceProvider]: {
@@ -1573,6 +1581,7 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       fallbacks: [qualified("image-fallback"), "small"],
     });
     assert.equal(defaults.pdfModel, qualified("pdf"));
+    assert.equal(defaults.utilityModel, qualified("utility"));
     assert.deepEqual(defaults.heartbeat, { model: qualified("small") });
     assert.deepEqual(defaults.compaction, {
       model: qualified("small"),
@@ -1584,7 +1593,14 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
     assert.deepEqual(rendered.agents.entries.main.heartbeat, {
       model: qualified("entry-heartbeat"),
     });
+    assert.deepEqual(rendered.agents.entries.main.models, {
+      [qualified("entry-policy")]: {},
+      [qualified("small")]: { alias: "entry-small" },
+    });
     assert.equal(rendered.tools.exec.reviewer.model, qualified("reviewer"));
+    assert.equal(rendered.hooks.gmail.model, qualified("gmail"));
+    assert.equal(rendered.hooks.mappings[0].model, qualified("hook"));
+    assert.deepEqual(rendered.channels.modelByChannel, { slack: { C1: qualified("channel") } });
     assert.deepEqual(Object.keys(rendered.models.providers), ["codex"]);
     const byModelId = (left, right) => left.id.localeCompare(right.id);
     assert.deepEqual(
@@ -1592,7 +1608,18 @@ test("custom Codex endpoints qualify every non-primary model selection before dr
       [
         { id: "openai-compatible/gpt-5", name: "Primary model" },
         { id: "openai-compatible/small", name: "Small model", contextWindow: 16000 },
-        ...["image", "image-fallback", "pdf", "flush", "media-image", "summary"].map((id) => ({
+        ...[
+          "image",
+          "image-fallback",
+          "pdf",
+          "utility",
+          "flush",
+          "media-image",
+          "summary",
+          "gmail",
+          "hook",
+          "channel",
+        ].map((id) => ({
           id: `openai-compatible/${id}`,
           name: id,
         })),
