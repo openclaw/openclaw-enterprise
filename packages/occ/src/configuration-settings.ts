@@ -129,8 +129,8 @@ export function validateConfigurationSettings(
 }
 
 /**
- * A literal gateway.auth.password. Also checked when a Preset is saved, by the Configuration
- * Driver's credential rules, so it is refused wherever it is written.
+ * A literal gateway.auth.password. The Configuration Driver's credential rules run it again on
+ * every write and at deployment, which refuses a stored document that predates the rule.
  */
 export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocument): void {
   const password = asRecord(asRecord(values.gateway)?.auth)?.password;

@@ -4901,3 +4901,48 @@ test("A stored Configuration with request credentials an older release accepted 
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.equal(JSON.stringify(context.auditSink.events).includes(sentinel), false);
 });
+
+test("A stored Configuration with a literal Gateway password an older release accepted reads and does not deploy", async (t) => {
+  // Deployment does not run the save rules (validateConfigurationSettings); the Configuration
+  // Driver's credential rules refuse the literal there, with the save message, before any
+  // revision exists. Without that check, Kubernetes Compute answers with a gateway.auth.mode
+  // conflict and other Compute Drivers get further still.
+  for (const [label, computeDriver] of [
+    [
+      "Kubernetes Compute",
+      kubernetesRules("compute-stored-gateway-password", ...configurationRules),
+    ],
+    ["ready Compute", createReadyComputeDriver("compute-stored-gateway-password-ready")],
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), "occ-stored-gateway-password-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const configurationDriver = new FilesystemConfigurationDriver(root);
+    const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+    const { configurationId, item, agentPath } = await deployableAgent(context, namespace, {
+      values: runtimeSelected,
+      name: "Stored Gateway password consumer",
+      secretName: "stored-gateway-password-key",
+    });
+    const path = join(root, namespace.id, `${configurationId}.json`);
+    const sentinel = `synthetic-gateway-password-${randomUUID()}`;
+    const stale = {
+      ...runtimeSelected,
+      gateway: { auth: { mode: "password", password: sentinel } },
+    };
+    const current = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(path, JSON.stringify({ ...current, values: stale }));
+
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(
+      deployed.body.error.message,
+      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+      label,
+    );
+    assert.equal(JSON.stringify(deployed.body).includes(sentinel), false, label);
+    const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, [], label);
+  }
+});
