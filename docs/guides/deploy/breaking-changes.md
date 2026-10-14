@@ -65,6 +65,21 @@ contain a tab or newline, or a backslash before the query`. Startup logs
 **Steps.** Write the host you mean, with no tab, newline, or backslash before the
 query, and upgrade. _untested_ against a live Installation.
 
+## 2026-10-14: proxy and MCP URLs must name a host
+
+**What breaks.** Configuration and Preset saves refuse a proxy, channel proxy,
+MCP server, or plugin URL whose authority is empty (`https:///v1`) or whose
+`//` is missing (`https:/v1`).
+
+**Who is affected.** Configurations and Presets that save one of those
+spellings in a proxy, channel, MCP, or plugin URL.
+
+**How to tell.** The save answers `400` naming the field: `has an empty
+authority or a missing //, which parses as a different host.`
+
+**Steps.** Write an absolute http or https URL with the host you mean, and
+save again.
+
 ## 2026-10-14: OpenShell gateway IPv4 hosts must be four decimal octets
 
 **What breaks.** Startup and both gateway clients refuse an OpenShell

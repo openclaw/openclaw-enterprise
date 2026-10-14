@@ -26,6 +26,11 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 const urlCredentialMessage = (path: string): string =>
   `Configuration field ${path} carries a user name or password in the URL. Remove it, or make the whole URL a \${NAME} reference.`;
 
+// `https:///v1` and `https:/v1` both parse as `https://v1/`. Model baseUrl already refuses
+// that spelling; the other URL fields checked here do not.
+const urlAuthorityMessage = (path: string): string =>
+  `Configuration field ${path} has an empty authority or a missing //, which parses as a different host. Write an absolute http:// or https:// URL with the host you mean, and save again.`;
+
 // Proxy environment variables, in any case (`HTTPS_PROXY`, `all_proxy`, `npm_config_proxy`).
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
@@ -361,6 +366,20 @@ export function validateModelCredentialReferences(
       (withScheme !== undefined && urlHoldsUserinfo(value, withScheme))
     ) {
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
+    // baseUrl keeps the model-provider message. These fields stored the rewritten host.
+    if (path.at(-1) !== "baseUrl") {
+      const written = head.replaceAll(/[\t\n\r]/g, "");
+      // `https:{{ vars.endpoint }}` and `https:/{{ vars.rest }}` are not finished URLs: the
+      // variable can supply `//host` or `/host`. The filled Configuration is checked again.
+      // A literal `https:///` already has an empty authority.
+      const schemeAwaitingVariable = tail.length > 0 && /^[\0- ]*https?:[/\\]?$/i.test(written);
+      if (
+        !schemeAwaitingVariable &&
+        (/^[\0- ]*https?:[/\\]{3,}/i.test(written) || /^[\0- ]*https?:(?![/\\]{2})/i.test(written))
+      ) {
+        throw new ModelCredentialValueError(pointer(...path), urlAuthorityMessage);
+      }
     }
   };
   // A proxy URL in part of an environment value, `text`, where `\0` stands for each unfilled
