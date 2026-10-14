@@ -4934,14 +4934,19 @@ test("A stored Configuration with a literal Gateway password an older release ac
 
     const read = await request(context.app, "GET", item);
     assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
+    assert.deepEqual(read.body.data.values, stale, label);
+    // Saving it unchanged and deploying it are refused with the same message.
+    const message =
+      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.";
+    const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
+    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
+    assert.equal(resaved.body.error.message, message, label);
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
     assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
-    assert.equal(
-      deployed.body.error.message,
-      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
-      label,
-    );
-    assert.equal(JSON.stringify(deployed.body).includes(sentinel), false, label);
+    assert.equal(deployed.body.error.message, message, label);
+    for (const body of [resaved.body, deployed.body]) {
+      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
+    }
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
   }

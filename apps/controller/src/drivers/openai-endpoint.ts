@@ -81,10 +81,10 @@ export function normalizeOpenAiBaseUrl(value: string): string | undefined {
 }
 
 /**
- * True when Node would store a different IPv4 address than the one written. The parser always
- * serializes an IPv4 host as four decimal octets with no leading zeros, so a written host that
- * differs from the parsed one (leading zeros, octal, hex, fewer parts, a trailing dot, escapes)
- * is exactly the rewrite.
+ * True when Node would store a different IPv4 address than the one written. `isIP` accepts only
+ * four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every IPv4
+ * host that way, so a written host that differs from the parsed one (leading zeros, octal, hex,
+ * fewer parts, a trailing dot, escapes) is exactly the rewrite.
  */
 export function openAiBaseUrlRewritesIpv4(value: string): boolean {
   if (openAiBaseUrlSpellingProblem(value) !== undefined) {
