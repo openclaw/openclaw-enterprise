@@ -3553,7 +3553,8 @@ test("Configuration save refuses a document too large to store before its conten
     ...backend,
     validate: (configuration) => kubernetes.validate(configuration),
     validateSize: (values) => kubernetes.validateSize(values),
-    // Agent provisioning needs exact create and inspect; nothing here is stored.
+    // Agent provisioning requires exact create and inspect before it reads the plan; the size
+    // refusal comes first, so neither runs.
     createExact: (configuration) => backend.create(configuration),
     inspectExact: async () => undefined,
   };
@@ -3618,6 +3619,7 @@ test("Configuration save refuses a document too large to store before its conten
     name: "oversized-agent-key",
     value: "synthetic-configuration-key",
   });
+  // Called directly: the provision route's request body limit refuses a 1 MiB document first.
   await assert.rejects(
     context.controller.provisionAgent(context.principal.id, {
       namespaceId: namespace.id,
@@ -4557,8 +4559,8 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       `${inline("/gateway/auth/password")} Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.`,
     ]),
   ];
-  for (const [values, message] of refused) {
-    await t.test(`refuses ${message.split(" ")[2]}`, async () => {
+  for (const [index, [values, message]] of refused.entries()) {
+    await t.test(`refuses ${index}: ${message.split(" ")[2]}`, async () => {
       for (const [path, body] of [
         [configurations, { kind: "agent", values }],
         [presets, { name: "Refused", template: { configuration: { values } } }],
