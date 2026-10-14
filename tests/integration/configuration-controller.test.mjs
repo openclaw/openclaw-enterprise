@@ -4684,6 +4684,9 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     `Configuration field /models/providers/gateway/${field} must start with https:// or http:// (the // after the scheme is missing).`;
   const api =
     "Configuration field /models/providers/gateway/api must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.";
+  // Finding 1346: a numeric or 0x last label makes the URL parser read the host as IPv4.
+  const numericHost = (field = "baseUrl") =>
+    `${baseUrl(field)} A numeric or 0x last label parses as IPv4; use four decimal octets from 0 to 255 without leading zeros.`;
 
   // An empty written authority, however it is spelled, is refused on Configuration create, and
   // so is one or no slash after the scheme (finding 1259), which the URL parser accepts. Only the
@@ -4717,6 +4720,14 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ baseUrl: "https:${MODEL_SLASHES:-//}models.example.test/v1" }, slashes()],
     [{ baseUrl: "${MODEL_SCHEME:-https://}${MODEL_SLASH:-/}models.example.test/v1" }, baseUrl()],
     [{ baseUrl: "${MODEL_SCHEME:-https:/}${MODEL_PATH:-/models.example.test}/v1" }, baseUrl()],
+    // A host the URL parser reads as IPv4 and refuses names the last label (finding 1346).
+    [{ baseUrl: "https://api.123/v1" }, numericHost()],
+    [{ baseUrl: "https://api.0x10/v1" }, numericHost()],
+    [{ baseUrl: "HTTPS://999.1.2.3:8443" }, numericHost()],
+    [{ models: [{ id: "m", baseUrl: "https://1.2.3.4.5/v1" }] }, numericHost("models/0/baseUrl")],
+    [{ baseUrl: "https://0.0.0.08./v1" }, numericHost()],
+    // A URL that fails for another reason too keeps the general message.
+    [{ baseUrl: "https://api.123:99999/v1" }, baseUrl()],
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway(settings) },
@@ -4738,6 +4749,12 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ h: { type: "string" } }, { baseUrl: "HTTPS:/{{ vars.h }}/v1" }, slashes()],
     [{ n: { type: "number" } }, { baseUrl: "{{ vars.n }}" }, baseUrl()],
     [{ b: { type: "boolean" } }, { baseUrl: "{{ vars.b }}" }, baseUrl()],
+    [{ p: { type: "string" } }, { baseUrl: "https://api.123/{{ vars.p }}" }, numericHost()],
+    [
+      {},
+      { models: [{ id: "m", baseUrl: "https://api.0x10/v1" }] },
+      numericHost("models/0/baseUrl"),
+    ],
     [{ n: { type: "number" } }, { api: "{{ vars.n }}" }, api],
     [
       { b: { type: "boolean" } },

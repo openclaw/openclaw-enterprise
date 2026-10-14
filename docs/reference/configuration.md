@@ -149,7 +149,9 @@ runtime (a `$${VAR}` escape is no reference), and a Preset `baseUrl` or `api`
 that waits on a variable without a default is checked once filled. At save, such
 a `baseUrl` needs a literal `http` or `https` scheme, or one a variable
 completes, and each variable stands for one host, port, IPv6 address or path
-token. The `400` names the field as a JSON pointer within `values`. They also refuse a `models` that is not a list and a `headers`
+token. The `400` names the field as a JSON pointer within `values`, and says
+when the host's numeric or `0x` last label makes the URL parser refuse it as
+IPv4. They also refuse a `models` that is not a list and a `headers`
 or `request.headers` name that is not a valid HTTP field name, naming the
 setting and the header; a Preset header name that waits on such a variable
 is checked once filled, on every Compute.

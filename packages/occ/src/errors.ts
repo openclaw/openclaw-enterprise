@@ -459,6 +459,9 @@ const modelProviderSettingMessages = {
   // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
   baseUrlSlashes: (path: string): string =>
     `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
+  // A host with a numeric or 0x last label, which the URL parser reads as IPv4 (finding 1346).
+  baseUrlNumericHost: (path: string): string =>
+    `Configuration field ${path} must be an absolute http or https URL. A numeric or 0x last label parses as IPv4; use four decimal octets from 0 to 255 without leading zeros.`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;
