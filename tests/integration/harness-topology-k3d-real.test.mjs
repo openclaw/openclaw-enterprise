@@ -42,6 +42,10 @@ test(
     timeout: 1_200_000,
   },
   async (context) => {
+    assert.ok(
+      process.env.OCC_TEST_OPENAI_MODEL?.trim(),
+      "the native outbound proof must explicitly select its authorized provider model",
+    );
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayOutbound: { mode: "restricted", hosts: ["example.com"] },
     });

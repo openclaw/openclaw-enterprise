@@ -46,7 +46,9 @@ Use the existing [production topology prerequisites](kubernetes.md) with a
 fresh controller image containing this change, the explicitly pinned stock native
 runtime, an enforcing owned k3d cluster, and a dedicated migrated `openclaw_k8s_*`
 database. Prepare ownership with the existing gateway-routing or k3d-model lane
-and allocate this file’s database through `prepare.mjs --file`. Then select:
+and allocate this file’s database through `prepare.mjs --file`. Set
+`OCC_TEST_OPENAI_MODEL` explicitly for the test process to an authorized model;
+preparation does not save that input in the file environment. Then select:
 
 ```sh
 OCC_TEST_GATEWAY_OUTBOUND_K3D=1 node --env-file=<prepared-file-env> --test \

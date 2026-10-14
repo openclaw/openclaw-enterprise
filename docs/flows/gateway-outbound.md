@@ -94,6 +94,10 @@ when current configuration refuses its admitted authority.
 ServiceAccount, Deployment, Service, proxy egress policy and Gateway peer policy.
 All resource names and ownership selectors include Agent and revision identity.
 
+`apps/controller/src/gateway/proxy-configuration.mjs:readProxyConfiguration` checks
+and reads the same opened regular file with a 1 MiB bound. Both proxy entrypoints
+use it; Kubernetes ConfigMap projection symlinks remain supported.
+
 The proxy Pod uses its separate network profile, has no Secret or API token, and
 receives public IPv4 TCP/443 plus DNS under exclusions. Its ingress admits only
 its owning Gateway revision. The Gateway receives no new direct public grant.
@@ -120,7 +124,7 @@ only OCC API clients; Agent selections never broaden it. See the
 
 `apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` defers a terminal
 active-version result as `GATEWAY_OUTBOUND_WITHDRAWAL_PENDING` before any removal.
-Work-bound audit evidence preserves the refusal. The next pass finishes only
+Work-bound audit evidence preserves the refusal and bounded failure details. The next pass finishes only
 `KubernetesComputeDriver.withdrawGatewayOutbound`, validating ownership and waiting
 for exact proxy Pods and tunnels to terminate. Restored permissions cannot repair
 the old route during this wait; a new authorized revision restores service.

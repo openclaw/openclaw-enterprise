@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -42,7 +42,12 @@ async function startProxy(
 ) {
   const directory = await mkdtemp(join(tmpdir(), "oce-outbound-proxy-"));
   const path = join(directory, "policy.json");
-  await writeFile(path, JSON.stringify(policy));
+  // Real ConfigMap volumes resolve the visible file through a versioned data
+  // symlink. Both production entrypoints must still boot with that projection.
+  await mkdir(join(directory, "..revision"));
+  await writeFile(join(directory, "..revision", "policy.json"), JSON.stringify(policy));
+  await symlink("..revision", join(directory, "..data"));
+  await symlink("..data/policy.json", path);
   const child = spawn(process.execPath, [launchPath], {
     env: {
       PATH: process.env.PATH,
@@ -294,20 +299,47 @@ test("invalid policy never creates a serving proxy", () => {
 });
 
 test(
-  "production CLI fails closed on a missing policy without revealing file contents",
+  "production CLIs refuse missing, oversized and malformed configuration without revealing contents",
   testOptions,
-  async () => {
-    const child = spawn(process.execPath, [entrypoint], {
-      env: { PATH: process.env.PATH },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    const [code] = await bound(once(child, "exit"), "invalid proxy exit");
-    assert.equal(code, 1);
-    assert.equal(stderr, '{"event":"outbound_proxy.startup_failed"}\n');
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-outbound-invalid-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const invalid = join(directory, "invalid.json");
+    const oversized = join(directory, "oversized.json");
+    const oversizedControlPlane = join(directory, "oversized-control-plane.json");
+    const marker = "private-configuration-marker";
+    await writeFile(invalid, marker);
+    // Valid JSON plus padding would otherwise be admitted: startup must enforce
+    // its byte bound before serving even a semantically valid large policy.
+    await writeFile(oversized, `${JSON.stringify(publicPolicy)}${" ".repeat(1024 * 1024)}`);
+    await writeFile(
+      oversizedControlPlane,
+      `${JSON.stringify({ denyCidrs: ["203.0.113.0/24"] })}${" ".repeat(1024 * 1024)}`,
+    );
+    for (const [launchPath, variable, event, oversizedPath] of [
+      [entrypoint, "OCC_OUTBOUND_PROXY_POLICY_PATH", "outbound_proxy.startup_failed", oversized],
+      [
+        controlPlaneEntrypoint,
+        "OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH",
+        "control_plane_outbound_proxy.startup_failed",
+        oversizedControlPlane,
+      ],
+    ]) {
+      for (const path of [undefined, invalid, oversizedPath, directory]) {
+        const child = spawn(process.execPath, [launchPath], {
+          env: { PATH: process.env.PATH, ...(path === undefined ? {} : { [variable]: path }) },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        let stderr = "";
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        const [code] = await bound(once(child, "exit"), "invalid proxy exit");
+        assert.equal(code, 1);
+        assert.equal(stderr, `${JSON.stringify({ event })}\n`);
+        assert.doesNotMatch(stderr, new RegExp(marker));
+      }
+    }
   },
 );
 

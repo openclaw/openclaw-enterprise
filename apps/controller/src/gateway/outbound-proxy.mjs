@@ -1,11 +1,10 @@
 import { lookup } from "node:dns/promises";
-import { readFile, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { readProxyConfiguration } from "./proxy-configuration.mjs";
 
 const DEFAULT_PORT = 3128;
-const MAX_POLICY_BYTES = 1024 * 1024;
 const MAX_CONNECTIONS = 256;
 const MAX_RESOLUTIONS = 64;
 const MAX_DNS_ANSWERS = 64;
@@ -440,18 +439,10 @@ export async function runOutboundProxy(policy) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const path = process.env.OCC_OUTBOUND_PROXY_POLICY_PATH;
-    if (
-      typeof path !== "string" ||
-      path.length === 0 ||
-      (await stat(path)).size > MAX_POLICY_BYTES
-    ) {
+    if (typeof path !== "string" || path.length === 0) {
       throw new Error("Outbound proxy policy file is required and bounded.");
     }
-    const bytes = await readFile(path);
-    if (bytes.length > MAX_POLICY_BYTES) {
-      throw new Error("Outbound proxy policy file exceeds its bound.");
-    }
-    await runOutboundProxy(JSON.parse(bytes.toString("utf8")));
+    await runOutboundProxy(await readProxyConfiguration(path));
   } catch {
     process.stderr.write(`${JSON.stringify({ event: "outbound_proxy.startup_failed" })}\n`);
     process.exitCode = 1;

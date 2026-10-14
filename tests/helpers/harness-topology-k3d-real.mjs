@@ -3616,13 +3616,38 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
       "--patch",
       JSON.stringify([{ op: "replace", path: "/rules", value: rules }]),
     );
+  let restoredRole;
+  const restoredTargets = new Set();
   const restoreBinding = async () => {
-    const restored = await topology.adminRequest("POST", `${namespacePath}/iam/access-bindings`, {
-      subjectKind: binding.subjectKind,
-      subjectId: binding.subjectId,
-      roleId: binding.roleId,
-    });
-    assert.equal(restored.status, 201, JSON.stringify(restored.error));
+    if (restoredRole === undefined) {
+      // Namespace-wide bootstrap Roles contain create grants; this API restores only exact resource authority.
+      const created = await topology.adminRequest("POST", `${namespacePath}/iam/roles`, {
+        name: `Restored outbound deployer ${randomUUID()}`,
+        permissions: [
+          { action: "deploy", resourceKind: "agent" },
+          { action: "read", resourceKind: "configuration" },
+        ],
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.error));
+      restoredRole = created.data;
+    }
+    for (const [resourceKind, resourceId] of [
+      ["agent", topology.agent.id],
+      ["configuration", topology.revision.configurationId],
+    ]) {
+      if (restoredTargets.has(resourceId)) {
+        continue;
+      }
+      const restored = await topology.adminRequest("POST", `${namespacePath}/iam/access-bindings`, {
+        subjectKind: binding.subjectKind,
+        subjectId: binding.subjectId,
+        roleId: restoredRole.id,
+        resourceKind,
+        resourceId,
+      });
+      assert.equal(restored.status, 201, JSON.stringify(restored.error));
+      restoredTargets.add(resourceId);
+    }
   };
   const pendingEvidence = async () => {
     const { rows } = await topology.observerPool.query(
@@ -3774,6 +3799,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
   context.diagnostic(
     "Native Gateway outbound: durable actor withdrawal survived real RBAC denial, missing Service, restored actor and worker restart; CONNECT closed before final refusal with runtime/model projection intact.",
   );
+  topology.request = topology.adminRequest;
 }
 
 async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
