@@ -313,6 +313,11 @@ test("development admission fails closed outside explicit loopback-only developm
       /HTTPS localhost subdomain/,
     );
   }
+  // Outside development even a valid loopback origin is refused, not admitted.
+  await assert.rejects(
+    createFixture({ development: { enabled: false, browserOrigin: "http://127.0.0.1:3000" } }),
+    /HTTPS localhost subdomain/,
+  );
 
   const fixture = await createFixture();
   const remote = await request(fixture.app, "/installation/bootstrap", {

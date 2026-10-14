@@ -914,6 +914,12 @@ test("Agent detail and list show a deployment stopped by its owner as neutral, n
   await activity
     .getByText("Deployment work ended because the Agent was stopped.", { exact: true })
     .waitFor();
+  await activity
+    .getByText(
+      "Not recorded: the Agent was stopped first. Deploy a new version when you want it running.",
+      { exact: true },
+    )
+    .waitFor();
   assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
   assert.equal(await activity.getByRole("alert").count(), 0);
   const record = page.locator(".version-deployment-record");

@@ -590,7 +590,7 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
       }),
     }),
   );
-  // Each submit returns the same cancelled job; the cases change which Agent it names and why.
+  // Each submit returns the same job; the cases change which Agent it names and how it ended.
   let cancelled = { agentId: kept.id, by: "stopped" };
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_cancelled`, (route) =>
     route.fulfill({
@@ -605,7 +605,7 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
           updatedAt,
           url,
           agentId: cancelled.agentId,
-          error: {
+          error: cancelled.error ?? {
             code: "PROVISIONING_CANCELLED",
             message: `Provisioning was cancelled because the Agent was ${cancelled.by}.`,
           },
@@ -642,14 +642,15 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
 
   // When the Agent cannot be read, the page cannot tell a Stop from a deletion: it offers both.
   const agentUrl = `**/namespaces/${namespace.id}/agents/${kept.id}`;
+  let agentRead = {
+    status: 503,
+    error: { code: "DEPENDENCY_UNAVAILABLE", message: "A dependency is unavailable." },
+  };
   await page.route(agentUrl, (route) =>
     route.fulfill({
-      status: 503,
+      status: agentRead.status,
       contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "A dependency is unavailable." },
-        meta,
-      }),
+      body: JSON.stringify({ error: agentRead.error, meta }),
     }),
   );
   await create.click();
@@ -660,7 +661,6 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
     .waitFor();
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(await open.getAttribute("href"), keptHref);
-  await page.unroute(agentUrl);
 
   // A deleted Agent is not kept: the page says so and offers a new request, with no link.
   cancelled = { agentId: removed.id, by: "deleted" };
@@ -672,6 +672,36 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
     .waitFor();
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(await open.count(), 0);
+
+  // Only a 404 means the Agent is gone. A caller who may not read it cannot tell either.
+  cancelled = { agentId: kept.id, by: "stopped" };
+  agentRead = {
+    status: 403,
+    error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+  };
+  await create.click();
+  await page
+    .getByText(
+      "Provisioning was cancelled because the Agent was stopped. If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.",
+    )
+    .waitFor();
+  assert.equal(await open.getAttribute("href"), keptHref);
+  await page.unroute(agentUrl);
+
+  // A job that created its Agent and then failed did not stop, even though that Agent is kept.
+  cancelled = {
+    agentId: kept.id,
+    error: {
+      code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+      message: "Agent provisioning could not complete.",
+    },
+  };
+  await create.click();
+  await page
+    .getByText("Agent provisioning could not complete. Retry uses the accepted provisioning job.")
+    .waitFor();
+  assert.equal(await page.getByText("Provisioning failed.", { exact: true }).isVisible(), true);
+  assert.equal(await page.locator(".provisioning-stopped").count(), 0);
 
   // The kept Agent's page has nothing failed to show: it simply has no deployment yet.
   await page.goto(new URL(keptHref, fixture.origin).href);
