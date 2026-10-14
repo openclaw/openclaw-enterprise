@@ -45,24 +45,23 @@ var (
 
 // prepareDevelopmentResolver only changes the resolver of the owned k3d node.
 // An explicit address is needed when k3d's host-gateway DNS forwarding is unavailable.
-// On Linux Docker, where that forwarding fails on iptables-nft hosts because the
-// node runs iptables in legacy mode, the node gets the host's upstream resolver
-// unless the setting selects another address or k3d's default.
-func (r *runner) prepareDevelopmentResolver(state *developmentState) ([]string, error) {
+// On Docker that forwarding fails when the engine writes its DNS rules with
+// iptables-nft, because the node runs iptables in legacy mode, so the node gets
+// an automatic resolver unless the setting selects another address or k3d's default.
+// nodeImage is the image or k3d channel the profile passes to k3d for the node.
+func (r *runner) prepareDevelopmentResolver(ctx context.Context, state *developmentState, nodeImage string) ([]string, error) {
 	value := r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"]
 	if value == developmentResolverK3dDefault {
 		return nil, nil
 	}
 	if value == "" {
-		if r.engine != "docker" || developmentHostOS != "linux" {
-			return nil, nil
-		}
-		value = hostUpstreamResolver(readHostResolverFile)
+		var origin string
+		value, origin = r.automaticDevelopmentResolver(ctx, nodeImage)
 		if value == "" {
 			return nil, nil
 		}
-		r.automaticNodeResolver = value
-		fmt.Fprintf(r.opts.Out, "Using this host's upstream DNS resolver %s for the k3d node (set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to choose another, or to %s to keep k3d's default).\n", value, developmentResolverK3dDefault)
+		r.automaticNodeResolver, r.automaticNodeResolverOrigin = value, origin
+		fmt.Fprintf(r.opts.Out, "Using %s DNS resolver %s for the k3d node (set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to choose another, or to %s to keep k3d's default).\n", origin, value, developmentResolverK3dDefault)
 	}
 	address, err := netip.ParseAddr(value)
 	if err != nil || !address.Is4() || !address.IsGlobalUnicast() {
@@ -75,6 +74,26 @@ func (r *runner) prepareDevelopmentResolver(state *developmentState) ([]string, 
 	// k3d's DNS fix rewrites /etc/resolv.conf and conflicts with an explicit mount.
 	r.env["K3D_FIX_DNS"] = "false"
 	return []string{"--volume", path + ":/etc/resolv.conf:ro@server:0"}, nil
+}
+
+// automaticDevelopmentResolver returns the node resolver for an unset
+// OCC_DEVELOPMENT_K3D_DNS_RESOLVER and where it came from, or "" to keep k3d's
+// default. Linux Docker uses the host's upstream resolver, where k3d's gateway
+// refuses queries on iptables-nft hosts. On macOS, Docker Desktop's gateway
+// drops them, and the Mac's own resolvers may be reachable only from the host,
+// so a Docker Desktop node gets the resolver Docker gives containers on its
+// default bridge. Other macOS Docker engines keep k3d's default.
+func (r *runner) automaticDevelopmentResolver(ctx context.Context, nodeImage string) (address, origin string) {
+	if r.engine != "docker" {
+		return "", ""
+	}
+	switch developmentHostOS {
+	case "linux":
+		return hostUpstreamResolver(readHostResolverFile), "this host's upstream"
+	case "darwin":
+		return r.dockerDesktopBridgeResolver(ctx, nodeImage), "Docker Desktop's default-bridge"
+	}
+	return "", ""
 }
 
 type developmentProbeResource struct {

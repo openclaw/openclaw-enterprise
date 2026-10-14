@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-09
-last_updated_session: authoring-run/c12130ba-3173-4831-86e9-5a209d16d630
+updated: 2026-10-14
+last_updated_session: authoring-run/f244317f-76bd-4804-9e19-8423c3942b5d
 ---
 
 # Compose development startup
@@ -181,13 +181,15 @@ Before tools or state creation, `upK3d` requires a control-plane Namespace DNS l
 of at most 63 characters. Cleanup accepts longer historical names but retains all
 ownership checks and deletes only the recorded cluster through its recorded endpoint.
 
-Both k3d profiles use legacy iptables and honor an explicit IPv4 node resolver
-without changing host DNS.
-Linux Docker's automatic host resolver selection ignores trailing nameserver
-fields, matching glibc parsing.
+Both k3d profiles use legacy iptables and honor explicit IPv4 resolvers without
+changing host DNS. With no setting,
+`internal/occdev/network_k3d.go:automaticDevelopmentResolver` selects Linux
+Docker's host upstream (ignoring trailing fields like glibc) or macOS Docker
+Desktop's default-bridge resolver via
+`internal/occdev/node_dns_k3d.go:dockerDesktopBridgeResolver`. Failure or a
+45-second timeout keeps k3d's default.
 `internal/occdev/node_dns_k3d.go:checkDevelopmentNodeDNS` fails startup on
-refused node DNS. Kubernetes-only startup imports matching OCE images into the
-cluster.
+refused node DNS. Kubernetes-only startup imports matching OCE images into k3d.
 
 Without OpenShell, it verifies the pinned cert-manager and Envoy Gateway
 manifests, waits for the k3s-owned Gateway API CRDs, then installs Envoy,
@@ -230,15 +232,16 @@ beside the URL and public CA path. Stack readiness does not establish browser tr
 Without a Sandbox Driver, Kubernetes startup selects Docker or Podman and
 resolves its host socket from Docker's active context or `podman machine inspect`.
 Private state records the socket, Compose project, and `occ-dev-*` cluster.
-Cleanup validates and reuses those records, regardless of later context changes.
+Cleanup validates and reuses those records despite later context changes.
 
-Startup refuses existing cluster or project resources, validates resolved Compose
+Startup refuses existing cluster or project resources, validates Compose
 publications with `internal/occdev/compose.go:AnalyzeCompose`, and rejects
 external or unscoped networks and volumes with
-`internal/occdev/up.go:validateResourceOwnership`. It claims the state directory
-by exclusive `0700` creation and privately writes the rendered Compose snapshot
-before creating resources. Before saving, `setKubernetesBridgeGateway` preserves an explicit development-network gateway or uses the rendered subnet's first usable address, supplying k3d's required bridge gateway for subnet overrides. Startup and cleanup both use that snapshot, so later `.env` edits
-cannot change it.
+`internal/occdev/up.go:validateResourceOwnership`. Before creating resources, it
+exclusively creates `0700` state and privately saves Compose configuration.
+`setKubernetesBridgeGateway` preserves an explicit development-network gateway
+or selects the subnet's first usable address, including overridden subnets.
+Startup and cleanup use this snapshot, ignoring later `.env` edits.
 
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, Kubernetes Compute branches
 into `internal/occdev/openshell_k3d.go:upK3d` before Compose rendering, uses the
@@ -324,10 +327,10 @@ preserving the original client.
 
 Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d cluster create --timeout`; node readiness timeout fails startup.
 
-`internal/occdev/state.go:exclusiveWrite` removes a newly created output when
-permission setting, writing, or closing fails, including a partial external key
-before startup records a successful copy. Existing targets stay untouched; a
-removal failure is returned with the original file-operation error.
+`internal/occdev/state.go:exclusiveWrite` removes newly created outputs after
+permission, write, or close failures, including partial external keys before
+startup records a successful copy. Existing targets stay untouched; removal
+failures are returned with the original error.
 
 On failure, startup attempts cleanup. Explicit Kubernetes shutdown validates the
 marker, state, and Compose snapshot, then uses the recorded engine endpoint.
@@ -360,7 +363,7 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
   selects the [real launcher cases](../../testing/keycloak.md#local-launcher-coverage),
   including Keycloak login, persistence and failure cleanup.
 - A successful startup does not prove Agent creation, model credentials, or a
-  model turn. Follow the owning runtime integration procedure for those claims.
+  model turn.
 
 ## Related docs
 
@@ -374,6 +377,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Changelog
 
+- 2026-10-14 09:08: Reconciled resolver documentation. (authoring-run/f244317f-76bd-4804-9e19-8423c3942b5d - 7ace6cfcc022acff01f0968fe04a9ec60d1df8c6)
+
 - 2026-10-09 22:35: Bind bootstrap authorization to startup cancellation (authoring-run/c12130ba-3173-4831-86e9-5a209d16d630 - 7f358117e68076912a6062411d363e920a0e6adb)
 
 - 2026-10-08 15:23: Reconciled current Docker preflight behavior with failed exclusive-output cleanup and clarified tool and image ownership. (authoring-run/0da79016-d6a4-4217-a420-1e8b0b314e14 - 3cffa93e76aedec4b2f35d14f9824b4531640449)
@@ -381,6 +386,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 - 2026-10-08 09:30: Trimmed repeated startup detail after integration. (authoring-run/de31a6a4-b02f-464c-8652-662a7b152fe2 - 9506de602a55f57bf19fa02ba0c7b844aa5a6649)
 
 - 2026-10-07 23:31: Documented optional Keycloak startup, identity attachment and cleanup. (authoring-run/aaa97aa0-d766-4366-af99-089d183c088a - c14b315969527a4e1f3fc3bd525e54d2ed5ec030)
+
+- 2026-10-07 09:06: Added the macOS Docker Desktop node resolver. (authoring-run/5c63c099-5677-4391-b9eb-6a2d9e4ac947 - a9dd6b07f91454745bf7c40898b5fd75262707a5)
 
 - 2026-10-06 17:46: Remove newly created exclusive outputs after file-write failures. (authoring-run/e789ef10-ca82-4ee2-b31d-8d11100d9744 - 6508695f267e1441bf5a797b9710965f9b10990a)
 

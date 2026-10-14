@@ -1,8 +1,8 @@
 # Local Kubernetes development
 
-Run OpenClaw Enterprise (OCE) against a disposable, loopback-only k3d cluster.
-Start with the Kubernetes-only profile below, which runs PostgreSQL, the
-OpenClaw Control Plane (OCC), and Agent workloads in the owned cluster.
+Run OpenClaw Enterprise (OCE) in a disposable, loopback-only k3d cluster.
+Start with the Kubernetes-only profile. It runs PostgreSQL, the OpenClaw
+Control Plane (OCC), and Agent workloads there.
 
 ## Start the profile
 
@@ -310,10 +310,10 @@ only inside this disposable, loopback-owned cluster. Tenant egress selects only
 OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
 carry that setting, into a shared cluster or container network.
 
-Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
-to the OCE service accounts cluster-wide. This is not a production RBAC pattern:
-production and shared clusters must use the tenant-local RoleBindings in the
-production deployment guide.
+In this disposable, single-profile cluster, the helper binds the chart's tenant
+worker, configuration, and Secret ClusterRoles to OCE service accounts
+cluster-wide. Production and shared clusters must use tenant-local RoleBindings
+as described in the production deployment guide.
 
 To verify a fresh Kubernetes-only installation without OpenShell, use the
 [real local installation test](../../testing/kubernetes.md#local-kubernetes-installation).
@@ -387,10 +387,11 @@ the cluster. For a persistent Helm-installed k3d environment, complete the
 
 ## Resolve node DNS failures
 
-On Linux Docker, the launcher gives its k3d node the host's first non-loopback
-IPv4 upstream resolver, because k3d's default refuses queries on iptables-nft
-hosts. If the node still cannot resolve image registries, set a DNS server
-reachable from the node network for a fresh startup:
+Linux Docker uses the host's first non-loopback IPv4 resolver because k3d's
+default can refuse queries on iptables-nft hosts. macOS Docker Desktop probes
+its default-bridge resolver because k3d's default can drop queries. Failure or a
+45-second timeout warns and keeps k3d's default. If registry DNS still fails,
+restart with a resolver reachable from the node:
 
 ```bash
 OCC_DEVELOPMENT_K3D_DNS_RESOLVER='<reachable-dns-ip>' ./scripts/dev-up

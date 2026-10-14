@@ -26,9 +26,11 @@ type runner struct {
 	opts   Options
 	env    map[string]string
 	engine string
-	// automaticNodeResolver is the host upstream resolver that startup chose for
-	// the k3d node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER was unset.
-	automaticNodeResolver string
+	// automaticNodeResolver is the resolver that startup chose for the k3d node
+	// because OCC_DEVELOPMENT_K3D_DNS_RESOLVER was unset, and
+	// automaticNodeResolverOrigin names its source, such as "this host's upstream".
+	automaticNodeResolver       string
+	automaticNodeResolverOrigin string
 	// legacyNATUnconfirmed records that the preflight could not confirm the
 	// host's legacy iptables nat table, so a k3d failure names it.
 	legacyNATUnconfirmed bool
