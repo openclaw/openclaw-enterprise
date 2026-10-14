@@ -78,6 +78,10 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
         abort();
       }
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+        // A child that ignores SIGTERM keeps writing until SIGKILL: drop that output.
+        if (stdout.length > 64 * 1024) {
+          return;
+        }
         stdout += chunk;
         if (stdout.length > 64 * 1024) {
           failed = new Error("SSH helper output exceeded its limit.");
