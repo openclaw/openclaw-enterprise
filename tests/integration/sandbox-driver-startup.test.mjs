@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmod, mkdtemp, mkdir, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { createKubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  NATIVE_WORKER_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
@@ -27,6 +34,7 @@ const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
 const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 function sandboxInstallation() {
   const configuration = installation();
@@ -55,6 +63,7 @@ function sandboxInstallation() {
       },
       kubernetes: {
         runtimeClassName: "openshell-sandbox",
+        userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",
@@ -233,6 +242,46 @@ function namespaceContext(name = "oce-123456789012345") {
   };
 }
 
+// Controlled Kubernetes transport: verifies the production preparation manifest and
+// ordering only. The real k3d case must prove filesystem effects and Pod termination.
+function nativePreparationClient(context) {
+  const client = Object.create(KubernetesObjectApi.prototype);
+  const prepared = [];
+  let deployment;
+  const read = context.kubernetes.read?.bind(context.kubernetes);
+  client.read = async (resource) => {
+    if (resource.kind === "Namespace") {
+      return { ...resource };
+    }
+    if (resource.kind === "Deployment") {
+      if (deployment === undefined) {
+        throw { code: 404 };
+      }
+      // Use the same decoder as KubernetesObjectApi.read, including nested SDK models.
+      return ObjectSerializer.deserialize(JSON.parse(JSON.stringify(deployment)), "V1Deployment");
+    }
+    return read(resource);
+  };
+  client.create = async (resource) => {
+    prepared.push(structuredClone(resource));
+    deployment = {
+      ...resource,
+      metadata: { ...resource.metadata, uid: "preparation-uid", generation: 1 },
+      status: { availableReplicas: 1, observedGeneration: 1 },
+    };
+    return ObjectSerializer.deserialize(JSON.parse(JSON.stringify(deployment)), "V1Deployment");
+  };
+  client.delete = async (resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
+    assert.equal(resource.kind, "Deployment");
+    assert.equal(propagation, "Foreground");
+    assert.equal(body.preconditions.uid, "preparation-uid");
+    deployment = undefined;
+  };
+  client.list = async () => ({ items: [] });
+  context.kubernetes = client;
+  return prepared;
+}
+
 function codexRequirements(revision, environment = []) {
   return {
     loginMode: "api_key",
@@ -381,7 +430,8 @@ function runtimeSandboxFixture(
         : []),
     labels: { "openclaw.dev/revision": revision.id },
   };
-  return { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup };
+  const prepared = harnessId === "openclaw" ? nativePreparationClient(context) : [];
+  return { context, revision, requirements, runtimeManifest, codexConfig, nodeSetup, prepared };
 }
 
 test("startup constructs the bundled OpenShell SandboxDriver before constructing Kubernetes Compute", async (t) => {
@@ -600,13 +650,29 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
     implementation: "openshell",
     backend: backendFor(gatewayClient),
   });
-  const { context, revision, requirements, nodeSetup } = runtimeSandboxFixture(driver, {
+  const { context, revision, requirements, nodeSetup, prepared } = runtimeSandboxFixture(driver, {
     harnessId: "openclaw",
   });
   const command = requirements.command;
   await driver.ensureNamespace(context);
+  // A denied preparer must leave the native Sandbox absent and retryable.
+  const create = context.kubernetes.create;
+  context.kubernetes.create = async () => {
+    throw new Error("preparation forbidden");
+  };
+  await assert.rejects(
+    driver.provisionHarness({ ...context, revision, requirements }),
+    /preparation forbidden/,
+  );
+  assert.equal(requests.length, 0);
+  context.kubernetes.create = create;
   const sandbox = await driver.provisionHarness({ ...context, revision, requirements });
   await driver.provisionHarness({ ...context, revision, requirements });
+  assert.equal(prepared.length, 1, "an adopted Sandbox must not recreate its PVC writer");
+  const preparation = prepared[0].spec.template.spec;
+  assert.equal(preparation.automountServiceAccountToken, false);
+  assert.equal(preparation.securityContext.runAsUser, 10001);
+  assert.deepEqual(preparation.containers[0].securityContext.capabilities, { drop: ["ALL"] });
 
   assert.equal(sandbox.revisionId, revision.id);
   assert.equal(requests.length, 1);
@@ -675,6 +741,64 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), true);
   await driver.cleanup(context);
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), false);
+});
+
+test("OpenShell native startup creates private temporary state without changing the supervisor temporary directory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-native-temporary-"));
+  try {
+    const supervisorTemporary = join(directory, "supervisor");
+    await mkdir(supervisorTemporary);
+    await chmod(supervisorTemporary, 0o777);
+    const gateway = workspaceGatewayClient();
+    let request;
+    gateway.createSandbox = async (value) => {
+      request = value;
+      return { name: value.name, serviceUrls: {} };
+    };
+    const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gateway),
+    });
+    const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
+    // Execute the actual native startup through its filesystem-initialization phase.
+    // Image assets and model execution belong to the separate real-runtime proof.
+    const assetBoundary = NATIVE_WORKER_ENTRYPOINT.indexOf("initializeRuntimeAssets();");
+    assert.ok(assetBoundary > 0);
+    fixture.requirements.command = harnessRuntimeCommand(
+      NATIVE_WORKER_ENTRYPOINT.slice(0, assetBoundary),
+    );
+    await driver.provisionHarness({
+      ...fixture.context,
+      revision: fixture.revision,
+      requirements: fixture.requirements,
+    });
+    const result = spawnSync(
+      process.execPath,
+      request.spec.command.slice(RUNTIME_WRAPPER_COMMAND.length - 1),
+      {
+        encoding: "utf8",
+        timeout: 5_000,
+        env: {
+          PATH: process.env.PATH,
+          HOME: directory,
+          TMPDIR: supervisorTemporary,
+          OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+          OPENCLAW_NODE_STATE_DIR: join(directory, "state"),
+          OPENCLAW_NODE_SETUP_CODE: "controlled-filesystem-phase",
+          OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+          OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const temporary = await stat(join(directory, "tmp"));
+    assert.equal(temporary.uid, process.getuid());
+    assert.equal(temporary.mode & 0o7777, 0o700);
+    assert.equal((await stat(supervisorTemporary)).mode & 0o7777, 0o777);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
@@ -2456,4 +2580,323 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     /managed workspace mode is not implemented; cannot observe a Harness/,
   );
   assert.deepEqual(observed, []);
+});
+
+// These cases invoke the production Driver over controlled Kubernetes/Gateway
+// transports. They prove cleanup selection, fencing and completion ordering, not
+// Kubernetes garbage collection, filesystem isolation, or live Pod termination.
+async function orphanedNativePreparation() {
+  const gateway = workspaceGatewayClient();
+  gateway.deleteSandbox = async () => gateway.calls.push(["deleteSandbox"]);
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.kubernetes.userNamespaces = false;
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gateway),
+  });
+  const fixture = runtimeSandboxFixture(driver, { harnessId: "openclaw" });
+  const { revision, requirements, prepared } = fixture;
+  const api = fixture.context.kubernetes;
+  const create = api.create;
+  // The API stored the real manifest, but the response never reached the Driver.
+  api.create = async (resource) => {
+    await create(resource);
+    throw new Error("preparation create response lost");
+  };
+  await assert.rejects(
+    driver.provisionHarness({ ...fixture.context, revision, requirements }),
+    /preparation create response lost/,
+  );
+  assert.equal(gateway.providers.size, 1);
+  assert.equal(
+    gateway.calls.some(([method]) => method === "deleteSandbox"),
+    false,
+  );
+  const resource = prepared[0];
+  const deployment = await api.read(resource);
+  const context = { ...fixture.context, revision };
+  return { driver, gateway, api, resource, deployment, context, requirements };
+}
+
+test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {
+  const { driver, gateway, api, resource, context, requirements } =
+    await orphanedNativePreparation();
+  api.create = async () => assert.fail("a retry must adopt the existing preparer");
+  let sandboxCreates = 0;
+  gateway.createSandbox = async (request) => {
+    await assert.rejects(api.read(resource), (error) => error.code === 404);
+    sandboxCreates++;
+    return { name: request.name, serviceUrls: {} };
+  };
+
+  // The original response was lost, not the Deployment. Reconciliation must verify
+  // its SDK-decoded content, finish preparation, and remove the writer before launch.
+  const sandbox = await driver.provisionHarness({ ...context, requirements });
+  assert.equal(sandbox.revisionId, context.revision.id);
+  assert.equal(sandboxCreates, 1);
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer adoption still rejects changed SDK-decoded security content", async (t) => {
+  for (const scenario of [
+    {
+      name: "container privilege",
+      change: (template) => {
+        template.spec.containers[0].securityContext.allowPrivilegeEscalation = true;
+      },
+    },
+    {
+      name: "PVC group identity",
+      change: (template) => {
+        template.spec.securityContext.fsGroup = 1000;
+      },
+    },
+    {
+      name: "cleanup Pod selector",
+      change: (template) => {
+        template.metadata.labels["openclaw.dev/revision"] = "foreign";
+      },
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const { driver, gateway, api, resource, deployment, context, requirements } =
+        await orphanedNativePreparation();
+      scenario.change(deployment.spec.template);
+      const read = api.read;
+      api.read = async (target) => (target.kind === "Deployment" ? deployment : read(target));
+      api.create = async () => assert.fail("a foreign preparer must not be replaced");
+      api.delete = async () => assert.fail("a foreign preparer must not be deleted");
+      gateway.createSandbox = async () => assert.fail("a foreign preparer must prevent launch");
+      await assert.rejects(
+        driver.provisionHarness({ ...context, requirements }),
+        /foreign workspace preparation Deployment/,
+      );
+      assert.equal((await api.read(resource)).metadata.uid, deployment.metadata.uid);
+    });
+  }
+});
+
+test("OpenShell revision cleanup removes an orphaned preparer before its provider and replays safely", async () => {
+  const { driver, gateway, api, resource, context } = await orphanedNativePreparation();
+  const remove = api.delete;
+  let deletions = 0;
+  api.delete = async (...args) => {
+    assert.equal(gateway.providers.size, 1, "runtime provider must survive until the writer stops");
+    assert.equal(
+      gateway.calls.some(([method]) => method === "deleteSandbox"),
+      false,
+    );
+    assert.equal(args[0].metadata.name, resource.metadata.name);
+    assert.equal(args[0].metadata.namespace, context.namespace.name);
+    deletions++;
+    await remove(...args);
+  };
+  await driver.cleanup(context);
+  await assert.rejects(api.read(resource), (error) => error.code === 404);
+  assert.equal(gateway.providers.size, 0);
+  await driver.cleanup(context);
+  assert.equal(deletions, 1, "a replay must not delete another resource");
+});
+
+test("OpenShell preparer cleanup retries after a delete response is lost", async () => {
+  const { driver, gateway, api, resource, context } = await orphanedNativePreparation();
+  const remove = api.delete;
+  const failure = new Error("preparation delete response lost");
+  api.delete = async (...args) => {
+    await remove(...args);
+    throw failure;
+  };
+  await assert.rejects(driver.cleanup(context), (error) => error === failure);
+  await assert.rejects(api.read(resource), (error) => error.code === 404);
+  assert.equal(gateway.providers.size, 1);
+  // The next pass must finish without requiring a Deployment or a create receipt.
+  api.delete = async () => assert.fail("deleted preparation must not be deleted again");
+  await driver.cleanup(context);
+  assert.equal(gateway.providers.size, 0);
+});
+
+test("OpenShell preparer cleanup rejects foreign ownership and missing UIDs before deletion", async (t) => {
+  const changes = [
+    ...[
+      "app.kubernetes.io/managed-by",
+      "openclaw.dev/namespace",
+      "openclaw.dev/agent",
+      "openclaw.dev/revision",
+      "openclaw.dev/workload-role",
+    ].map((label) => ({
+      name: label,
+      change: (metadata) => {
+        metadata.labels[label] = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    })),
+    {
+      name: "namespace",
+      change: (metadata) => {
+        metadata.namespace = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    },
+    {
+      name: "name",
+      change: (metadata) => {
+        metadata.name = "foreign";
+      },
+      error: /foreign workspace preparation/,
+    },
+    {
+      name: "missing UID",
+      change: (metadata) => {
+        delete metadata.uid;
+      },
+      error: /Deployment UID/,
+    },
+  ];
+  for (const scenario of changes) {
+    await t.test(scenario.name, async () => {
+      const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+      scenario.change(deployment.metadata);
+      api.read = async () => structuredClone(deployment);
+      api.delete = async () => assert.fail("foreign or unfenced Deployment must not be deleted");
+      await assert.rejects(driver.cleanup(context), scenario.error);
+      assert.equal(gateway.providers.size, 1);
+      assert.equal(
+        gateway.calls.some(([method]) => method === "deleteSandbox"),
+        false,
+      );
+    });
+  }
+});
+
+test("OpenShell preparer cleanup preserves a same-name UID replacement", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  const conflict = Object.assign(new Error("UID precondition failed"), { code: 409 });
+  api.delete = async (_resource, _pretty, _dryRun, _grace, _orphan, propagation, body) => {
+    assert.equal(propagation, "Foreground");
+    assert.equal(body.preconditions.uid, deployment.metadata.uid);
+    // Kubernetes refuses deletion after the resource is replaced between GET and DELETE.
+    deployment.metadata.uid = "replacement-uid";
+    throw conflict;
+  };
+  await assert.rejects(driver.cleanup(context), (error) => error === conflict);
+  assert.equal(deployment.metadata.uid, "replacement-uid");
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer cleanup rejects a replacement observed while waiting for deletion", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  api.delete = async () => {
+    deployment.metadata.uid = "replacement-uid";
+  };
+  api.read = async () => structuredClone(deployment);
+  await assert.rejects(driver.cleanup(context), /Deployment changed/);
+  assert.equal(gateway.providers.size, 1);
+});
+
+test("OpenShell preparer cleanup tolerates a concurrent delete but waits for lingering Pods", async (t) => {
+  for (const missingDeployment of [false, true]) {
+    await t.test(
+      missingDeployment ? "Deployment already absent" : "foreground deletion",
+      async () => {
+        const { driver, gateway, api, resource, deployment, context } =
+          await orphanedNativePreparation();
+        const remove = api.delete;
+        if (missingDeployment) {
+          await remove(resource, undefined, undefined, undefined, undefined, "Foreground", {
+            preconditions: { uid: deployment.metadata.uid },
+          });
+          api.delete = async () => assert.fail("an absent Deployment must not be deleted");
+        } else {
+          api.delete = async (...args) => {
+            await remove(...args);
+            throw { code: 404 };
+          };
+        }
+        let observations = 0;
+        api.list = async (version, kind, namespace, _pretty, _exact, _export, _field, selector) => {
+          assert.equal(version, "v1");
+          assert.equal(kind, "Pod");
+          assert.equal(namespace, context.namespace.name);
+          assert.deepEqual(
+            Object.fromEntries(selector.split(",").map((entry) => entry.split("="))),
+            deployment.metadata.labels,
+          );
+          assert.equal(gateway.providers.size, 1);
+          assert.equal(
+            gateway.calls.some(([method]) => method === "deleteSandbox"),
+            false,
+          );
+          observations++;
+          // A Pod carrying deletionTimestamp can still write; readiness is irrelevant.
+          return {
+            items:
+              observations === 1
+                ? [{ metadata: { deletionTimestamp: "2026-10-12T00:00:00Z" } }]
+                : [],
+          };
+        };
+        await driver.cleanup(context);
+        assert.equal(observations, 2);
+        assert.equal(gateway.providers.size, 0);
+      },
+    );
+  }
+});
+
+test("OpenShell preparer cleanup waits for the Deployment even when no Pods are listed", async () => {
+  const { driver, gateway, api, deployment, context } = await orphanedNativePreparation();
+  let reads = 0;
+  api.read = async () => {
+    if (++reads <= 2) {
+      return structuredClone(deployment);
+    }
+    throw { code: 404 };
+  };
+  api.delete = async () => {
+    deployment.metadata.deletionTimestamp = "2026-10-12T00:00:00Z";
+  };
+  api.list = async () => {
+    assert.equal(gateway.providers.size, 1);
+    return { items: [] };
+  };
+  await driver.cleanup(context);
+  assert.equal(reads, 3);
+  assert.equal(gateway.providers.size, 0);
+});
+
+test("OpenShell preparer cleanup preserves retryable work on cancellation and transport errors", async (t) => {
+  for (const stage of [
+    "cancelled before cleanup",
+    "cancelled while waiting",
+    "read",
+    "delete",
+    "list",
+  ]) {
+    await t.test(stage, async () => {
+      const { driver, gateway, api, context } = await orphanedNativePreparation();
+      const abort = new AbortController();
+      context.signal = abort.signal;
+      const failure = new Error("cleanup interrupted");
+      if (stage === "cancelled before cleanup") {
+        abort.abort(failure);
+        api.delete = async () => assert.fail("cancellation must prevent mutation");
+      } else if (stage === "cancelled while waiting") {
+        api.list = async () => {
+          abort.abort(failure);
+          return { items: [{}] };
+        };
+      } else {
+        api[stage] = async () => {
+          throw failure;
+        };
+      }
+      await assert.rejects(driver.cleanup(context), (error) => error === failure);
+      assert.equal(gateway.providers.size, 1);
+      assert.equal(
+        gateway.calls.some(([method]) => method === "deleteSandbox"),
+        false,
+      );
+    });
+  }
 });

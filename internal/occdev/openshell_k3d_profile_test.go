@@ -154,6 +154,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		"mode: inCluster",
 		"workspaceMode: operator",
 		"operatorWorkspaceResources:",
+		"userNamespaces: false",
 		`openshell.ai/openclaw-workspace: "true"`,
 	} {
 		if !strings.Contains(text, required) {

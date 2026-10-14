@@ -9,9 +9,9 @@ export const nativeFirstAgentProofTimeout = 10 * 60_000;
 
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
-async function nativeWorkerProof({ namespaceId, agentId, timeout }) {
+async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile }) {
   const assert = (await import("node:assert/strict")).default;
-  const { randomUUID } = await import("node:crypto");
+  const { createHash, randomUUID } = await import("node:crypto");
   const { readFile } = await import("node:fs/promises");
   const { createRequire } = await import("node:module");
   const { resolve } = await import("node:path");
@@ -96,11 +96,18 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout }) {
     assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
-    const command = `node -e '${[
+    const program = [
       `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
-      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")',
+      'hostname:require("node:os").hostname(),',
+      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY"),',
+      ...(workspaceFile === undefined
+        ? []
+        : [
+            `workspaceFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(workspaceFile.path)})).digest("hex"),`,
+          ]),
       '}) + "\\n")',
-    ].join("")}'`;
+    ].join("");
+    const command = `node -e '${program.replaceAll("'", "'\\''")}'`;
     stage = "send";
     const sent = await call("sessions.send", {
       key,
@@ -144,9 +151,22 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout }) {
           .find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
+        assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
         assert.equal(proof.cwd, placement.remoteWorkspaceDir);
         assert.equal(proof.modelCredentialPresent, false);
-        emit({ verified: true, profileId: required.id, environmentId: placement.environmentId });
+        if (workspaceFile !== undefined) {
+          assert.equal(
+            proof.workspaceFileSha256,
+            createHash("sha256").update(workspaceFile.content).digest("hex"),
+          );
+        }
+        emit({
+          verified: true,
+          profileId: required.id,
+          providerId: required.providerId,
+          environmentId: placement.environmentId,
+          hostname: proof.hostname,
+        });
         return;
       }
       assert.ok(
@@ -169,7 +189,7 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout }) {
 
 export async function assertNativeWorkerProofInController(
   context,
-  { stateDirectory, state, environment, namespaceId, agentId },
+  { stateDirectory, state, environment, namespaceId, agentId, workspaceFile },
 ) {
   context.signal.throwIfAborted();
   const safeEnvironment = {
@@ -179,7 +199,7 @@ export async function assertNativeWorkerProofInController(
   };
   delete safeEnvironment.OPENAI_API_KEY;
   delete safeEnvironment.OPENAI_API_KEY_FILE;
-  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout })});`;
+  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -254,5 +274,7 @@ export async function assertNativeWorkerProofInController(
     `Native first-Agent proof failed during ${result.proof?.stage ?? "controller startup"}; raw output withheld`,
   );
   assert.equal(result.proof?.verified, true);
-  assert.ok(result.proof.profileId && result.proof.environmentId);
+  assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
+  assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
+  return result.proof;
 }

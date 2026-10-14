@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-08
-last_updated_session: Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa
+updated: 2026-10-13
+last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -60,7 +60,11 @@ graph TD
   Q --> G{"<b>Harness inputs valid?</b><br/>Provider files"}
   G -- "no" --> R["<b>Reject provisioning</b><br/>Candidate stays inactive"]
   G -- "yes" --> W["<b>Reconcile runtime provider</b><br/>Files and literal setup"]
-  W --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
+  W --> W0{"<b>Native OpenClaw?</b>"}
+  W0 -- "yes" --> W1["<b>Prepare writable subpaths</b><br/>Private ownership; retain entries"]
+  W1 --> W2["<b>Stop preparer</b><br/>Deployment and Pods gone"]
+  W2 --> H["<b>Create Sandbox</b><br/>Providers and exposure"]
+  W0 -- "no" --> H
   H --> V{"<b>Harness</b>"}
   V -- "Codex" --> J["<b>Resolve exposure</b><br/>Advertised WebSocket origin"]
   J --> K["<b>Replace Gateway</b><br/>Provider route and bearer token"]
@@ -85,8 +89,8 @@ graph TD
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
   class A,B,F state
-  class D,E,I,Q,W,H,J,K,L,M,N,O,P,R1,T,U operation
-  class C,G,S,V,Y,Y0,Z gate
+  class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,R1,T,U operation
+  class C,G,S,V,Y,Y0,Z,W0 gate
   class X,R,R0 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -106,34 +110,19 @@ source's provider profile, not the Sandbox policy. The pinned OCE runtime offers
 Dedicated OpenClaw in the normal Console flow; an experimental Sandbox still
 requires a host capable of enforcing its Landlock policy.
 
-`scripts/dev-up` validates Kubernetes Compute with OpenShell and delegates to
-`occ dev up`. Compose is the default control plane;
-`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Before
-creating state, Kubernetes-only startup rejects API-port collisions and records
-the engine, cluster, control-plane Kubernetes namespace, API port, and key destination. Both
-profiles verify the pinned source archive, package its charts, and import
-digest-pinned Gateway, Sandbox, and supervisor images. Kubernetes-only startup
-also builds or selects the OCE controller and Agent runtime, then imports them
-with PostgreSQL and resolves every in-cluster digest.
+`scripts/dev-up` delegates to `occ dev up`. Compose is the default control plane;
+`OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only. Both verify
+the pinned source archive, package charts, import immutable images, install
+private Envoy routing, and scope OpenShell Gateway access to its control-plane
+callers, supervisors, and Agent Gateways. Kubernetes-only also imports PostgreSQL
+and resolves in-cluster image digests.
 
-After Helm installs OpenShell, the development launcher reads the exact Gateway
-Service ClusterIP. It writes `network.providerHarness` with that address, the
-Gateway Pod selector, and TCP/8080. The Agent Gateway Pod uses the address only
-as a host alias for the exact hostname in the provider-advertised origin; its
-HTTP Host remains the OpenShell routing key. The corresponding NetworkPolicy
-allows that Gateway only to the selected OpenShell Gateway Pods and port.
-
-The default Compose profile runs PostgreSQL and OCC in Compose while its worker
-targets k3d. Kubernetes-only runs those components in `oce-system` with
-in-cluster authentication. Both install private Envoy routing and operator
-Workspace resources, and restrict OpenShell Gateway access to the API, worker,
-supervisor callbacks, and dedicated Agent Gateways. See
-the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
-for startup, RBAC, image, and cleanup details.
-
-Cleanup validates the recorded engine and state before deleting the named
-cluster and, in Compose mode, the recorded project and volumes. Partial cleanup
-retains recovery state.
+The launcher reads the exact Gateway Service ClusterIP into `network.providerHarness`
+with its Pod selector and TCP/8080. Agent Gateways use it only as a host alias;
+HTTP Host retains the provider's routing key. NetworkPolicy restricts egress to
+that peer and port. See the [local deployment guides](../guides/deploy/local-kubernetes-development.md)
+for startup, RBAC, images and cleanup. Cleanup deletes only recorded helper-owned
+resources and retains partial state for retry.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -230,7 +219,17 @@ The Driver mounts a revision-scoped Agent PVC subpath at
 runtime home. Exact mount paths such as `OPENCLAW_NODE_STATE_DIR` use a
 process-created `state` child, so atomic writes cross neither a symlink nor a
 root-owned mount. Workspace, node identity, sessions, and generated images
-remain separate. `/tmp` stays on the bounded ephemeral image layer.
+remain separate. The supervisor probes `/tmp`; the native command then redirects
+`TMPDIR` to a process-owned `tmp` child of its revision runtime home.
+
+`apps/controller/src/drivers/sandbox/openshell.ts:prepareNativeWorkspace` uses a
+restricted revision-owned Deployment to privatize every writable PVC subpath
+before native Sandbox creation, including retained redeployment state. It reuses
+`harnessWorkspacePreparationScript` to preserve existing entries, verifies mode
+and process ownership, then waits for UID-fenced foreground deletion and all
+writer Pods to disappear. Preparation requires explicit `userNamespaces: false`
+and the pinned Gateway's default identity selection. It grants no model
+credential, service-account token, added capability, or direct Pod creation.
 
 Credential attachments must use the OCC `oce-cs-` name shape and cannot repeat
 a static provider. The profile binds model access to the configured Codex or
@@ -325,7 +324,9 @@ attachment completes preparation. On revision
 shutdown, `shutdownRevisionRuntime` calls `cleanup` with the revision. The
 Gateway client sends `DeleteSandbox` with the same `workspace_scope`; a missing
 Sandbox is an idempotent success. Both Harnesses then delete their owned
-revision provider. Namespace cleanup removes unused runtime profiles.
+revision provider. `cleanupNativeWorkspace` also retires an owned preparer left
+by an interrupted attempt without a Sandbox; foreign or replaced resources fail
+closed. Namespace cleanup removes unused runtime profiles.
 
 The current unified `cleanup` contract receives the immutable revision during
 revision shutdown and no revision during Namespace deletion. Namespace deletion
@@ -361,6 +362,8 @@ native model turn.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 16:45: Reconcile native private temporary state and retained writable-subpath preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - ff12fc86cd1662c98a9d8db78be9c2fa4facdcdd)
 
 - 2026-10-08: Document normal native OpenClaw provider delivery and private Compute workspace initialization; retain experimental qualification limits. (Codex/01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 

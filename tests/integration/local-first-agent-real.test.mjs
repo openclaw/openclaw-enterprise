@@ -379,8 +379,8 @@ test(
       2 * commandTimeout +
       refusalTimeout +
       stackLifecycleTimeout +
-      nativeFirstAgentProofTimeout +
-      9 * 60_000,
+      2 * nativeFirstAgentProofTimeout +
+      17 * 60_000,
   },
   async (context) => {
     assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for the first invocation");
@@ -573,8 +573,8 @@ test(
       secretId = source.secrets.api_key?.id;
 
       await context.test(
-        "guided provisioning starts a dedicated native OpenClaw Agent with automatic required-worker execution",
-        { timeout: 8 * 60_000 + nativeFirstAgentProofTimeout + 30_000 },
+        "guided native OpenClaw provisioning and redeployment retain workspace files and required-worker execution",
+        { timeout: 16 * 60_000 + 2 * nativeFirstAgentProofTimeout + 30_000 },
         async (nativeContext) => {
           const request = (method, path, body) =>
             requestLocalApi(first.origin, serviceKey, method, path, body);
@@ -681,13 +681,156 @@ test(
             assert.equal(file.name, filename);
             assert.equal(file.content, content);
           }
-          await assertNativeWorkerProofInController(nativeContext, {
+          // Change owner-maintained bytes after setup: a replacement must reuse
+          // the workspace rather than silently restoring the initial templates.
+          const retainedMarker = `NATIVE_RETAINED_WORKSPACE_${randomUUID()}`;
+          const retainedFiles = {
+            ...WORKSPACE_DEFAULTS,
+            "USER.md": `${WORKSPACE_DEFAULTS["USER.md"]}\n<!-- ${retainedMarker} -->\n`,
+          };
+          await request("PUT", `${nativePath}/workspace/files/USER.md`, {
+            content: retainedFiles["USER.md"],
+          });
+          const workspaceRoot = revision.configuration.agents.defaults.workspace;
+          assert.ok(workspaceRoot?.startsWith("/"));
+          const workspaceFile = {
+            path: join(workspaceRoot, "USER.md"),
+            content: retainedFiles["USER.md"],
+          };
+          const proofOptions = {
             stateDirectory,
             state: recorded,
             environment: env,
             namespaceId: first.namespaceId,
             agentId: nativeAgent.id,
-          });
+            workspaceFile,
+          };
+          const kube = { stateDirectory, cluster: recorded.cluster, env };
+          const readProviderRevision = async (revisionId) => {
+            const pods = await readKubernetesJson(
+              kube,
+              [
+                "get",
+                "pods",
+                "--all-namespaces",
+                "--selector",
+                `openclaw.dev/agent=${nativeAgent.id},openclaw.dev/revision=${revisionId},openclaw.dev/workload-role=agent`,
+              ],
+              "the native OpenShell Harness",
+            );
+            assert.equal(pods.items.length, 1);
+            const pod = pods.items[0];
+            assert.ok(pod.metadata.uid);
+            assert.ok(
+              pod.status.conditions.some(
+                ({ type, status }) => type === "Ready" && status === "True",
+              ),
+            );
+            assert.equal(pod.metadata.labels["openclaw.dev/network-profile"], "provider-fenced-v1");
+            const owner = pod.metadata.ownerReferences.find(({ kind }) => kind === "Sandbox");
+            assert.ok(owner?.name && owner.uid, "OpenShell must own the native Harness Pod");
+            const sandbox = await readKubernetesJson(
+              kube,
+              [
+                "get",
+                "sandboxes.agents.x-k8s.io",
+                owner.name,
+                "--namespace",
+                pod.metadata.namespace,
+              ],
+              "the native Harness's provider-owned Sandbox",
+            );
+            assert.equal(sandbox.metadata.uid, owner.uid);
+            const container = pod.spec.containers.find(({ name }) => name === "agent");
+            assert.ok(container, "The Sandbox must contain its native Harness");
+            const mount = container.volumeMounts.find(
+              ({ mountPath }) => mountPath === workspaceRoot,
+            );
+            assert.ok(
+              mount?.subPath,
+              "The native workspace must use an exact Agent storage subpath",
+            );
+            assert.notEqual(mount.readOnly, true);
+            const volume = pod.spec.volumes.find(({ name }) => name === mount.name);
+            assert.ok(volume?.persistentVolumeClaim?.claimName);
+            const workspaceStorage = {
+              claimName: volume.persistentVolumeClaim.claimName,
+              subPath: mount.subPath,
+            };
+            return { pod, sandbox, workspaceStorage };
+          };
+          const initialProvider = await readProviderRevision(provisioned.revisionId);
+          const firstNativeProof = await assertNativeWorkerProofInController(
+            nativeContext,
+            proofOptions,
+          );
+          assert.equal(
+            firstNativeProof.hostname,
+            initialProvider.pod.spec.hostname ?? initialProvider.pod.metadata.name,
+            "The initial native model turn and exec must run in the first revision's Harness Pod",
+          );
+
+          // A new revision replaces the provider-owned workload while retaining
+          // Agent storage.
+          const replacement = await request("POST", `${nativePath}/deploy`);
+          assert.notEqual(replacement.id, provisioned.revisionId);
+          assert.equal(replacement.harness.id, "openclaw");
+          assert.equal(replacement.harness.mode, "dedicated");
+          const replacementDeadline = Date.now() + 8 * 60_000;
+          let replacementDeployment;
+          let replacementAgent;
+          while (Date.now() < replacementDeadline) {
+            nativeContext.signal.throwIfAborted();
+            replacementDeployment = await request(
+              "GET",
+              `${nativePath}/deployments/${replacement.id}`,
+            );
+            assert.notEqual(
+              replacementDeployment.status,
+              "failed",
+              "Redeployment with the retained native workspace must succeed",
+            );
+            replacementAgent = await request("GET", nativePath);
+            if (
+              replacementDeployment.status === "succeeded" &&
+              replacementAgent.activeRevisionId === replacement.id
+            ) {
+              break;
+            }
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(2_000, Math.max(1, replacementDeadline - Date.now()))),
+            );
+          }
+          assert.equal(replacementDeployment?.status, "succeeded");
+          assert.equal(replacementAgent?.activeRevisionId, replacement.id);
+          const replacementProvider = await readProviderRevision(replacement.id);
+          assert.notEqual(replacementProvider.pod.metadata.uid, initialProvider.pod.metadata.uid);
+          assert.notEqual(
+            replacementProvider.sandbox.metadata.uid,
+            initialProvider.sandbox.metadata.uid,
+          );
+          assert.deepEqual(replacementProvider.workspaceStorage, initialProvider.workspaceStorage);
+          for (const [filename, content] of Object.entries(retainedFiles)) {
+            const file = await request("GET", `${nativePath}/workspace/files/${filename}`);
+            assert.equal(file.name, filename);
+            assert.equal(file.content, content, `Redeployment must preserve ${filename}`);
+          }
+          const replacementNativeProof = await assertNativeWorkerProofInController(
+            nativeContext,
+            proofOptions,
+          );
+          assert.equal(
+            replacementNativeProof.hostname,
+            replacementProvider.pod.spec.hostname ?? replacementProvider.pod.metadata.name,
+            "The replacement native model turn and exec must run in the new revision's Harness Pod",
+          );
+          assert.equal(replacementNativeProof.profileId, firstNativeProof.profileId);
+          assert.equal(replacementNativeProof.providerId, firstNativeProof.providerId);
+          assert.notEqual(
+            replacementNativeProof.environmentId,
+            firstNativeProof.environmentId,
+            "The replacement must serve the fresh session in a new native worker environment",
+          );
         },
       );
       const bindings = await requestLocalApi(

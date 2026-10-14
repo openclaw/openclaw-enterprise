@@ -1,5 +1,10 @@
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
-import { KubernetesObjectApi, type KubernetesObject, PatchStrategy } from "@kubernetes/client-node";
+import {
+  KubernetesObjectApi,
+  type KubernetesObject,
+  type V1Deployment,
+  PatchStrategy,
+} from "@kubernetes/client-node";
 import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
@@ -47,6 +52,7 @@ import {
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
+import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
@@ -1043,6 +1049,7 @@ function relocatedWorkspaceMountPath(mount: {
 function sandboxCommand(
   command: readonly string[],
   links: readonly OpenShellWorkspaceLink[],
+  native: boolean,
 ): readonly string[] {
   const loaderIndex = RUNTIME_WRAPPER_COMMAND.length;
   const loader = nodeProgramArguments("")[0]!;
@@ -1061,7 +1068,7 @@ function sandboxCommand(
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
   return [
     ...command.slice(0, loaderIndex),
-    `${bootstrap}${loader}`,
+    `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${loader}`,
     ...command.slice(loaderIndex + 1),
   ];
 }
@@ -1145,6 +1152,320 @@ function workspaceVolumeMounts(
     links,
     workspaceMountPaths,
   };
+}
+
+function workspacePreparationLabels(revision: Readonly<AgentRevision>): Record<string, string> {
+  return {
+    "app.kubernetes.io/managed-by": "openclaw-enterprise",
+    "openclaw.dev/namespace": revision.namespaceId,
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/revision": revision.id,
+    "openclaw.dev/workload-role": "workspace-preparation",
+  };
+}
+
+async function cleanupNativeWorkspace(
+  context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  sandbox: SandboxResourceRef,
+  expectedUid?: string,
+): Promise<void> {
+  const api = kubernetes(context);
+  const labels = workspacePreparationLabels(context.revision);
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: `${sandbox.resourceName}-workspace`, namespace: sandbox.namespaceName },
+  };
+  const readOwned = async () => {
+    context.signal.throwIfAborted();
+    let existing: V1Deployment;
+    try {
+      existing = await api.read<V1Deployment>(resource);
+    } catch (error) {
+      if (missingResource(error)) {
+        return undefined;
+      }
+      throw error;
+    }
+    context.signal.throwIfAborted();
+    if (
+      existing.metadata?.name !== resource.metadata.name ||
+      existing.metadata.namespace !== resource.metadata.namespace ||
+      Object.entries(labels).some(([key, value]) => existing.metadata?.labels?.[key] !== value)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to delete a foreign workspace preparation Deployment.",
+      );
+    }
+    const uid = nonempty(existing.metadata.uid, "Workspace preparation Deployment UID");
+    if (expectedUid !== undefined && uid !== expectedUid) {
+      throw new OpenShellSandboxConfigurationFailure("Workspace preparation Deployment changed.");
+    }
+    return uid;
+  };
+  const deadline = Date.now() + 120_000;
+  const owned = await readOwned();
+  if (owned !== undefined) {
+    expectedUid = owned;
+    context.signal.throwIfAborted();
+    try {
+      await api.delete(resource, undefined, undefined, undefined, undefined, "Foreground", {
+        preconditions: { uid: owned },
+      });
+    } catch (error) {
+      // Another cleanup may already have removed this exact Deployment.
+      if (!missingResource(error)) {
+        throw error;
+      }
+    }
+  }
+  for (;;) {
+    const remaining = await readOwned();
+    const pods = await api.list(
+      "v1",
+      "Pod",
+      sandbox.namespaceName,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      labelSelector(labels),
+    );
+    context.signal.throwIfAborted();
+    // A missing Deployment is not enough: orphaned or terminating Pods can still
+    // write the PVC. Never delete Pods directly or accept a same-name replacement.
+    if (remaining === undefined && pods.items.length === 0) {
+      return;
+    }
+    if (Date.now() >= deadline) {
+      throw new OpenShellSandboxConfigurationFailure("Workspace preparation did not stop.");
+    }
+    await delay(1_000, undefined, { signal: context.signal });
+  }
+}
+
+// TODO(openshell-private-subpath-preparation): Remove if OpenShell adds support for preparing private subpaths
+// and OCE adopts that support.
+// Use existing Deployment permissions; never grant OCC direct Pod creation for this.
+async function prepareNativeWorkspace(
+  context: SandboxHarnessContext,
+  options: OpenShellSandboxDriverOptions,
+  sandbox: SandboxResourceRef,
+): Promise<void> {
+  if (options.kubernetes.userNamespaces !== false) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "Temporary native workspace preparation requires userNamespaces: false.",
+    );
+  }
+  const api = kubernetes(context);
+  const namespace = await api.read({
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: sandbox.namespaceName },
+  });
+  // Match the pinned OpenShell driver's namespace-derived runtime identity.
+  const annotations = namespace.metadata?.annotations ?? {};
+  const rangeStart = (value: string | undefined) => {
+    if (value === undefined) {
+      return undefined;
+    }
+    const first = value.split(",")[0]!.split("/")[0]!;
+    if (!/^\d+$/u.test(first) || !Number.isSafeInteger(Number(first))) {
+      throw new OpenShellSandboxConfigurationFailure("Invalid namespace runtime identity range.");
+    }
+    return Number(first);
+  };
+  const uid = rangeStart(annotations["openshift.io/sa.scc.uid-range"]) ?? 10001;
+  const gid = uid;
+  if (uid < 1 || gid < 1) {
+    throw new OpenShellSandboxConfigurationFailure("Workspace preparation requires non-root IDs.");
+  }
+  const accounts = (options.gateway.operatorWorkspaceResources ?? []).filter(
+    (resource) => resource.kind === "ServiceAccount",
+  );
+  if (accounts.length > 1) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "OpenShell workspace requires one Sandbox ServiceAccount.",
+    );
+  }
+  const data = sandboxDataMount(options, context.requirements);
+  const workspace = workspaceVolumeMounts(context.requirements, data, context.revision.id);
+  const claims = [
+    ...new Set(workspace.mounts.filter((mount) => !mount.read_only).map((mount) => mount.name)),
+  ];
+  const paths = workspace.mounts
+    .filter((mount) => !mount.read_only)
+    .map((mount) => `/workspace-preparation/${mount.name}/${mount.sub_path}`);
+  const name = `${sandbox.resourceName}-workspace`;
+  const labels = workspacePreparationLabels(context.revision);
+  const program = `{
+    const fs = require("node:fs");
+    for (const path of ${JSON.stringify(paths)}) {
+      let current = "";
+      for (const component of path.split("/").filter(Boolean)) {
+        current += "/" + component;
+        const stat = fs.lstatSync(current, { throwIfNoEntry: false });
+        if (stat && !stat.isDirectory()) throw new Error("Preparation refuses non-directory ancestors.");
+      }
+    }
+  }
+  ${harnessWorkspacePreparationScript(paths)}
+  {
+    const fs = require("node:fs");
+    for (const path of ${JSON.stringify(paths)}) {
+      const stat = fs.lstatSync(path);
+      const saved = require("node:path").join(require("node:path").dirname(path),
+        "." + require("node:path").basename(path) + ".kubelet-created");
+      if (stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700 ||
+          fs.lstatSync(saved, { throwIfNoEntry: false })) {
+        throw new Error("Private workspace preparation did not complete.");
+      }
+    }
+    fs.writeFileSync("/preparation-status/ready", "ready");
+    setInterval(() => {}, 1000);
+  }`;
+  const podSpec = {
+    restartPolicy: "Always",
+    automountServiceAccountToken: false,
+    serviceAccountName: nonempty(
+      context.requirements.workloadIdentity?.serviceAccountName ??
+        asRecord(accounts[0]?.metadata)?.name ??
+        "openshell-sandbox",
+      "OpenShell Sandbox ServiceAccount",
+    ),
+    runtimeClassName: options.kubernetes.runtimeClassName,
+    securityContext: {
+      runAsUser: uid,
+      runAsGroup: gid,
+      runAsNonRoot: true,
+      fsGroup: gid,
+      fsGroupChangePolicy: "OnRootMismatch",
+      seccompProfile: { type: "RuntimeDefault" },
+    },
+    containers: [
+      {
+        name: "prepare",
+        image: context.requirements.image,
+        command: ["node", "-e", program],
+        readinessProbe: {
+          exec: {
+            command: ["node", "-e", 'require("node:fs").accessSync("/preparation-status/ready")'],
+          },
+          initialDelaySeconds: 1,
+          periodSeconds: 1,
+        },
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: { drop: ["ALL"] },
+        },
+        resources: {
+          requests: { cpu: "10m", memory: "64Mi" },
+          limits: { cpu: "500m", memory: "256Mi" },
+        },
+        volumeMounts: [
+          ...claims.map((claim) => ({ name: claim, mountPath: `/workspace-preparation/${claim}` })),
+          { name: "preparation-status", mountPath: "/preparation-status" },
+        ],
+      },
+    ],
+    volumes: [
+      ...workspace.volumes
+        .filter((volume) => claims.includes(volume.name))
+        .map((volume) => ({
+          name: volume.name,
+          persistentVolumeClaim: { claimName: volume.persistent_volume_claim.claim_name },
+        })),
+      { name: "preparation-status", emptyDir: { sizeLimit: "1Mi" } },
+    ],
+  };
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name, namespace: sandbox.namespaceName, labels },
+    spec: {
+      replicas: 1,
+      strategy: { type: "Recreate" },
+      selector: { matchLabels: labels },
+      template: { metadata: { labels }, spec: podSpec },
+    },
+  };
+  let existing: V1Deployment | undefined;
+  try {
+    existing = await api.read<V1Deployment>(resource);
+  } catch (error) {
+    if (!missingResource(error)) {
+      throw error;
+    }
+  }
+  if (existing === undefined) {
+    existing = await api.create<V1Deployment>(resource);
+  } else {
+    // Kubernetes reads contain SDK model instances and unset optional fields.
+    // Compare their JSON content without weakening the ownership or spec checks.
+    const observed = asRecord(JSON.parse(JSON.stringify(existing.spec?.template?.spec ?? {})));
+    const expected = asRecord(podSpec)!;
+    const observedContainer = asRecord((observed?.containers as unknown[])?.[0]);
+    const expectedContainer = asRecord((expected.containers as unknown[])[0]);
+    const observedSecurity = asRecord(observed?.securityContext);
+    if (
+      Object.entries(labels).some(([key, value]) => existing!.metadata?.labels?.[key] !== value) ||
+      existing.spec?.replicas !== 1 ||
+      existing.spec.strategy?.type !== "Recreate" ||
+      !isDeepStrictEqual(existing.spec.selector.matchLabels, labels) ||
+      !isDeepStrictEqual(existing.spec.template.metadata?.labels, labels) ||
+      observed?.initContainers !== undefined ||
+      (observed?.containers as unknown[])?.length !== 1 ||
+      observedContainer?.image !== expectedContainer?.image ||
+      observedContainer?.env !== undefined ||
+      observedContainer?.envFrom !== undefined ||
+      !isDeepStrictEqual(
+        asRecord(observedContainer?.readinessProbe)?.exec,
+        asRecord(expectedContainer?.readinessProbe)?.exec,
+      ) ||
+      !isDeepStrictEqual(observedContainer?.securityContext, expectedContainer?.securityContext) ||
+      observed?.runtimeClassName !== expected.runtimeClassName ||
+      !isDeepStrictEqual(observedContainer?.volumeMounts, expectedContainer?.volumeMounts) ||
+      observed?.serviceAccountName !== expected.serviceAccountName ||
+      observed?.automountServiceAccountToken !== false ||
+      !isDeepStrictEqual(observedSecurity, expected.securityContext) ||
+      !isDeepStrictEqual(
+        asRecord((observed?.containers as unknown[])?.[0])?.command,
+        asRecord((expected.containers as unknown[])[0])?.command,
+      ) ||
+      !isDeepStrictEqual(observed?.volumes, expected.volumes)
+    ) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing a foreign workspace preparation Deployment.",
+      );
+    }
+  }
+  const preparationUid = nonempty(existing.metadata?.uid, "Workspace preparation Deployment UID");
+  const deadline = Date.now() + 120_000;
+  let preparationFailure: unknown;
+  try {
+    for (;;) {
+      if (
+        existing.status?.availableReplicas === 1 &&
+        existing.status.observedGeneration === existing.metadata?.generation
+      ) {
+        break;
+      }
+      if (Date.now() >= deadline) {
+        throw new OpenShellSandboxConfigurationFailure(
+          `Native workspace preparation ${name} did not complete.`,
+        );
+      }
+      await delay(1_000, undefined, { signal: context.signal });
+      existing = await api.read<V1Deployment>(resource);
+    }
+  } catch (error) {
+    preparationFailure = error;
+  }
+  await cleanupNativeWorkspace(context, sandbox, preparationUid);
+  if (preparationFailure !== undefined) {
+    throw preparationFailure;
+  }
 }
 
 function sandboxDataMount(
@@ -1400,7 +1721,11 @@ function sandboxSpec(
       },
     },
     providers: sandboxProviders(options, requirements, runtimeProvider),
-    command: sandboxCommand(requirements.command, workspace.links),
+    command: sandboxCommand(
+      requirements.command,
+      workspace.links,
+      revision.harness.id === "openclaw",
+    ),
   };
 }
 
@@ -2011,6 +2336,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // exists would hit the gateway's request_id replay, which refuses a changed spec
     // (REQUEST_ID_PAYLOAD_MISMATCH) and forgets the create after 24 h (ALREADY_EXISTS).
     let existing = await client.getSandbox(selector, context.signal);
+    if (!codex && existing === undefined) {
+      await prepareNativeWorkspace(context, this.options, sandbox);
+    }
     // A refused request_id ran nothing, but its earlier call may still create the Sandbox,
     // so the next ID is tried only after GetSandbox finds none. The Sandbox name is unique
     // per Workspace, so concurrent attempts yield one Sandbox and ALREADY_EXISTS adopts it.
@@ -2188,6 +2516,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         );
       }
       const sandbox = this.sandboxRef({ namespace: context.namespace, revision: context.revision });
+      if (
+        context.revision.harness.mode === "dedicated" &&
+        context.revision.harness.id === "openclaw"
+      ) {
+        // Creation can reach Kubernetes without returning a receipt or creating a Sandbox.
+        await cleanupNativeWorkspace({ ...context, revision: context.revision }, sandbox);
+      }
       const client = this.gatewayClientForNamespace(sandbox.namespaceName);
       const workspace = workspaceName(context.namespace);
       await client.deleteSandbox(

@@ -482,6 +482,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			},
 			"kubernetes": map[string]any{
 				"runtimeClassName": openShellRuntimeClass,
+				"userNamespaces":   false,
 				"serviceAccount":   map[string]string{"mode": "gatewayConfigured"},
 				"sandboxDataMount": map[string]any{"subPath": "workspace", "mountPath": "/sandbox/enterprise", "readOnly": false},
 			},

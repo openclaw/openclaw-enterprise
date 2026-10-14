@@ -227,6 +227,15 @@ It checks that the Gateway uses the advertised WebSocket origin, maps its exact
 hostname to the installed OpenShell Gateway Service, and leaves the direct Agent
 Service inactive.
 
+Both first-Agent topologies also provision dedicated native OpenClaw through the
+guided-provisioning API with the ready credential source and pinned runtime.
+The case changes `USER.md` through the workspace API, verifies its marker through
+real model execution and `exec`, then deploys a new revision. It checks replacement
+Sandbox and Pod UIDs, the retained workspace PVC/subpath, and every owner file's
+bytes. A fresh session must complete another model turn and `exec` with the same
+marker and required worker placement. This case uses production Drivers without
+the native test bridge described below.
+
 For the exact Compose-plus-k3d startup, repeatable first-Agent command, current
 checkpoint, and symptom-based recovery notes, see
 [Resume the OpenShell first-Agent proof](openshell-first-agent.md).

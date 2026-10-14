@@ -96,6 +96,7 @@ drivers:
         networkPolicyResources: []
       kubernetes:
         runtimeClassName: openshell-sandbox
+        userNamespaces: false
         serviceAccount:
           mode: gatewayConfigured
         sandboxDataMount:
@@ -332,22 +333,23 @@ and revision; Gateway and Harness authenticate separately. See
 
 ### Writable runtime state
 
-The Sandbox contract requires bounded, revision-local writable state rather than
-a specific path or volume kind. Persistent data remains in explicit Agent-owned
-mounts.
+OpenShell mounts `/sandbox/.openclaw-runtime` from a bounded revision subpath,
+never the PVC root. Persistent categories use separate subpaths below
+`/sandbox/.openclaw-mounts`. Exact mount paths, including
+`OPENCLAW_NODE_STATE_DIR`, use a process-created `state` child so atomic writes
+avoid symlinks and permission changes on root-owned mounts. PVC quota bounds
+runtime storage; Agent deletion removes it.
 
-OpenShell mounts a revision-scoped Agent PVC subpath at
-`/sandbox/.openclaw-runtime`, never the PVC root. Persistent categories retain
-separate subpaths; non-workspace mounts live below `/sandbox/.openclaw-mounts`.
-An exact mount environment path such as `OPENCLAW_NODE_STATE_DIR` points to a
-process-created `state` child, avoiding atomic replacement through a symlink or
-permission changes on a root-owned mount. The Agent PVC quota bounds the runtime
-root, and Agent deletion removes it.
-OpenShell uses the image's existing `/tmp` for temporary files because the
-supervisor probes `TMPDIR` before the Harness can create a nested directory;
-Kubernetes ephemeral-storage limits bound that writable layer.
-Ordinary Kubernetes Compute may retain bounded `emptyDir` volumes at
-`/home/node` and `/tmp`.
+The supervisor probes the image's `/tmp`. Native OpenClaw uses its own
+runtime-home `tmp` child; the supervisor's directory permissions stay unchanged. Codex
+retains bounded ephemeral temporary storage. Native provisioning preserves
+retained entries while privatizing writable PVC subpaths in a restricted,
+revision-owned Deployment. Ownership/mode verification, foreground deletion,
+and writer termination precede Sandbox creation. This temporary preparation
+requires `kubernetes.userNamespaces: false` and the pinned Gateway's default
+identity selection, without UID/GID overrides.
+Ordinary Kubernetes Compute may use bounded `/home/node` and `/tmp` `emptyDir`
+volumes.
 
 ### Remaining qualification work
 
