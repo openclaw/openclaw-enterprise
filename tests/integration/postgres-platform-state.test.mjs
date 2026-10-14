@@ -1333,17 +1333,32 @@ test(
        FROM generate_series(1, 64) AS n`,
       [fixture.namespace.id, large],
     );
-    const fastest = async (read) => {
-      let best = Infinity;
-      let result;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+    // The bound counts the bytes the database sends for one read, which a slow or busy runner
+    // does not change: a list that reads the full documents receives about 64 x 0.9 MB, a
+    // summary list a few hundred bytes a row. Every pool client this read checks out is counted.
+    const received = async (read) => {
+      const sockets = new Map();
+      const acquired = (client) => {
+        const socket = client.connection.stream;
+        if (!sockets.has(socket)) {
+          sockets.set(socket, socket.bytesRead);
+        }
+      };
+      pool.on("acquire", acquired);
+      try {
         const started = performance.now();
-        result = await state.read(read);
-        best = Math.min(best, performance.now() - started);
+        const result = await state.read(read);
+        const ms = Math.round(performance.now() - started);
+        let bytes = 0;
+        for (const [socket, before] of sockets) {
+          bytes += socket.bytesRead - before;
+        }
+        return { result, bytes, ms };
+      } finally {
+        pool.off("acquire", acquired);
       }
-      return { result, ms: Math.round(best) };
     };
-    const revisionPage = await fastest((view) =>
+    const revisionPage = await received((view) =>
       view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, {
         limit: 100,
       }),
@@ -1355,15 +1370,23 @@ test(
     );
     assert.equal(heavyRevisions.length, 64);
     assert.equal(heavyRevisions[0].harness.mode, fixture.revision.harness.mode);
-    const presetSummaries = await fastest((view) =>
+    const presetSummaries = await received((view) =>
       view.presets.listPresetSummaries(fixture.namespace.id),
     );
     assert.ok(presetSummaries.result.length >= 64);
+    const measured = (read) => `${read.bytes} bytes in ${read.ms} ms`;
     context.diagnostic(
-      `64 x 0.9 MB: revision summary page ${revisionPage.ms} ms, Preset summaries ${presetSummaries.ms} ms`,
+      `64 x 0.9 MB: revision summary page ${measured(revisionPage)}, Preset summaries ${measured(presetSummaries)}`,
     );
-    assert.ok(revisionPage.ms < 1_000, `revision summary page took ${revisionPage.ms} ms`);
-    assert.ok(presetSummaries.ms < 1_000, `Preset summaries took ${presetSummaries.ms} ms`);
+    // Less than one stored document: neither list may carry a single snapshot or template.
+    assert.ok(
+      revisionPage.bytes > 0 && revisionPage.bytes < large.length,
+      `revision summary page received ${measured(revisionPage)}`,
+    );
+    assert.ok(
+      presetSummaries.bytes > 0 && presetSummaries.bytes < large.length,
+      `Preset summaries received ${measured(presetSummaries)}`,
+    );
     // Later starts in this database seed default Presets, which reads full templates.
     await pool.query(
       "DELETE FROM occ.presets WHERE namespace_id = $1 AND name LIKE 'Heavy preset %'",
