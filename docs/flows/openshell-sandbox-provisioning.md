@@ -288,6 +288,10 @@ process-group signaling returns `EPERM`.
 Compute verifies revision ownership. With `harnessEndpoint`, it replaces the
 initial fail-closed target with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
 and the owned k3d profile's exact host alias.
+`gatewayConfigurationDocument` renders dedicated Codex's Gateway defaults and
+main workspace as `/home/node/workspace`. The admitted Harness workspace stays
+on its Sandbox mount. Codex maps the Gateway's local path through
+`remoteWorkspaceRoot`; the Gateway does not mount Harness storage.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayNativeHookRelayConfiguration`
 derives private storage from Sandbox `harnessHome`; Compute owns relay URL/auth.
 Egress permits only the provider peer/port; the direct Agent Service stays

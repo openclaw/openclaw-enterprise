@@ -2086,7 +2086,7 @@ const deadline = setTimeout(() => {
 );
 
 test(
-  "runtime image spawns custom-provider subagents with intact native model IDs",
+  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
   imageTestOptions,
   async (t) => {
     const nativeIds = {
@@ -2133,6 +2133,10 @@ test(
       modelProvider: "openai-compatible",
     });
     assert.deepEqual(admitted, before);
+    // The Gateway prepares each Agent's writable local workspace, then the
+    // plugin maps its native cwd to the provider-owned Harness filesystem.
+    const remoteWorkspaceRoot = "/sandbox/enterprise";
+    configuration.plugins.entries.codex.config.appServer.remoteWorkspaceRoot = remoteWorkspaceRoot;
 
     // Keep the real packaged Gateway and Codex plugin; replace only the native peer
     // at its authenticated WebSocket boundary. The network-none container cannot
@@ -2156,6 +2160,7 @@ test(
     const cases = ["main", "string", "object", "alias"].map((agentId) => ({
       agentId,
       model: nativeIds[agentId === "alias" ? "parent" : agentId],
+      cwd: remoteWorkspaceRoot,
     }));
     let stdout;
     try {
@@ -2185,10 +2190,11 @@ test(
     t.diagnostic(JSON.stringify(result));
     assert.equal(result.commit, commit);
     assert.deepEqual(
-      result.observed.map(({ agentId, modelProvider, model }) => ({
+      result.observed.map(({ agentId, modelProvider, model, cwd }) => ({
         agentId,
         modelProvider,
         model,
+        cwd,
       })),
       cases.map((scenario) => ({ ...scenario, modelProvider: "openai-compatible" })),
     );

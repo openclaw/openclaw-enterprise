@@ -11153,6 +11153,23 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     },
   });
   const { driver, revision, namespace, core } = fixture;
+  // OpenShell admits its private mount as the Harness workspace. OpenClaw still
+  // needs a writable logical workspace in the separate Gateway Pod before chat
+  // dispatch; a case-insensitive main entry takes precedence over defaults.
+  revision.configuration = admitLoggingConfiguration(
+    {
+      ...revision.configuration,
+      agents: {
+        defaults: {
+          ...revision.configuration.agents.defaults,
+          workspace: providerWorkspaceRoot,
+        },
+        entries: { Main: { workspace: providerWorkspaceRoot } },
+      },
+    },
+    "info",
+  );
+  const admittedAgents = structuredClone(revision.configuration.agents);
   fixture.sandbox.harnessHome = providerHome;
   // This provider fixture declares its initializer; its implementation is proved by the
   // OpenShell startup tests. Here Compute must consult it before delivering the private setup.
@@ -11510,6 +11527,21 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     gatewayContainer.env.find(({ name }) => name === "OPENCLAW_REMOTE_WORKSPACE_ROOT").value,
     providerWorkspaceRoot,
   );
+  assert.equal(
+    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
+    "/home/node/workspace",
+  );
+  const gatewayConfigurationName = objects
+    .get(key("Deployment", gatewayName, gatewayNamespace))
+    .spec.template.spec.volumes.find(({ name }) => name === "openclaw-configuration")
+    .configMap.name;
+  const gatewayDocument = JSON.parse(
+    objects.get(key("ConfigMap", gatewayConfigurationName, gatewayNamespace)).data["openclaw.json"],
+  );
+  assert.equal(gatewayDocument.agents.defaults.workspace, "/home/node/workspace");
+  assert.equal(gatewayDocument.agents.entries.Main.workspace, "/home/node/workspace");
+  assert.deepEqual(revision.configuration.agents, admittedAgents);
+  assert.deepEqual(provisions[0].revision.configuration.agents, admittedAgents);
   const renderedHookDirectory = () => {
     const activeGateway = objects.get(key("Deployment", gatewayName, gatewayNamespace));
     const configurationName = activeGateway.spec.template.spec.volumes.find(

@@ -2374,10 +2374,25 @@ function gatewayConfigurationDocument(
   pluginRuntime?: PluginRuntimeSpec,
 ): OpenClawConfigurationDocument {
   if (nativeRuntime === undefined) {
-    if (pluginRuntime?.kind === "codex" && pluginRuntime.modelEndpoint !== undefined) {
-      return codexGatewayModelConfiguration(revision.configuration, pluginRuntime.modelEndpoint);
+    const configuration =
+      pluginRuntime?.kind === "codex" && pluginRuntime.modelEndpoint !== undefined
+        ? codexGatewayModelConfiguration(revision.configuration, pluginRuntime.modelEndpoint)
+        : revision.configuration;
+    if (revision.harness.id !== "codex" || revision.harness.mode !== "dedicated") {
+      return configuration;
     }
-    return revision.configuration;
+    // The Gateway owns a local logical workspace. Codex and file transfer map it to
+    // the Harness workspace through remoteWorkspaceRoot; that mount is not in this Pod.
+    const document = structuredClone(configuration);
+    const agents = asRecord(document.agents) ?? {};
+    agents.defaults = { ...asRecord(agents.defaults), workspace: HARNESS_WORKSPACE };
+    for (const [id, entry] of Object.entries(asRecord(agents.entries) ?? {})) {
+      const agent = asRecord(entry);
+      if (id.trim().toLowerCase() === "main" && agent !== undefined) {
+        agent.workspace = HARNESS_WORKSPACE;
+      }
+    }
+    return { ...document, agents: agents as Record<string, OpenClawConfigurationValue> };
   }
   const cloudWorkers = asRecord(revision.configuration.cloudWorkers) ?? {};
   const profiles = asRecord(cloudWorkers.profiles) ?? {};

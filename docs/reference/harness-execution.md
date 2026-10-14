@@ -63,6 +63,8 @@ supported runtime policy.
 
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
+Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
+in the separate Harness workspace.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an

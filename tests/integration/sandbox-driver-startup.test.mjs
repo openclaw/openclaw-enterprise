@@ -689,7 +689,8 @@ test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount"
     /OpenShell main Agent entry/,
   );
 
-  // The admitted revision's Gateway workspace is the mount the Harness and file transfer use.
+  // The setup snapshot retains the admitted Harness mount. Compute separately
+  // projects a local logical workspace into a dedicated Codex Gateway's ConfigMap.
   const compute = createKubernetesComputeDriver(
     conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
   );
