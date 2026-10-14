@@ -26,7 +26,8 @@ export const imageReferenceCases = [
   ["legacy Docker Hub host", `index.docker.io/repo${digest}`],
   ["tag with uppercase letters", `registry.example/repo:V1.2.3-RC${digest}`],
   ["path double hyphen", `registry.example/re--po${digest}`],
-  // After a host the path rule cannot read as a path component.
+  // A port keeps the host from reading as a path component, so `re--po` must pass the
+  // first-component rule.
   ["path double hyphen after a registry port", `registry.example:5000/re--po${digest}`],
   ["path double underscore", `registry.example/re__po${digest}`],
   // A first component with a dot names a registry; one Kubernetes cannot parse as a host is

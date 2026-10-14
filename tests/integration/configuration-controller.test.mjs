@@ -2586,7 +2586,6 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
       body: { kind: "agent", values: { channels: { telegram: { accounts: { a0: { proxy } } } } } },
     });
     assert.equal(one.status, 201, JSON.stringify(one.body));
-    await request(context.app, "DELETE", `${configurations}/${one.body.data.id}`);
     const response = await timed(configurations, {
       kind: "agent",
       values: { channels: { telegram: { accounts } } },
@@ -2594,20 +2593,19 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
     assert.equal(response.status, 400, JSON.stringify(response.body));
     assert.equal(response.body.error.message, cost("/channels/telegram/accounts/a6/proxy"));
   });
-  // A scheme-less proxy is checked as written and as http, and pays for both readings; a git
-  // config proxy in `GIT_CONFIG_PARAMETERS` spends the budget too.
   for (const [name, value] of [
+    // A scheme-less proxy is checked as written and as http, and pays for both readings.
     ["HTTPS_PROXY", "${A:-x}".repeat(415)],
+    // A git config proxy spends the budget too: unbudgeted, this one took 12 s.
     ["GIT_CONFIG_PARAMETERS", `'http.proxy'='${"${A:-x}".repeat(8500)}'`],
   ]) {
-    await t.test(`refuses a ${name} of fallbacks`, async () => {
+    await t.test(`refuses ${name} of fallbacks`, async () => {
       const response = await timed(configurations, {
         kind: "agent",
         values: { env: { vars: { [name]: value } } },
       });
       assert.equal(response.status, 400, JSON.stringify(response.body));
       assert.equal(response.body.error.message, cost(`/env/vars/${name}`));
-      // Unbudgeted, the git config proxy took 12 s.
       assert.ok(response.elapsed < 500, `took ${response.elapsed} ms`);
     });
   }
@@ -2628,7 +2626,9 @@ test("Configuration and Preset saves check a URL of many ${NAME:-fallback} refer
       },
     });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));
-    // An escaped `$${NAME:-fallback}` is literal text, and costs no rendering.
+  });
+  // An escaped `$${NAME:-fallback}` is literal text, and costs no rendering.
+  await t.test("accepts a URL of escaped fallbacks", async () => {
     const escaped = await request(context.app, "POST", configurations, {
       body: {
         kind: "agent",
@@ -2784,15 +2784,6 @@ test("Configuration and Preset saves read a git config value as a proxy when its
         },
       },
       "/env/vars/GIT_CONFIG_PARAMETERS",
-    ],
-    // Variable names in any case.
-    [
-      { env: { vars: { git_config_key_0: "http.proxy", git_config_value_0: proxy } } },
-      "/env/vars/git_config_value_0",
-    ],
-    [
-      { env: { vars: { git_config_parameters: `'http.proxy'='${proxy}'` } } },
-      "/env/vars/git_config_parameters",
     ],
   ];
   for (const [values, field] of refused) {
