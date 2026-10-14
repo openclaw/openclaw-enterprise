@@ -467,7 +467,32 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   }
 
   await store.read(async (state) => {
-    assert.deepEqual(await state.revisions.listRevisions(namespace.id, agent.id), [revision]);
+    const listed = await state.revisions.listRevisions(namespace.id, agent.id);
+    assert.deepEqual(listed, [revision]);
+    // Revision metadata lists the same revisions, in the same order, without saved settings.
+    assert.deepEqual(
+      await state.revisions.listRevisionMetadata(namespace.id, agent.id),
+      listed.map(({ id, namespaceId, agentId, revision, backendId, createdAt }) => ({
+        id,
+        namespaceId,
+        agentId,
+        revision,
+        backendId,
+        createdAt,
+      })),
+    );
+    assert.deepEqual(await state.revisions.listRevisionMetadata(identifier("ns"), agent.id), []);
+    // Agent references carry only the identity of each Agent in a live Namespace.
+    const references = (await state.agents.listAgentReferences()).filter(
+      ({ namespaceId }) => namespaceId === namespace.id,
+    );
+    assert.deepEqual(
+      references.sort((left, right) => left.id.localeCompare(right.id)),
+      (await state.agents.listAgents(namespace.id))
+        .map(({ id, namespaceId }) => ({ id, namespaceId }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    );
+    assert.ok(references.some(({ id }) => id === agent.id));
   });
 
   await store.transact(async (transaction) => {

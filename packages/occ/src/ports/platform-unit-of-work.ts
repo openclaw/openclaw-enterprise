@@ -93,6 +93,7 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "listAgentReferences",
       "createAgent",
       "lockAgent",
       "updateConfiguration",
@@ -106,6 +107,7 @@ export function bindPlatformUnitOfWork(
       "listRevisionsForBrowsing",
       "findRevision",
       "listRevisions",
+      "listRevisionMetadata",
       "createRevision",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [

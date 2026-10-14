@@ -2162,17 +2162,16 @@ export class OpenClawController {
     matches: (agent: Pick<Agent, "id" | "namespaceId">) => boolean,
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
     return this.read(async (state) => {
+      // One read of Agent identities in live Namespaces; no saved settings are decoded.
       let selected: Pick<Agent, "id" | "namespaceId"> | undefined;
-      for (const namespace of await state.namespaces.listNamespaces()) {
-        for (const agent of await state.agents.listAgents(namespace.id)) {
-          if (agent.namespaceId !== namespace.id || !matches(agent)) {
-            continue;
-          }
-          if (selected !== undefined) {
-            return undefined;
-          }
-          selected = { id: agent.id, namespaceId: agent.namespaceId };
+      for (const agent of await state.agents.listAgentReferences()) {
+        if (!matches(agent)) {
+          continue;
         }
+        if (selected !== undefined) {
+          return undefined;
+        }
+        selected = { id: agent.id, namespaceId: agent.namespaceId };
       }
       return selected;
     });
@@ -2625,7 +2624,7 @@ export class OpenClawController {
         record.status === "cancelled" ||
         record.revisionId !== undefined ||
         (record.agentId !== undefined &&
-          (await state.revisions.listRevisions(namespaceId, record.agentId)).length !== 0)
+          (await state.revisions.listRevisionMetadata(namespaceId, record.agentId)).length !== 0)
       ) {
         throw new ResourceStateConflictError(
           "Provisioning cannot retry after cancellation or deployment handoff.",
@@ -3772,8 +3771,8 @@ export class OpenClawController {
       }
       // Native admin status must know whether a newer deployment is replacing this revision.
       // Only the newest later revision is decoded strictly, so an unreadable older snapshot
-      // cannot make a healthy Agent's native admin unavailable.
-      const newest = (await state.revisions.listRevisionsForBrowsing(namespace.id, agent.id))
+      // cannot make a healthy Agent's native admin unavailable, and no other is decoded at all.
+      const newest = (await state.revisions.listRevisionMetadata(namespace.id, agent.id))
         .filter((candidate) => candidate.revision > revision.revision)
         .sort((left, right) => right.revision - left.revision)[0];
       const successor =
@@ -6959,7 +6958,7 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
-      const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
+      const previous = await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
       const repositoryCredentials = this.admitRepositoryCredentials(
         lockedAgent,
@@ -9665,7 +9664,7 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      if ((await state.revisions.listRevisions(namespace.id, agent.id)).length > 0) {
+      if ((await state.revisions.listRevisionMetadata(namespace.id, agent.id)).length > 0) {
         throw new ResourceStateConflictError(
           "Runtime credentials can be provisioned only before the Agent has historical revisions.",
         );

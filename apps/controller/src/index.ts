@@ -264,8 +264,48 @@ function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
 // builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
 // chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
 // the serializer options, so build each distinct combination once.
-function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
+//
+// Stored documents (Configuration values, Preset templates, revision snapshots) are
+// SafeJsonValue trees of up to 1 MiB each. fast-json-stringify writes that recursive anyOf by
+// running ajv on every node to pick a branch: about 160 ms per MiB against 3 ms for
+// JSON.stringify, in one synchronous call per list response (finding 1323). For any JSON value
+// the walk writes exactly JSON.stringify's bytes: the branches are the disjoint JSON types, the
+// object branch keeps every own key (additionalProperties is SafeJsonValue again), and strings,
+// numbers, booleans and null come out as JSON.stringify writes them. It strips, coerces and
+// redacts nothing. So serializers see SafeJsonValue as a typeless schema, which
+// fast-json-stringify writes with JSON.stringify. Request validation and OpenAPI keep the
+// full schema, and the fields around each document are serialized as before.
+const SAFE_JSON_VALUE_ID = "SafeJsonValue";
+const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
+
+export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
   const buildSerializerCompiler = SerializerSelector();
+  // Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
+  // content. A different schema registered under that $id keeps its own serializer.
+  const contractSafeJsonValue = new WeakMap<object, boolean>();
+  const isContractSafeJsonValue = (schema: unknown): boolean => {
+    if (typeof schema !== "object" || schema === null) {
+      return false;
+    }
+    let known = contractSafeJsonValue.get(schema);
+    if (known === undefined) {
+      known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
+      contractSafeJsonValue.set(schema, known);
+    }
+    return known;
+  };
+  const serializedSchemas = (
+    externalSchemas: Parameters<SerializerSelector.SerializerFactory>[0],
+  ): Parameters<SerializerSelector.SerializerFactory>[0] => {
+    const shared = externalSchemas as Record<string, unknown> | undefined;
+    if (shared === undefined || !isContractSafeJsonValue(shared[SAFE_JSON_VALUE_ID])) {
+      return externalSchemas;
+    }
+    return {
+      ...shared,
+      [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
+    } as typeof externalSchemas;
+  };
   const sharedSchemaIds = new WeakMap<object, number>();
   // Never pruned. That is safe only while every serializer is built at route registration,
   // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
@@ -282,7 +322,7 @@ function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
     return id;
   };
   return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(externalSchemas, options);
+    const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
     const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
     // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
     // schema that is not a plain object compiles uncached instead.
