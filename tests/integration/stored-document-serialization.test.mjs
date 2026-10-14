@@ -63,9 +63,10 @@ function serializers(operationId, status = "200") {
 const routes = Object.fromEntries(
   // List routes return summaries without stored documents (finding 1323), so only the exact
   // reads carry them.
-  ["getConfiguration", "getPreset", "getAgentRevision"].map(
-    (operationId) => [operationId, serializers(operationId)],
-  ),
+  ["getConfiguration", "getPreset", "getAgentRevision"].map((operationId) => [
+    operationId,
+    serializers(operationId),
+  ]),
 );
 
 const revision = (configuration, number = 1) => ({

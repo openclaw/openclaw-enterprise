@@ -484,19 +484,22 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     assert.deepEqual(await state.revisions.listRevisionMetadata(identifier("ns"), agent.id), []);
     // A summary page carries metadata plus the fields that tell revisions apart, never the
     // saved settings; `before` excludes the revision it names and everything newer.
-    assert.deepEqual(await state.revisions.pageRevisionSummaries(namespace.id, agent.id, { limit: 1 }), {
-      revisions: listed.map((item) => ({
-        id: item.id,
-        namespaceId: item.namespaceId,
-        agentId: item.agentId,
-        revision: item.revision,
-        backendId: item.backendId,
-        configurationId: item.configurationId,
-        configurationGeneration: item.configurationGeneration,
-        harness: item.harness,
-        createdAt: item.createdAt,
-      })),
-    });
+    assert.deepEqual(
+      await state.revisions.pageRevisionSummaries(namespace.id, agent.id, { limit: 1 }),
+      {
+        revisions: listed.map((item) => ({
+          id: item.id,
+          namespaceId: item.namespaceId,
+          agentId: item.agentId,
+          revision: item.revision,
+          backendId: item.backendId,
+          configurationId: item.configurationId,
+          configurationGeneration: item.configurationGeneration,
+          harness: item.harness,
+          createdAt: item.createdAt,
+        })),
+      },
+    );
     assert.deepEqual(
       await state.revisions.pageRevisionSummaries(namespace.id, agent.id, {
         before: revision.revision,
@@ -1583,12 +1586,14 @@ async function verifyDuplicateNameContract(store) {
   await store.read(async (state) => {
     assert.deepEqual(
       await state.presets.listPresetSummaries(namespace.id),
-      (await state.presets.listPresets(namespace.id)).map(({ id, namespaceId, name, createdAt }) => ({
-        id,
-        namespaceId,
-        name,
-        createdAt,
-      })),
+      (await state.presets.listPresets(namespace.id)).map(
+        ({ id, namespaceId, name, createdAt }) => ({
+          id,
+          namespaceId,
+          name,
+          createdAt,
+        }),
+      ),
     );
     assert.equal((await state.presets.listPresetSummaries(namespace.id)).length, 2);
     assert.deepEqual(await state.presets.listPresetSummaries(identifier("ns")), []);
