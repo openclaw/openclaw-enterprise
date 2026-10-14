@@ -215,19 +215,22 @@ for (const status of [404, 503]) {
   });
 }
 
-test("runtime status readback still parses an in-limit status", async (t) => {
-  const server = createServer((request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
+// Every 2xx is a status answer, up to 299 (which is not a redirect).
+for (const status of [200, 299]) {
+  test(`runtime status readback still parses an in-limit ${status} status`, async (t) => {
+    const server = createServer((request, response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    assert.deepEqual(await statusReadback(server.address().port), {
+      status: { revisionId: "revision-1", container: "agent" },
+      podUid: "agent-uid",
+      containerId: undefined,
+    });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  assert.deepEqual(await statusReadback(server.address().port), {
-    status: { revisionId: "revision-1", container: "agent" },
-    podUid: "agent-uid",
-    containerId: undefined,
-  });
-});
+}
 
 test("runtime status readback refuses a redirect even on a client built elsewhere (finding 1347)", async (t) => {
   // statusReadback's client keeps client-node's default HTTP library, which follows
@@ -256,21 +259,15 @@ for (const status of [300, 399]) {
   });
 }
 
-test("runtime status readback reads a 299 as status and a 400 as an error, not a redirect", async (t) => {
-  let status = 299;
+// A 4xx other than 404 is not an answer, and not a redirect: it surfaces as the client's error.
+test("runtime status readback reports a 400 as the client's error, not a redirect", async (t) => {
   const server = createServer((request, response) => {
-    response.writeHead(status, { "content-type": "application/json" });
-    response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end("{}");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  assert.deepEqual(await statusReadback(server.address().port), {
-    status: { revisionId: "revision-1", container: "agent" },
-    podUid: "agent-uid",
-    containerId: undefined,
-  });
-  // A 4xx other than 404 is not an answer: it surfaces as the client's error.
-  status = 400;
   const refused = await settled(statusReadback(server.address().port), 8_000);
+  assert.equal(refused.pending, undefined, "the readback settles");
   assert.equal(refused.error?.code, 400);
 });

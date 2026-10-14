@@ -539,9 +539,11 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
   const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const writes = [];
+  const cancel = new AbortController();
   const api = await recordingApiServer(directory, (request, response) => {
-    // A read of this Namespace never answers; only cancellation can end it.
+    // A read of this Namespace never answers; the operation is cancelled once it is in flight.
     if (request.url === "/api/v1/namespaces/held") {
+      cancel.abort();
       return;
     }
     let body = "";
@@ -550,7 +552,7 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
       body += chunk;
     });
     request.on("end", () => {
-      writes.push({ method: request.method, body: JSON.parse(body) });
+      writes.push({ method: request.method, body });
       response.writeHead(201, { "content-type": "application/json" });
       response.end(body);
     });
@@ -565,9 +567,12 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
 
   const created = await core.createNamespace({ body: namespace });
   assert.equal(created.metadata?.name, "tenant");
-  assert.deepEqual(writes, [{ method: "POST", body: namespace }]);
+  assert.deepEqual(
+    writes.map(({ method, body }) => ({ method, body: body && JSON.parse(body) })),
+    [{ method: "POST", body: namespace }],
+  );
 
-  const held = withComputeAbortSignal(AbortSignal.timeout(200), () =>
+  const held = withComputeAbortSignal(cancel.signal, () =>
     core.readNamespace({ name: "held" }),
   ).then(
     () => "answered",
@@ -575,6 +580,6 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
   );
   assert.equal(
     await Promise.race([held, delay(3_000, "still pending", { ref: false })]),
-    "TimeoutError",
+    "AbortError",
   );
 });

@@ -4745,8 +4745,11 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
       },
       numericHost(),
     ],
-    // A URL that fails for another reason too keeps the general message.
+    // A URL that fails for another reason too keeps the general message, and so does a last
+    // label that only starts or ends with digits.
     [{ baseUrl: "https://api.123:99999/v1" }, baseUrl()],
+    [{ baseUrl: "https://api.a<1/v1" }, baseUrl()],
+    [{ baseUrl: "https://api.1<a/v1" }, baseUrl()],
   ]) {
     const response = await request(context.app, "POST", configurations, {
       body: { kind: "agent", values: gateway(settings) },
