@@ -734,15 +734,35 @@ test("Harness resolution stays in step with the size of the model selections and
   // Finding 1316: every Configuration and Preset save resolves the Harness synchronously, while
   // holding the Namespace row lock. It matched every catalog row against every selected model,
   // and repeated the defaults' fallbacks for each entry without its own model, so one large
-  // valid document held the controller for seconds to minutes. Each shape below took minutes
-  // before; resolution now takes about 100 ms, under the 1 s bound.
+  // valid document held the controller for seconds to minutes.
   const count = 50_000;
   const fallbacks = Array.from({ length: count }, (_, index) => `openai/m${index + 1}`);
+  // The bound is relative to a structured clone of the same document, so a slow or busy runner
+  // does not fail it (finding 1326). At two CPUs resolution takes 1-6 clones; before, the first
+  // shape took about 2 minutes, about 5,800 clones (and about 300 at 2,000 models). The two are
+  // timed in turn up to three times, each at its best; a miss far past the bound is not noise and
+  // is not timed again.
   const timed = (values, expected) => {
-    const started = performance.now();
-    assert.equal(resolveConfiguredHarnessId(values), expected);
-    const elapsed = performance.now() - started;
-    assert.ok(elapsed < 1_000, `took ${elapsed.toFixed(0)} ms`);
+    const timings = { resolving: Infinity, cloning: Infinity };
+    for (let round = 0; round < 3; round += 1) {
+      for (const [name, work] of [
+        ["resolving", () => assert.equal(resolveConfiguredHarnessId(values), expected)],
+        ["cloning", () => structuredClone(values)],
+      ]) {
+        const started = performance.now();
+        work();
+        timings[name] = Math.min(timings[name], performance.now() - started);
+      }
+      const { resolving, cloning } = timings;
+      if (resolving < 25 * cloning || resolving > 250 * cloning) {
+        break;
+      }
+    }
+    const { resolving, cloning } = timings;
+    assert.ok(
+      resolving < 25 * cloning,
+      `resolution took ${resolving.toFixed(0)} ms, a clone ${cloning.toFixed(0)} ms`,
+    );
   };
   // 50k fallbacks, each listed in a 50k-row provider catalog that selects its runtime.
   timed(
