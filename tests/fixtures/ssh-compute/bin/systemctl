@@ -49,12 +49,12 @@ case "$operation" in
     # for the fixture's whole life and serves /readyz for the live unit configured on it,
     # so no other local process can take the port between reservation and start.
     port=$(sed -n 's/^Environment=OPENCLAW_GATEWAY_PORT=//p' "$OCC_SSH_FIXTURE_UNIT_DIRECTORY/$unit")
-    [ -n "$port" ]
+    [ -n "$port" ] || { printf '%s\n' 'Unit has no OPENCLAW_GATEWAY_PORT' >&2; exit 1; }
     # A second gateway on a live unit's port would fail to bind, leaving its unit inactive.
     for other in "$OCC_SSH_FIXTURE_UNIT_DIRECTORY"/*; do
       name=$(basename "$other")
       [ "$name" != "$unit" ] || continue
-      grep -qx "Environment=OPENCLAW_GATEWAY_PORT=$port" "$other" || continue
+      grep -qsx "Environment=OPENCLAW_GATEWAY_PORT=$port" "$other" || continue
       if kill -0 "$(cat "$OCC_SSH_FIXTURE_STATE/$name.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
     done
     node -e '

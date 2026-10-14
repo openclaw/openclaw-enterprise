@@ -136,14 +136,14 @@ function runtimeAccountName(namespace, agentId, prefix) {
 // releasing them, and letting each fake gateway bind its port later raced every other
 // local process, including outgoing connections that take ephemeral ports (finding 1160).
 // Instead each port answers as the gateway of the one live unit configured for it, and
-// resets the connection otherwise, as a closed port would refuse it.
+// otherwise resets the connection, which the helper treats like a closed port.
 async function gatewayPortRange(t, units, state) {
-  const port = (name) => `Environment=OPENCLAW_GATEWAY_PORT=${name}`;
+  const portLine = (gatewayPort) => `Environment=OPENCLAW_GATEWAY_PORT=${gatewayPort}`;
   async function served(gatewayPort) {
     let live = 0;
     for (const name of await readdir(units)) {
       const unit = await readFile(join(units, name), "utf8").catch(() => "");
-      if (!unit.split("\n").includes(port(gatewayPort))) {
+      if (!unit.split("\n").includes(portLine(gatewayPort))) {
         continue;
       }
       const pid = Number(await readFile(join(state, `${name}.pid`), "utf8").catch(() => ""));
@@ -156,7 +156,8 @@ async function gatewayPortRange(t, units, state) {
         // ESRCH: the unit's process has exited.
       }
     }
-    // Two live units on one port would have failed to bind on a real host.
+    // Two live units on one port would have failed to bind on a real host. The fixture
+    // systemctl already refuses to start the second; this check is a backstop.
     return live === 1;
   }
   // Reserve adjacent loopback ports together so the lowest-free-port assertion is meaningful.
@@ -187,17 +188,17 @@ async function gatewayPortRange(t, units, state) {
         gatewayPort = server.address().port;
         start ??= gatewayPort;
       }
-      t.after(() => Promise.all(servers.map(close)));
+      t.after(() => Promise.all(servers.map(closeServer)));
       return { start, end: start + 2 };
     } catch {
       // Another local process can hold the adjacent port; try a different ephemeral range.
-      await Promise.all(servers.map(close));
+      await Promise.all(servers.map(closeServer));
     }
   }
   throw new Error("Could not reserve a loopback port range.");
 }
 
-function close(server) {
+function closeServer(server) {
   server.closeAllConnections();
   return new Promise((resolve) => server.close(resolve));
 }
@@ -684,6 +685,7 @@ WantedBy=multi-user.target
   await writeFile(join(dir, "state", "retained-after-stop"), "persistent");
   await f.driver.stopRevision(rev);
   await f.driver.stopRevision(rev);
+  await missing(join(f.state, `${f.unit(rev)}.pid`));
   await missing(join(dir, "current"));
   await missing(join(dir, "served.json"));
   assert.equal((await stat(f.revisionDir(rev))).isDirectory(), true);
@@ -826,6 +828,8 @@ test("SSH Agent deletion frees the Agent's host port, unit, account, and state",
   await assert.rejects(f.driver.deleteAgentRuntimeCredentials(binding), /SSH host operation/);
   await missing(dir);
   await f.driver.deleteAgentRuntimeCredentials(binding);
+  // The gateway process is stopped, not just its unit file removed, so its port is free.
+  await missing(join(f.state, `${f.unit(deleted)}.pid`));
   await missing(join(f.units, f.unit(deleted)));
   await missing(join(f.root, "accounts", `${runtimeUser}.json`));
   await missing(join(f.state, "accounts", "users", runtimeUser));
