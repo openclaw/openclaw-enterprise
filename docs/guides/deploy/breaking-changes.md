@@ -50,8 +50,9 @@ localhost or localdomain name.` or `... token_url host must not be a Kubernetes
 Pod name or a name in the OpenShell gateway's namespace.` A deployment that binds such a source fails with the same
 message, or with `... token_url port must be 1 to 65535.` for a stored port `0`. `GET` on the source shows
 its stored `config.token_url`. Creation with such a `host` returns `400` for
-`/config/host` with `... host must be an exact DNS name.`, and a deployment that
-binds a stored source with such a `host` fails with the same message.
+`/config/host` with `... host must be an exact DNS name.`, and deploying or
+updating the value of a stored source with such a `host` fails with the same
+message.
 
 **Steps.** _untested_ against a live Installation:
 
