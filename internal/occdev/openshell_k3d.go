@@ -681,26 +681,30 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-			return err
-		}
-		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-		if err != nil {
-			return err
-		}
-		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-		if err != nil {
-			return err
-		}
-		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-			return err
-		}
-		values["auth"] = map[string]string{"baseUrl": fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)}
-		// OpenShell-owned Harnesses do not serve the native admin UI.
-		if state.SandboxDriver == "none" {
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
+		// Private Agent routing does not imply a published HTTPS Console. The
+		// OpenShell profile signs in through the loopback HTTP API instead.
+		if state.BrowserPort != 0 {
+			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+				return err
+			}
+			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+			if err != nil {
+				return err
+			}
+			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+			if err != nil {
+				return err
+			}
+			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+				return err
+			}
+			values["auth"] = map[string]string{"baseUrl": fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)}
+			// OpenShell-owned Harnesses do not serve the native admin UI.
+			if state.SandboxDriver == "none" {
+				values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
+			}
 		}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
