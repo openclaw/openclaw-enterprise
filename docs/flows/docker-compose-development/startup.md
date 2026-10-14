@@ -299,7 +299,7 @@ and OpenShell Gateway in k3d and selects operator workspace mode. The
 owns their placement and resources.
 
 The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
-and routing settings. A private CA signs only the console and wildcard Agent
+and routing settings. A name-constrained CA signs only the console and wildcard Agent
 hosts. `browser-proxy` terminates HTTPS on loopback; Agent `ClusterIP` Services
 remain behind Envoy.
 

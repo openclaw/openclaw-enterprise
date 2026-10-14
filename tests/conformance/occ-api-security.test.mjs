@@ -301,7 +301,13 @@ test("development admission fails closed outside explicit loopback-only developm
       cidr,
     );
   }
-  for (const browserOrigin of ["https://public.example.com", "ftp://127.0.0.1:3000"]) {
+  for (const browserOrigin of [
+    "https://public.example.com",
+    "ftp://127.0.0.1:3000",
+    "http://x.localhost",
+    "https://.localhost",
+    "http://localhost:3000/auth",
+  ]) {
     await assert.rejects(
       createFixture({ development: { browserOrigin } }),
       /HTTPS localhost subdomain/,
