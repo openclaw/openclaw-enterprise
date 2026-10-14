@@ -225,3 +225,19 @@ test("runtime status readback still parses an in-limit status", async (t) => {
     containerId: undefined,
   });
 });
+
+test("runtime status readback refuses a redirect even on a client built elsewhere (finding 1347)", async (t) => {
+  // statusReadback's client keeps client-node's default HTTP library, which follows
+  // redirects: the status read must bring its own instead of relying on the shared clients.
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    response.writeHead(302, { location: "../../../../../../../api/v1/namespaces/x/secrets/y" });
+    response.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const outcome = await settled(statusReadback(server.address().port), 8_000);
+  assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
+  assert.equal(requests.length, 1);
+});

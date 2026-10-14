@@ -62,6 +62,7 @@ namespace; dedicated Harnesses use the tenant namespace. The Driver reads a
 private endpoint, then checks the Pod name, UID, and container ID again. Missing
 or replaced Pods produce `unknown` checks. Invalid endpoint data fails the
 request. Collection has a ten-second deadline and a 64 KiB response limit.
+Kubernetes clients never follow redirects: a Pod's redirect fails the read.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:PLUGIN_RUNTIME_HELPERS`
 calls `channels.status` through OpenClaw's public Gateway SDK on demand in the

@@ -130,6 +130,7 @@ import {
 import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
+  nonRedirectingHttpLibrary,
 } from "../../kubernetes/client.ts";
 import {
   HARNESS_WORKSPACE,
@@ -1187,6 +1188,8 @@ let runtimeStatusRequestOptions: Promise<ConfigurationOptions> | undefined;
 
 function runtimeStatusOptions(): Promise<ConfigurationOptions> {
   runtimeStatusRequestOptions ??= import("@kubernetes/client-node").then((sdk) => ({
+    // The shared clients already refuse redirects; the Pod-written read does not rely on that.
+    httpApi: nonRedirectingHttpLibrary(sdk),
     middleware: [
       {
         pre: (request) => new sdk.Observable(Promise.resolve(request)),
@@ -8841,6 +8844,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // 404/503 mean the status port is not serving yet: an answer, not an outage to retry.
     const notServing = Symbol("not serving");
     const oversized = Symbol("oversized");
+    const redirected = Symbol("redirected");
     const options = await runtimeStatusOptions();
     const raw = await this.request(async () => {
       try {
@@ -8860,6 +8864,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (numericErrorStatus(error) === 404 || numericErrorStatus(error) === 503) {
           return notServing;
         }
+        // The client never follows a redirect (finding 1347). The Pod wrote this one: the
+        // status is unreadable, and a retry would get the same answer.
+        const status = numericErrorStatus(error);
+        if (status !== undefined && status >= 300 && status <= 399) {
+          return redirected;
+        }
         throw error;
       }
     });
@@ -8868,6 +8878,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     if (raw === oversized) {
       throw new DependencyUnavailableError("Runtime status returned oversized data.");
+    }
+    if (raw === redirected) {
+      throw new DependencyUnavailableError("Runtime status answered with a redirect.");
     }
     const parsed = this.boundedRuntimeStatusResponse(raw);
     const latestPods = (await this.revisionPods(revision, namespace, container)).filter(
