@@ -76,6 +76,9 @@ function clientAgentProvisioning(
   };
 }
 
+/** Revisions per list page when the caller names no limit; the route caps it at 100. */
+const REVISION_PAGE_DEFAULT = 50;
+
 function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, unknown> {
   if ("configurationReadError" in revision) {
     return { ...revision };
@@ -417,10 +420,28 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async listAgentRevisions({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;
-      const revisions = await controller.listRevisions(context.actorId, namespaceId, agentId);
+      // The route schema admits only decimal limits 1-100 and `v1.<revision number>` cursors.
+      const query = request.query as { limit?: string; cursor?: string };
+      const page = await controller.listRevisions(context.actorId, namespaceId, agentId, {
+        limit: query.limit === undefined ? REVISION_PAGE_DEFAULT : Number(query.limit),
+        ...(query.cursor === undefined ? {} : { before: Number(query.cursor.slice(3)) }),
+      });
       reply.send({
-        data: revisions.map(clientRevision),
-        meta: { requestId: request.id },
+        data: page.revisions.map((summary) => ({
+          id: summary.id,
+          namespaceId: summary.namespaceId,
+          agentId: summary.agentId,
+          revision: summary.revision,
+          backendId: summary.backendId,
+          configurationId: summary.configurationId,
+          configurationGeneration: summary.configurationGeneration,
+          harness: summary.harness,
+          createdAt: summary.createdAt,
+        })),
+        meta: {
+          requestId: request.id,
+          nextCursor: page.nextBefore === undefined ? null : `v1.${page.nextBefore}`,
+        },
       });
     },
     async getAgentRevision({ controller, context, request, reply, params, namespaceId }) {

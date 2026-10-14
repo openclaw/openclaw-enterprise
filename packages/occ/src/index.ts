@@ -16,6 +16,8 @@ import type {
   Agent,
   AgentCredentialSourceBinding,
   AgentRead,
+  AgentRevisionSummary,
+  AgentRevisionSummaryPage,
   AgentRevisionRead,
   InitialWorkspaceFiles,
   AgentDeploymentDiagnostics,
@@ -61,6 +63,7 @@ import type {
   ManagedIAMResourceKind,
   Permission,
   Preset,
+  PresetSummary,
   PresetTemplate,
   PermissionAction,
   PluginDesiredSelection,
@@ -3457,18 +3460,29 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * One page of the Agent's revisions the principal may read, newest first, as summaries: a
+   * list never decodes a saved snapshot (finding 1323). The page covers `limit` revisions
+   * numbered below `before`; unreadable ones are left out, so it can hold fewer, even none.
+   * `nextBefore` continues below the page's last revision, readable or not.
+   */
   async listRevisions(
     principalId: string,
     namespaceId: string,
     agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionRead>[]> {
+    page: { readonly before?: number; readonly limit: number },
+  ): Promise<Readonly<AgentRevisionSummaryPage>> {
+    if (!Number.isSafeInteger(page.limit) || page.limit < 1) {
+      throw new ScopeViolationError("The revision page size is invalid.");
+    }
+    if (page.before !== undefined && (!Number.isSafeInteger(page.before) || page.before < 1)) {
+      throw new ScopeViolationError("The revision page cursor is invalid.");
+    }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
     return this.read(async (state) => {
-      const readable: Readonly<AgentRevisionRead>[] = [];
-      for (const revision of await state.revisions.listRevisionsForBrowsing(
-        agent.namespaceId,
-        agent.id,
-      )) {
+      const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, page);
+      const readable: Readonly<AgentRevisionSummary>[] = [];
+      for (const revision of listed.revisions) {
         if (
           await this.canRead(principalId, {
             kind: "agent_revision",
@@ -3479,7 +3493,10 @@ export class OpenClawController {
           readable.push(revision);
         }
       }
-      return Object.freeze(readable);
+      return Object.freeze({
+        revisions: Object.freeze(readable),
+        ...(listed.nextBefore === undefined ? {} : { nextBefore: listed.nextBefore }),
+      });
     });
   }
 
@@ -4083,14 +4100,15 @@ export class OpenClawController {
     });
   }
 
+  /** The Presets the principal may read, without their templates (finding 1323). */
   async listPresets(
     principalId: string,
     namespaceId: string,
-  ): Promise<readonly Readonly<Preset>[]> {
+  ): Promise<readonly Readonly<PresetSummary>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
-      const readable: Readonly<Preset>[] = [];
-      for (const preset of await state.presets.listPresets(namespace.id)) {
+      const readable: Readonly<PresetSummary>[] = [];
+      for (const preset of await state.presets.listPresetSummaries(namespace.id)) {
         if (
           await this.canRead(principalId, {
             kind: "preset",

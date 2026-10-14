@@ -813,6 +813,20 @@ export type AgentRevisionMetadata = Pick<
   "id" | "namespaceId" | "agentId" | "revision" | "backendId" | "createdAt"
 >;
 
+/**
+ * A revision without its saved settings: metadata plus the database-checked fields that tell
+ * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ */
+export type AgentRevisionSummary = AgentRevisionMetadata &
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+
+/** One page of revision summaries, newest first, and the revision number the next page starts below. */
+export interface AgentRevisionSummaryPage {
+  readonly revisions: readonly Readonly<AgentRevisionSummary>[];
+  /** Revisions numbered below this one remain; undefined on the last page. */
+  readonly nextBefore?: number;
+}
+
 export type AgentRevisionRead =
   | AgentRevision
   | (AgentRevisionMetadata & { readonly configurationReadError: ConfigurationReadError });
@@ -1967,7 +1981,10 @@ export {
   isServiceAccountHarnessAuth,
 } from "./harness-auth.ts";
 
-export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
+export type {
+  Preset,
+  PresetSummary,
+  PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
 export { normalizePresetTemplate } from "./presets.ts";
 export {
   PRESET_JSON_MAX_BYTES,

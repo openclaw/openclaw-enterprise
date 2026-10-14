@@ -23,7 +23,11 @@ export function createPlatformReadView(
       "listNamespaces",
     ]),
     configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
-    presets: bindRepository(repositories.presets, lifetime, ["findPreset", "listPresets"]),
+    presets: bindRepository(repositories.presets, lifetime, [
+      "findPreset",
+      "listPresets",
+      "listPresetSummaries",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
@@ -54,6 +58,7 @@ export function createPlatformReadView(
       "findRevisionForBrowsing",
       "listRevisionsForBrowsing",
       "listRevisionMetadata",
+      "pageRevisionSummaries",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
       "listRoles",
