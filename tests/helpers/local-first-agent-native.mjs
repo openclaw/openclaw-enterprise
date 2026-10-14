@@ -146,7 +146,16 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
           ),
       );
       if (tool && final) {
-        const line = text(tool.content)
+        let output = text(tool.content);
+        try {
+          const result = JSON.parse(output);
+          if (typeof result?.value?.aggregated === "string") {
+            output = result.value.aggregated;
+          }
+        } catch {
+          // Plain exec output already has the diagnostic line.
+        }
+        const line = output
           .split(/\r?\n/)
           .find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
