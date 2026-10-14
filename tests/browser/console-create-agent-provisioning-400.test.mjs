@@ -44,6 +44,7 @@ async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
     id: "console-credential-gateway",
     capability: "credential_gateway",
     implementation: "test-model-source",
+    validateSourceConfig() {},
     async listSourceTypes() {
       return [
         {
@@ -66,9 +67,6 @@ async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
     },
     async updateSource() {
       assert.fail("these cases do not update a source");
-    },
-    async rotateSource() {
-      assert.fail("these cases do not rotate a source");
     },
     async attachForRevision() {
       assert.fail("these cases do not deploy a Sandbox");
