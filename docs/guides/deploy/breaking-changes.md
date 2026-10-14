@@ -29,14 +29,22 @@ binds an existing source with such a `token_url` fails. Until it is deleted,
 the gateway keeps refreshing that source against the stored `token_url`, and
 rotating it does too. DNS names, including
 in-cluster Service names such as `keycloak.idp.svc.cluster.local`, stay
-accepted.
+accepted. Names that reach the gateway Pod itself are refused too: a Pod DNS
+name (`10-42-0-5.idp.pod.cluster.local`), and, when the OpenShell Backend's
+`endpoint` or `serviceName` names the gateway's namespace, any name in that
+namespace (`openshell-gateway.openshell-system.svc`,
+`openshell-gateway-0.openshell-gateway-peer`). OCC now stores `token_url` in
+normalized form (`https://Login.Example.test:443/token` becomes
+`https://login.example.test/token`).
 
 **Who is affected.** Installations with OAuth2 credential sources whose issuer
-is addressed by IP address, a `localhost` name or a single-label name.
+is addressed by IP address, a `localhost` name, a single-label name, a Pod DNS
+name, or a name in the OpenShell gateway's namespace.
 
 **How to tell.** Creation returns `400` for `/config/token_url` with `... token_url
 host must be a DNS name with at least two labels, not an IP address or a
-localhost or localdomain name.` A deployment that binds such a source fails with the same
+localhost or localdomain name.` or `... token_url host must not be a Kubernetes
+Pod name or a name in the OpenShell gateway's namespace.` A deployment that binds such a source fails with the same
 message, or with `... token_url port must be 1 to 65535.` for a stored port `0`. `GET` on the source shows
 its stored `config.token_url`.
 

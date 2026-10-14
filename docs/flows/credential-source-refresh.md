@@ -71,6 +71,27 @@ attaching such a source fails. A `hostAliases` entry on the gateway Pod (the
 OpenShell chart's `server.hostGatewayIP`) stays reachable by its name; that is
 the deployer's choice.
 
+The check also refuses names that reach the gateway Pod itself, which egress
+NetworkPolicy does not police (finding 1356):
+
+- A Pod DNS name (`10-42-0-5.idp.pod.cluster.local`) in any namespace: CoreDNS's
+  default `pods insecure` answers it with the written address.
+- When the OpenShell Backend names the gateway's namespace
+  (`apps/controller/src/backends/openshell.ts:placement`), any name in that
+  namespace's `svc` or `pod` zone, whatever the cluster domain, and the shorter
+  names the gateway Pod's DNS search list completes into it: `<x>.<namespace>`, `<x>.<y>.<namespace>`, and
+  `<pod>.<service>-peer`, the StatefulSet Pod's own name. An `endpoint` host
+  `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
+  namespace at save. A bare `serviceName` runs in each tenant namespace, so only
+  registration and attach know it; registration's profile check refuses the
+  name before any gateway write. An IP address, node address, two-label
+  `<service>.<namespace>` or other `endpoint` host names no namespace, and only
+  Pod names are refused.
+
+Issuers in other namespaces keep their Service names. OCC stores `token_url` as
+the controller's URL parser serializes it (`new URL(token_url).href`), so the
+gateway parses the spelling that was checked.
+
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 imports a per-source OpenShell profile whose `access_token` credential declares
 the OAuth2 strategy, `token_url`, and refresh-material names. It creates the

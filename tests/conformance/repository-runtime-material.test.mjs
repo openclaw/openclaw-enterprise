@@ -622,14 +622,18 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   const agent = f.consumer();
   const gateway = f.deployments().find((deployment) => deployment !== agent);
   const gatewayConfiguration = JSON.parse(preparedNativeDocument(f));
-  // Compute adds the hook callback independently of repository credential custody.
+  // Compute owns the hook callback and Gateway's local logical workspace
+  // independently of repository credential custody.
   // Repository material must leave every other Gateway setting unchanged.
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
+  const expectedGatewayConfiguration = JSON.parse(original);
+  expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
   assert.deepEqual(
     gatewayConfiguration,
-    JSON.parse(original),
+    expectedGatewayConfiguration,
     "repository material does not change the separate Gateway's execution configuration",
   );
+  assert.equal(JSON.stringify(f.revision.configuration), original);
   const assertGatewayIsolated = (deployment) => {
     const pod = deployment.spec.template.spec;
     assert.equal(
