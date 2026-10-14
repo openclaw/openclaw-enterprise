@@ -775,11 +775,22 @@ test("Agent detail and list show a superseded deployment as neutral, not failed"
     )
     .waitFor();
   assert.equal(await activity.locator(".deployment-step-superseded").count(), 2);
+  await activity
+    .getByText("Deployment work stopped because a newer version superseded this one.", {
+      exact: true,
+    })
+    .waitFor();
+  await activity
+    .getByText("Not needed: this version did not become current.", { exact: true })
+    .waitFor();
   assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
   assert.equal(await activity.getByRole("alert").count(), 0);
-  await page
-    .locator(".version-deployment-record")
-    .getByText("Recorded outcome: superseded", { exact: true })
+  const record = page.locator(".version-deployment-record");
+  await record.getByText("Recorded outcome: superseded", { exact: true }).waitFor();
+  await record
+    .getByText(
+      /^Superseded by a newer version before this one became current \(REVISION_SUPERSEDED\)/,
+    )
     .waitFor();
   assert.equal(await page.locator(".agent-status-line").isVisible(), false);
   // Nothing names the newer version, which this reader cannot read.
@@ -809,4 +820,20 @@ test("Agent detail and list show a superseded deployment as neutral, not failed"
       /^v1 deployment is recorded as failed\. rev_.* is selected\. Live serving is unverified\.$/,
     )
     .waitFor();
+
+  // The repository credential worker ends superseded work with its own code: neutral too.
+  error = {
+    code: "REPOSITORY_REVISION_SUPERSEDED",
+    message: "Deployment was superseded by a newer revision.",
+  };
+  await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
+  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
+  await activity
+    .getByText(
+      "Superseded by a newer version before this one became current (REPOSITORY_REVISION_SUPERSEDED). This version did not fail; no action is needed.",
+    )
+    .waitFor();
+  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
+  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
 });

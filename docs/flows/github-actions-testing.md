@@ -1,14 +1,14 @@
 ---
 created: 2026-09-04
 updated: 2026-10-14
-last_updated_session: authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b
+last_updated_session: authoring-run/0733d076-37af-4fd5-ade5-869487072f47
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-GitHub Actions ends at `CI Required` and cleanup. Full CI runs twenty-two noncredentialed lanes with disposable resources, rejecting missing or skipped coverage. Verified documentation-only PRs run Suite Audit and docs checks. Neither route proves protected integrations.
+GitHub Actions ends at `CI Required` and cleanup. Full CI runs twenty-two noncredentialed lanes with disposable resources, rejecting missing or skipped coverage. Verified docs-only PRs run Suite Audit and docs checks. Neither proves protected integrations.
 
 ## Entry Points
 
@@ -88,7 +88,7 @@ Results prove only the selected lane.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
-The application lane's per-file preparer gives the native IAM barrier test its own migrated PostgreSQL database. Only that test receives its application and migrator connection details; the CLI refuses to write them to `GITHUB_ENV`. The test installs its unregistered supplier only in that disposable database. This fixture does not establish production writer participation in the barrier.
+The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
 Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the revision, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
 
@@ -155,9 +155,8 @@ file as `attempt-<run attempt>-<artifact-prefix>-<lane>`, which no aggregate
 pattern matches, so a failed attempt's cases survive a `--failed` rerun.
 
 The `k3d-fixture-configuration` lane runs `scripts/ci/memory-sampler.sh`
-beside tests to diagnose hosted-runner loss. Every 15 seconds it samples available
-memory, memory pressure, root disk space, container memory and the largest
-processes by executable name, excluding arguments and environment. Minute
+beside tests to diagnose runner loss. Every 15 seconds it samples available and container memory, memory pressure,
+root disk and top process RSS by name, excluding arguments and environment. Minute
 summaries reach the job log; failed or cancelled lanes print the last samples.
 Each attempt uploads at most about 1 MiB as
 `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`. Sampler and upload errors
@@ -171,16 +170,16 @@ prove cleanup. The separate runtime-images test tag, other resource kinds and
 private environment values are excluded. Export, upload or runner failure can
 prevent retention.
 
-Fixture bootstrap failures upload `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`
-separately. Diagnostics survive cluster/private-state cleanup for upload but
-cannot satisfy required test results.
+Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
+They survive cluster/private-state cleanup but cannot satisfy required test results.
 
 Per-file cleanup releases its database; job cleanup removes state-owned resources.
 Deleting an owned `k3d-cluster` removes its Collector Namespace and RBAC. Logging
-cleanup independently removes its local Docker backend and JSONL/config directory,
-even when Kubernetes is unavailable. Cleanup failure fails the check. Private
-state remains usable only on its runner host and path. User databases, contexts,
-unrelated containers and global images are outside that ownership.
+cleanup removes its Docker backend and JSONL/config directory even without
+Kubernetes. Cleanup failure fails the check except for
+[hosted QA image warnings](github-actions-testing/preparation.md). Private
+state stays on its runner host and path; user databases, contexts, unrelated
+containers and other image references remain outside that ownership.
 
 `scripts/ci/cleanup.mjs:execFile` waits for exit and drained output.
 On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
@@ -229,6 +228,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 16:37: Document hosted QA image cleanup. (authoring-run/0733d076-37af-4fd5-ade5-869487072f47 - 1c406aef)
 
 - 2026-10-14 10:19: Retain cleanup ownership. (authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b - 10f34280f56dc2375f48df9d2161024520a35882)
 

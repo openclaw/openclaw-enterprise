@@ -115,38 +115,9 @@ OCC_TEST_OPENSHELL_K3D_REAL=1 \
 ```
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
-Gateway Drivers. They register an `openai` credential source through the
-production API from an OCC Secret holding `OPENAI_API_KEY`, check its live
-`ready` status, and bind the Agent with `credential_source`. The Agent service
-principal receives `operate` on the source only, not on the Secret.
-
-The default Codex scenario uses the production Driver path. Compute sends only
-`APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
-one-shot node setup credential through a revision-owned provider. The test
-checks that the raw app-server token and model key are absent from Pod specs and
-nonsecret provider data. It then verifies missing, incorrect, and correct bearer
-requests through the exposed route and runs the real model and tool turns from
-the Agent Gateway. Exact workload identity, approved mounts and privileges,
-source withdrawal, denied egress, replacement, and cleanup remain required.
-Missing prerequisites fail rather than skip.
-
-After the tool-source turns, the Codex scenario deploys a second Agent that
-attaches one of the tool sources. When the first Agent withdraws that source,
-the second Agent still receives its token. The scenario then checks that:
-
-- no Pod of the Agent mounts or references the stored source Secret;
-- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
-  files hold no upstream credential. Files are matched outside the Pod, so no
-  credential-derived value enters it;
-- deployment diagnostics, runtime status and logs, and the Namespace's audit
-  events hold neither a credential nor an OpenShell placeholder.
-
-The Codex scenario then updates the source through the API, withdraws it from
-the running Agent, waits for `revoked`, and expects the next model turn in the
-same process to fail. It accepts any turn failure, so it does not yet tell a
-credential rejection from a transport error or a restarted process. Full
-integration lanes run only from `main`, so this proof runs after a withdrawal
-change lands, not on its pull request.
+Gateway Drivers, register an `openai` credential source through the production
+API, and run real model turns. See
+[What the OpenShell Sandbox suite proves](openshell-coverage.md) for each check.
 
 `OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` to verify
 that the native Harness requests no inbound OpenShell service exposure and

@@ -53,7 +53,8 @@ drivers:
 
 `binaries` is required and closed: a nonempty list of absolute executable paths
 inside the Harness image. OpenShell releases a credential only to requests made
-by those binaries. Use the exact native Codex executable, not a wrapper script.
+by those binaries and the processes they start. Use the exact native Codex
+executable, not a wrapper script.
 The development profile lists the pinned runtime's x64 and ARM64 executables;
 it does not infer the container architecture from the launcher host.
 A stale path fails the Codex startup model probe: the deployment fails with
@@ -74,8 +75,9 @@ Changing binary lists rewrites profiles on the next update, deployment, or
 repair; until that succeeds, removed binaries retain access and deployment stays
 pending. To cut access immediately, withdraw or delete the source. Mixed-version
 controller replicas can overwrite each other's lists. Removing `toolBinaries`
-blocks new use of tool sources (`409`) because OpenShell treats an empty list as
-any binary; existing sources remain readable and deletable.
+blocks tool-source registrations, updates, deployments, and repairs with
+`409 RESOURCE_CONFLICT`, because OpenShell treats an empty list as any binary.
+Existing sources remain readable and deletable.
 
 Startup rejects the selection when:
 
@@ -213,7 +215,9 @@ keeps the previous value until it restarts.
 `removeSource` deletes the owned provider, confirms that it is gone, and deletes
 the source's profile. OpenShell cannot delete a Workspace that still holds profiles.
 
-The source ID identifies its own profile even when the persisted endpoint is invalid. Deletion refuses an unowned provider; unknown source types and gateway errors also remain failures.
+The source ID identifies its profile even when the persisted endpoint is invalid.
+Deletion refuses an unowned provider; unknown source types and gateway errors
+remain failures.
 
 For a revision, `attachForRevision` brings each source's profile up to date and
 returns its provider name. It fails when two of the revision's sources would use
@@ -251,9 +255,7 @@ and HTTPS Responses; other Harnesses retain the default endpoint limit.
   which denies workload-initiated connections. The cluster network plugin must
   enforce NetworkPolicy.
 - **TLS inspection.** The proxy terminates TLS for the selected profile endpoint,
-  so Codex must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. The
-  Codex startup probe keeps `SSL_CERT_FILE` and `SSL_CERT_DIR` in its otherwise
-  minimal environment for this reason. Do not add an uninspected `tls: skip` policy
+  so Codex must trust the Sandbox CA that OpenShell provides through `SSL_CERT_FILE`. Do not add an uninspected `tls: skip` policy
   for the selected model endpoint in the Sandbox's `policy.networkPolicies`; it conflicts
   with the profile.
 - **Namespaces.** Sources never cross OCC Namespaces.
@@ -271,6 +273,12 @@ not from OpenShell administrators or OCC itself. With the selected gateway:
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
   the endpoint selected by the source.
+- **Commands the Harness runs.** OpenShell matches `binaries` against the
+  calling process and its ancestors. A command Codex starts that reads the
+  placeholder from an ancestor's environment gets the key inserted at the
+  source's endpoint. It cannot read the key or use it elsewhere; other hosts
+  answer `403 credential_endpoint_mismatch`. Running Agent tools in a separate
+  Sandbox would remove this use.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can
   update a source's profile to add hosts or binaries while Sandboxes use it,
@@ -298,12 +306,11 @@ not from OpenShell administrators or OCC itself. With the selected gateway:
 
 ## Verification
 
-The [OpenShell real Sandbox suite](../../testing/openshell.md#openshell-sandbox)
-registers a source through the API, deploys a dedicated Codex Agent that uses it,
-and checks that every Harness process sees only the placeholder. It also binds a
-`bearer-token` source to an in-cluster endpoint, proves the substituted token
-arrives, and withdraws it from the running Agent while model turns continue. The Sandbox
-Driver startup integration covers Backend membership and selection rules.
+The [OpenShell real Sandbox suite](../../testing/openshell-coverage.md) checks
+model and tool-source delivery, credential routing, untrusted upstreams, and
+withdrawal through the API and a dedicated Codex Agent. That page records proof
+limits. The Sandbox Driver startup integration covers Backend membership and
+selection rules.
 
 ## Troubleshooting
 

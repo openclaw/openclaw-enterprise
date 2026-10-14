@@ -597,3 +597,54 @@ test("Kubernetes API clients do not follow a redirect from the API server (findi
   assert.equal(listed?.code, 302);
   assert.equal(api.requests.length, 1);
 });
+
+// The non-redirecting library replaces client-node's own for every client (finding 1347), so it
+// must still send each write's method and body, and stop a read when its operation is cancelled.
+test("Kubernetes API clients send write bodies and honor cancellation through the shared library", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const writes = [];
+  const cancel = new AbortController();
+  const api = await recordingApiServer(directory, (request, response) => {
+    // A read of this Namespace never answers; the operation is cancelled once it is in flight.
+    if (request.url === "/api/v1/namespaces/held") {
+      cancel.abort();
+      return;
+    }
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      writes.push({ method: request.method, body });
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(body);
+    });
+  });
+  t.after(() => api.close());
+  const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
+    await writeTokenKubeconfig(directory, api),
+    (message) => new Error(message),
+  );
+  const core = new sdk.CoreV1Api(clientConfiguration);
+  const namespace = { apiVersion: "v1", kind: "Namespace", metadata: { name: "tenant" } };
+
+  const created = await core.createNamespace({ body: namespace });
+  assert.equal(created.metadata?.name, "tenant");
+  assert.deepEqual(
+    writes.map(({ method, body }) => ({ method, body: body && JSON.parse(body) })),
+    [{ method: "POST", body: namespace }],
+  );
+
+  const held = withComputeAbortSignal(cancel.signal, () =>
+    core.readNamespace({ name: "held" }),
+  ).then(
+    () => "answered",
+    (error) => error.name,
+  );
+  assert.equal(
+    await Promise.race([held, delay(3_000, "still pending", { ref: false })]),
+    "AbortError",
+  );
+});
