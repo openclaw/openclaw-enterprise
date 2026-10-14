@@ -1320,6 +1320,277 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
 });
 
+test("Harness switches preserve unrestricted and explicit native plugin allowlists through Agent creation", async (t) => {
+  for (const allow of [
+    undefined,
+    [],
+    ["knowledge"],
+    ["knowledge", "codex"],
+    ["codex"],
+    ["knowledge", "codex", "openai"],
+  ]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Native plugin settings", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
+    const harnessAuth = { method: "api_key", source: secret.ref };
+    const values = nativeValues("preserved-native-plugin");
+    values.plugins.deny = ["blocked-plugin"];
+    if (allow !== undefined) {
+      values.plugins.allow = allow;
+    }
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Native plugins",
+        template: {
+          agent: { name: "Native plugin Agent", executionMode: "embedded", harnessAuth },
+          configuration: { values },
+        },
+      },
+    });
+    assert.equal(preset.status, 201);
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+
+    // Harness wiring changes must neither grant plugins nor erase an authored restriction.
+    await harness.selectOption("codex");
+    const dedicated = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(dedicated.plugins.allow, allow);
+    assert.deepEqual(dedicated.plugins.deny, values.plugins.deny);
+    assert.deepEqual(dedicated.plugins.entries.knowledge, values.plugins.entries.knowledge);
+    assert.equal(dedicated.plugins.entries.codex.enabled, true);
+    await harness.selectOption("openclaw");
+    assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+
+    if (allow?.length && !allow.includes("openai")) {
+      // Retaining a restriction must not create an OpenClaw Agent with its provider disabled.
+      const requests = apiRequests(page, fixture.origin);
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "plugins.allow must include openai" })
+        .waitFor();
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+      continue;
+    }
+
+    // Save through the ordinary Agent form and read its owned Configuration back from the API.
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const response = await createdResponse;
+    assert.equal(response.status(), 201);
+    const created = (await response.json()).data;
+    assert.equal(created.executionMode, "embedded");
+    assert.deepEqual(created.harnessAuth, harnessAuth);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    assert.deepEqual(saved.data.values.plugins, values.plugins);
+  }
+});
+
+test("Default Codex policy survives Harness switches, explicit edits and restored drafts", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex policy round-trip", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  // Explicit Preset selection supports restored drafts; the starter shortcut deliberately discards them.
+  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const harness = page.getByLabel("Harness", { exact: true });
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("openclaw");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, ["codex"]);
+
+  // An operator's explicit unrestricted policy replaces the preset restriction, even after navigation.
+  const edited = JSON.parse(await configuration.inputValue());
+  edited.plugins.allow = [];
+  await openAdvancedSettings(page);
+  await configuration.fill(JSON.stringify(edited));
+  await page.goBack();
+  await page.goForward();
+  await openAdvancedSettings(page);
+  await harness.selectOption("openclaw");
+  await harness.selectOption("codex");
+  assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins.allow, []);
+});
+
+test("Codex policy conflicts stop Console creation before writes and allow an explicit repair", async (t) => {
+  for (const policy of [{ allow: ["knowledge"] }, { deny: ["codex"] }, { enabled: false }]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Codex policy conflict", { ready: true });
+    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+    const values = nativeValues("policy-conflict");
+    Object.assign(values.plugins, policy);
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: {
+        name: "Restricted plugins",
+        template: {
+          agent: {
+            name: "Policy conflict Agent",
+            executionMode: "embedded",
+            harnessAuth: { method: "api_key", source: secret.ref },
+          },
+          configuration: { values },
+        },
+      },
+    });
+    assert.equal(preset.status, 201);
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /Configuration setting plugins\..*Codex Harness/ })
+      .waitFor();
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    const blocked = JSON.parse(await configuration.inputValue());
+    for (const [key, value] of Object.entries(policy)) {
+      assert.deepEqual(blocked.plugins[key], value);
+    }
+    // Permission is changed only by the explicit JSON edit, after which the ordinary API save succeeds.
+    blocked.plugins.allow = ["knowledge", "codex"];
+    blocked.plugins.deny = [];
+    blocked.plugins.enabled = true;
+    await configuration.fill(JSON.stringify(blocked));
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const response = await createdResponse;
+    assert.equal(response.status(), 201, await response.text());
+    const created = (await response.json()).data;
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.deepEqual(saved.data.values.plugins, blocked.plugins);
+  }
+});
+
+test("Default Codex Preset refuses a blocked OpenClaw provider before writes", async (t) => {
+  for (const provider of ["openai", "anthropic"]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`OpenClaw ${provider} policy`, { ready: true });
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+    const starter = presets.data.find((preset) => preset.name === "default-codex");
+    await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    if (provider === "openai") {
+      await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+    } else {
+      await page.getByLabel("Provider", { exact: true }).selectOption(provider);
+    }
+    await page.getByLabel("Agent name", { exact: true }).fill(`OpenClaw ${provider} Agent`);
+    await enterManualModel(
+      page,
+      "synthetic-provider-key",
+      provider === "openai" ? "gpt-6-astra" : "claude-opus-5-5",
+    );
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const values = JSON.parse(await configuration.inputValue());
+    assert.deepEqual(values.plugins.allow, ["codex"]);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: `plugins.allow must include ${provider}` })
+      .waitFor();
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+
+    // Normalized duplicate entries must refuse before any Secret, Configuration or Agent write.
+    values.plugins.allow.push(provider);
+    for (const alias of [provider.toUpperCase(), ` ${provider} `]) {
+      for (const enabled of [true, false, undefined]) {
+        for (const reverse of [false, true]) {
+          const entries = [
+            [provider, { enabled: true }],
+            [alias, enabled === undefined ? {} : { enabled }],
+          ];
+          values.plugins.entries = Object.fromEntries(reverse ? entries.reverse() : entries);
+          await configuration.fill(JSON.stringify(values));
+          await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+          await page
+            .getByRole("alert")
+            .filter({
+              hasText: `plugins.entries must contain at most one entry for ${provider}`,
+            })
+            .waitFor();
+          assert.deepEqual(nonAuthWriteRequests(requests), []);
+          assert.deepEqual(
+            JSON.parse(await configuration.inputValue()).plugins,
+            JSON.parse(JSON.stringify(values.plugins)),
+          );
+        }
+      }
+    }
+    values.plugins.entries = { [` ${provider.toUpperCase()} `]: { enabled: false } };
+    await configuration.fill(JSON.stringify(values));
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: `plugins.entries.${provider}.enabled` })
+      .waitFor();
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    // Explicit repair leaves one enabled alias and preserves unrelated entries.
+    values.plugins.entries = {
+      [` ${provider.toUpperCase()} `]: { enabled: true },
+      knowledge: { enabled: false },
+      " KNOWLEDGE ": { enabled: true },
+    };
+    // Explicit permission repair preserves the original restriction and allows ordinary creation.
+    await configuration.fill(JSON.stringify(values));
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const response = await createdResponse;
+    assert.equal(response.status(), 201, await response.text());
+    const created = (await response.json()).data;
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.deepEqual(saved.data.values.plugins, values.plugins);
+  }
+});
+
 test("Dedicated OpenClaw Presets preserve custom provider transport across execution mode changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -3020,4 +3291,62 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
     false,
   );
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+});
+
+test("Console rejects duplicate Codex entries in either order before writes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Codex alias admission", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  await page.getByLabel("Preset template", { exact: true }).selectOption(starter.id);
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Agent name", { exact: true }).fill("Codex alias Agent");
+  await enterManualModel(page, "synthetic-provider-key", "gpt-5.1");
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const values = JSON.parse(await configuration.inputValue());
+  const canonical = structuredClone(values.plugins.entries.codex);
+  const requests = apiRequests(page, fixture.origin);
+  for (const alias of [" CODEX ", "CoDeX"]) {
+    for (const enabled of [true, false, undefined]) {
+      for (const reverse of [false, true]) {
+        const entries = [
+          ["codex", canonical],
+          [alias, enabled === undefined ? {} : { enabled }],
+        ];
+        values.plugins.entries = Object.fromEntries(reverse ? entries.reverse() : entries);
+        await configuration.fill(JSON.stringify(values));
+        await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+        await page
+          .getByRole("alert")
+          .filter({ hasText: "plugins.entries must contain at most one entry for codex" })
+          .waitFor();
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+      }
+    }
+  }
+  values.plugins.entries = {
+    " CODEX ": canonical,
+    knowledge: { enabled: false },
+    " KNOWLEDGE ": { enabled: true },
+  };
+  await configuration.fill(JSON.stringify(values));
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await responsePromise;
+  assert.equal(response.status(), 201, await response.text());
+  const created = (await response.json()).data;
+  const saved = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.deepEqual(saved.data.values.plugins, values.plugins);
 });

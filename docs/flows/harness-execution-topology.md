@@ -1,26 +1,26 @@
 ---
 created: 2026-08-21
-updated: 2026-10-10
-last_updated_session: agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110
+updated: 2026-10-14 10:10
+last_updated_session: authoring-run/efd9df0c-50ba-40c9-a281-10996f9292cf
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes native Harness policy, placement and authentication in an
-AgentRevision. Compute prepares its workloads, publishes guarded routes and
-retires predecessors before exactly-once activation audit.
+Deployment freezes Harness policy, placement and authentication. Compute prepares
+workloads, publishes guarded routes and retires predecessors before exactly-once
+activation audit.
 
 ## Entry Points
 
-- Trigger: exact-Agent `POST /namespaces/:namespaceId/agents/:agentId/deploy` and durable revision
+- Trigger: exact-Agent `POST /namespaces/:namespaceId/agents/:agentId/deploy` and revision
   reconciliation.
 - Source: `packages/occ/src/index.ts:OpenClawController.deployAgent` and
   `apps/controller/src/worker.ts:ControllerWorker`.
-- Assumptions: authorized actor; ready Namespace; same-Namespace native agent Configuration;
-  explicit Agent execution mode; and a supported `harnessAuth` binding. Managed methods reference an authorized OCC
-  Secret API key or a Driver-issued account-owned access-token credential.
+- Assumptions: authorized actor, ready Namespace, same-Namespace native Configuration,
+  explicit execution mode, and supported `harnessAuth`. Managed methods require an authorized
+  OCC Secret API key or Driver-issued account-owned access token.
 
 ## Flow
 
@@ -57,22 +57,22 @@ graph TD
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC locks the authorized Agent and Configuration, resolves `agentRuntime.id`,
-and validates primary/fallback routes and Harness modes. Fallbacks preserve native order,
-primary provider and Harness. Only unambiguous built-in configuration defaults
-to embedded OpenClaw. Missing/ambiguous policies, unsupported IDs and incompatible
-modes fail closed.
+OCC locks authorized Agent/Configuration, resolves `agentRuntime.id`, and validates
+routes/modes. Fallbacks retain order, primary provider and Harness.
+Only unambiguous built-in configuration defaults to embedded OpenClaw;
+missing/ambiguous policies, unsupported IDs and incompatible modes fail closed.
 Compute's `apps/controller/src/drivers/compute/native-gateway-transport.ts:validatePlaintextNativeGateway`
 rejects `gateway.tls.enabled: true` before revision creation and preparation:
 Docker, SSH and Kubernetes require native HTTP.
-The admitted revision immutably
-captures its native configuration, approved harness identity/version, explicit mode, Compute
-selection, and Agent ServicePrincipal. Production admits approved
-`openclaw`/`embedded` and `codex`/`dedicated`, and `openclaw`/`dedicated` only when
-the selected SandboxDriver provisions Harnesses with networking, filesystem, and
-process containment. An associated
-`access_token` additionally requires dedicated Codex; the frozen account
-contains only its OCC identity, credential kind, and opaque Secret reference.
+Revisions freeze Configuration, approved Harness identity/version, mode, Compute,
+and Agent ServicePrincipal. Production supports embedded OpenClaw and dedicated
+Codex; dedicated OpenClaw needs SandboxDriver containment of networks, filesystems,
+and processes. Access tokens require dedicated Codex; snapshots retain OCC identity,
+credential kind, and opaque Secret reference.
+`apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts:requireCodexPluginPolicy`
+validates Codex policy before save/provisioning/deployment.
+Duplicate normalized Codex entries are refused: storage cannot preserve order.
+Permissions remain unchanged.
 
 ### 2. Claim work and realize the approved topology
 
@@ -318,6 +318,11 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Changelog
 
+- 2026-10-14 10:10: Refuse duplicates. (authoring-run/efd9df0c-50ba-40c9-a281-10996f9292cf - bf3ad81987031ca135b06d7f2055b497e61f00dc)
+
+- 2026-10-14 09:44: Check normalized entries. (authoring-run/1bb49df0-7a5c-40a9-b668-f5ff3123d24b - a765fb077f910730403ce5c03439907a5cf9ba4b)
+
+- 2026-10-13 15:58: Reject Codex policy conflicts. (authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de - 438103e91)
 - 2026-10-10 04:41: Reconcile endpoint validation and routing with credential refresh, native approval and readiness contracts. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
 - 2026-10-10 02:49: Refuse native listener TLS before deployment work. (authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628 - 5d303757fb488fe34c8cbb9e7b6b975921fc1061)

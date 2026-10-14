@@ -62,6 +62,8 @@ import {
   withYieldingComputeStop,
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { canonicalProvisioningJson } from "../../packages/occ/src/agent-provisioning.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
@@ -4746,6 +4748,10 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
 test("agent provisioning validation reuses native trusted-proxy admission before cluster access", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
+  // Provisioning checks the selected Harness, so the plan carries its required native model policy.
+  revision.configuration.agents.defaults.models = {
+    "codex/gpt-5": { agentRuntime: { id: "codex" } },
+  };
   assert.deepEqual(driver.agentProvisioning.executionModes, ["dedicated"]);
 
   assert.doesNotThrow(() =>
@@ -6596,7 +6602,14 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const provisioning = { id: "codex", version: "provisioning", mode: "dedicated" };
   const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
-  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const base = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5",
+        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
   const embeddedBase = { agents: { defaults: { model: "openai/gpt-5" } } };
   const named = (setting, requirement) => (error) =>
     error instanceof ConfigurationHarnessError &&
@@ -20026,4 +20039,47 @@ test("Kubernetes embedded setup uses a Main roster entry's workspace", async () 
     containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
     false,
   );
+});
+
+test("Codex plugin admission is invariant under canonical provisioning key order", () => {
+  const driver = createTestKubernetesComputeDriver("plugin-order-admission");
+  const admit = (configuration) =>
+    driver.validateAgentProvisioning({ executionMode: "dedicated", configuration });
+  for (const alias of [" CODEX ", "CoDeX", " codex "]) {
+    for (const canonicalEnabled of [true, false]) {
+      for (const aliasEntry of [{ enabled: true }, { enabled: false }, {}, null]) {
+        const first = createHarnessConfiguration("codex", "gpt-5.1");
+        first.plugins.entries.codex.enabled = canonicalEnabled;
+        first.plugins.entries[alias] = aliasEntry;
+        const second = structuredClone(first);
+        second.plugins.entries = Object.fromEntries(
+          Object.entries(second.plugins.entries).reverse(),
+        );
+        assert.equal(canonicalProvisioningJson(first), canonicalProvisioningJson(second));
+        for (const values of [first, second, JSON.parse(canonicalProvisioningJson(first))]) {
+          const before = structuredClone(values);
+          assert.throws(
+            () => admit(values),
+            /plugins.entries must contain at most one entry for codex/,
+          );
+          assert.deepEqual(values, before);
+        }
+      }
+    }
+  }
+  // Single canonical and alias entries keep their authored identity; unrelated entries are ignored.
+  for (const key of ["codex", " CODEX ", "CoDeX"]) {
+    const values = createHarnessConfiguration("codex", "gpt-5.1");
+    values.plugins.entries = {
+      [key]: values.plugins.entries.codex,
+      knowledge: { enabled: false },
+      " KNOWLEDGE ": { enabled: true },
+    };
+    const before = structuredClone(values);
+    assert.doesNotThrow(() => admit(values));
+    assert.doesNotThrow(() => admit(JSON.parse(canonicalProvisioningJson(values))));
+    assert.deepEqual(values, before);
+    values.plugins.entries[key].enabled = false;
+    assert.throws(() => admit(values), /plugins.entries.codex.enabled/);
+  }
 });

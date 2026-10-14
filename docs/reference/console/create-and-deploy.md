@@ -25,10 +25,10 @@ Console withholds Dedicated until an operator declares a compatible custom image
 [Sandbox delivery limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
 still block initial workspace files and Secret-backed environment projection.
 
-1. Sign in, select the intended Namespace, open **Agents**, and select
+1. Sign in, select the Namespace, open **Agents**, then select
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
-   Review defaults and choose an existing or new model Secret.
+   Review defaults and choose a model Secret.
    **Start with default Preset** loads `default-codex`; **Start without Preset**
    skips Presets.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
@@ -53,7 +53,12 @@ still block initial workspace files and Secret-backed environment projection.
 4. Confirm the Installation, credential, and runtime support the chosen model. Primary and fallback
    models must use the same supported provider and Harness. For custom settings,
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
-   **Reset template** replaces them.
+   **Reset template** replaces them. Harness switches preserve native `plugins.allow`
+   and `plugins.deny`; only Codex's runtime entry changes. Missing or empty allowlists
+   remain unrestricted. Remove duplicate required-plugin entries (ignoring case and
+   surrounding whitespace) explicitly. If policy blocks the selected plugin, edit
+   **Configuration JSON** or choose a permitted Harness/provider.
+   Native Configuration is separate from Agent plugin policies.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their access levels. Kubernetes supports Codex (Dedicated) or OpenClaw
    (Embedded), without a Sandbox Driver. Dedicated OpenClaw requires a Sandbox

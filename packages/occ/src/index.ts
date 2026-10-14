@@ -1246,8 +1246,8 @@ function validateWorkspaceSetupTopology(
 // The Compute Driver refuses a plan it cannot provision (execution mode, gateway settings,
 // routing). Report that as a refusal of this plan, as validateHarnessAuth does, so the API
 // answers 409 rather than 500 and the worker does not retry a plan every attempt will refuse.
-// A gateway setting in the caller's own Configuration keeps the Driver's reason, which names
-// that setting; any other refusal gets fixed text and keeps its reason for the API log.
+// Named gateway and Harness Configuration errors keep their actionable reasons; any other
+// refusal gets fixed text and keeps its reason for the API log.
 function validateComputeAgentProvisioning(
   compute: ComputeDriver,
   executionMode: HarnessExecutionMode,
@@ -1258,7 +1258,8 @@ function validateComputeAgentProvisioning(
   } catch (error) {
     if (
       error instanceof DependencyUnavailableError ||
-      error instanceof ComputeGatewaySettingError
+      error instanceof ComputeGatewaySettingError ||
+      error instanceof ConfigurationHarnessError
     ) {
       throw error;
     }

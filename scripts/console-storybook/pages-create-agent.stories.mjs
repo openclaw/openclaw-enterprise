@@ -193,6 +193,12 @@ export const RepositoryExactSearch = story("createRepositoriesExactSearch");
 export const RepositoryCustom = story("createRepositoriesCustom");
 export const RepositoryPolicyConflict = story("createRepositoriesPolicyConflict");
 
+export const NativePluginsUnrestricted = story("createNativePluginsUnrestricted");
+export const NativePluginsAllowlist = story("createNativePluginsAllowlist");
+export const NativePluginsEmptyAllowlist = story("createNativePluginsEmptyAllowlist");
+export const NativePluginsCodexRoundTrip = story("createNativePluginsCodexRoundTrip");
+export const NativePluginsDenyConflict = story("createNativePluginsDenyConflict");
+
 export const CreateStandardOpenclawPreset = {
   ...story("createStandardOpenclawPreset"),
   name: "Standard OpenClaw preset",

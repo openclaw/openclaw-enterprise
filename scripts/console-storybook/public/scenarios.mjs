@@ -9,6 +9,22 @@ const candidateVersion =
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
+const nativePluginForm = [
+  { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+  { selector: "#preset-variable-name", value: "Native plugin example" },
+  { selector: "#preset-variable-model", value: "gpt-5.1" },
+  { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
+  click("Use Preset"),
+  { selector: ".launch-advanced summary", click: true },
+];
+const nativePlugins = {
+  entries: { knowledge: { enabled: true, config: { collection: "team-notes" } } },
+};
+const nativePluginSteps = [
+  "Inspect Configuration JSON, then select Codex. The allowlist and denylist stay unchanged; only Codex's runtime entry is added.",
+  "With an allowlist excluding Codex, try Create Agent: the policy conflict requires an explicit Configuration JSON edit.",
+  "Select OpenClaw again. Confirm the same policy remains and Codex's runtime entry is removed.",
+];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
@@ -2100,6 +2116,70 @@ export const scenarios = {
     actions: existingPresetSecret,
     description:
       "An empty Namespace Secret catalog requires creating a new Secret or returning after a Secret is available.",
+  },
+  createNativePluginsUnrestricted: {
+    group: "Pages/Create Agent",
+    name: "Native plugins without an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: nativePlugins,
+    actions: nativePluginForm,
+    description:
+      "Harness switches preserve an omitted native plugin allowlist and configured entries.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: ["knowledge"] },
+    actions: nativePluginForm,
+    description:
+      "A restrictive allowlist is preserved. Selecting Codex reports the conflict rather than granting permission.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsEmptyAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an empty allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: [] },
+    actions: nativePluginForm,
+    description: "An explicitly authored empty array remains unrestricted in both Harnesses.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsCodexRoundTrip: {
+    group: "Pages/Create Agent",
+    name: "Codex allowlist round-trip",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, { selector: ".launch-advanced summary", click: true }],
+    description:
+      "The shipped Codex Preset keeps its codex-only allowlist when switching to OpenClaw and back.",
+    steps: [
+      "Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout.",
+      "Switch to OpenClaw and try Create Agent. Explicitly add the selected provider to plugins.allow to resolve the conflict; repeat for OpenAI and Anthropic.",
+      'For the selected provider, set entries.openai.enabled to true and add entries[" OPENAI "] with enabled false (use anthropic and " ANTHROPIC " for Anthropic). Create Agent must refuse before writes and preserve both entries.',
+      "Reverse the entries and give both the same enabled value: duplicates must still be refused. Remove the duplicate explicitly, keep one enabled entry, and retry. Repeat for Codex.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsDenyConflict: {
+    group: "Pages/Create Agent",
+    name: "Codex denied by native policy",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, deny: ["codex"] },
+    actions: [...nativePluginForm, { selector: "#agent-harness", value: "codex" }],
+    description: "Selecting Codex preserves the denylist and reports the conflict before creation.",
+    steps: [
+      "Try Create Agent. Edit Configuration JSON to deliberately remove the codex denial, or select OpenClaw.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },
   createStandardOpenclawPreset: {
     group: "Pages/Create Agent",

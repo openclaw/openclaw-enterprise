@@ -20,7 +20,11 @@ import {
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import {
+  canonicalProvisioningJson,
+  provisioningProgress,
+} from "../../packages/occ/src/agent-provisioning.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
@@ -3874,5 +3878,137 @@ test(
       [namespace.id, failed.agentId],
     );
     assert.equal(revisions.rowCount, 1);
+  },
+);
+
+test(
+  "PostgreSQL provisioning rejects ambiguous Codex entries before persistence and preserves reordered replay",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const production = createTestKubernetesComputeDriver("plugin-order-validation");
+    computeDriver.validateAgentProvisioning = production.validateAgentProvisioning.bind(production);
+    const fixture = await createFixture(context, { computeDriver, stopAfterProvisioning: true });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const path = `/namespaces/${namespace.id}/agents/provision`;
+    const values = createHarnessConfiguration("codex", "gpt-5.1");
+    const body = provisioningBody(namespace.id, secrets, {
+      configuration: { kind: "agent", values },
+    });
+    const resources = () =>
+      fixture.pool.query(
+        `SELECT
+    (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+    (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
+    (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations`,
+        [namespace.id],
+      );
+    for (const enabled of [true, false]) {
+      const ambiguous = structuredClone(body);
+      ambiguous.configuration.values.plugins.entries[" CODEX "] = { enabled };
+      const reverse = structuredClone(ambiguous);
+      reverse.configuration.values.plugins.entries = Object.fromEntries(
+        Object.entries(reverse.configuration.values.plugins.entries).reverse(),
+      );
+      assert.equal(canonicalProvisioningJson(ambiguous), canonicalProvisioningJson(reverse));
+      for (const attempt of [ambiguous, reverse]) {
+        const refused = await fixture.request("POST", path, { body: attempt });
+        assert.equal(refused.status, 409, JSON.stringify(refused.body));
+        assert.match(
+          refused.error.message,
+          /plugins.entries must contain at most one entry for codex/,
+        );
+        assert.deepEqual((await resources()).rows, [{ jobs: 0, agents: 0, configurations: 0 }]);
+      }
+    }
+    const admitted = await fixture.request("POST", path, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const stored = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.deepEqual(stored.plan.configuration.values, values);
+    assert.doesNotThrow(() =>
+      production.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: stored.plan.configuration.values,
+      }),
+    );
+    const reordered = JSON.parse(canonicalProvisioningJson(body));
+    const replay = await fixture.request("POST", path, { body: reordered });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.deepEqual((await resources()).rows, [{ jobs: 1, agents: 0, configurations: 0 }]);
+    const changed = structuredClone(body);
+    changed.configuration.values.plugins.entries.codex.enabled = false;
+    const conflict = await fixture.request("POST", path, { body: changed });
+    assert.equal(conflict.status, 409, JSON.stringify(conflict.body));
+    assert.match(conflict.error.message, /request ID has a different plan/);
+    // Real PostgreSQL/OCC worker and revision persistence; external lifecycle Drivers remain fixtures.
+    await fixture.startWorker();
+    const status = await waitFor("order-safe provisioning revision handoff", async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      return observed.data.revisionId && observed.data.status === "queued"
+        ? observed.data
+        : undefined;
+    });
+    await fixture.stopWorker();
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, status.agentId),
+    );
+    assert.equal(revisions.length, 1);
+    assert.deepEqual(revisions[0].configuration.plugins, values.plugins);
+    fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
+  },
+);
+
+test(
+  "PostgreSQL stored ambiguous Codex plans refuse replay retry and worker effects",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const production = createTestKubernetesComputeDriver("stored-plugin-order-validation");
+    const fixture = await createFixture(context, { computeDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets, {
+      configuration: { kind: "agent", values: createHarnessConfiguration("codex", "gpt-5.1") },
+    });
+    // The fixture validator admits the legacy plan, as an older Compute installation could.
+    // Revalidation below uses the actual current Kubernetes validator without changing stored rows.
+    body.configuration.values.plugins.entries = {
+      " CODEX ": { enabled: false },
+      ...body.configuration.values.plugins.entries,
+    };
+    const path = `/namespaces/${namespace.id}/agents/provision`;
+    const admitted = await fixture.request("POST", path, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    computeDriver.validateAgentProvisioning = production.validateAgentProvisioning.bind(production);
+    const replay = await fixture.request("POST", path, { body });
+    assert.equal(replay.status, 409, JSON.stringify(replay.body));
+    assert.match(replay.error.message, /plugins.entries must contain at most one entry for codex/);
+    const status = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    await fixture.startWorker();
+    const failed = await waitFor("stored ambiguous plan refusal", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(failed.progress.error.code, "PROVISIONING_REJECTED");
+    assert.equal(failed.agent_id, null);
+    assert.equal(failed.configuration_id, null);
+    const retry = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retry.status, 409, JSON.stringify(retry.body));
+    assert.match(retry.error.message, /plugins.entries must contain at most one entry for codex/);
+    const resources = await fixture.pool.query(
+      `SELECT
+    (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
+    (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations,
+    (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id = $1) AS revisions`,
+      [namespace.id],
+    );
+    assert.deepEqual(resources.rows, [{ agents: 0, configurations: 0, revisions: 0 }]);
+    assert.deepEqual(computeDriver.calls, []);
   },
 );

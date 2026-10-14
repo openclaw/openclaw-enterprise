@@ -283,7 +283,7 @@ function provisioningRequestBody(namespaceId, secrets, { configuration, ...overr
     executionMode: "dedicated",
     configuration: {
       kind: "agent",
-      values: { agents: { defaults: { model: "codex/gpt-6-astra" } } },
+      values: createHarnessConfiguration("codex", "gpt-6-astra"),
       secretBindings: {
         TOOL_API_KEY: {
           source: exactSecretRef(namespaceId, secrets.toolApiKey.id),
@@ -5707,7 +5707,14 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // without its value, so the caller can fix it.
   const kubernetes = createTestKubernetesComputeDriver("compute-provisioning-validation");
   computeDriver.validateAgentProvisioning = (input) => kubernetes.validateAgentProvisioning(input);
-  const model = { agents: { defaults: { model: "codex/gpt-6-astra" } } };
+  const model = {
+    agents: {
+      defaults: {
+        model: "codex/gpt-6-astra",
+        models: { "codex/gpt-6-astra": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
   for (const [gateway, message] of [
     [
       { auth: { mode: "token" } },
@@ -5734,6 +5741,57 @@ test("Agent provisioning API validates inline configuration with existing Secret
       { code: "RESOURCE_CONFLICT", message },
     );
     assert.doesNotMatch(JSON.stringify(refused.body), /10\.99\./);
+  }
+  // Configuration failures remain actionable 400s even when Compute resolves the Harness first.
+  for (const [values, message] of [
+    [
+      { agents: { defaults: { model: "codex/gpt-6-astra" } } },
+      "The configured Agent model requires an explicit supported Harness runtime.",
+    ],
+    [{ agents: [] }, "Configuration setting agents must be an object."],
+  ]) {
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
+    );
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, { code: "INVALID_REQUEST", message });
+  }
+  // Inline admission must refuse the effective disabled alias before storing provisioning resources.
+  const configurationWrites = [];
+  const createExact = configurationDriver.createExact;
+  configurationDriver.createExact = (configuration) => {
+    configurationWrites.push(configuration);
+    return createExact(configuration);
+  };
+  for (const alias of [" CODEX ", "CoDeX"]) {
+    const values = createHarnessConfiguration("codex", "gpt-6-astra");
+    values.plugins.entries[alias] = { enabled: false };
+    const agentsBeforeAlias = await fixture.controller.listAgents(
+      fixture.principal.id,
+      namespace.data.id,
+    );
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      {
+        body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }),
+      },
+    );
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
+    assert.match(
+      refused.body.error.message,
+      /plugins.entries must contain at most one entry for codex/,
+    );
+    assert.deepEqual(configurationWrites, []);
+    assert.deepEqual(
+      await fixture.controller.listAgents(fixture.principal.id, namespace.data.id),
+      agentsBeforeAlias,
+    );
   }
   // The retired Codex untrusted approval policy is one of those gateway settings (finding 987).
   const untrustedPolicy = await injectedRequest(

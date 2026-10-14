@@ -26,6 +26,48 @@ import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
  */
 type SettingError = (setting: string, requirement: string) => Error;
 
+/** Codex's Gateway requires its native plugin; admission must not widen the caller's policy. */
+export function requireCodexPluginPolicy(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): void {
+  const plugins = asRecord(configuration.plugins);
+  const requirement = "for the Codex Harness";
+  if (plugins?.enabled === false) {
+    throw createError("plugins.enabled", `must not be false ${requirement}`);
+  }
+  const ids = (key: "allow" | "deny"): readonly string[] => {
+    const list = plugins?.[key];
+    if (list === undefined) {
+      return [];
+    }
+    if (!Array.isArray(list) || list.some((id) => typeof id !== "string")) {
+      throw createError(`plugins.${key}`, "must be a list of plugin IDs");
+    }
+    return (list as string[]).map((id) => id.trim().toLowerCase()).filter(Boolean);
+  };
+  if (ids("deny").includes("codex")) {
+    throw createError("plugins.deny", `must not list codex ${requirement}`);
+  }
+  const allow = ids("allow");
+  if (allow.length > 0 && !allow.includes("codex")) {
+    throw createError("plugins.allow", `must include codex ${requirement}`);
+  }
+  const entries = Object.entries(asRecord(plugins?.entries) ?? {}).filter(
+    ([id]) => id.trim().toLowerCase() === "codex",
+  );
+  // JSON object order is not preserved by provisioning fingerprints or PostgreSQL jsonb.
+  if (entries.length > 1) {
+    throw createError(
+      "plugins.entries",
+      "must contain at most one entry for codex after trimming whitespace and ignoring case; remove duplicate entries",
+    );
+  }
+  if (asRecord(entries[0]?.[1])?.enabled === false) {
+    throw createError("plugins.entries.codex.enabled", `must not be false ${requirement}`);
+  }
+}
+
 export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 
 /**

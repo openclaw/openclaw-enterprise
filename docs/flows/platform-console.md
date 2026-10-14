@@ -1,21 +1,19 @@
 ---
 created: 2026-09-01
-updated: 2026-10-09
-last_updated_session: authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2
+updated: 2026-10-13
+last_updated_session: authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de
 ---
 
 # Platform console request flow
 
 ## Overview
 
-`/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior;
-API and IAM authorize access.
+`/console/` renders authorized resources; API and IAM authorize access.
+The [console reference](../reference/console.md) owns user-visible behavior.
 
 ## Entry Points
 
-- Browser entry: `apps/controller/src/console/console.mjs` composes the session,
-  request client, view lifetime, navigation, and shell.
+- Browser entry: `apps/controller/src/console/console.mjs` composes the Console.
 - `api-client.mjs` owns cancellation and session expiry; `view-lifetime.mjs`
   owns generation and abort state; `navigation.mjs` owns return paths and history;
   `shell.mjs` owns navigation and collections.
@@ -187,22 +185,22 @@ Installation-wide collection. No readable selection means no Agent request.
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes Provider,
-Harness, Preset, Configuration, and workspace inputs. Provider/Harness changes
-reset incompatible credentials and model choices while retaining unrelated JSON. The
-[creation reference](../reference/console/create-and-deploy.md) owns combinations,
-Preset constraints, token handling, permissions, and recovery.
+`apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes the form.
+Provider/Harness changes reset incompatible credentials and models.
+`updateModelConfiguration` preserves allow/deny policy and updates Codex's runtime entry.
+The form refuses blocked Codex/OpenClaw provider plugins before writes.
+Kubernetes `validateHarnessAuth` enforces Codex policy for API callers.
+See [creation](../reference/console/create-and-deploy.md) for supported combinations.
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
 `capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
-The picker keeps a compact credential/access reminder beside an expandable
-**Access and credential setup** disclosure. Its bounded instructions, list, and
-details scroll within the dialog while search and pagination remain reachable.
-While mounted, Available and Configured retain separate selected plugins, queries,
-tool filters, and expanded rows without fetching pages or changing drafts.
-Removed selections clear their details; discovery resets clear both tabs.
+The picker has a compact credential/access reminder, expandable **Access and
+credential setup**, and bounded scrolling with reachable search/pagination.
+Available and Configured retain separate selections, queries, filters, and expanded
+rows without requests or draft edits. Removal clears details; discovery resets
+clear both tabs.
 
 `create.mjs:loadPluginCatalog` and `loadPluginTools` implement
 [PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
@@ -210,15 +208,14 @@ Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
-`create.mjs:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
-`renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
-`updateControls`. Manual mode preserves `model.value` and clears the dropdown.
-`resetModelChoices` restores the current provider's list, including Configuration
-JSON changes, retaining only listed models; otherwise both inputs clear.
-Provider/authentication changes retain no model. Submission matches the primary
-Configuration model to `model.value`. `updateControls` sets the button label,
-visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
-Configuration; saved-Configuration and pending-request locks govern both directions.
+`create.mjs:MODEL_CHOICES` supplies static unauthenticated lists and manual entry.
+`renderAgentForm` switches `manualModel`, calls `updateModelConfiguration` and
+`updateControls`, and focuses the required input. Manual mode retains `model.value`
+and clears the hidden dropdown. `resetModelChoices` rebuilds the current provider's
+list after JSON provider edits, retaining listed models or clearing both inputs.
+Provider/authentication changes reset without retention. Submission requires primary
+model equality with `model.value`. Both directions retain credentials, unrelated
+Configuration, and saved-Configuration/pending-request locks.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
 Compute supplies gateway authentication; Presets replace the starter unchanged.
@@ -373,6 +370,11 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13 15:53: Preserve plugin permissions; reject conflicts. (authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de - 438103e91)
+
+- 2026-10-12 15:30: Refresh native plugin preservation against current upstream. (authoring-run/86831b3d-1b20-4d59-8b4f-e814f6bdb488 - 1c722bea21fabefffc112b23bb739c88dbcecf4b)
+- 2026-10-10 22:27: Preserve native plugin allowlists across Harness switches. (authoring-run/73ca79b6-4687-4e93-a98f-d46b194ee2ed - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)

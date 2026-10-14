@@ -1,9 +1,7 @@
 # Harness execution
 
-A Harness calls the model and runs tools for an Agent. The bundled deployment
-paths run OpenClaw inside the Agent's gateway or Codex as a dedicated runtime.
-Choose an execution mode on the Agent and a compatible model and Harness in its
-Configuration.
+A Harness calls models and runs tools. Choose compatible execution mode, model
+and Harness.
 
 ## Supported topology
 
@@ -13,17 +11,16 @@ Configuration.
 | Codex    | `dedicated`          | A gateway connects to a separate Codex Harness; available on Kubernetes.                                                                                                                   |
 | OpenClaw | `dedicated`          | Experimental native worker; requires full-facet Sandbox provisioning. Stock OpenShell has [upstream blockers](#optional-sandbox-provisioning), so this is not a supported production path. |
 
-Agent creation defaults to `embedded`; an update that omits the mode preserves
-it. Deployment rejects a Harness that the Agent's execution mode cannot run with
-`400 INVALID_REQUEST` before work is admitted. A Harness is not a separately
-created resource or Driver. Availability and isolation also depend on the
-installation's Compute and optional Sandbox. In a single Kubernetes cluster, a
+Agent creation defaults to `embedded`; updates omitting the mode preserve it.
+Incompatible Harness/execution modes receive `400 INVALID_REQUEST` before work.
+A Harness is not a separate resource or Driver.
+Availability and isolation depend on the Installation's Compute and optional Sandbox. In a single Kubernetes cluster, a
 dedicated gateway and its Harness run as separate Pods in the Agent's
 [tenant namespace](drivers/kubernetes-compute.md), each with its own
 ServiceAccount and storage. Embedded OpenClaw remains one untrusted workload
 that cannot move apart from its built-in Harness.
 
-Each dedicated AgentRevision owns one Harness that all its sessions share: the
+Each dedicated AgentRevision owns one Harness shared by its sessions: the
 Codex app server or the native OpenClaw node host. OpenShell contains the whole
 AgentRevision, not each session; see
 [Agent runtime isolation](security/runtime-isolation.md#agent-runtime-isolation)
@@ -40,8 +37,8 @@ history.
 
 ## Native runtime selection
 
-The selected native model uses a `provider/model` name. The first slash separates
-the provider; the complete remaining model ID may contain slashes, as in
+Native models use `provider/model`. The first slash separates the provider;
+model IDs may contain slashes, as in
 `openai/vendor/model`. Provider catalog IDs may use that complete model ID
 or the full provider-prefixed name. Its supported
 `agentRuntime.id` is `openclaw` or `codex`; OCC considers model-specific,
@@ -66,6 +63,13 @@ supported runtime policy.
 
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
+Kubernetes Compute rejects Agent create/update, provisioning, and deployment when
+native policy blocks its required Codex plugin: `plugins.enabled` or
+`plugins.entries.codex.enabled` is false, `plugins.deny` lists `codex`, or a
+nonempty `plugins.allow` excludes it. Missing/empty allowlists are unrestricted.
+Duplicate trimmed, case-insensitive Codex entries are refused even with equal
+enablement; remove duplicates explicitly. Configuration staging remains separate;
+admission never rewrites permissions.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an

@@ -66,6 +66,16 @@ export async function openAdvancedSettings(page) {
   }
 }
 
+// Tests that switch the Codex starter to an OpenClaw provider must grant it explicitly.
+export async function allowNativeProvider(page, provider) {
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON", { exact: true });
+  const values = JSON.parse(await configuration.inputValue());
+  assert.deepEqual(values.plugins.allow, ["codex"]);
+  values.plugins.allow.push(provider);
+  await configuration.fill(JSON.stringify(values, null, 2));
+}
+
 // Create Agent stays disabled while the form reads Installation capabilities and repository
 // choices. Waits until the live form has both; a retained preview of an earlier form is inert
 // and shows that form's settled reads. A capability retry keeps the failure text until it ends.
