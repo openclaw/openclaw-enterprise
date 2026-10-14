@@ -734,8 +734,8 @@ test("Harness resolution stays in step with the size of the model selections and
   // Finding 1316: every Configuration and Preset save resolves the Harness synchronously, while
   // holding the Namespace row lock. It matched every catalog row against every selected model,
   // and repeated the defaults' fallbacks for each entry without its own model, so one large
-  // valid document held the controller for seconds to minutes. Each shape below took over a
-  // minute before; resolution now takes tens of milliseconds, under the 1 s bound.
+  // valid document held the controller for seconds to minutes. Each shape below took minutes
+  // before; resolution now takes about 100 ms, under the 1 s bound.
   const count = 50_000;
   const fallbacks = Array.from({ length: count }, (_, index) => `openai/m${index + 1}`);
   const timed = (values, expected) => {

@@ -30,7 +30,7 @@ Preset save run this one set (`validateConfigurationContent` in
 variable is checked as far as its written text goes, and in full once filled.
 Create, update and provisioning first ask the Driver's optional
 [`validateSize`](../../reference/drivers/configuration.md#optional-validation)
-to refuse a document too large to store, so no rule walks it.
+to refuse a document too large to store, so no content rule walks it.
 A stored row that predates a rule still reads and an edit can replace it: a
 bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and

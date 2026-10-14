@@ -5417,10 +5417,10 @@ export class OpenClawController {
         values,
         createdAt: advanced.createdAt,
       });
-      // A stored Configuration that predates these rules still reads, and deployment refuses it
-      // as before; only a replacement that keeps the refused value fails.
       // A document too large to store is refused before the content rules walk it (finding 1317).
       await driver.validateSize?.(values);
+      // A stored Configuration that predates these rules still reads, and deployment refuses it
+      // as before; only a replacement that keeps the refused value fails.
       this.validateConfigurationContent(values);
       await driver.validate(configuration);
       // Registered before the write: a replace that applied but answered with an error (a

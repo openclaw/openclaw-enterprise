@@ -183,6 +183,7 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
   }
 
   async validateSize(document: OpenClawConfigurationDocument): Promise<void> {
+    // Values that are not an object are left to validate, which refuses them.
     const values = asRecord(document);
     if (values !== undefined) {
       checkSize(values);
