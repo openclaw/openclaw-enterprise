@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
 updated: 2026-10-14
-last_updated_session: authoring-run/b98d803a-436a-4437-84af-01be278a6460
+last_updated_session: fix-1375-1377
 ---
 
 # Agent provisioning flow
@@ -90,7 +90,7 @@ Kubernetes Configuration requests inherit the provisioning claim cancellation si
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. A Stop during the first rollout records `REVISION_STOPPED` and names the stopped Agent. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for a new deployment, asking for repair only for other failures. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
+The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. A Stop during the first rollout records `REVISION_STOPPED`. A Stop or deletion before handoff records `PROVISIONING_CANCELLED`, and its message names which one; both name the Agent. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for a new deployment, asking for repair only for other failures. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime lacks that support;
@@ -137,6 +137,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
+- 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
 - 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
 - 2026-10-12 22:30: Provisioning refuses undeliverable repository bindings and Sandbox workspace files before queueing. (fix-1144-1145b - d34b4a8f7)
 

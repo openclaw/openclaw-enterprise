@@ -163,9 +163,9 @@ Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-After the first revision is admitted, a failed or stopped deployment cannot
-retry provisioning or create another Agent. Open the retained Agent and submit
-a new deployment. If it failed for another reason, correct that cause first.
+A failed or stopped first deployment, or a Stop before it
+(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
+retry. Open that Agent and deploy; after another failure, correct its cause first.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.

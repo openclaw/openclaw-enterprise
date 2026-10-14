@@ -41,8 +41,9 @@ another version or the draft. Its milestones use the persisted record:
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
 
 Work ended by a newer version (`REVISION_SUPERSEDED` or
-`REPOSITORY_REVISION_SUPERSEDED`) shows as a neutral `superseded`
-result, not a failure. A `failed` result shows the stored error. Select **Open vN Logs** to open that
+`REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a
+neutral `superseded` or `stopped` result, not a failure; after a Stop, deploy a
+new version to run the Agent again. A `failed` result shows the stored error. Select **Open vN Logs** to open that
 version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
 even from the draft or another version. If logs are unavailable, the panel
 shows an access or availability message.

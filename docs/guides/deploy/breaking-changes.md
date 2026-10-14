@@ -54,6 +54,22 @@ its stored `config.token_url`. Creation with such a `host` returns `400` for
 updating the value of a stored source with such a `host` fails with the same
 message.
 
+To find affected sources before upgrading, print every source's `token_url`
+and `host` with the [CLI](../../reference/cli.md) and `jq`, as an account that
+can read every Namespace and credential source (lists return only readable ones):
+
+```sh
+for ns in $(occ namespace list -o json | jq -r '.[].id'); do
+  occ credential-source list --namespace "$ns" -o json | jq -r '.[]
+    | select(.config.token_url or .config.host)
+    | [.namespaceId, .id, .type, .config.token_url // "-", .config.host // "-"]
+    | @tsv'
+done
+```
+
+Compare each host with the shapes under **What breaks**. This was checked
+against the CLI and the list response shape, not a live Installation.
+
 **Steps.** _untested_ against a live Installation:
 
 1. Give the issuer (or, for a `host`, the protected API) a DNS name its TLS
