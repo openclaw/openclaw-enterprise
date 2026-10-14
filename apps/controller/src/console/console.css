@@ -718,6 +718,11 @@ select:not([multiple])[size="1"] {
   border-color: var(--danger);
   background: var(--danger);
 }
+/* Superseded by a newer version: neutral, neither success nor failure (finding 1353). */
+.deployment-step-superseded .deployment-step-marker {
+  border-color: var(--muted);
+  background: var(--muted);
+}
 .deployment-outcome {
   font-weight: 600;
 }

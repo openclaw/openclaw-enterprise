@@ -25,6 +25,9 @@ import {
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
+  SUPERSEDED_DEPLOYMENT_NOTE,
+  deploymentOutcome,
+  supersededDeployment,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -284,13 +287,28 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
   );
 }
 
-function deploymentProgress(status, progress) {
+// A recorded result: the failure, or a neutral note when a newer version superseded this one.
+function deploymentResult(record, hrefs = {}, logsLink = null) {
+  if (supersededDeployment(record)) {
+    return element(
+      "p",
+      { className: "muted deployment-superseded" },
+      `${SUPERSEDED_DEPLOYMENT_NOTE} before this one became current (${record.error.code}). This is not a failure of this version and needs no fix.`,
+    );
+  }
+  return deploymentFailure(record.error, hrefs, logsLink);
+}
+
+function deploymentProgress(record) {
+  const status = deploymentOutcome(record);
+  const progress = record.progress;
   const workDescriptions = {
     queued: progress?.lastAttempt
       ? "Waiting to continue deployment."
       : "Waiting for a worker claim.",
     running: "A worker claim is active.",
     failed: "Deployment work failed; check the recorded error and current version.",
+    superseded: "Deployment work stopped because a newer version superseded this one.",
     succeeded: "Work completed or the version was already active.",
   };
   const stages = [
@@ -304,16 +322,20 @@ function deploymentProgress(status, progress) {
           ? "active"
           : status === "succeeded"
             ? "complete"
-            : "failed",
+            : status === "superseded"
+              ? "superseded"
+              : "failed",
     ],
     [
       "Completion recorded",
       status === "succeeded"
         ? "This deployment completed activation or was already active."
-        : status === "failed"
-          ? "Successful completion was not recorded for this deployment."
-          : "Successful completion is not recorded yet.",
-      status === "succeeded" ? "complete" : "waiting",
+        : status === "superseded"
+          ? "Not needed: this version did not become current."
+          : status === "failed"
+            ? "Successful completion was not recorded for this deployment."
+            : "Successful completion is not recorded yet.",
+      status === "succeeded" ? "complete" : status === "superseded" ? "superseded" : "waiting",
     ],
   ];
   return element(
@@ -430,7 +452,7 @@ function createDeploymentStatusPanel(
         state.loading = false;
         render();
         onStatusChange(
-          state.status?.status ?? null,
+          state.status ? deploymentOutcome(state.status) : null,
           state.error !== null,
           state.status?.error?.code ?? null,
           state.status,
@@ -460,7 +482,7 @@ function createDeploymentStatusPanel(
     return element(
       "div",
       {},
-      deploymentProgress(state.status.status, state.status.progress),
+      deploymentProgress(state.status),
       state.status.cleanup
         ? element(
             "p",
@@ -502,9 +524,13 @@ function createDeploymentStatusPanel(
               : null,
           )
         : null,
-      element("p", { className: "deployment-outcome" }, `Recorded status: ${state.status.status}`),
-      deploymentFailure(
-        state.status.error,
+      element(
+        "p",
+        { className: "deployment-outcome" },
+        `Recorded status: ${deploymentOutcome(state.status)}`,
+      ),
+      deploymentResult(
+        state.status,
         { credentials: credentialsHref, configuration: configurationHref },
         logsLink,
       ),
@@ -641,8 +667,8 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
           ? element(
               "div",
               {},
-              element("p", {}, `Recorded outcome: ${status.status}`),
-              deploymentFailure(status.error),
+              element("p", {}, `Recorded outcome: ${deploymentOutcome(status)}`),
+              deploymentResult(status),
               status.warnings?.length
                 ? element(
                     "div",
@@ -751,7 +777,8 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         check.code === "NOT_CONFIGURED",
     );
     const recorded = recordedStatus();
-    const failure = recorded?.status === "failed" ? recorded.error : null;
+    const failure =
+      recorded?.status === "failed" && !supersededDeployment(recorded) ? recorded.error : null;
     const hints = [];
     if (unreachable) {
       hints.push(
@@ -1340,13 +1367,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       running: "In progress",
       succeeded: "Succeeded",
       failed: "Failed",
+      superseded: "Superseded",
     }[latestDeploymentStatus];
+    // A superseded deployment is neutral: it raises no banner and says nothing about serving.
+    const superseded = latestDeploymentStatus === "superseded";
     latestDeploymentValue.textContent = `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`;
-    latestDeploymentNote.textContent = latestDeploymentStatus
-      ? `Recorded status: ${latestDeploymentStatus}`
-      : latestDeploymentError
-        ? "Recorded deployment status could not be read."
-        : "Reading recorded deployment status.";
+    latestDeploymentNote.textContent = superseded
+      ? `${SUPERSEDED_DEPLOYMENT_NOTE}.`
+      : latestDeploymentStatus
+        ? `Recorded status: ${latestDeploymentStatus}`
+        : latestDeploymentError
+          ? "Recorded deployment status could not be read."
+          : "Reading recorded deployment status.";
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
     // A succeeded deployment becomes current, so a different current version is newer.
@@ -1380,7 +1412,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       liveServingValue.textContent = "Not verified";
       liveServingNote.textContent = "Serving version and model access are unknown.";
     }
-    statusLine.hidden = !latestDeploymentStatus && !requestedHidden;
+    statusLine.hidden = (!latestDeploymentStatus || superseded) && !requestedHidden;
     if (requestedHidden || newerHidden) {
       statusLine.textContent = [
         requestedHidden
@@ -1397,7 +1429,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       statusLine.textContent = `v${latest.revision} deployment failed. ${currentLabel} is still recorded as current, but deploying a dedicated Agent stops the previous version first, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
     } else if (selectedFailed) {
       statusLine.textContent = `${currentLabel} deployment failed. ${currentLabel} is still selected because its runtime already replaced the previous version, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
-    } else if (latestDeploymentStatus) {
+    } else if (latestDeploymentStatus && !superseded) {
       const selection = currentRevisionId
         ? `${currentLabel} is selected.`
         : "No version is selected.";
