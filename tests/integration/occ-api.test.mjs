@@ -3530,6 +3530,90 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   ]);
 });
 
+test("Deployment binds an Installation-approved ClawHub plugin release into the AgentRevision", async () => {
+  const approvedRelease = {
+    nativeId: "acme-search",
+    name: "Acme Search",
+    source: "clawhub",
+    packageName: "@acme/openclaw-search",
+    version: "1.4.2",
+    integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+    toolNames: ["acme_search"],
+  };
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "approved-plugin-api");
+  const configuration = await createConfiguration(controller, namespace.id);
+  // The Installation administrator approves one exact ClawHub release for embedded OpenClaw.
+  const pluginDriver = new OCCPluginDriver({ approvedPlugins: [approvedRelease] });
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+
+  // An Agent editor selects it by ID only; release identity is never caller input.
+  const plugins = { "occ-plugin:acme-search": pluginPolicy() };
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "approved-plugin-agent", configurationId: configuration.id, plugins },
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.data.plugins, plugins);
+  assertPolicyOnlyPlugin(created.data.plugins["occ-plugin:acme-search"]);
+
+  // A ClawHub package the administrator did not approve is refused at save.
+  const unapproved = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "unapproved-plugin-agent",
+      configurationId: configuration.id,
+      plugins: { "occ-plugin:other-search": pluginPolicy() },
+    },
+  });
+  assert.equal(unapproved.status, 400);
+  assert.equal(unapproved.body.error.code, "INVALID_REQUEST");
+  assert.match(unapproved.body.error.message, /does not offer: occ-plugin:other-search/);
+
+  // Adding Diffs beside the release would install two packages in one gateway startup.
+  // OpenClaw would treat a second archive that declares the first plugin's ID as an update
+  // and run that unverified archive's Doctor migration, so the update is refused at save.
+  const pair = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    {
+      body: {
+        configurationId: configuration.id,
+        plugins: { ...plugins, "occ-plugin:diffs": pluginPolicy() },
+      },
+    },
+  );
+  assert.equal(pair.status, 400);
+  assert.equal(pair.body.error.code, "INVALID_REQUEST");
+  assert.match(pair.body.error.message, /installs one plugin for each Agent/);
+
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, created.data);
+  const deployment = await controller.request(
+    "POST",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/deploy`,
+  );
+  assert.equal(deployment.status, 202);
+  // Admission records the exact release, so Compute installs it on every restart
+  // even after the Installation's approved list changes.
+  const expectedPlugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins,
+    releases: { "occ-plugin:acme-search": approvedRelease },
+  };
+  assert.deepEqual(deployment.data.plugins, expectedPlugins);
+  const stored = await controller.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.data.id}/revisions/${deployment.data.id}`,
+  );
+  assert.equal(stored.status, 200);
+  assert.deepEqual(stored.data.plugins, expectedPlugins);
+});
+
 test("Agent plugin reviewer selection preserves omission and rejects unsupported tool scope", async () => {
   const controller = await configuredController();
   await bootstrap(controller);

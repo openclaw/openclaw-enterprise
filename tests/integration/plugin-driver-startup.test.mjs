@@ -79,3 +79,43 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
     );
   }
 });
+
+const approvedRelease = Object.freeze({
+  nativeId: "acme-search",
+  name: "Acme Search",
+  source: "clawhub",
+  packageName: "@acme/openclaw-search",
+  version: "1.4.2",
+  integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+  toolNames: ["acme_search"],
+});
+
+test("Installation startup admits pinned approved OpenClaw plugin releases", async (t) => {
+  const configuration = { approvedPlugins: [approvedRelease] };
+  const loaded = await load(t, { id: "occ-plugin", configuration });
+  assert.deepEqual(loaded.installation.drivers.plugin.configuration, configuration);
+  const selections = { "occ-plugin:acme-search": { enabled: true } };
+  loaded.pluginDriver.validatePolicies(selections);
+  assert.deepEqual(loaded.pluginDriver.bindReleases(selections), {
+    "occ-plugin:acme-search": approvedRelease,
+  });
+});
+
+test("Installation startup refuses approved plugins that are not exact releases", async (t) => {
+  for (const entry of [
+    { ...approvedRelease, version: "1.x" },
+    { ...approvedRelease, integrity: undefined },
+    { ...approvedRelease, source: "git" },
+    { ...approvedRelease, tarballUrl: "https://example.test/acme.tgz" },
+  ]) {
+    await assert.rejects(
+      load(t, { id: "occ-plugin", configuration: { approvedPlugins: [entry] } }),
+      /drivers\.plugin\.configuration|OpenClaw approved plugin/,
+    );
+  }
+  // The Codex Plugin Driver has no approved list.
+  await assert.rejects(
+    load(t, { id: "codex-plugin", configuration: { approvedPlugins: [approvedRelease] } }),
+    /drivers\.plugin\.configuration/,
+  );
+});

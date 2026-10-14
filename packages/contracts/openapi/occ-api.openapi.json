@@ -17369,7 +17369,16 @@
                           "additionalProperties": false,
                           "properties": {
                             "driver": { "$ref": "#/components/schemas/def-1" },
-                            "plugins": { "$ref": "#/components/schemas/def-6" }
+                            "plugins": { "$ref": "#/components/schemas/def-6" },
+                            "releases": {
+                              "additionalProperties": {
+                                "additionalProperties": true,
+                                "properties": {},
+                                "type": "object"
+                              },
+                              "description": "Exact plugin releases the selected Plugin Driver bound at deployment, keyed by selection ID.",
+                              "type": "object"
+                            }
                           },
                           "required": ["driver", "plugins"],
                           "type": "object"
@@ -20941,7 +20950,16 @@
                                 "additionalProperties": false,
                                 "properties": {
                                   "driver": { "$ref": "#/components/schemas/def-1" },
-                                  "plugins": { "$ref": "#/components/schemas/def-6" }
+                                  "plugins": { "$ref": "#/components/schemas/def-6" },
+                                  "releases": {
+                                    "additionalProperties": {
+                                      "additionalProperties": true,
+                                      "properties": {},
+                                      "type": "object"
+                                    },
+                                    "description": "Exact plugin releases the selected Plugin Driver bound at deployment, keyed by selection ID.",
+                                    "type": "object"
+                                  }
                                 },
                                 "required": ["driver", "plugins"],
                                 "type": "object"
@@ -21444,7 +21462,16 @@
                               "additionalProperties": false,
                               "properties": {
                                 "driver": { "$ref": "#/components/schemas/def-1" },
-                                "plugins": { "$ref": "#/components/schemas/def-6" }
+                                "plugins": { "$ref": "#/components/schemas/def-6" },
+                                "releases": {
+                                  "additionalProperties": {
+                                    "additionalProperties": true,
+                                    "properties": {},
+                                    "type": "object"
+                                  },
+                                  "description": "Exact plugin releases the selected Plugin Driver bound at deployment, keyed by selection ID.",
+                                  "type": "object"
+                                }
                               },
                               "required": ["driver", "plugins"],
                               "type": "object"

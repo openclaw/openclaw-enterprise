@@ -1548,6 +1548,47 @@ async function createK3dCluster(statePath, state, resource, args) {
   }
 }
 
+// A single-node cluster's API server reaches its own Pods across the node's
+// cni0 bridge, so that bridge address is the plugin status proxy source.
+async function sameNodePluginStatusProxySource(cluster) {
+  const node = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
+    "--kubeconfig",
+    cluster.kubeconfig,
+    "--context",
+    cluster.context,
+    "get",
+    "node",
+    `k3d-${cluster.name}-server-0`,
+    "-o",
+    "json",
+  ]);
+  const podCidr = JSON.parse(node.stdout)?.spec?.podCIDR;
+  const network = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
+  if (!isIPv4(network ?? "")) {
+    throw new Error("The k3d server node must have an IPv4 Pod CIDR.");
+  }
+  const destination = network.replace(/\.\d+$/, ".250");
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const route = await execFile(
+      process.env.OCC_DOCKER_BIN ?? "docker",
+      ["exec", `k3d-${cluster.name}-server-0`, "ip", "route", "get", destination],
+      { timeoutMs: Math.min(15_000, deadline - Date.now()) },
+    );
+    // cni0 appears with the node's first Pod; until then the default route answers.
+    if (!/\bdev\s+cni0(?:\s|$)/.test(route.stdout)) {
+      await delay(500);
+      continue;
+    }
+    const sources = [...route.stdout.matchAll(/\bsrc\s+(\S+)/g)].map((match) => match[1]);
+    if (sources.length !== 1 || !isIPv4(sources[0]) || sources[0].startsWith("127.")) {
+      throw new Error("Unable to determine the same-node plugin status proxy source IPv4 address.");
+    }
+    return `${sources[0]}/32`;
+  }
+  throw new Error("Timed out waiting for the same-node plugin status proxy route on cni0.");
+}
+
 async function waitForPluginStatusProxySource(cluster, destination) {
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -2952,6 +2993,15 @@ async function prepareLane({ lane, statePath }) {
       await ensurePostgresServer(resolvedStatePath, state);
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
+    case "plugin-clawhub-real": {
+      await ensurePostgresServer(resolvedStatePath, state);
+      const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
+        buildRuntime: true,
+      });
+      env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS =
+        await sameNodePluginStatusProxySource(cluster);
+      break;
+    }
     case "openshell": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);

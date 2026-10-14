@@ -207,6 +207,10 @@
                       {
                         "page": "guides/topics/plugins-configure",
                         "label": "Configure"
+                      },
+                      {
+                        "page": "guides/topics/plugins-approve-releases",
+                        "label": "Approve Releases"
                       }
                     ]
                   }
@@ -347,6 +351,10 @@
                       {
                         "page": "reference/drivers/plugin-bundled",
                         "label": "Bundled"
+                      },
+                      {
+                        "page": "reference/drivers/plugin-approved-releases",
+                        "label": "Approved Releases"
                       }
                     ]
                   },

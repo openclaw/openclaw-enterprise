@@ -1020,6 +1020,12 @@ export const AgentRevisionSchema = Type.Object(
         {
           driver: Type.Ref("PluginDriverIdentity"),
           plugins: Type.Ref("PluginDesiredState"),
+          releases: Type.Optional(
+            Type.Record(Type.String(), Type.Object({}, { additionalProperties: true }), {
+              description:
+                "Exact plugin releases the selected Plugin Driver bound at deployment, keyed by selection ID.",
+            }),
+          ),
         },
         { additionalProperties: false },
       ),

@@ -33,6 +33,7 @@
     "k3d-otel": "./test-suites/k3d-otel.json",
     "ssh-host": "./test-suites/ssh-host.json",
     "plugin-model": "./test-suites/plugin-model.json",
+    "plugin-clawhub-real": "./test-suites/plugin-clawhub-real.json",
     "repository-credentials-container": "./test-suites/repository-credentials-container.json",
     "repository-credentials-live": "./test-suites/repository-credentials-live.json",
     "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",

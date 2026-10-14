@@ -9,7 +9,8 @@ compatible Plugin Driver before an Agent can save nonempty plugin selections.
 
 - **Embedded OpenClaw** supports the bundled Diffs plugin on Kubernetes. Diffs
   lets an Agent show the difference between two pieces of text. Start with
-  [Configure Agent plugins](plugins-configure.md).
+  [Configure Agent plugins](plugins-configure.md). An Installation administrator
+  can also [approve exact ClawHub or npm plugin releases](plugins-approve-releases.md).
 - **Dedicated Codex** can use selected apps from its curated catalog when the
   Agent uses a ChatGPT login and the runtime supports their approval
   policy. An API-key Agent deploys with each selected app disabled and a

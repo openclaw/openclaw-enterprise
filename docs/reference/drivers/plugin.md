@@ -30,6 +30,9 @@ The [shared interface](../../../packages/contracts/src/index.ts) exposes:
   update, provisioning, and deployment, which checks again because a
   Configuration save does not know its Agents. A `ConfigurationHarnessError`
   naming the setting becomes `400`; other refusals get fixed text.
+- `bindReleases(selections)` (optional): return Driver-owned release identities
+  for selected plugins at deployment admission. OCC stores them unchanged as the
+  revision's `plugins.releases`; Compute delivers them to the runtime.
 - `listCatalog(context)`: read the catalog for a Namespace, Agent, Harness,
   native Configuration, and abort signal.
 

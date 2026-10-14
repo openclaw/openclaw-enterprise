@@ -1,6 +1,7 @@
 import {
   type AgentRevision,
   type PluginDesiredState,
+  type PluginReleaseBindings,
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
@@ -52,6 +53,7 @@ export type PluginRuntimeSpec =
       readonly kind: "openclaw";
       readonly selections: PluginDesiredState;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
+      readonly releases?: PluginReleaseBindings;
     }
   | {
       readonly kind: "codex";
@@ -144,6 +146,9 @@ export function pluginRuntimeSpecForRevision(
   ) {
     throw new Error("Repository credential broker network policy requires the Codex PluginDriver.");
   }
+  if (state.releases !== undefined && state.driver.implementation === "occ/codex-plugin") {
+    throw new Error("The Codex PluginDriver does not bind plugin releases.");
+  }
   const runtime: PluginRuntimeSpec =
     state.driver.implementation === "occ/codex-plugin"
       ? {
@@ -156,7 +161,12 @@ export function pluginRuntimeSpecForRevision(
             : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
         }
-      : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
+      : {
+          kind: "openclaw",
+          selections: state.plugins,
+          pluginApprovers: revision.pluginApprovers,
+          ...(state.releases === undefined ? {} : { releases: state.releases }),
+        };
   validateDriverMatchesRuntime(revision, runtime);
   return runtime;
 }
@@ -271,6 +281,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
       ? { modelEndpoint: runtime.modelEndpoint }
       : {}),
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
+    ...(runtime.kind === "openclaw" && runtime.releases !== undefined
+      ? { releases: runtime.releases }
+      : {}),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
       ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }
       : {}),

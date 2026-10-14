@@ -589,9 +589,16 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+/**
+ * Driver-owned release identities admitted with a revision, keyed by selection ID.
+ * The control plane stores them unchanged; Compute hands them to the Driver's runtime.
+ */
+export type PluginReleaseBindings = Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+
 export interface PluginRevisionState {
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
+  readonly releases?: PluginReleaseBindings;
 }
 
 export type PluginValidationFailure = (message: string) => never;
@@ -650,7 +657,7 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some((key) => key !== "driver" && key !== "plugins" && key !== "releases")
   ) {
     return false;
   }
@@ -664,7 +671,22 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   } catch {
     return false;
   }
-  return true;
+  return validPluginReleaseBindings(record.releases, record.plugins as PluginDesiredState);
+}
+
+// Each release belongs to one admitted selection; its contents are the Driver's.
+function validPluginReleaseBindings(value: unknown, plugins: PluginDesiredState): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  const releases = asRecord(value);
+  return (
+    releases !== undefined &&
+    Object.keys(releases).length > 0 &&
+    Object.entries(releases).every(
+      ([pluginId, release]) => Object.hasOwn(plugins, pluginId) && asRecord(release) !== undefined,
+    )
+  );
 }
 
 export interface Configuration extends Scope {
@@ -1548,6 +1570,12 @@ export interface PluginDriver extends Driver {
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void;
+  /**
+   * Resolve validated selections to the exact releases the Driver's runtime installs.
+   * Deployment admission records the result with the AgentRevision, so a later
+   * Installation change cannot alter what an admitted revision runs.
+   */
+  bindReleases?(selections: PluginDesiredState): PluginReleaseBindings | undefined;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;
   /** Pre-Agent discovery defaults to requiring a transient credential. Results are not persisted. */
   readonly discoveryCredential?: "required" | "none";

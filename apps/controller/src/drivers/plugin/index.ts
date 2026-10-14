@@ -10,6 +10,7 @@ import {
   type PluginPolicyCapabilities,
   type PluginDriverContext,
   type PluginDriverIdentity,
+  type PluginReleaseBindings,
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
@@ -20,9 +21,10 @@ import {
 } from "@openclaw-enterprise/occ";
 import {
   hasAliasedSelections,
-  openClawCatalogEntries,
+  openClawPluginTranslator,
   validatePolicies,
   type CodexPluginCatalogReader,
+  type OpenClawPluginTranslator,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
@@ -50,6 +52,45 @@ const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   properties: {},
 });
 
+// Shape only; the runtime translator checks pins, names and identities.
+const OCC_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    approvedPlugins: {
+      type: "array",
+      maxItems: 64,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "nativeId",
+          "name",
+          "source",
+          "packageName",
+          "version",
+          "integrity",
+          "toolNames",
+        ],
+        properties: {
+          nativeId: { type: "string", minLength: 1 },
+          name: { type: "string", minLength: 1, maxLength: 128 },
+          source: { type: "string", enum: ["npm", "clawhub"] },
+          packageName: { type: "string", minLength: 1, maxLength: 214 },
+          version: { type: "string", minLength: 1 },
+          integrity: { type: "string", minLength: 1 },
+          toolNames: {
+            type: "array",
+            minItems: 1,
+            maxItems: 64,
+            items: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+  },
+});
+
 const CODEX_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   type: "object",
   additionalProperties: false,
@@ -73,8 +114,6 @@ const CODEX_POLICY_SCHEMA: JSONSchema = deepFreeze({
     },
   },
 });
-
-const OCC_CATALOG: readonly BundledCatalogEntry[] = deepFreeze(openClawCatalogEntries());
 
 // Entries use recorded marketplace identities; account access and tools remain unknown.
 // Concrete apps and native component support are rechecked during deployment.
@@ -223,14 +262,24 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
-function validateEmptyConfiguration(configuration: unknown, name: string): void {
+function validateOpenClawConfiguration(configuration: unknown): OpenClawPluginTranslator {
   const value = asRecord(configuration);
   if (value === undefined) {
-    throw new PluginValidationError(`${name} configuration must be one object.`);
+    throw new PluginValidationError("OpenClaw Plugin Driver configuration must be one object.");
   }
-  const keys = Object.keys(value);
-  if (keys.length > 0) {
-    throw new PluginValidationError(`${name} configuration does not accept options.`);
+  for (const key of Object.keys(value)) {
+    if (key !== "approvedPlugins") {
+      throw new PluginValidationError(
+        `OpenClaw Plugin Driver configuration.${key} is unsupported.`,
+      );
+    }
+  }
+  try {
+    return openClawPluginTranslator(value.approvedPlugins ?? []);
+  } catch (error) {
+    throw new PluginValidationError(
+      error instanceof Error ? error.message : "OpenClaw approved plugins are invalid.",
+    );
   }
 }
 
@@ -311,12 +360,12 @@ class BundledPluginDriverBase {
   }
 
   protected validate(
-    kind: "codex" | "openclaw",
+    translator: Pick<OpenClawPluginTranslator, "validatePolicies" | "hasAliasedSelections">,
     selections: PluginDesiredState,
     defaultApprovers?: PluginApprovers,
   ): void {
     try {
-      validatePolicies(kind, selections, defaultApprovers);
+      translator.validatePolicies(selections, defaultApprovers);
     } catch (error) {
       const field =
         error instanceof Error && "policyField" in error ? error.policyField : undefined;
@@ -328,13 +377,15 @@ class BundledPluginDriverBase {
         throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
       }
       throw new PluginPolicyValidationError(
-        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
+        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" || field === "onePlugin"
+          ? field
+          : undefined,
       );
     }
     // Admission-only, like the Codex approvers check: revisions admitted before this
     // check keep rendering unchanged. An Agent or in-flight provisioning record that
     // holds both keys is refused at its next create replay, update, deploy, or resume.
-    if (hasAliasedSelections(kind, selections)) {
+    if (translator.hasAliasedSelections(selections)) {
       throw new PluginPolicyValidationError("aliasedPlugin");
     }
   }
@@ -345,32 +396,48 @@ class BundledPluginDriverBase {
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
-  static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
+  static readonly configurationSchema = OCC_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     driverPolicySchema: EMPTY_CONFIGURATION_SCHEMA,
   });
+  private readonly translator: OpenClawPluginTranslator;
+  private readonly catalogEntries: readonly BundledCatalogEntry[];
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    this.validate("openclaw", selections, defaultApprovers);
+    this.validate(this.translator, selections, defaultApprovers);
+  }
+
+  bindReleases(selections: PluginDesiredState): PluginReleaseBindings | undefined {
+    const releases = this.translator.releases(selections);
+    return Object.keys(releases).length === 0 ? undefined : releases;
   }
 
   static validateConfiguration(configuration: unknown): void {
-    validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
+    validateOpenClawConfiguration(configuration);
   }
 
   constructor(configuration: ConfigurationRecord = {}, selection: PluginDriverSelection = {}) {
-    OCCPluginDriver.validateConfiguration(configuration);
+    const translator = validateOpenClawConfiguration(configuration);
     super(selection, { id: OCC_DRIVER_ID, implementation: OCC_IMPLEMENTATION });
+    this.translator = translator;
+    this.catalogEntries = deepFreeze(translator.catalogEntries());
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
     ensureHarness(context, "embedded");
-    return this.catalog(OCC_CATALOG);
+    return this.catalog(this.catalogEntries);
   }
 }
+
+const CODEX_POLICY_TRANSLATOR = {
+  validatePolicies: (selections: PluginDesiredState, defaultApprovers?: PluginApprovers) =>
+    validatePolicies("codex", selections, defaultApprovers),
+  hasAliasedSelections: (selections: PluginDesiredState) =>
+    hasAliasedSelections("codex", selections),
+};
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
@@ -396,7 +463,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    this.validate("codex", selections, defaultApprovers);
+    this.validate(CODEX_POLICY_TRANSLATOR, selections, defaultApprovers);
     // Admission-only check: runtime translation still renders already-admitted revisions unchanged.
     // TODO(policySubject): remove with the capability gate above.
     if (

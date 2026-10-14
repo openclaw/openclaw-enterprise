@@ -109,10 +109,10 @@ selections and still requires the Agent's projected credentials and provider
 access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
-| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                                                  |
+| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled `occ-plugin:diffs` (`@openclaw/diffs` `2026.8.2`, npm integrity) plus [approved releases](plugin-approved-releases.md). |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`.                    |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills
@@ -133,18 +133,19 @@ checks native metadata, tool ownership, and effective configuration. Runtime
 versions and the OpenClaw-to-Codex projection constrain enforcement: emitting a
 native setting does not prove an Agent thread retains it.
 
-| Surface                                  | Current translation                                                                                                                             |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Plugin `enabled`                         | Gate the selected plugin; disabled plugins cannot be re-enabled by tool overrides.                                                              |
-| OpenClaw default/tool `enabled`          | Resolve explicit tool enablement before the default using the pinned catalog's complete tool inventory. Emit native denies for disabled tools.  |
-| OpenClaw `provider_default` / `none`     | Use existing native tool execution without an added plugin approval step. Existing denies and profiles remain effective.                        |
-| OpenClaw `all_actions` / `write_actions` | Reject before save; no generic per-call review is implemented. Explicit reviewers and Driver policy fields are also unsupported.                |
-| Codex approval defaults                  | Write app `default_tools_approval_mode`: `provider_default` → `auto`, `all_actions` → `prompt`, `write_actions` → `writes`, `none` → `approve`. |
-| Codex explicit tool overrides            | Write only supplied `enabled` and `approval_mode` fields under the owning app and exact native tool name; use the same approval mapping.        |
-| Codex `toolDefaults.enabled`             | Write native `default_tools_enabled` when supplied.                                                                                             |
-| Codex `toolDefaults.reviewer`            | Write app `approvals_reviewer`: `human` maps to `user`, `auto` maps to `auto_review`. Per-tool reviewers are rejected.                          |
-| Codex `driverPolicy`                     | Write `destructive_enabled` when supplied. Reject destructive defaults combined with explicit default tool enablement.                          |
-| Empty Codex selection                    | Disable user apps/plugins; no remote install RPC runs.                                                                                          |
+| Surface                                  | Current translation                                                                                                                                       |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plugin `enabled`                         | Gate the selected plugin; disabled plugins cannot be re-enabled by tool overrides.                                                                        |
+| OpenClaw default/tool `enabled`          | Resolve explicit tool enablement before the default using the pinned catalog's complete tool inventory. Emit native denies for disabled tools.            |
+| OpenClaw `provider_default` / `none`     | Use existing native tool execution without an added plugin approval step. Existing denies and profiles remain effective.                                  |
+| OpenClaw `all_actions` / `write_actions` | Reject before save; no generic per-call review is implemented. Explicit reviewers and Driver policy fields are also unsupported.                          |
+| OpenClaw selection count                 | Reject a second selection before save; an embedded OpenClaw Agent installs one plugin. See [approved release limits](plugin-approved-releases.md#limits). |
+| Codex approval defaults                  | Write app `default_tools_approval_mode`: `provider_default` → `auto`, `all_actions` → `prompt`, `write_actions` → `writes`, `none` → `approve`.           |
+| Codex explicit tool overrides            | Write only supplied `enabled` and `approval_mode` fields under the owning app and exact native tool name; use the same approval mapping.                  |
+| Codex `toolDefaults.enabled`             | Write native `default_tools_enabled` when supplied.                                                                                                       |
+| Codex `toolDefaults.reviewer`            | Write app `approvals_reviewer`: `human` maps to `user`, `auto` maps to `auto_review`. Per-tool reviewers are rejected.                                    |
+| Codex `driverPolicy`                     | Write `destructive_enabled` when supplied. Reject destructive defaults combined with explicit default tool enablement.                                    |
+| Empty Codex selection                    | Disable user apps/plugins; no remote install RPC runs.                                                                                                    |
 
 OpenClaw extends a nonempty native `tools.allow`, otherwise `tools.alsoAllow`,
 with the selected plugin. The pinned catalog currently exposes the `diffs` tool
@@ -260,8 +261,8 @@ including tool denies and profiles, is retained.
 
 ## Preparation and security
 
-Revision plugin state carries only requested IDs/policies and selected Driver
-identity. Compute resolves current native metadata and applies the resulting
+Revision plugin state carries requested IDs/policies, selected Driver identity,
+and any [approved release](plugin-approved-releases.md) the Driver bound. Compute resolves current native metadata and applies the resulting
 nonsecret configuration inside the exact revision workload before readiness. Codex installation is verified through native API metadata and effective configuration. Codex owns its private cache layout and integrity; Enterprise does not parse its cache records or version directories.
 Package files/configuration are revision-private. In Kubernetes, the native
 installation registry remains in the persistent Agent-owned OpenClaw state

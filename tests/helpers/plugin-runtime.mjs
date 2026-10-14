@@ -125,6 +125,24 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
                 }
               );
             }
+            // `plugins registry --json` (no refresh) reports persisted install records.
+            // By default the Pod starts on a fresh state volume: no record store yet.
+            if (
+              command === "node" &&
+              args[0] === "/app/openclaw.mjs" &&
+              args[1] === "plugins" &&
+              args[2] === "registry" &&
+              args[3] === "--json" &&
+              args.length === 4
+            ) {
+              return (
+                options.pluginRegistryResponse ?? {
+                  status: 0,
+                  stdout: JSON.stringify({ state: "missing", persisted: null }),
+                  stderr: "",
+                }
+              );
+            }
             return responses.shift() ?? { status: 0, stdout: "", stderr: "" };
           },
         };

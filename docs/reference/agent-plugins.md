@@ -200,10 +200,11 @@ with the desired selections above; an absent or empty map means none.
 [AgentRevision responses](api.md) optionally include a `plugins` snapshot of
 admitted deployment state, not another mutation body.
 
-| Revision `plugins` field | Type                      | Meaning                                                |
-| ------------------------ | ------------------------- | ------------------------------------------------------ |
-| `driver`                 | Driver identity object    | Required `id` and `implementation` strings.            |
-| `plugins`                | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
+| Revision `plugins` field | Type                      | Meaning                                                                                                 |
+| ------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `driver`                 | Driver identity object    | Required `id` and `implementation` strings.                                                             |
+| `plugins`                | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`.                                                  |
+| `releases`               | Object keyed by plugin ID | Optional exact releases the Driver bound; see [approved releases](drivers/plugin-approved-releases.md). |
 
 `AgentRevision.pluginApprovers` freezes the Agent default for that deployment.
 

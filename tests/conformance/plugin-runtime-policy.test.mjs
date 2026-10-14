@@ -3,6 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { WORKSPACE_FILE_NAMES } from "../../packages/contracts/src/index.ts";
 import { requireWorkspaceNodePlugins } from "../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_NODE_BINDING_PATH,
   runOpenClawRuntimeHelper,
@@ -61,6 +62,7 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   });
 
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
+    ["/app/openclaw.mjs", "plugins", "registry", "--json"],
     [
       "/app/openclaw.mjs",
       "plugins",
@@ -83,6 +85,249 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   assert.deepEqual(effective.plugins.load.paths, ["existing"]);
   assert.deepEqual(effective.plugins.entries, { diffs: { enabled: true } });
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
+});
+
+const ACME_RELEASE = Object.freeze({
+  nativeId: "acme-search",
+  name: "Acme Search",
+  source: "clawhub",
+  packageName: "@acme/openclaw-search",
+  version: "1.4.2",
+  integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+  toolNames: ["acme_search"],
+});
+
+function approvedClawHubRuntime(release = ACME_RELEASE) {
+  return {
+    manifest: {
+      kind: "openclaw",
+      selections: { "occ-plugin:acme-search": { enabled: true } },
+      releases: { "occ-plugin:acme-search": release },
+    },
+  };
+}
+
+function clawHubInstallResponses(install = {}) {
+  return [
+    { status: 0, stdout: "", stderr: "" },
+    { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
+    {
+      status: 0,
+      stdout: JSON.stringify({
+        plugin: {
+          id: "acme-search",
+          version: "1.4.2",
+          rootDir: "/home/node/.openclaw/plugins/acme-search",
+        },
+        // The shape OpenClaw records for a ClawHub install: no npm resolvedName.
+        install: {
+          source: "clawhub",
+          clawhubPackage: "@acme/openclaw-search",
+          clawhubFamily: "code-plugin",
+          version: "1.4.2",
+          integrity: ACME_RELEASE.integrity,
+          installPath: "/home/node/.openclaw/plugins/acme-search",
+          ...install,
+        },
+      }),
+      stderr: "",
+    },
+  ];
+}
+
+// OpenClaw 2026.9.8 refuses --pin for ClawHub specs ("--pin is only supported with npm
+// registry installs"), so the ClawHub command omits it.
+test("OpenClaw runtime helper installs an admitted ClawHub release and verifies its install record", () => {
+  const { calls, files } = runOpenClawRuntimeHelper(
+    approvedClawHubRuntime(),
+    clawHubInstallResponses(),
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
+    ["/app/openclaw.mjs", "plugins", "registry", "--json"],
+    [
+      "/app/openclaw.mjs",
+      "plugins",
+      "install",
+      "clawhub:@acme/openclaw-search@1.4.2",
+      "--force",
+      "--no-enable",
+      // The administrator's approval is the capability consent OpenClaw requires.
+      "--accept-capabilities",
+    ],
+    ["/app/openclaw.mjs", "plugins", "registry", "--refresh", "--json"],
+    ["/app/openclaw.mjs", "plugins", "inspect", "acme-search", "--json"],
+  ]);
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
+  assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "acme-search"]);
+});
+
+// The gateway's state volume keeps OpenClaw's install records across restarts. An
+// install over a record is an update, whose migration loads the staged package's
+// Doctor contract module before the helper can verify it. OpenClaw picks the record
+// by the staged manifest's plugin ID, so a substituted package could declare any
+// retained ID: the helper drops every record, not only the admitted one. OpenClaw
+// 2026.9.8 uninstall (src/plugins/uninstall-package-config.ts) also strips the plugin
+// from plugins.allow and writes entries.<id>.enabled false; the helper restores the
+// admitted configuration.
+test("OpenClaw runtime helper drops every persisted install record before installing a release", () => {
+  const configPath = "/home/node/.openclaw/openclaw.json";
+  const { calls, files } = runOpenClawRuntimeHelper(
+    approvedClawHubRuntime(),
+    [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      ...clawHubInstallResponses(),
+    ],
+    {
+      baseConfig: { plugins: { allow: ["openai", "acme-search"] } },
+      env: { OPENAI_API_KEY: "model-credential-value" },
+      pluginRegistryResponse: {
+        status: 0,
+        stdout: JSON.stringify({
+          state: "fresh",
+          persisted: {
+            installRecords: {
+              "acme-search": { source: "clawhub", clawhubPackage: "@acme/openclaw-search" },
+              // Left by an earlier revision of this Agent; not selected now.
+              "acme-notes": { source: "npm", resolvedName: "@acme/openclaw-notes" },
+            },
+          },
+        }),
+        stderr: "",
+      },
+      beforeSpawn(command, args, sandbox) {
+        if (args[1] === "plugins" && args[2] === "uninstall") {
+          const config = JSON.parse(sandbox.files.get(configPath));
+          config.plugins.allow = (config.plugins.allow ?? []).filter((id) => id !== args[3]);
+          config.plugins.entries = { ...config.plugins.entries, [args[3]]: { enabled: false } };
+          sandbox.files.set(configPath, JSON.stringify(config));
+        }
+      },
+    },
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args.slice(1, 4)))), [
+    ["plugins", "registry", "--json"],
+    ["plugins", "uninstall", "acme-search"],
+    ["plugins", "uninstall", "acme-notes"],
+    ["plugins", "install", "clawhub:@acme/openclaw-search@1.4.2"],
+    ["plugins", "registry", "--refresh"],
+    ["plugins", "inspect", "acme-search"],
+  ]);
+  assert.ok(
+    calls
+      .filter((call) => call.args[2] === "uninstall")
+      .every((call) => call.args.includes("--force")),
+  );
+  // No plugin-management subprocess receives the workload's model credential.
+  for (const call of calls) {
+    assert.equal(call.options.env.OPENAI_API_KEY, undefined, call.args.join(" "));
+    assert.equal(call.options.env.OPENCLAW_CONFIG_PATH, "/home/node/.openclaw/openclaw.json");
+  }
+  const effective = JSON.parse(files.get(configPath));
+  assert.deepEqual(effective.plugins.allow, ["openai", "acme-search"]);
+  assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
+});
+
+test("OpenClaw runtime helper refuses to install when persisted install records are unreadable", () => {
+  const result = runOpenClawRuntimeHelper(approvedClawHubRuntime(), clawHubInstallResponses(), {
+    // A record store exists but its records cannot be read: install could become an update.
+    pluginRegistryResponse: {
+      status: 0,
+      stdout: JSON.stringify({ state: "fresh", persisted: null }),
+      stderr: "",
+    },
+    captureError: true,
+  });
+
+  assert.match(result.error?.message ?? "", /install records are unreadable/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.calls.map((call) => call.args.slice(1, 3)))), [
+    ["plugins", "registry"],
+  ]);
+});
+
+test("An approved npm release bound at admission installs and verifies in the Pod", () => {
+  const approved = {
+    nativeId: "acme-notes",
+    name: "Acme Notes",
+    source: "npm",
+    packageName: "@acme/openclaw-notes",
+    version: "2.0.1",
+    integrity: OCC_DIFFS_DIGEST,
+    toolNames: ["acme_notes"],
+  };
+  const selections = { "occ-plugin:acme-notes": { enabled: true } };
+  // The Driver's binding is what OCC stores in the AgentRevision and Compute delivers.
+  const releases = new OCCPluginDriver({ approvedPlugins: [approved] }).bindReleases(selections);
+  const { calls } = runOpenClawRuntimeHelper(
+    { manifest: { kind: "openclaw", selections, releases } },
+    [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
+      {
+        status: 0,
+        stdout: JSON.stringify({
+          plugin: {
+            id: "acme-notes",
+            version: "2.0.1",
+            rootDir: "/home/node/.openclaw/plugins/acme-notes",
+          },
+          install: {
+            source: "npm",
+            resolvedName: "@acme/openclaw-notes",
+            resolvedVersion: "2.0.1",
+            integrity: OCC_DIFFS_DIGEST,
+            installPath: "/home/node/.openclaw/plugins/acme-notes",
+          },
+        }),
+        stderr: "",
+      },
+    ],
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[1].args)), [
+    "/app/openclaw.mjs",
+    "plugins",
+    "install",
+    "@acme/openclaw-notes@2.0.1",
+    "--pin",
+    "--force",
+    "--no-enable",
+    "--accept-capabilities",
+  ]);
+});
+
+test("OpenClaw runtime helper keeps a ClawHub release unready when its install record drifts", () => {
+  for (const [install, message] of [
+    // A different archive under the same version must not become ready.
+    [{ integrity: `sha256-${Buffer.alloc(32, 8).toString("base64")}` }, /installed integrity/],
+    // The admitted digest in another record field is not the archive digest.
+    [{ integrity: undefined, npmIntegrity: ACME_RELEASE.integrity }, /installed integrity/],
+    [{ version: "1.4.3" }, /installed version/],
+    [{ clawhubPackage: "@other/openclaw-search" }, /installed package/],
+    // An npm install of the same name is a different source than the one admitted.
+    [{ source: "npm", resolvedName: "@acme/openclaw-search" }, /install record source/],
+  ]) {
+    assert.throws(
+      () => runOpenClawRuntimeHelper(approvedClawHubRuntime(), clawHubInstallResponses(install)),
+      message,
+    );
+  }
+});
+
+test("OpenClaw runtime helper refuses admitted releases that are not exact pins", () => {
+  for (const release of [
+    { ...ACME_RELEASE, version: "^1.4.2" },
+    { ...ACME_RELEASE, integrity: undefined },
+    { ...ACME_RELEASE, nativeId: "diffs" },
+  ]) {
+    assert.throws(
+      () => runOpenClawRuntimeHelper(approvedClawHubRuntime(release), clawHubInstallResponses()),
+      /OpenClaw approved plugin|identities must be unique/,
+    );
+  }
 });
 
 test("OpenClaw runtime helper opens Diffs viewer links only through the native admin origin", () => {
@@ -470,7 +715,8 @@ for (const [name, tools] of [
       successfulPluginIds: [],
       failures: [{ pluginId: "occ-plugin:diffs", code: "PLUGIN_INSTALL_FAILED" }],
     });
-    assert.equal(result.calls.length, 1);
+    // A persisted-record read, then the failed install.
+    assert.equal(result.calls.length, 2);
     const effective = JSON.parse(result.files.get("/home/node/.openclaw/openclaw.json"));
     assert.deepEqual(effective.plugins.entries, { diffs: { enabled: false } });
     // Remove only startup's generated grant; emptying an operator allowlist would widen access.
@@ -631,7 +877,7 @@ test("OpenClaw startup preserves restrictions for a disabled selection", () => {
   );
   const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
-  assert.ok(calls[0].args.includes("--no-enable"));
+  assert.ok(calls[1].args.includes("--no-enable"));
 });
 
 test("OpenClaw startup rejects a blocked Codex bridge before readiness", () => {

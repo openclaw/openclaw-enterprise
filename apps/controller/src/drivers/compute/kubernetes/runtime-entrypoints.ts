@@ -95,7 +95,8 @@ function startRuntimeReadinessServer(readiness) {
 `;
 
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
-const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
+const pluginRuntimeTranslatorFor = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE});
+const pluginRuntimeTranslator = pluginRuntimeTranslatorFor();
 const {
   dirname: pluginDirname,
   resolve: pluginResolve,
@@ -1082,9 +1083,20 @@ function samePluginFailures(left, right) {
     JSON.stringify([...(right ?? [])].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
 }
 
+// Operator-approved releases travel with the admitted revision, so a Pod
+// installs what was admitted even after the Installation list changes.
+function openClawRuntimeTranslator(runtime) {
+  const releases = runtime.manifest?.releases;
+  if (releases === undefined) return pluginRuntimeTranslator;
+  if (!isPlainObject(releases)) {
+    throw new Error("OpenClaw plugin releases are invalid.");
+  }
+  return pluginRuntimeTranslatorFor(Object.values(releases));
+}
+
 function openClawPluginConfiguration(runtime, failures = [], base) {
   if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(
+    return openClawRuntimeTranslator(runtime).openClawRuntimeArtifact(
       runtime.manifest.selections ?? {},
       failures,
       runtime.manifest.pluginApprovers,
@@ -1217,13 +1229,25 @@ function requireNonEmptyString(value, description) {
 function openClawPluginPackageSpec(plugin) {
   const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
   const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  return packageName + "@" + version;
+  return (plugin.source === "clawhub" ? "clawhub:" : "") + packageName + "@" + version;
+}
+
+// Plugin management needs no workload credentials. Withhold credential-shaped
+// variables (model keys, tokens, passwords) so package code that runs during an
+// install cannot read them from its environment.
+const PLUGIN_CLI_WITHHELD_ENV = /(?:^|_)(?:API_KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)/i;
+
+function pluginCliEnvironment() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !PLUGIN_CLI_WITHHELD_ENV.test(name)),
+  );
 }
 
 function runOpenClaw(args, description, diagnostic) {
   const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: pluginCliEnvironment(),
   });
   if (result.error !== undefined || typeof result.status !== "number") {
     throw new Error(description + " failed.");
@@ -1270,16 +1294,21 @@ function verifyOpenClawPluginInstall(plugin) {
     throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
   }
   const record = report.install;
-  if (record?.source !== "npm") {
+  const source = plugin.source ?? "npm";
+  if (record?.source !== source) {
     throw new Error("OpenClaw plugin install record source does not match the admitted release.");
   }
-  if (record.resolvedName !== packageName) {
+  // ClawHub records its package separately from npm's resolved name.
+  if ((source === "clawhub" ? record.clawhubPackage : record.resolvedName) !== packageName) {
     throw new Error("OpenClaw plugin installed package does not match the admitted release.");
   }
   if ((record.resolvedVersion ?? record.version) !== version) {
     throw new Error("OpenClaw plugin installed version does not match the admitted release.");
   }
-  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
+  // A ClawHub record also carries npmIntegrity and clawpackSha256; only its integrity is the
+  // archive digest an approved release pins.
+  const recordIntegrity = source === "clawhub" ? record.integrity : installRecordIntegrity(record);
+  if (plugin.integrity !== undefined && recordIntegrity !== plugin.integrity) {
     throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
   }
   const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");
@@ -1290,10 +1319,31 @@ function verifyOpenClawPluginInstall(plugin) {
   }
 }
 
+// OpenClaw treats an install over a persisted install record as an update, and its
+// update migration loads the Doctor contract module of the package it just staged,
+// before this helper verifies the admitted release. The record is chosen by the
+// staged manifest's plugin ID, so any retained record could be reused. The gateway's
+// state volume keeps records across restarts and revisions: drop every one before
+// installing (uninstall loads no plugin code), then restore the configuration that
+// uninstall edits, so each install is a fresh install.
+function removePersistedOpenClawInstallRecords(installs, failedIds) {
+  if (installs.every((plugin) => failedIds.has(plugin.pluginId))) return;
+  const registry = runOpenClawJson(["plugins", "registry", "--json"], "OpenClaw plugin registry read");
+  const records = registry?.persisted === null && registry.state === "missing" ? {} : registry?.persisted?.installRecords;
+  if (!isPlainObject(records)) {
+    throw new Error("OpenClaw plugin install records are unreadable.");
+  }
+  const config = readOpenClawConfig();
+  for (const recordId of Object.keys(records)) {
+    runOpenClaw(["plugins", "uninstall", recordId, "--force"], "OpenClaw plugin uninstall");
+  }
+  writeOpenClawConfig(config);
+}
+
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
+      ? openClawRuntimeTranslator(runtime).openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];
@@ -1301,12 +1351,26 @@ function installOpenClawPlugins(runtime, failures = []) {
   const failedIds = pluginFailureIds(failed);
   const originalTools = readOpenClawConfig().tools;
   applyOpenClawPluginConfiguration(runtime, failed);
+  removePersistedOpenClawInstallRecords(installs, failedIds);
+  // OpenClaw refuses a noninteractive install of a nonofficial plugin without explicit
+  // capability consent. The Installation administrator's approval of an exact release
+  // is that consent; bundled catalog entries are official and need none.
+  const approvedReleaseIds = new Set(Object.keys(runtime.manifest?.releases ?? {}));
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);
     try {
+      // OpenClaw accepts --pin only for npm specs; a ClawHub spec is already exact.
       runOpenClaw(
-        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
+        [
+          "plugins",
+          "install",
+          spec,
+          ...(plugin.source === "clawhub" ? [] : ["--pin"]),
+          "--force",
+          "--no-enable",
+          ...(approvedReleaseIds.has(plugin.pluginId) ? ["--accept-capabilities"] : []),
+        ],
         "OpenClaw plugin install",
         pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
       );

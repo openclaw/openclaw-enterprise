@@ -164,6 +164,94 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
+const approvedClawHubPlugin = Object.freeze({
+  nativeId: "acme-search",
+  name: "Acme Search",
+  source: "clawhub",
+  packageName: "@acme/openclaw-search",
+  version: "1.4.2",
+  integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+  toolNames: ["acme_search"],
+});
+
+test("OpenClaw Plugin Driver offers approved releases and binds exactly the selected ones", async () => {
+  const driver = new OCCPluginDriver({ approvedPlugins: [approvedClawHubPlugin] });
+
+  assert.deepEqual(await driver.listCatalog(context("embedded")), [
+    {
+      id: "occ-plugin:diffs",
+      name: "Diffs",
+      tools: [{ id: "diffs", name: "diffs", ownerId: "diffs" }],
+    },
+    {
+      id: "occ-plugin:acme-search",
+      name: "Acme Search",
+      tools: [{ id: "acme_search", name: "acme_search", ownerId: "acme-search" }],
+    },
+  ]);
+  const selections = {
+    "occ-plugin:acme-search": { enabled: true, tools: { acme_search: { approval: "none" } } },
+  };
+  driver.validatePolicies(selections);
+  // Diffs is a bundled catalog entry; only the operator-approved release is recorded.
+  assert.deepEqual(driver.bindReleases(selections), {
+    "occ-plugin:acme-search": approvedClawHubPlugin,
+  });
+  assert.equal(driver.bindReleases({ "occ-plugin:diffs": { enabled: true } }), undefined);
+
+  // A second selection would install a second package in one gateway startup. OpenClaw
+  // would then treat an archive that declares the first plugin's ID as an update and run
+  // its Doctor migration before Compute verifies it, so admission refuses the pair.
+  assert.throws(
+    () => driver.validatePolicies({ ...selections, "occ-plugin:diffs": { enabled: true } }),
+    /installs one plugin for each Agent/,
+  );
+
+  // An Installation without the approval no longer offers or admits it.
+  assert.throws(
+    () => new OCCPluginDriver().validatePolicies({ "occ-plugin:acme-search": { enabled: true } }),
+    (error) =>
+      error.pluginId === "occ-plugin:acme-search" &&
+      /Plugin Driver \(occ-plugin\) does not offer/.test(error.message),
+  );
+});
+
+test("OpenClaw Plugin Driver refuses approved entries that are not exact pinned releases", () => {
+  const npmIntegrity = OCC_DIFFS_DIGEST;
+  for (const [entry, message] of [
+    [{ ...approvedClawHubPlugin, version: "^1.4.2" }, /\[0\]\.version is invalid/],
+    [{ ...approvedClawHubPlugin, version: "latest" }, /\[0\]\.version is invalid/],
+    [{ ...approvedClawHubPlugin, integrity: npmIntegrity }, /\[0\]\.integrity is invalid/],
+    [{ ...approvedClawHubPlugin, source: "npm" }, /\[0\]\.integrity is invalid/],
+    [{ ...approvedClawHubPlugin, source: "git" }, /\[0\]\.source is invalid/],
+    [{ ...approvedClawHubPlugin, packageName: "../escape" }, /\[0\]\.packageName is invalid/],
+    [{ ...approvedClawHubPlugin, toolNames: [] }, /\[0\]\.toolNames is invalid/],
+    [{ ...approvedClawHubPlugin, url: "https://example.test/x" }, /\[0\] is invalid/],
+    [{ ...approvedClawHubPlugin, nativeId: "diffs" }, /identities must be unique/],
+    [{ ...approvedClawHubPlugin, toolNames: ["bash"] }, /canonical policy names/],
+    [{ ...approvedClawHubPlugin, toolNames: ["diffs"] }, /unambiguous/],
+  ]) {
+    assert.throws(() => new OCCPluginDriver({ approvedPlugins: [entry] }), message);
+  }
+  assert.throws(
+    () => new OCCPluginDriver({ approvedPlugins: [approvedClawHubPlugin], other: true }),
+    /configuration\.other is unsupported/,
+  );
+  // An exact npm release with its sha512 is accepted alongside ClawHub releases.
+  new OCCPluginDriver({
+    approvedPlugins: [
+      approvedClawHubPlugin,
+      {
+        ...approvedClawHubPlugin,
+        nativeId: "acme-npm",
+        source: "npm",
+        integrity: npmIntegrity,
+        toolNames: ["acme_npm"],
+      },
+    ],
+  });
+});
+
 test("OpenClaw plugin startup translation renders native install and enablement", () => {
   const enabled = openClawRuntimeArtifact(occSelection());
   assert.deepEqual(enabled.installs, [

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-10
-last_updated_session: fix-987-988
+updated: 2026-10-11
+last_updated_session: authoring-run/263ef7ca-1f9e-4b7b-a847-7ebfc1270c3b
 ---
 
 # Agent Plugin Deployment Flow
@@ -48,7 +48,7 @@ graph TD
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
-  S --> B["Revalidate and snapshot revision"]
+  S --> B["Revalidate, snapshot revision, bind approved releases"]
   B --> C["Validate native metadata; grant selected plugins"]
   C --> D["Attempt selected installs"]
   D -->|install rejection or auth required| E["Disable failed selections; collect warnings"]
@@ -124,8 +124,10 @@ Installation readers use `GET /installation`; Agent editors use
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
 Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in AgentRevision, and queues it. Native app mapping,
-release metadata, and configuration resolve later.
+policy-only plugin map in AgentRevision, and queues it. The OpenClaw Driver's
+`bindReleases` adds each selected [approved release](../reference/drivers/plugin-approved-releases.md)
+as `plugins.releases`. Native app mapping, other release metadata, and
+configuration resolve later.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -163,15 +165,21 @@ container's private temporary home.
 
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:installOpenClawPlugins`
 
-Embedded OpenClaw validates selections against its bundled catalog and policy.
+Embedded OpenClaw validates selections against its bundled catalog plus the
+manifest's admitted `releases` (`openClawRuntimeTranslator`), then policy.
 Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`, preserving denies and profiles. A tool's `enabled`
 override precedes `toolDefaults.enabled`; disabled tools emit native denies.
 Master disable and operator denies prevail; `provider_default` and `none` add no
-Diffs review step. Revision-private configuration uses `--pin --force --no-enable`,
-preserving enablement and allow/deny lists. Preparation refreshes the registry
-and verifies admitted configuration; the pinned runtime release lacks this flag.
+Diffs review step. Revision-private configuration uses `--pin --force --no-enable`;
+approved releases add `--accept-capabilities`. Admission allows one OpenClaw plugin per
+Agent; startup uninstalls every persisted install record
+(`removePersistedOpenClawInstallRecords`) and restores configuration, so no record lets
+OpenClaw's update path load a staged Doctor contract before verification. Plugin CLI calls omit credential-named environment variables.
+Preparation refreshes the registry and verifies admitted configuration.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
+A ClawHub release installs as `clawhub:<package>@<version>`; its record must
+show source `clawhub` and the admitted `clawhubPackage`.
 Failure prevents gateway readiness. Confirmed install rejection disables the
 optional selection and removes its managed tool allowance before startup.
 
@@ -345,6 +353,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 01:55: Bind Installation-approved OpenClaw plugin releases at admission and install them, including from ClawHub, with source, package, version, and integrity checks. (authoring-run/263ef7ca-1f9e-4b7b-a847-7ebfc1270c3b - dd687b85f1f4f9cb7b743eee4dcd1a2b90f9ea94)
 
 - 2026-10-10 09:00: Render `on-failure` as the Gateway's `on-request`; Compute refuses `untrusted`, and the Codex PluginDriver an automatic reviewer without an explicit policy. (fix-987-988)
 

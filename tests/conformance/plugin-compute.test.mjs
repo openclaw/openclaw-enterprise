@@ -556,6 +556,78 @@ test("plugin-free revisions apply explicit Slack approvers for configured Slack 
   }
 });
 
+test("Compute hands an admitted plugin release to the OpenClaw runtime that installs it", () => {
+  const release = {
+    nativeId: "acme-search",
+    name: "Acme Search",
+    source: "clawhub",
+    packageName: "@acme/openclaw-search",
+    version: "1.4.2",
+    integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+    toolNames: ["acme_search"],
+  };
+  const plugins = { "occ-plugin:acme-search": { enabled: true } };
+  const admitted = revision({
+    harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+    plugins: {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins,
+      releases: { "occ-plugin:acme-search": release },
+    },
+  });
+  const runtime = pluginRuntimeSpecForRevision(admitted);
+  const manifest = JSON.parse(pluginRuntimeConfigMapData(runtime)[PLUGIN_RUNTIME_MANIFEST]);
+  assert.deepEqual(manifest.releases, { "occ-plugin:acme-search": release });
+
+  // The Pod installs the release named by the revision, not by current Installation state.
+  const { calls } = runOpenClawRuntimeHelper({ manifest }, [
+    { status: 0, stdout: "", stderr: "" },
+    { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
+    {
+      status: 0,
+      stdout: JSON.stringify({
+        plugin: {
+          id: "acme-search",
+          version: "1.4.2",
+          rootDir: "/home/node/.openclaw/plugins/acme-search",
+        },
+        install: {
+          source: "clawhub",
+          clawhubPackage: "@acme/openclaw-search",
+          version: "1.4.2",
+          integrity: release.integrity,
+          installPath: "/home/node/.openclaw/plugins/acme-search",
+        },
+      }),
+      stderr: "",
+    },
+  ]);
+  // The first call reads persisted install records; the second installs.
+  assert.equal(calls[1].args[3], "clawhub:@acme/openclaw-search@1.4.2");
+
+  // A release must belong to an admitted selection, and only the OpenClaw Driver binds them.
+  assert.throws(
+    () =>
+      pluginRuntimeSpecForRevision({
+        ...admitted,
+        plugins: { ...admitted.plugins, releases: { "occ-plugin:other": release } },
+      }),
+    /plugin selections are invalid/,
+  );
+  assert.throws(
+    () =>
+      pluginRuntimeSpecForRevision(
+        revision({
+          plugins: {
+            ...codexLinearPluginState(),
+            releases: { "codex-plugin:linear@openai-curated-remote": release },
+          },
+        }),
+      ),
+    /does not bind plugin releases/,
+  );
+});
+
 test("plugin-free Codex Gateway applies explicit Agent approvers at launch", async () => {
   const runtime = pluginRuntimeSpecForRevision(revision({ pluginApprovers: [] }));
   const { files } = await runOpenClawRuntimeHelper({ manifest: runtime }, [], {

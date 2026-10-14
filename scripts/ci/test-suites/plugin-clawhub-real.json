@@ -1,0 +1,35 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS",
+    "OPENAI_API_KEY"
+  ],
+  "env": {
+    "OCC_TEST_PLUGIN_DRIVER_OPENCLAW_CLAWHUB_REAL": "1"
+  },
+  "prepare": {
+    "postgres": true,
+    "k3d": true,
+    "requiresPreparedStateForFile": true,
+    "requireEnv": ["OPENAI_API_KEY"],
+    "immutableOptionalEnvImages": [
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+      "OCC_TEST_KUBERNETES_AGENT_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/plugin-driver-clawhub-real.test.mjs",
+      "expectedTests": [
+        "an Installation-approved ClawHub release installs at its admitted identity and runs in a normal Agent turn",
+        "an admitted ClawHub release replays after its approval changes or is removed and the controllers restart, while new admissions follow the current approval",
+        "a ClawHub archive that does not match its admitted digest is refused before the gateway starts",
+        "a mismatched digest is refused before the gateway starts when the Pod reinstalls over a persisted record",
+        "a new revision starts with no install record retained from an earlier release",
+        "an Installation-approved community ClawHub release installs with the administrator's capability consent"
+      ]
+    }
+  ]
+}
