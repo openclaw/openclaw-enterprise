@@ -693,12 +693,16 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
     { endpoint: "http://openshell-gateway.openshell-system.svc.cluster.local:8080" },
     { endpoint: "openshell-gateway.openshell-system.svc.example.internal:8080" },
     { endpoint: "https://openshell-gateway-0.openshell-gateway-peer.openshell-system.svc:8080" },
+    // CoreDNS answers a port and protocol before the Service name like the Service (finding 1369).
+    { endpoint: "https://grpc.tcp.openshell-gateway.openshell-system.svc:8080" },
+    { endpoint: "http://_grpc._tcp.openshell-gateway.openshell-system.svc.cluster.local:8080" },
     { serviceName: "openshell-gateway.openshell-system" },
     { serviceName: "openshell-gateway.openshell-system.svc.cluster.local" },
     { serviceName: "openshell-gateway-0.openshell-gateway-peer.openshell-system.svc" },
     // DNS names are case-insensitive, and token_url hosts are compared after URL parsing.
     { serviceName: "OpenShell-Gateway.OpenShell-System" },
     { serviceName: "OpenShell-Gateway.OpenShell-System.SVC.Cluster.Local" },
+    { serviceName: "GRPC.TCP.OpenShell-Gateway.OpenShell-System.SVC" },
   ]) {
     assert.deepEqual(placement(configuration, "oce-0123456789abcde"), named, configuration);
   }
@@ -719,6 +723,8 @@ test("the OpenShell Backend names its gateway's namespace only from Service-shap
     "http://k3d-occ-dev-server-0:30080",
     "https://openshell.example.com",
     "openshell-gateway.openshell-system:8080",
+    // CoreDNS answers at most two labels before the Service name.
+    "https://a.grpc.tcp.openshell-gateway.openshell-system.svc:8080",
   ]) {
     assert.equal(placement({ endpoint }, "oce-0123456789abcde"), undefined, endpoint);
   }
@@ -773,6 +779,11 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     // Three labels ending in another Service name the gateway's namespace only through a
     // Service the OpenShell chart does not create there, and never the gateway itself.
     "https://a.b.keycloak/token",
+    "https://grpc.tcp.openshell-gateway2/token",
+    // CoreDNS answers at most two labels before a Service name, so four labels ending in the
+    // gateway Service name it only after `svc` completion, as a Service in another namespace.
+    "https://a.b.c.openshell-gateway/token",
+    "https://a.b.c.openshell-gateway-peer/token",
     "https://kubernetes.default.svc/token",
     "https://openshell-system.example/token",
     "https://login.openshell-gateway.example/token",
@@ -786,6 +797,7 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
   for (const gateway of [
     { endpoint: "https://openshell-gateway.openshell-system.svc:8080" },
     { serviceName: "openshell-gateway.openshell-system" },
+    { endpoint: "https://grpc.tcp.openshell-gateway.openshell-system.svc:8080" },
   ]) {
     const f = await fixture(t, { toolSources: true, gateway });
     for (const type of OAUTH2_TYPES) {
