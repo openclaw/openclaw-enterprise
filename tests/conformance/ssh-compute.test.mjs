@@ -173,8 +173,13 @@ async function gatewayPortRange(t, units, state) {
               request.socket.destroy();
               return;
             }
-            await appendFile(join(state, "readyz.log"), `${request.method} ${request.url}\n`);
-            response.writeHead(request.method === "GET" && request.url === "/readyz" ? 200 : 404);
+            const readyz = request.method === "GET" && request.url === "/readyz";
+            // Log a fixed line, never request data: the tests assert only readiness probes arrive.
+            await appendFile(
+              join(state, "readyz.log"),
+              `${readyz ? "GET /readyz" : "unexpected"}\n`,
+            );
+            response.writeHead(readyz ? 200 : 404);
             response.end();
           } catch {
             request.socket.destroy();
