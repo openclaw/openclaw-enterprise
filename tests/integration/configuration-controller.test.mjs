@@ -3896,6 +3896,10 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       key("/agents/entries/main/sandbox/ssh/certificateData"),
     ],
     [
+      { agents: { defaults: { sandbox: { ssh: { knownHostsData: sentinel } } } } },
+      key("/agents/defaults/sandbox/ssh/knownHostsData"),
+    ],
+    [
       { storage: { locations: { backup: { encryption: { passphrase: sentinel } } } } },
       key("/storage/locations/backup/encryption/passphrase"),
     ],
@@ -3917,6 +3921,16 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
         },
       },
       key("/channels/synology-chat/incomingUrl"),
+    ],
+    [
+      {
+        channels: {
+          "synology-chat": {
+            accounts: { ops: { webhookUrl: `https://chat.example.test/?token=${sentinel}` } },
+          },
+        },
+      },
+      key("/channels/synology-chat/accounts/ops/webhookUrl"),
     ],
     // Plugin settings: a key, an account's password, a list entry, a field only the manifest
     // marks sensitive and a headers map.
@@ -3954,13 +3968,27 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
       }
     });
   }
+  // A Preset variable that fills a whole secret renders as its own text, a literal: the Preset
+  // must name a reference instead (a SecretRef whose `id` waits on a variable).
+  const variable = await request(context.app, "POST", presets, {
+    body: {
+      name: "Variable token",
+      template: {
+        variables: { token: { type: "string" } },
+        configuration: { values: { channels: { telegram: { botToken: "{{ vars.token }}" } } } },
+      },
+    },
+  });
+  assert.equal(variable.status, 400, JSON.stringify(variable.body));
+  assert.equal(variable.body.error.message, key("/channels/telegram/botToken"));
   // Nothing refused was stored.
   assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
   assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
 
   // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
   // where a credential is read from (`secretFile`), a channel map key that reads like one, a
-  // boolean, a hook mapping's routing key and an unencrypted storage location.
+  // boolean, a hook mapping's routing key, an unencrypted storage location, and an environment
+  // map, which keeps the rules every environment map has.
   const secretRef = (id) => ({ source: "env", provider: "default", id });
   const accepted = {
     gateway: {
@@ -3998,6 +4026,11 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
         firecrawl: { config: { webFetch: { apiKey: secretRef("FIRECRAWL_API_KEY") } } },
         "voice-call": { config: { telnyx: { publicKey: "${TELNYX_PUBLIC_KEY}" } } },
         "visitor-access": { config: { requireToken: true } },
+        acpx: {
+          config: {
+            mcpServers: { docs: { command: "docs-mcp", env: { DOCS_API_TOKEN: "env-value" } } },
+          },
+        },
       },
     },
   };

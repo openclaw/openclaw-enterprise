@@ -37,7 +37,7 @@ saves also refuse a literal `gateway.auth.password`.
 
 **Who is affected.** Configurations and Presets that select a second provider
 or give it an `apiKey`, set an `apiKey`, media or voice model for Dedicated
-Codex, or hold a literal key in one of those slots.
+Codex, or hold a literal key or secret in one of those slots.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
