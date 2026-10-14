@@ -1126,16 +1126,36 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
 
   // A row stored before the fallback rule still reads; Agent save and deployment name it.
   await t.test("a stored fallback on another provider", async () => {
-    await writePastOcc(configurationDriver, configurationId, offProvider.at(-1)[0]);
-    const agentSaved = await request(context.app, "PATCH", agentPath, {
-      body: { configurationId },
-    });
-    assert.equal(agentSaved.status, 400, JSON.stringify(agentSaved.body));
-    assert.equal(agentSaved.body.error.message, fallback);
-    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-    assert.equal(deployed.body.error.message, fallback);
-    await writePastOcc(configurationDriver, configurationId, valid);
+    const entryFallback = {
+      agents: {
+        defaults: runtimeDefaults,
+        entries: {
+          main: { model: { primary: runtimeDefaults.model, fallbacks: [other] } },
+        },
+      },
+    };
+    for (const [values, message] of [
+      [offProvider.at(-1)[0], fallback],
+      [
+        entryFallback,
+        setting("agents.entries.main.model.fallbacks", "must use the primary model's provider"),
+      ],
+    ]) {
+      const label = JSON.stringify(values);
+      await writePastOcc(configurationDriver, configurationId, values);
+      const agentSaved = await request(context.app, "PATCH", agentPath, {
+        body: { configurationId },
+      });
+      assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
+      assert.equal(agentSaved.body.error.message, message, label);
+      const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+      assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+      assert.equal(deployed.body.error.message, message, label);
+      // Refused before a revision exists.
+      const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+      assert.deepEqual(revisions.body.data, [], label);
+      await writePastOcc(configurationDriver, configurationId, valid);
+    }
   });
 
   // A Configuration whose model policy selects the Codex Harness runs as Dedicated Codex, which

@@ -22,7 +22,8 @@ import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
  * Each error names the setting and what is accepted, never the submitted value.
  *
  * Rules that hold on every topology (`validateConfiguration`) also run when a Configuration is
- * saved, provisioned or set as Preset defaults, so they refuse the content where it is written.
+ * saved, provisioned or set as Preset defaults (except the model provider rules, which skip
+ * Preset defaults), so they refuse the content where it is written.
  */
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -365,8 +366,8 @@ export function requireSelectedModelProvider(
  * Header names must be valid HTTP field names, so a lookalike cannot slip past the match; on a
  * Preset save, a name that waits on an unfilled variable (`options.unresolved`) is checked with a
  * stand-in for it, matched as a credential header as the text around it, and checked again once
- * filled, as on every Compute. (The provider apiKey rule depends on the Harness, so it stays in
- * Harness authentication admission, on every provider.)
+ * filled, as on every Compute. (The provider apiKey rule depends on the Harness the model policy
+ * selects; validateConfiguration and Harness authentication admission run it, on every provider.)
  */
 export function requireHarnessCredentialBinding(
   configuration: Readonly<OpenClawConfigurationDocument>,

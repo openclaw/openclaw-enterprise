@@ -16,21 +16,20 @@ real Installation.
 ## 2026-10-14: every model selection must use the Harness provider
 
 **What breaks.** On Kubernetes Compute, Configuration save, Agent save and
-deployment refuse a model selection on another provider than the primary model's:
+deployment refuse a model selection off the primary model's provider:
 fallbacks, Agent entries, `subagents.model`, `imageModel`, `pdfModel` and the
 other `*Model` settings, `models` policy keys, hook models and
-`channels.modelByChannel`. They also refuse an `apiKey` on any other
-`models.providers` entry. Dedicated Codex refuses one on every entry, and a
-`models` policy key without a provider.
+`channels.modelByChannel`, and an `apiKey` on another `models.providers` entry.
+Dedicated Codex refuses every `apiKey` and a `models` policy key without a
+provider. Every Compute refuses a fallback on another provider at save.
 
 **Who is affected.** Configurations that select a second provider or give it
 an `apiKey`, or that set any provider `apiKey` for Dedicated Codex.
 
 **How to tell.** A `400` names the setting: `... must select
 <provider>/<model>, the provider of the Agent's Harness authentication
-binding`, `... must use the primary model's provider` (any Compute), `... must
-be provider/model references`, or `models.providers.<name>.apiKey must be
-unset`.
+binding`, `... must use the primary model's provider`, `... must be
+provider/model references`, or `models.providers.<name>.apiKey must be unset`.
 
 **Steps.** Select only the primary model's provider and remove the other
 provider's `apiKey`, then save and deploy again.

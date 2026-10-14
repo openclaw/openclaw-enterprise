@@ -2163,11 +2163,12 @@ function requireProviderApiKeys(
   configuration: Readonly<OpenClawConfigurationDocument>,
   openclaw: boolean,
   authentication: { readonly providerId: string; readonly environmentName: string },
+  referencesOnly = false,
 ): void {
   const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
   for (const [provider, value] of Object.entries(providers)) {
     const config = asRecord(value);
-    if (config?.apiKey === undefined) {
+    if (config?.apiKey === undefined || (referencesOnly && !isCredentialReference(config.apiKey))) {
       continue;
     }
     const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
@@ -2223,45 +2224,50 @@ function requireProviderApiKeys(
   }
 }
 
+// A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
+// (model-auth.ts); it refuses anything else as an inline credential, with its own message.
+function isCredentialReference(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
+  }
+  const reference = asRecord(value);
+  return (
+    reference !== undefined &&
+    Object.keys(reference).length === 3 &&
+    [reference.source, reference.provider, reference.id].every(isNonEmptyString)
+  );
+}
+
 /**
  * The model provider rules of finding 1291 depend only on the Configuration: the provider is
  * its primary model's (harnessModelAuthentication), and the Harness, Dedicated Codex or
  * OpenClaw, is the one its model policy selects. Every deployment applies them, so Configuration
- * save does too (finding 1299). A Configuration that selects no model or an unsupported primary
- * provider, or whose model policy selects no Harness, is left to deployment, which refuses it
- * first.
+ * save does too (finding 1299). A draft whose model policy selects no Harness (or no model), or
+ * whose primary provider Kubernetes Compute does not support, is left to deployment, which
+ * refuses it first; OCC's requireFallbackProviders still names a fallback on another provider.
  */
 function requireConfiguredModelProviders(
   configuration: Readonly<OpenClawConfigurationDocument>,
 ): void {
+  let harnessId: string;
   let authentication: ReturnType<typeof harnessModelAuthentication>;
   try {
+    harnessId = resolveConfiguredHarnessId(configuration);
     authentication = harnessModelAuthentication(configuration);
   } catch (error) {
-    if (error instanceof ConfigurationFailure) {
+    if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
       return;
     }
     throw error;
   }
-  requireSelectedModelProvider(configuration, authentication.providerId, false, callerSettingError);
-  let harnessId: string;
-  try {
-    harnessId = resolveConfiguredHarnessId(configuration);
-  } catch (error) {
-    if (error instanceof ConfigurationHarnessError) {
-      return;
-    }
-    throw error;
-  }
-  if (harnessId === "codex") {
-    requireSelectedModelProvider(
-      configuration,
-      authentication.providerId,
-      true,
-      callerSettingError,
-    );
-  }
-  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication);
+  requireSelectedModelProvider(
+    configuration,
+    authentication.providerId,
+    harnessId === "codex",
+    callerSettingError,
+  );
+  // An inline key is left to the Configuration Driver, whose message says to use a Secret.
+  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true);
 }
 
 // The error contract caps the message a ConfigurationHarnessError becomes.
