@@ -2332,7 +2332,7 @@ test(
     );
     assert.equal(refusal.name, "DependencyUnavailableError");
     assert.equal(refusal.field, "plugins");
-    assert.equal(refusal.message, "Persisted saved configuration is invalid.");
+    assert.equal(refusal.message, "Persisted AgentRevision plugin state is invalid.");
     assert.equal(requestFailure(refusal).status, 503);
     assert.deepEqual(await counts(), before);
   },
