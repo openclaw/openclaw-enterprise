@@ -491,6 +491,11 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     { tools: { media: { models: [{ headers: { Authorization: `Bearer ${sentinel}` } }] } } },
     { tts: { providers: { openai: { apiKey: sentinel } } } },
     { talk: { providers: { openai: { apiKey: sentinel } } } },
+    // The other slots OpenClaw marks sensitive, and channel and plugin settings (finding 1309).
+    { gateway: { auth: { token: sentinel } } },
+    { hooks: { token: sentinel } },
+    { channels: { telegram: { botToken: sentinel } } },
+    { plugins: { entries: { brave: { config: { webSearch: { apiKey: sentinel } } } } } },
   ];
   for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };

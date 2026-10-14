@@ -8,6 +8,7 @@ import {
   isAdmittedHeaderName,
   isCredentialHeaderName,
   ModelCredentialValueError,
+  refuseLiteralGatewayPassword,
   urlHoldsUserinfo,
 } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
@@ -88,6 +89,38 @@ const TOKEN_COUNT_OPTION =
   /(?:^|[-_.])(?:max|min|num|total|context|input|output|completion)[-_.]?tokens?$/i;
 const credentialOptionMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the option value a \${NAME} reference.`;
+
+// OpenClaw's rule for the settings of plugins and channels (`isSensitiveConfigPath` in the pinned
+// src/config/sensitive-paths.ts), matched against each key: a name that ends in "token" or names
+// a password, secret, API key, encryption or private key, or a service account. A key that names
+// the file, path, directory or environment variable a credential is read from (`secretFile`,
+// `apiKeyEnv`) holds no credential itself.
+const SENSITIVE_SETTING =
+  /token$|password|secret|api.?key|encrypt.?key|private.?key|serviceaccount(?:ref)?$/i;
+const CREDENTIAL_LOCATION_SETTING = /(?:file|path|dir|env)$/i;
+// A Google Chat service account may also be an inline JSON object, a credential too.
+const SERVICE_ACCOUNT_SETTING = /serviceaccount$/i;
+// Settings the pinned OpenClaw's bundled plugin and channel manifests mark sensitive whose key the
+// rule misses, as dotted paths under `plugins.entries.<id>.config` or `channels.<id>` (`*` for any
+// key). A `headers` map (the Codex plugin's `appServer.headers`) follows the credential header rule.
+const SENSITIVE_MANIFEST_SETTINGS: Readonly<Record<string, readonly string[]>> = {
+  "plugins/voice-call": ["telnyx.publicKey"],
+  "channels/synology-chat": [
+    "incomingUrl",
+    "webhookUrl",
+    "accounts.*.incomingUrl",
+    "accounts.*.webhookUrl",
+  ],
+};
+
+const isSecretRef = (value: unknown): boolean => {
+  const reference = asRecord(value);
+  return (
+    reference !== undefined &&
+    Object.keys(reference).length === 3 &&
+    [reference.source, reference.provider, reference.id].every(isNonEmptyString)
+  );
+};
 
 const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
@@ -246,7 +279,8 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * network proxy and speech and Talk provider proxies. MCP server credential headers hold references
  * too, and so do the other key and header slots the Gateway sends: memory search, media
  * understanding requests, speech and Talk provider keys, web fetch and OpenTelemetry headers, skill
- * keys and the cron webhook token (writes only).
+ * keys and the cron webhook token, as do the other slots OpenClaw marks sensitive: Gateway, hooks,
+ * sandbox SSH and storage secrets, and the sensitive settings of channels and plugins (writes only).
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -274,12 +308,7 @@ export function validateModelCredentialReferences(
     ) {
       return;
     }
-    const reference = asRecord(value);
-    if (
-      reference &&
-      Object.keys(reference).length === 3 &&
-      [reference.source, reference.provider, reference.id].every(isNonEmptyString)
-    ) {
+    if (isSecretRef(value)) {
       return;
     }
     throw new ModelCredentialValueError(path, message);
@@ -449,6 +478,61 @@ export function validateModelCredentialReferences(
         ) {
           validateReference(value, pointer(...optionsPath, option), false, credentialOptionMessage);
         }
+      }
+    }
+  };
+  // The settings of one plugin or channel, `owner` (a `SENSITIVE_MANIFEST_SETTINGS` key), at
+  // `root` (finding 1309). A string under a sensitive key, or in a list under one, holds a
+  // `${NAME}` reference. Under a sensitive key a SecretRef passes and any other object is read key
+  // by key, except a service account's. A `headers` map follows the credential header rule, and an
+  // `env` map keeps the environment rules above. A number or boolean (`requireToken: true`) passes.
+  const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
+    const manifest = (SENSITIVE_MANIFEST_SETTINGS[owner] ?? []).map((field) => field.split("."));
+    const marked = (relative: SettingPath): boolean =>
+      manifest.some(
+        (field) =>
+          field.length === relative.length &&
+          field.every((segment, index) => segment === "*" || segment === relative[index]),
+      );
+    const pending: [SettingPath, unknown, boolean][] = [[[], settings, false]];
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      const [relative, value, sensitive] = next;
+      const path = [...root, ...relative];
+      const key = relative.at(-1);
+      if (typeof value === "string") {
+        if (sensitive) {
+          validateReference(value, pointer(...path), false, credentialKeyMessage);
+        }
+        continue;
+      }
+      // Each child is queued last to first, so the first refused setting in the document is named.
+      if (Array.isArray(value)) {
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+          pending.push([[...relative, index], value[index], sensitive]);
+        }
+        continue;
+      }
+      const record = asRecord(value);
+      if (record === undefined || (sensitive && isSecretRef(record))) {
+        continue;
+      }
+      if (sensitive && typeof key === "string" && SERVICE_ACCOUNT_SETTING.test(key)) {
+        validateReference(record, pointer(...path), false, credentialKeyMessage);
+      }
+      if (key === "headers") {
+        refuseCredentialHeaders(path, record, credentialHeaderMessage);
+        continue;
+      }
+      if (key === "env") {
+        continue;
+      }
+      for (const [name, child] of Object.entries(record).reverse()) {
+        const at = [...relative, name];
+        pending.push([
+          at,
+          child,
+          (SENSITIVE_SETTING.test(name) && !CREDENTIAL_LOCATION_SETTING.test(name)) || marked(at),
+        ]);
       }
     }
   };
@@ -640,6 +724,49 @@ export function validateModelCredentialReferences(
       false,
       credentialKeyMessage,
     );
+    // The other slots the pinned OpenClaw schema registers sensitive (finding 1309): the Gateway's
+    // inbound auth (the password keeps the message that names the reference Compute fills) and
+    // remote auth, the Control UI's GitHub token, the hooks endpoint and Gmail push tokens, sandbox
+    // SSH key material (default and per Agent) and each storage location's encryption passphrase. OpenClaw reads a `${NAME}` reference in every one, and a SecretRef
+    // where the slot takes one. A hook mapping's `sessionKey`, also registered, is a routing key
+    // (often a template), not a credential, and stays as written.
+    refuseLiteralGatewayPassword(values);
+    const sensitiveSlots: [SettingPath, unknown][] = [
+      ...[
+        ["gateway", "auth", "token"],
+        ["gateway", "remote", "token"],
+        ["gateway", "remote", "password"],
+        ["gateway", "controlUi", "github", "token"],
+        ["hooks", "token"],
+        ["hooks", "gmail", "pushToken"],
+      ].map((path): [SettingPath, unknown] => [path, get(values, path)]),
+      ...["identityData", "certificateData", "knownHostsData"].flatMap(
+        (field): [SettingPath, unknown][] => [
+          [
+            ["agents", "defaults", "sandbox", "ssh", field],
+            get(values, ["agents", "defaults", "sandbox", "ssh", field]),
+          ],
+          ...keyed(["agents", "entries"], ["sandbox", "ssh", field]),
+        ],
+      ),
+      ...keyed(["storage", "locations"], ["encryption", "passphrase"]),
+    ];
+    for (const [path, value] of sensitiveSlots) {
+      validateReference(value, pointer(...path), false, credentialKeyMessage);
+    }
+    // Channel and plugin settings have no schema OCC can read, so their keys are matched as
+    // OpenClaw matches plugin-owned fields (`isSensitiveConfigPath`), with the fields bundled
+    // manifests mark sensitive that the rule misses (`SENSITIVE_PLUGIN_FIELD`).
+    for (const [channel, settings] of Object.entries(asRecord(values.channels) ?? {})) {
+      refuseSensitiveSettings(["channels", channel], settings, `channels/${channel}`);
+    }
+    for (const [plugin, settings] of Object.entries(plugins ?? {})) {
+      refuseSensitiveSettings(
+        ["plugins", "entries", plugin, "config"],
+        asRecord(settings)?.config,
+        `plugins/${plugin}`,
+      );
+    }
     // Every other environment map OpenClaw starts a process with (findings 1260, 1261): a
     // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
     // Docker sandbox's (default and per Agent) and the install policy's exec check.

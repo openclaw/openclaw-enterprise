@@ -77,8 +77,15 @@ export function validateConfigurationSettings(values: OpenClawConfigurationDocum
     (setting, requirement) =>
       new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`),
   );
-  const auth = asRecord(asRecord(values.gateway)?.auth);
-  const password = auth?.password;
+  refuseLiteralGatewayPassword(values);
+}
+
+/**
+ * A literal gateway.auth.password. Also checked when a Preset is saved, by the Configuration
+ * Driver's credential rules, so it is refused wherever it is written.
+ */
+export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocument): void {
+  const password = asRecord(asRecord(values.gateway)?.auth)?.password;
   if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
   }

@@ -3849,6 +3849,169 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
   assert.equal(templated.status, 201, JSON.stringify(templated.body));
 });
 
+test("Configuration and Preset saves refuse a literal secret in the other slots OpenClaw marks sensitive", async (t) => {
+  // Finding 1309: Gateway and hooks tokens, sandbox SSH keys, storage passphrases, and the secret
+  // settings of channels and plugins (`webSearch.apiKey`) saved as literals and reached the
+  // ConfigMap that Namespace members read. Channel and plugin keys are matched as OpenClaw
+  // matches plugin-owned fields, plus the fields bundled manifests mark sensitive.
+  const root = await mkdtemp(join(tmpdir(), "occ-sensitive-slots-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configurationDriver = new FilesystemConfigurationDriver(root);
+  const computeDriver = createReadyComputeDriver("compute-sensitive-slots");
+  const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configurations = `/namespaces/${namespace.id}/configurations`;
+  const presets = `/namespaces/${namespace.id}/presets`;
+  const sentinel = `synthetic-sensitive-slot-${randomUUID()}`;
+  const inline = (field) =>
+    `Configuration field ${field} holds a credential value inline, where a reference is required.`;
+  const key = (field) => `${inline(field)} Make the value a \${NAME} reference or a SecretRef.`;
+  const header = (field) =>
+    `${inline(field)} Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+  const plugin = (id, config) => ({ plugins: { entries: { [id]: { config } } } });
+  const refused = [
+    // Slots the pinned OpenClaw schema registers sensitive.
+    [{ gateway: { auth: { token: sentinel } } }, key("/gateway/auth/token")],
+    // The Gateway password keeps its own message, which names the reference Compute fills.
+    [
+      { gateway: { auth: { password: sentinel } } },
+      `${inline("/gateway/auth/password")} Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.`,
+    ],
+    [{ gateway: { remote: { token: sentinel } } }, key("/gateway/remote/token")],
+    [{ gateway: { remote: { password: sentinel } } }, key("/gateway/remote/password")],
+    [
+      { gateway: { controlUi: { github: { token: sentinel } } } },
+      key("/gateway/controlUi/github/token"),
+    ],
+    [{ hooks: { token: sentinel } }, key("/hooks/token")],
+    [{ hooks: { gmail: { pushToken: sentinel } } }, key("/hooks/gmail/pushToken")],
+    [
+      { agents: { defaults: { sandbox: { ssh: { identityData: sentinel } } } } },
+      key("/agents/defaults/sandbox/ssh/identityData"),
+    ],
+    [
+      { agents: { entries: { main: { sandbox: { ssh: { certificateData: sentinel } } } } } },
+      key("/agents/entries/main/sandbox/ssh/certificateData"),
+    ],
+    [
+      { storage: { locations: { backup: { encryption: { passphrase: sentinel } } } } },
+      key("/storage/locations/backup/encryption/passphrase"),
+    ],
+    // Channel settings: a token, an account's password and an inline service account.
+    [{ channels: { telegram: { botToken: sentinel } } }, key("/channels/telegram/botToken")],
+    [
+      { channels: { matrix: { accounts: { work: { password: sentinel } } } } },
+      key("/channels/matrix/accounts/work/password"),
+    ],
+    [
+      { channels: { googlechat: { serviceAccount: { private_key: sentinel } } } },
+      key("/channels/googlechat/serviceAccount"),
+    ],
+    // A field only the channel's manifest marks sensitive: a URL that carries a token.
+    [
+      {
+        channels: {
+          "synology-chat": { incomingUrl: `https://chat.example.test/?token=${sentinel}` },
+        },
+      },
+      key("/channels/synology-chat/incomingUrl"),
+    ],
+    // Plugin settings: a key, an account's password, a list entry, a field only the manifest
+    // marks sensitive and a headers map.
+    [
+      plugin("brave", { webSearch: { apiKey: sentinel } }),
+      key("/plugins/entries/brave/config/webSearch/apiKey"),
+    ],
+    [
+      plugin("imap", { accounts: { work: { password: sentinel } } }),
+      key("/plugins/entries/imap/config/accounts/work/password"),
+    ],
+    [
+      plugin("memory-lancedb", { embedding: { apiKeys: ["${EMBED_KEY}", sentinel] } }),
+      key("/plugins/entries/memory-lancedb/config/embedding/apiKeys/1"),
+    ],
+    [
+      plugin("voice-call", { telnyx: { publicKey: sentinel } }),
+      key("/plugins/entries/voice-call/config/telnyx/publicKey"),
+    ],
+    [
+      plugin("codex", { appServer: { headers: { Authorization: `Bearer ${sentinel}` } } }),
+      header("/plugins/entries/codex/config/appServer/headers/Authorization"),
+    ],
+  ];
+  for (const [values, message] of refused) {
+    await t.test(`refuses ${message.split(" ")[2]}`, async () => {
+      for (const [path, body] of [
+        [configurations, { kind: "agent", values }],
+        [presets, { name: "Refused", template: { configuration: { values } } }],
+      ]) {
+        const response = await request(context.app, "POST", path, { body });
+        assert.equal(response.status, 400, `${path}: ${JSON.stringify(response.body)}`);
+        assert.equal(response.body.error.message, message, path);
+        assert.equal(JSON.stringify(response.body).includes(sentinel), false);
+      }
+    });
+  }
+  // Nothing refused was stored.
+  assert.deepEqual((await request(context.app, "GET", presets)).body.data, []);
+  assert.deepEqual(await readdir(join(root, namespace.id)).catch(() => []), []);
+
+  // `${NAME}` and SecretRef references still save, and so do settings the rule leaves alone:
+  // where a credential is read from (`secretFile`), a channel map key that reads like one, a
+  // boolean, a hook mapping's routing key and an unencrypted storage location.
+  const secretRef = (id) => ({ source: "env", provider: "default", id });
+  const accepted = {
+    gateway: {
+      auth: { mode: "password", password: "${OPENCLAW_GATEWAY_PASSWORD}" },
+      remote: { token: secretRef("REMOTE_GATEWAY_TOKEN") },
+      controlUi: { github: { token: "${CONTROL_UI_GITHUB_TOKEN}" } },
+    },
+    hooks: {
+      token: "${HOOKS_TOKEN}",
+      gmail: { pushToken: "${GMAIL_PUSH_TOKEN}" },
+      mappings: [{ match: { path: "gmail" }, sessionKey: "hook:gmail:{{messages[0].id}}" }],
+    },
+    agents: {
+      defaults: { sandbox: { ssh: { identityData: secretRef("SANDBOX_SSH_KEY") } } },
+    },
+    storage: {
+      locations: {
+        backup: { encryption: { passphrase: "${BACKUP_PASSPHRASE}" } },
+        scratch: { encryption: "none" },
+      },
+    },
+    channels: {
+      telegram: {
+        enabled: false,
+        botToken: "${TELEGRAM_BOT_TOKEN}",
+        accounts: { work: { botToken: secretRef("TELEGRAM_WORK_BOT_TOKEN") } },
+      },
+      line: { enabled: false, secretFile: "/run/secrets/line-channel-secret" },
+      googlechat: { enabled: false, serviceAccount: secretRef("GOOGLECHAT_SERVICE_ACCOUNT") },
+      slack: { enabled: false, channels: { "secret-launch": { requireMention: true } } },
+    },
+    plugins: {
+      entries: {
+        brave: { config: { webSearch: { apiKey: "${BRAVE_API_KEY}" } } },
+        firecrawl: { config: { webFetch: { apiKey: secretRef("FIRECRAWL_API_KEY") } } },
+        "voice-call": { config: { telnyx: { publicKey: "${TELNYX_PUBLIC_KEY}" } } },
+        "visitor-access": { config: { requireToken: true } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", configurations, {
+    body: { kind: "agent", values: accepted },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.data.values, accepted);
+  const templated = await request(context.app, "POST", presets, {
+    body: { name: "Templated", template: { configuration: { values: accepted } } },
+  });
+  assert.equal(templated.status, 201, JSON.stringify(templated.body));
+});
+
 test("Preset and Configuration saves refuse a baseUrl or api that a variable fills with no host or no string", async (t) => {
   // Finding 1256: `https://{{ vars.h }}/v1` filled empty renders `https:///v1`, whose first path
   // segment the URL parser reads as the host. Finding 1257: a number or boolean variable that is

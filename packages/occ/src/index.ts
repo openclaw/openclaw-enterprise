@@ -407,7 +407,11 @@ export {
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
-export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
+export {
+  CODEX_APPROVAL_POLICY_SETTING,
+  codexApprovalPolicy,
+  refuseLiteralGatewayPassword,
+} from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
