@@ -3620,29 +3620,62 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
   const finalizer = "openclaw.dev/test-outbound-withdrawal";
   let finalizerHeld = false;
   const setProxyFinalizer = async (held) => {
-    const current = await resource("pod", proxy.metadata.name, topology.gatewayPlacement);
-    assert.equal(
-      current.metadata.uid,
-      proxy.metadata.uid,
-      "only the observed proxy Pod may change",
-    );
-    const finalizers = (current.metadata.finalizers ?? []).filter((value) => value !== finalizer);
-    if (held) {
-      finalizers.push(finalizer);
-    }
-    await kubectl(
-      "patch",
-      "pod",
-      proxy.metadata.name,
-      "--namespace",
-      topology.gatewayPlacement,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        { op: "test", path: "/metadata/uid", value: proxy.metadata.uid },
-        { op: "test", path: "/metadata/resourceVersion", value: current.metadata.resourceVersion },
-        { op: "add", path: "/metadata/finalizers", value: finalizers },
-      ]),
+    await waitFor(
+      "exact proxy Pod finalizer mutation",
+      async () => {
+        const current = await resource("pod", proxy.metadata.name, topology.gatewayPlacement).catch(
+          (error) => {
+            if (!held && /NotFound|not found/i.test(error.stderr ?? error.message)) {
+              return undefined;
+            }
+            throw error;
+          },
+        );
+        if (current === undefined) {
+          return true;
+        }
+        assert.equal(
+          current.metadata.uid,
+          proxy.metadata.uid,
+          "only the observed proxy Pod may change",
+        );
+        const finalizers = (current.metadata.finalizers ?? []).filter(
+          (value) => value !== finalizer,
+        );
+        if (held) {
+          finalizers.push(finalizer);
+        }
+        try {
+          await kubectl(
+            "patch",
+            "pod",
+            proxy.metadata.name,
+            "--namespace",
+            topology.gatewayPlacement,
+            "--type=json",
+            "--patch",
+            JSON.stringify([
+              { op: "test", path: "/metadata/uid", value: proxy.metadata.uid },
+              {
+                op: "test",
+                path: "/metadata/resourceVersion",
+                value: current.metadata.resourceVersion,
+              },
+              { op: "add", path: "/metadata/finalizers", value: finalizers },
+            ]),
+          );
+        } catch (error) {
+          const latest = await resource("pod", proxy.metadata.name, topology.gatewayPlacement);
+          assert.equal(latest.metadata.uid, proxy.metadata.uid);
+          // Kubelet status updates may race our patch; retry only that verified optimistic-lock conflict.
+          if (latest.metadata.resourceVersion !== current.metadata.resourceVersion) {
+            return undefined;
+          }
+          throw error;
+        }
+        return true;
+      },
+      10_000,
     );
     finalizerHeld = held;
   };
@@ -3782,7 +3815,6 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     await setProxyFinalizer(true);
     await setRules(controllerRole.rules);
     roleRestored = true;
-    await tunnel.assertClosed();
     await waitFor("terminated proxy container held by the owned Pod finalizer", async () => {
       const current = await resource("pod", proxy.metadata.name, topology.gatewayPlacement);
       assert.equal(current.metadata.uid, proxy.metadata.uid);
@@ -3802,6 +3834,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
       return rows[0];
     };
     const lease = await maintenance();
+    await tunnel.assertClosed();
     await waitFor(
       "a live withdrawal worker lease renewal while Pod deletion is blocked",
       async () =>

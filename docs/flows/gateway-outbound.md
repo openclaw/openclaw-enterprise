@@ -140,7 +140,7 @@ returns a typed refusal. Maintenance scheduling is owned by the existing worker;
 its interval does not bound queue and shutdown time.
 
 `removeGatewayOutbound` deletes only resources matching exact revision ownership
-and waits for owned Pods to stop. Stop retains the proxy while the Gateway drains;
+and waits on Namespace, Agent, revision and workload-role Pod labels. Stop retains the proxy while the Gateway drains;
 retirement and deletion remove it afterward. Old cleanup cannot match a successor.
 Existing tunnels end with the proxy process rather than surviving a policy change.
 

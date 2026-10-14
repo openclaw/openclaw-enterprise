@@ -66,7 +66,9 @@ and a lost runtime retirement obligation during withdrawal. Both fixes preserve
 durable removal-only work, failure evidence and required cleanup across retries,
 restart and lease recovery. Five focused PostgreSQL cases and the existing
 candidate cleanup case passed without skips; final refinement review and native
-proof remain in progress. The broad local conformance attempt also encountered host
+proof remain in progress. The native finalizer regression also found a proxy Pod
+selector mismatch that allowed premature finalization; the corrected wait uses
+the actual revision ownership labels. The broad local conformance attempt also encountered host
 prerequisite failures; targeted passing suites do not imply all local suites passed.
 
 ## Changelog

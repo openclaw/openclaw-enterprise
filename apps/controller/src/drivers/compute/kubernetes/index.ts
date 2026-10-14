@@ -12526,7 +12526,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const name = this.gatewayOutboundName(revision);
     const ownership = this.gatewayOutboundOwnership(revision);
     await this.deleteNamedRuntimeResources(name, ownership, namespace);
-    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway-outbound", name);
+    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway-outbound");
     await this.deleteOwnedNamespacedResource(
       "NetworkPolicy",
       `${name}-gateway`,
