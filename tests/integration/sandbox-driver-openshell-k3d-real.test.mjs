@@ -4107,7 +4107,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
-async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
+async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
   const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
     (secret) => typeof secret === "string" && secret.length > 0,
   );
@@ -4166,7 +4166,7 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
   return `\n${sections.join("\n")}`;
 }
 
-async function requestNativeOpenClawTurns(context, topology) {
+async function requestGatewayTurns(context, topology, harnessId) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -4178,8 +4178,15 @@ async function requestNativeOpenClawTurns(context, topology) {
     openShellGatewayName(topology.agent.id),
   );
   context.after(() => forwarding.stop());
+  const sessionKey = `openshell-gateway-${randomUUID()}`;
+  const nonces = [];
   const requestTurn = async () => {
-    const nonce = `OCC-OPENSHELL-NATIVE-${randomUUID()}`;
+    const nonce = `OCC-OPENSHELL-GATEWAY-${randomUUID()}`;
+    nonces.push(nonce);
+    const prompt =
+      harnessId === "codex"
+        ? `Use the shell exec tool to run exactly printf '%s' '${nonce}'. Reply with its output.`
+        : `Reply with exactly ${nonce}.`;
     let response;
     try {
       response = await fetch(`${forwarding.url}/v1/chat/completions`, {
@@ -4187,36 +4194,78 @@ async function requestNativeOpenClawTurns(context, topology) {
         headers: {
           authorization: `Bearer ${gatewayPassword}`,
           "content-type": "application/json",
-          "x-openclaw-session-key": `openshell-native-${randomUUID()}`,
+          "x-openclaw-session-key":
+            harnessId === "codex" ? sessionKey : `openshell-native-${randomUUID()}`,
         },
         body: JSON.stringify({
           model: "openclaw/default",
           stream: false,
-          messages: [{ role: "user", content: `Reply with exactly ${nonce}.` }],
+          messages: [{ role: "user", content: prompt }],
         }),
         signal: AbortSignal.timeout(180_000),
       });
     } catch (error) {
-      const diagnostic = await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
       assert.fail(
-        `Native OpenClaw turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
+        `Agent Gateway turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
       );
     }
     const body = await response.text();
     assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
-      response.status === 200
-        ? ""
-        : await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
     assert.equal(response.status, 200, `${body}${failureDiagnostic}`);
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 
-  // The first session's retained worker keeps its slot after the turn. A second session therefore
-  // proves that the same AgentRevision Sandbox admits more than one session-owned worker.
+  // Codex reuses the Gateway session to cover the bridge's next-turn policy. Native
+  // OpenClaw uses distinct sessions to exercise its multiple retained worker slots.
   await requestTurn();
   await requestTurn();
+  if (harnessId === "codex") {
+    // Inspect native, durable command records, not the model's claim that it ran printf.
+    // The HTTP requests above must pass through the regular OpenClaw bridge.
+    const claims = new Set(
+      topology.harnessPod.spec.volumes
+        .filter(({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName)
+        .map(({ name }) => name),
+    );
+    const roots = topology.harnessPod.spec.containers
+      .find(({ name }) => name === "agent")
+      .volumeMounts.filter(({ name }) => claims.has(name))
+      .map(({ mountPath }) => mountPath);
+    await waitFor(
+      "successful native shell commands for both Gateway turns",
+      async () => {
+        const commands = (await readHarnessFiles(topology.placement, topology.harnessPod, roots))
+          .filter(({ path }) => path.endsWith(".jsonl"))
+          // The writer may still be flushing its last record after the HTTP response.
+          .flatMap(({ content }) =>
+            content
+              .toString("utf8")
+              .split("\n")
+              .slice(0, -1)
+              .filter(Boolean)
+              .map((line) => JSON.parse(line)),
+          )
+          .filter(({ type, payload }) => type === "event_msg" && payload.type === "item_completed")
+          .map(({ payload }) => payload.item)
+          .filter(({ type }) => type === "CommandExecution");
+        return (
+          nonces.every((nonce) =>
+            commands.some(
+              (command) =>
+                command.command.join(" ").includes(nonce) &&
+                command.exit_code === 0 &&
+                command.aggregated_output?.trim() === nonce,
+            ),
+          ) || undefined
+        );
+      },
+      30_000,
+    );
+  }
 }
 
 async function assertNativeOpenClawWorkspaceFiles(topology) {
@@ -5095,7 +5144,7 @@ test(
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );
-          await requestNativeOpenClawTurns(context, topology);
+          await requestGatewayTurns(context, topology, "openclaw");
           await assertEmbeddedOpenShellFailsClosed(topology);
         }
         return;
@@ -5136,19 +5185,11 @@ test(
         );
       }
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting authenticated real in-Sandbox model turn.\n",
+        "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
       );
-      const nonce = `OCC-OPENSHELL-${randomUUID()}`;
-      const modelTurn = await requestCodexTurnFromGatewayPod({
-        namespace: topology.gatewayPlacement,
-        gatewayPod: topology.gatewayPod.metadata.name,
-        providerModel,
-        prompt: `Reply with exactly ${nonce}.`,
-      });
-      assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(modelCredential), false);
+      await requestGatewayTurns(context, topology, "codex");
       process.stderr.write(
-        "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
+        "OpenShell integration: regular Gateway shell turns passed; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
       process.stderr.write(
