@@ -126,9 +126,15 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     if (state.pending || !context.isCurrent()) {
       return;
     }
+    // Disabling Refresh can drop focus to the page. Return it only if the operator stayed here.
+    let returnFocus = document.activeElement === refresh;
+    const focusMoved = () => {
+      returnFocus = false;
+    };
     state.pending = true;
     state.error = null;
     render();
+    document.addEventListener("focusin", focusMoved, { once: true });
     try {
       const current = await context.request(path);
       if (!context.isCurrent()) {
@@ -158,10 +164,13 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
         };
       }
     } finally {
+      document.removeEventListener("focusin", focusMoved);
       if (context.isCurrent()) {
         state.pending = false;
         render();
-        focusStatusControl();
+        if (returnFocus) {
+          focusStatusControl();
+        }
       }
     }
   }

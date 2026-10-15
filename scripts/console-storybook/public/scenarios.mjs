@@ -4682,6 +4682,11 @@ export const scenarios = {
     path: revision,
     deployed: true,
     stopped: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1800 }],
+    steps: [
+      "Focus Refresh stop status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
+    ],
     description:
       "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
   },
