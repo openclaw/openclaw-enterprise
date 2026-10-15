@@ -156,6 +156,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexSandbox: modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
 });
 const {
   kubectl,
@@ -2498,8 +2499,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      "workspace-write",
-      "OCC must freeze OpenShell-selected Codex revisions within managed sandbox restrictions.",
+      modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
+      "OCC must select Codex isolation from the admitted source login mode.",
     );
   } else {
     assert.equal(

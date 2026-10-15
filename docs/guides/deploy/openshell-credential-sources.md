@@ -140,7 +140,7 @@ JSON
 CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o json | jq -r .id)"
 ```
 
-The OpenShell Sandbox Driver freezes `"sandbox": "workspace-write"` and
+For PAT sources, the OpenShell Sandbox Driver freezes `"sandbox": "workspace-write"` and
 `"approvalsReviewer": "user"` for dedicated Codex revisions. `approvalPolicy`
 stays configured. Managed account requirements and OpenShell enforcement remain
 active; forbidden native settings fail closed. The pinned runtimes currently

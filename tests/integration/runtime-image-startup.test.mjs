@@ -1140,11 +1140,11 @@ function run(args, env, readinessUrl) {
 );
 
 test(
-  "runtime image Gateway preserves OpenShell Codex managed workspace restrictions",
+  "runtime image Gateway preserves OpenShell Codex isolation policy",
   imageTestOptions,
   async () => {
-    // Run the bundled policy resolver: the Gateway must preserve the admitted restricted
-    // sandbox and human reviewer, including models without model-backed review support.
+    // The bundled resolver must preserve both PAT and API-key isolation choices and the
+    // human reviewer, including models without model-backed review support.
     const documented = {
       mode: "guardian",
       approvalPolicy: "on-request",
@@ -1161,10 +1161,12 @@ test(
     ].flatMap(({ documented: appServer }) =>
       // The Gateway passes no provider for the documented `codex/<model>` ref; `openai` is a
       // model it can verify for model-backed review.
-      [undefined, "openai"].map((modelProvider) => ({
-        appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY },
-        modelProvider,
-      })),
+      [undefined, "openai"].flatMap((modelProvider) =>
+        ["workspace-write", "danger-full-access"].map((sandbox) => ({
+          appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY, sandbox },
+          modelProvider,
+        })),
+      ),
     );
     const script = String.raw`
 import { readdirSync } from "node:fs";
@@ -1218,8 +1220,8 @@ process.stdout.write(JSON.stringify(results));
     ]);
     assert.deepEqual(
       JSON.parse(stdout),
-      cases.map(() => ({
-        sandbox: "workspace-write",
+      cases.map(({ appServer }) => ({
+        sandbox: appServer.sandbox,
         approvalsReviewer: "user",
       })),
     );

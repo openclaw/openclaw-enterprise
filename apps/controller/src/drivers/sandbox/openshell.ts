@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
+  CredentialSourceLoginMode,
   Backend,
   HarnessWorkloadRequirements,
   KubernetesNamespacedResource,
@@ -183,7 +184,7 @@ const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
 // OpenShell probes TMPDIR before the Harness entrypoint can create a nested directory.
 const OPENSHELL_TEMPORARY = "/tmp";
 /**
- * Keep admitted turns within managed Codex workspace restrictions. OpenShell still owns
+ * Default PAT and unresolved sources to managed Codex workspace restrictions. OpenShell owns
  * the outer filesystem, network and credential boundary; native sandbox failures remain
  * failures. The explicit user reviewer preserves human approval instead of selecting a
  * model-backed reviewer. Recheck against the pinned OpenClaw config-options.ts on upgrades.
@@ -1946,6 +1947,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   configureAgent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<AgentRevision["harness"]>,
+    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument {
     if (harness.mode !== "dedicated") {
       throw new OpenShellSandboxConfigurationFailure(
@@ -2008,6 +2010,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               appServer: {
                 ...appServer,
                 ...OPENSHELL_CODEX_APP_SERVER_POLICY,
+                // API-key login has no managed Codex policy; OpenShell owns its isolation.
+                // PAT and unresolved sources retain native restrictions until admission.
+                sandbox:
+                  credentialSourceLoginMode === "api_key"
+                    ? "danger-full-access"
+                    : "workspace-write",
               },
             },
           },

@@ -396,6 +396,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.3-pre.2",
+  codexSandbox = "workspace-write",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -1088,17 +1089,19 @@ export function createOpenShellKubernetesFixture({
             cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: "workspace-write",
+            sandbox: ${JSON.stringify(codexSandbox)},
             config: { project_doc_max_bytes: 131072 },
           });
           await request("turn/start", {
             threadId: started.thread.id,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            // Keep native managed policy enforced alongside the real OpenShell boundary.
-            sandboxPolicy: {
-              type: "workspaceWrite", writableRoots: [workspace], networkAccess: true,
-              excludeTmpdirEnvVar: false, excludeSlashTmp: false,
-            },
+            // Match the admitted source mode; PAT retains native managed restrictions.
+            sandboxPolicy: ${JSON.stringify(codexSandbox)} === "danger-full-access"
+              ? { type: "dangerFullAccess" }
+              : {
+                  type: "workspaceWrite", writableRoots: [workspace], networkAccess: true,
+                  excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+                },
           });
         } catch (error) {
           fail(error);

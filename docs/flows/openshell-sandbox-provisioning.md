@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-14
-last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
+updated: 2026-10-15
+last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -9,11 +9,11 @@ last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ## Overview
 
 Kubernetes Compute delegates dedicated Codex and native OpenClaw Harnesses to
-the OpenShell Sandbox Driver. Operator mode owns each Namespace's Workspace; managed mode fails before mutation. Model access uses a
-[credential source](credential-source-lifecycle.md), without granting the Agent
-Secret permission. Dedicated Codex receives revision-owned provider files and
-authenticates Gateway requests through OpenShell's bearer-passthrough exposure.
-Compute uses that endpoint, omitting the direct Harness Service.
+OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
+[Credential sources](credential-source-lifecycle.md) provide model access without
+Agent Secret permission. Codex authenticates Gateway requests through revision-owned
+provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
+Harness Service.
 
 Workspace-node setup exposes a scoped bootstrap token through a revision-owned
 provider file; it remains development-only.
@@ -156,25 +156,26 @@ and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-With `provisionHarness`, Compute derives image, command, labels, environment,
-mounts, optional identity, and resources from its ordinary Deployment shape.
-First-deploy preparation starts the Gateway on fail-closed transport, leaving
-the Agent Service inactive. Until Gateway readiness and its Agent-owned node
-setup Secret exist, preparation stays incomplete without attaching credentials
-or creating providers/Sandboxes. Compute then adds that Secret reference and
-invokes the SandboxDriver.
+Compute derives `provisionHarness` image, command, labels, environment, mounts,
+optional identity, and resources from its ordinary Deployment shape.
+First deployment keeps the Agent Service inactive. Compute starts the Gateway on
+fail-closed transport, waits for readiness and its Agent-owned node setup Secret,
+then passes the Secret reference to the SandboxDriver. Credential attachment and
+provider/Sandbox creation wait for both prerequisites.
 The local OpenShell profile disables projected workload identity. If it is
 enabled, OpenShell rejects the revision before Gateway mutation because the
 pinned API cannot preserve the exact Agent ServiceAccount and token.
-For `credential_source`, Compute renders the catalog login mode (`api_key` or
-`codex_pat` for Codex), without a model Secret. It passes the revision and
-`attachForRevision` provider names to OpenShell in `requirements.credentialAttachments`.
+For `credential_source`, Compute renders the catalog login mode without a model
+Secret and passes revision and `attachForRevision` provider names through
+`requirements.credentialAttachments`.
 For Codex, it reads the exact Agent transport Secret in the control plane and
-adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
-plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
-requirements and removes their ConfigMap paths from the remaining environment.
+adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It converts the admitted plugin
+snapshot into `runtime.json`/`config.toml` workload files and removes their ConfigMap
+paths from the environment.
 
-`OpenShellSandboxDriver.configureAgent` retains `workspace-write` and user review.
+OCC supplies admitted login metadata to `OpenShellSandboxDriver.configureAgent`.
+API-key sources select `danger-full-access`; PAT and unresolved sources retain
+`workspace-write`. Both require user review.
 OpenShell blocks nested bubblewrap user namespaces; model readiness does not
 prove shell execution.
 
@@ -358,6 +359,8 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
 
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 

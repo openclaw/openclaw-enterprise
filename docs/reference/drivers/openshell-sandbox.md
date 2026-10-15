@@ -184,7 +184,7 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+For PAT-backed dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
 configuration before OCC validates and freezes the revision:
 
 ```json
@@ -205,8 +205,9 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
-Codex uses `workspace-write` and an explicit `user` reviewer. Managed policy and
-OpenShell both apply. Nested shell execution remains unverified: Codex requires
+API-key sources use `danger-full-access`, with OpenShell providing isolation.
+PAT and unresolved sources retain `workspace-write` and native managed policy.
+Both use explicit `user` review. Nested shell execution remains unverified: Codex requires
 bubblewrap user namespaces, which OpenShell blocks.
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
