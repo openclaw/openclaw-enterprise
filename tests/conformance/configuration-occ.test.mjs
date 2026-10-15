@@ -560,7 +560,7 @@ test("a failed Configuration update leaves an update committed after its rollbac
   );
 });
 
-test("a Configuration left one generation ahead of its record recovers on the next update", async () => {
+test("a Configuration left ahead of its record by failed updates recovers on the next update", async () => {
   const { agent, configuration, configurationDriver, controller, namespace } = await fixture();
   const reference = { id: configuration.id, namespaceId: namespace.id };
   // Records each replace as [stored, written] generations: the Kubernetes Driver accepts only a
@@ -807,7 +807,15 @@ test("a Configuration whose ConfigMap a failed delete removed can still be delet
     DependencyUnavailableError,
   );
   assert.deepEqual(configurationDriver.stored(far), farAhead);
+  // At the bound, update advances the record past every leftover generation, then delete works.
   await configurationDriver.update({ ...farAhead, generation: 101 });
+  const replaced = await controller.updateConfiguration(administrator, {
+    namespaceId: namespace.id,
+    configurationId: far.id,
+    values: { model: "replacement" },
+  });
+  assert.equal(replaced.generation, 102);
+  assert.deepEqual(configurationDriver.stored(far), replaced);
   await controller.deleteConfiguration(administrator, namespace.id, far.id);
   assert.equal(configurationDriver.stored(far), undefined);
 
