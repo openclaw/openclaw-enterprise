@@ -3400,6 +3400,13 @@ test("a failed Namespace ensure reports a fixed or cleaned, bounded reason", asy
       "permanent",
       "A Namespace preparation request failed with HTTP status 422.",
     ],
+    // A malformed request, an expired controller token and a missing grant fail at once too:
+    // retrying cannot change the answer until an operator acts.
+    ...[400, 401, 403].map((statusCode) => [
+      Object.assign(new Error("refused"), { statusCode }),
+      "permanent",
+      `A Namespace preparation request failed with HTTP status ${statusCode}.`,
+    ]),
   ]) {
     assert.deepEqual(
       await ensure(async () => {
@@ -12244,6 +12251,27 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   );
   assert.ok(unreachable instanceof DependencyUnavailableError, String(unreachable));
   assert.equal(driver.describePrepareRevisionFailure(unreachable).stage, "sandbox_provision");
+
+  // OpenShell's admission limit on CreateSandbox names itself and keeps its provisioning stage.
+  const { OpenShellAdmissionLimitError } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts");
+  const limit = new OpenShellAdmissionLimitError(
+    "CreateSandbox",
+    Object.assign(new Error("8 RESOURCE_EXHAUSTED"), { code: 8 }),
+  );
+  fixture.sandbox.provisionHarness = async () => {
+    throw limit;
+  };
+  const limited = await driver.prepareRevision(revision, authContext(revision)).then(
+    () => assert.fail("a refused CreateSandbox must not prepare"),
+    (error) => error,
+  );
+  assert.equal(limited, limit);
+  assert.deepEqual(driver.describePrepareRevisionFailure(limited), {
+    code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+    stage: "sandbox_provision",
+    errorClass: "TransientDependencyError",
+  });
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
@@ -17209,22 +17237,34 @@ test("Kubernetes preparation diagnostics name a request timeout and keep real AP
       message: "Kubernetes API request timed out.",
     });
   }
-  {
+  // A 500 reaches the worker as the Kubernetes API's own TransientDependencyError, and the
+  // diagnostic walks past it to the answer, so it keeps the status (from 500 up, unavailable).
+  for (const [status, code] of [
+    [403, "KUBERNETES_API_REJECTED"],
+    [500, "KUBERNETES_API_UNAVAILABLE"],
+  ]) {
     const fixture = workspaceSetupFixture(true);
+    fixture.driver.waitBeforeRetry = async () => {};
     const clients = await fixture.driver.apiClients;
     clients.core.listNamespace = async () => {
-      throw new ApiException(403, "Forbidden", JSON.stringify({ kind: "Status", code: 403 }), {});
+      throw new ApiException(
+        status,
+        "Refused",
+        JSON.stringify({ kind: "Status", code: status }),
+        {},
+      );
     };
     const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
       () => assert.fail("the Namespace read must be refused"),
       (failure) => failure,
     );
+    assert.equal(error instanceof TransientDependencyError, status === 500);
     assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
-      code: "KUBERNETES_API_REJECTED",
+      code,
       stage: "prepare_revision",
       errorClass: "KubernetesApiError",
       message: "The Kubernetes API rejected revision preparation.",
-      status: 403,
+      status,
     });
   }
   // An abort that is no Kubernetes answer never reads as an HTTP status.
@@ -17300,6 +17340,19 @@ test("Kubernetes preparation diagnostics name the Agent Gateway for its own tran
       errorClass: "TransientDependencyError",
     },
   );
+  // The bound is the worker's own: 256 printable characters pass, and one more character or
+  // any control character leaves the message out.
+  for (const [message, kept] of [
+    ["x".repeat(256), true],
+    ["x".repeat(257), false],
+    ["The Agent Gateway route was unreachable\n(ECONNREFUSED).", false],
+  ]) {
+    const diagnostic = workspaceSetupFixture(false).driver.describePrepareRevisionFailure(
+      new TransientDependencyError("agent_gateway", "unreachable", message),
+    );
+    assert.equal(diagnostic.code, "AGENT_GATEWAY_UNAVAILABLE");
+    assert.equal(diagnostic.message, kept ? message : undefined, JSON.stringify(message));
+  }
 });
 
 for (const embedded of [true, false]) {

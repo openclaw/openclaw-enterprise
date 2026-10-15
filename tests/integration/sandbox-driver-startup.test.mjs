@@ -2026,17 +2026,18 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     });
   }
   // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state,
-  // not the identity.
-  {
+  // RESOURCE_EXHAUSTED a rate limit or busy admission workers, and NOT_FOUND a missing object,
+  // none of them the identity.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED", "NOT_FOUND"]) {
     const gatewayClient = workspaceGatewayClient();
-    const precondition = grpcError(grpc.status.FAILED_PRECONDITION, "workspace is terminating");
+    const passedThrough = grpcError(grpc.status[name], "not an identity refusal");
     gatewayClient.createWorkspace = async () => {
-      throw precondition;
+      throw passedThrough;
     };
     await assert.rejects(
       sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()),
       (error) => {
-        assert.equal(error, precondition);
+        assert.equal(error, passedThrough, name);
         return true;
       },
     );
@@ -2101,12 +2102,12 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       failure: "permanent",
     });
   }
-  {
-    // A refusal Compute cannot classify stays retryable, with a fixed reason and no
-    // "HTTP status 9".
+  // A refusal Compute cannot classify stays retryable, with a fixed reason and no
+  // "HTTP status 9" or "HTTP status 8": a rate limit clears by itself.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"]) {
     const gatewayClient = workspaceGatewayClient();
     gatewayClient.createWorkspace = async () => {
-      throw grpcError(grpc.status.FAILED_PRECONDITION, "precondition");
+      throw grpcError(grpc.status[name], "not an identity refusal");
     };
     assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
       namespaceId: tenant.id,
