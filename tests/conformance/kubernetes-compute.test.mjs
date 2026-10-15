@@ -17173,6 +17173,70 @@ for (const embedded of [true, false]) {
   });
 }
 
+// A request timeout outside any preparation stage names the timeout, not its cause: the
+// deadline's DOMException carries TIMEOUT_ERR (code 23), which once read as an HTTP status and
+// logged KUBERNETES_API_REJECTED status 23 (finding 1386). A real API refusal keeps its status.
+test("Kubernetes preparation diagnostics name a request timeout and keep real API statuses", async (context) => {
+  const { ApiException } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  {
+    const fixture = workspaceSetupFixture(true);
+    const clients = await fixture.driver.apiClients;
+    // request() makes its deadline right before it calls the read, so the latest
+    // AbortSignal.timeout is this read's deadline; the read lets it lapse while in flight.
+    let deadline;
+    const timeout = context.mock.method(AbortSignal, "timeout", () => {
+      deadline = new AbortController();
+      return deadline.signal;
+    });
+    clients.core.listNamespace = async () => {
+      deadline.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      throw deadline.signal.reason;
+    };
+    const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+      () => assert.fail("the Namespace read must time out"),
+      (failure) => failure,
+    );
+    timeout.mock.restore();
+    assert.equal(error.name, "TransientDependencyError");
+    assert.equal(error.reason, "timeout");
+    assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
+      code: "KUBERNETES_API_TIMEOUT",
+      stage: "prepare_revision",
+      errorClass: "KubernetesRequestTimeout",
+      message: "Kubernetes API request timed out.",
+    });
+  }
+  {
+    const fixture = workspaceSetupFixture(true);
+    const clients = await fixture.driver.apiClients;
+    clients.core.listNamespace = async () => {
+      throw new ApiException(403, "Forbidden", JSON.stringify({ kind: "Status", code: 403 }), {});
+    };
+    const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+      () => assert.fail("the Namespace read must be refused"),
+      (failure) => failure,
+    );
+    assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
+      code: "KUBERNETES_API_REJECTED",
+      stage: "prepare_revision",
+      errorClass: "KubernetesApiError",
+      message: "The Kubernetes API rejected revision preparation.",
+      status: 403,
+    });
+  }
+  // An abort that is no Kubernetes answer never reads as an HTTP status.
+  const fixture = workspaceSetupFixture(true);
+  for (const name of ["TimeoutError", "AbortError"]) {
+    const diagnostic = fixture.driver.describePrepareRevisionFailure(
+      new DOMException("The operation was aborted.", name),
+    );
+    assert.equal(diagnostic.code, "KUBERNETES_PREPARATION_FAILED", name);
+    assert.equal(Object.hasOwn(diagnostic, "status"), false, name);
+  }
+});
+
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} failed workspace initialization reports safe evidence and retains retry content`, async () => {
     const fixture = workspaceSetupFixture(embedded);

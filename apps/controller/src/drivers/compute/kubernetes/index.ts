@@ -663,16 +663,24 @@ function preparationFailure(
       }
     }
   }
+  // A request timeout is the failure itself: its cause is the deadline's DOMException, whose
+  // numeric code (TIMEOUT_ERR, 23) must not read as an HTTP status (finding 1386).
   const cause = asRecord(error)?.cause;
-  return cause === undefined
+  return cause === undefined || error instanceof KubernetesRequestTimeout
     ? { stage: "prepare_revision", error }
     : preparationFailure(cause, depth + 1);
+}
+
+/** The HTTP status of a Kubernetes API error. A DOMException abort also carries a numeric code. */
+function kubernetesHttpStatus(error: unknown): number | undefined {
+  const status = numericErrorStatus(error);
+  return status === undefined || status < 100 || status > 599 ? undefined : status;
 }
 
 function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFailureDiagnostic {
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
-  const status = numericErrorStatus(cause);
+  const status = kubernetesHttpStatus(cause);
   if (cause instanceof ConfigurationFailure || cause instanceof ConfigurationHarnessError) {
     return {
       code: "KUBERNETES_CONFIGURATION_INVALID",
@@ -858,9 +866,8 @@ function kubernetesApiFailureEvidence(
   if (socket !== undefined) {
     return new KubernetesApiFailureEvidence(socket);
   }
-  // Only an HTTP status counts: a DOMException abort also carries a numeric code.
-  const status = numericErrorStatus(error);
-  return status === undefined || status < 100 || status > 599
+  const status = kubernetesHttpStatus(error);
+  return status === undefined
     ? undefined
     : new KubernetesApiFailureEvidence(status, kubernetesStatusReason(error));
 }
