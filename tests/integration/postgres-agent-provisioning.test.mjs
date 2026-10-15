@@ -2931,7 +2931,7 @@ test(
 );
 
 test(
-  "a refusal whose worker loses its claim before the Configuration delete is deleted by the next refusing attempt",
+  "the Configuration a refusal could not delete before losing its claim is deleted by the next refusing attempt",
   { ...requiresPostgres, timeout: 90_000 },
   async (context) => {
     const computeDriver = createRuntimeComputeDriver();
