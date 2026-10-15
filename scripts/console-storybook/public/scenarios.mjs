@@ -3134,7 +3134,7 @@ export const scenarios = {
       },
     ],
     description:
-      "The newest version's deployment status read is slow. Deployment activity keeps its loading placeholder until the status arrives, then shows it in one step.",
+      "Deployment status reads take 4 s. Deployment activity keeps its loading placeholder until the newest version's status arrives, then shows it in one step.",
     steps: [
       "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
     ],
