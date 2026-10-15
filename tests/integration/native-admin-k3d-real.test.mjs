@@ -703,7 +703,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
     const popup = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open admin console" }).click();
     const nativePage = await popup;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
     const terminalFrame = await submitChatTurnWithAssistantProof(
@@ -882,7 +882,7 @@ test(
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
     const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
+    await page.getByRole("link", { name: "Open admin console" }).click();
     const nativePage = await popupPromise;
     await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
 

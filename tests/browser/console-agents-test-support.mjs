@@ -84,8 +84,14 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
-  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 }
 
 export function assertRevisionUrl(page, revisionId) {

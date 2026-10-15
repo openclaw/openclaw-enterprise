@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-15
-last_updated_session: authoring-run/2aecf15b-82ac-4724-94d9-45b8c1c99fc6
+last_updated_session: authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d
 ---
 
 # Console Agent editing and runtime requests
@@ -76,10 +76,12 @@ payload-decode failures into metadata plus `configurationReadError`; queries
 and operational reads remain strict. Drafts and revisions decode independently.
 The UI retains navigation, blocks editing/deployment of unreadable drafts, and
 never substitutes defaults. Exact-resource permissions still apply.
-**Current version** uses `activeRevisionId`; **View version vN** opens read-only
+**Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
 version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
-health. Viewed versions show their own results. Pending activity is reread every
+health. Routine completion folds its details. Pending work, read errors, warnings,
+and cleanup stay visible; a failed deployment links its own Logs and the relevant
+draft settings, even if an older version remains selected. Viewed versions show their own results. Pending activity is reread every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection. **Current observations** requests timestamped
@@ -356,6 +358,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-15 21:30: Separate selected version, recorded deployment, and live-serving uncertainty; surface failed-version recovery. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
 - 2026-10-15 04:40: Hide stop controls for a never-deployed Agent in the accompanying change. (authoring-run/2aecf15b-82ac-4724-94d9-45b8c1c99fc6 - c78f96b706ce94dbfe6aadfdac9c40e7e7e759ae)
 - 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
 - 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)

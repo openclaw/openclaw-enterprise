@@ -1103,17 +1103,14 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   await activity
     .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
     .waitFor();
-  assert.equal(
-    await activity.locator(".deployment-failure-guidance").textContent(),
-    "Open Credentials",
-  );
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   assert.match(
-    await activity.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
+    await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
   );
   // The draft has no Logs tab, so the failure links to the failed version's output.
   assert.match(
-    await activity
+    await recovery
       .getByRole("link", { name: `Open v${revision.revision} Logs` })
       .getAttribute("href"),
     new RegExp(`revision=${revision.id}&tab=logs`),
