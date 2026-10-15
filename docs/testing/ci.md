@@ -180,76 +180,19 @@ script's fixed-name containers/network and run `occ dev down` with its printed
 state directory. Job summaries include timings and failure diagnostics;
 see [DNS recovery](../guides/deploy/local-kubernetes-development.md#resolve-node-dns-failures).
 
-### QA Matrix Advisory
-
-QA eligibility admits the following jobs; superseding pushes cancel older runs.
-
-| Jobs                                            | What they test / suite guide                                                                                    | Exact manifest                                               |
-| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| QA advisory (compose), QA advisory (kubernetes) | [QA matrix](#qa-matrix): Codex `model-ui` and `calendar`                                                        | [QA](../../scripts/ci/test-suites/qa-matrix.json)            |
-| QA advisory (OpenShell)                         | [Sandbox enforcement and first-Agent flows](openshell.md); checks Landlock, builds tested images, rejects skips | [OpenShell](../../scripts/ci/test-suites/openshell.json)     |
-| QA advisory (local installation)                | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                        | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json) |
-
-<a id="manual-full-integration-lanes"></a>
-
-### Full Integration
-
-`pr-safe-same-sha` and Runtime Image Fixture repeat the [CI suites](#ci) at the
-dispatch commit when `all` is selected; its matrix also adds Demo Observability
-Smoke below. Dispatch Preflight checks policy; Full Integration Aggregate requires
-selected results. QA waits for Slack to finish, including after Slack failure.
-
-| Jobs                                                        | What they test / suite guide                                                                                                                               | Exact manifests                                                                                                                                                                          |
-| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Docker Model Runtime; k3d Model Runtime                     | [Docker](docker.md) and [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)                                                                             |
-| Gateway Routing; Production TUI                             | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI revision cutover](kubernetes.md#production-tui-tests)                                | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json)                                                                    |
-| Slack Live; Provider Account                                | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                       | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)                                                                          |
-| OpenShell; Local Kubernetes Installation; Logging Collector | Same suites as above                                                                                                                                       | [OpenShell](../../scripts/ci/test-suites/openshell.json), [Installation](../../scripts/ci/test-suites/dev-up-k3d.json), [Collector](../../scripts/ci/test-suites/logging-collector.json) |
-| k3d OTEL; Helper Timeout                                    | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                               | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
-| Shipped Installation QA Matrix                              | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                                                                                        |
-
-#### Run a protected integration lane
-
-Configure [integration environments](#environments), inspect the
-commit, then dispatch the selected lane or `all` on `main`:
-
-```sh
-gh workflow run full-integration.yml --ref main -f lane=all
-```
-
-Branch exceptions are listed above. `qa_repository_fixture` applies to both
-`qa-matrix` and `all`; QA and focused Slack share a serial execution path.
-
-#### Run the hosted local installation lane
-
-```sh
-gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
-```
-
-Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
-The 180-minute job budget includes setup/cleanup. Advisory results use
-`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
-
-### Observability Demo
-
-`Demo Observability Smoke` checks the chart, metrics/log ingestion and rendered
-dashboards. See the [suite guide](local.md#kubernetes-observability-acceptance)
-and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
-
-### No GitHub workflow entrypoint
-
-These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
-
-- `repository-credentials-live`: requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
-- `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
-- `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
-- `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
+<a id="qa-matrix-advisory"></a>
 
 ### QA matrix
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
-not use existing clusters or change the default kubeconfig.
+not use existing clusters or change the default kubeconfig. The exact test list
+is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
+
+PR jobs `QA advisory (compose)` and `QA advisory (kubernetes)` run the marked
+scenarios with Codex in both installation modes, subject to [Special Cases](#special-cases).
+New pushes cancel superseded advisory runs. Full Integration's
+`Shipped Installation QA Matrix` runs every selected combination.
 
 ```sh
 pnpm cli:build
@@ -259,13 +202,13 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Selector   | Presets         | Checks                                                            |
-| ---------- | --------------- | ----------------------------------------------------------------- |
-| `model-ui` | OpenClaw, Codex | Real model turn and native browser response.                      |
-| `git-full` | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
-| `git-read` | Codex           | Reject read-only push and dispose credentials.                    |
-| `calendar` | Codex           | Successful Calendar read, approvals and tool restrictions.        |
-| `slack`    | Codex           | Threaded reply and new root message.                              |
+| Selector   | Presets         | Checks                                                            | Runs on PRs |
+| ---------- | --------------- | ----------------------------------------------------------------- | ----------- |
+| `model-ui` | OpenClaw, Codex | Real model turn and native browser response.                      | Codex only  |
+| `git-full` | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. | No          |
+| `git-read` | Codex           | Reject read-only push and dispose credentials.                    | No          |
+| `calendar` | Codex           | Successful Calendar read, approvals and tool restrictions.        | Yes         |
+| `slack`    | Codex           | Threaded reply and new root message.                              | No          |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -331,6 +274,43 @@ the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 
+<a id="manual-full-integration-lanes"></a>
+
+### Full Integration
+
+`pr-safe-same-sha` and Runtime Image Fixture repeat the [CI suites](#ci) at the
+dispatch commit when `all` is selected; its matrix also adds Demo Observability
+Smoke below. Dispatch Preflight checks policy; Full Integration Aggregate requires
+selected results. QA waits for Slack to finish, including after Slack failure.
+The PR column identifies suites reused by other workflows; Full Integration
+itself remains manual.
+
+| Jobs                                    | What they test / suite guide                                                                                                                               | Exact manifests                                                                                                       | Runs on PRs                           |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) and [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                    |
+| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI revision cutover](kubernetes.md#production-tui-tests)                                | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                                    |
+| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                       | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                                    |
+| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                  | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | Yes: QA advisory (OpenShell)          |
+| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                   | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | Yes: QA advisory (local installation) |
+| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                              | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                               |
+| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                               | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                    |
+| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | Subset; see QA scenarios              |
+
+### Observability Demo
+
+`Demo Observability Smoke` checks the chart, metrics/log ingestion and rendered
+dashboards. See the [suite guide](local.md#kubernetes-observability-acceptance)
+and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
+
+### No GitHub workflow entrypoint
+
+These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
+
+- `repository-credentials-live`: requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
+- `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
+- `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
+- `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
+
 ### Results and cleanup
 
 Selected lanes reject missing/skipped/TODO cases, failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
@@ -344,3 +324,27 @@ node scripts/ci/cleanup.mjs --state <private-state-file>
 ```
 
 Run cleanup after preparation or test failures too. See [local browser diagnostics](local.md#browser-failure-diagnostics) and the [CI flow](../flows/github-actions-testing.md) for failure evidence.
+
+## Guides
+
+### Run a protected integration lane
+
+Configure [integration environments](#environments), inspect the
+commit, then dispatch the selected lane or `all` on `main`:
+
+```sh
+gh workflow run full-integration.yml --ref main -f lane=all
+```
+
+Branch exceptions are listed above. `qa_repository_fixture` applies to both
+`qa-matrix` and `all`; QA and focused Slack share a serial execution path.
+
+### Run the hosted local installation lane
+
+```sh
+gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
+```
+
+Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
+The 180-minute job budget includes setup/cleanup. Advisory results use
+`qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
