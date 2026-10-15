@@ -1,5 +1,5 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { element, button } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -172,8 +172,12 @@ async function cancelledAgentState(request, namespaceId, agentId) {
 async function waitForProvisioning({ request, status, first, namespaceId }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
+  // A started job goes back to queued between retries. Keep one label once it has started,
+  // and write it only when it changes, since this rereads every second (finding 1424).
+  let started = false;
   while (current?.status === "queued" || current?.status === "running") {
-    status.textContent = provisioningStatusText(current.status);
+    started ||= current.status === "running";
+    setText(status, provisioningStatusText(started ? "running" : current.status));
     if (typeof current.url !== "string" || !current.url) {
       throw new Error("Provisioning status URL is unavailable.");
     }

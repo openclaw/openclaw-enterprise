@@ -256,7 +256,10 @@ launch; see the
 [compatibility check](../flows/agent-plugin-approvals.md#3-check-the-selected-gateway-before-launch).
 
 The Console resolves display names with the selected same-Namespace bot Secret,
-which stays on the server, and stores IDs. During Agent creation, choose a Secret
+which stays on the server. Selecting a person shows their name and handle immediately;
+the policy stores their workspace-qualified Slack user ID. If the Console cannot resolve
+a saved name, it shows **Name unavailable** and keeps the selection until you remove it.
+During Agent creation, choose a Secret
 beside the approver field; this search-only selection does not bind it to the Agent.
 An existing Slack channel binding supplies the initial selection. Lookup requires
 Agent create or edit and Secret `operate` permission; operators can paste user IDs instead. The

@@ -230,20 +230,6 @@ function acceptsHtml(accept: string | undefined): boolean {
   });
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      })[character]!,
-  );
-}
-
 /** Bounds the once-per-revision Compute-owner mismatch warnings kept in memory. */
 const MAX_LOGGED_COMPUTE_OWNER_MISMATCHES = 1024;
 
@@ -1049,22 +1035,16 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         /^\/chat\/main(?:\/[0-9a-f]{32})?$/.test(nativeAdminPathname(request.url)) &&
         request.headers["sec-fetch-mode"] === "navigate" &&
         request.headers["sec-fetch-dest"] === "document" &&
+        request.headers["sec-fetch-user"] === "?1" &&
         acceptsHtml(request.headers.accept)
       ) {
+        const consoleUrl = new URL("/console/", publicOrigin);
+        consoleUrl.hash = `native-agent=${agentKey}`;
         reply
           .header("cache-control", "no-store")
-          .header("content-type", "text/html; charset=utf-8")
-          .header("x-content-type-options", "nosniff")
-          .header("x-request-id", request.id)
           .header("referrer-policy", "no-referrer")
-          .header(
-            "content-security-policy",
-            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-          )
-          .status(403)
-          .send(
-            `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Open the team console</title><style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:10vh auto;padding:0 1.5rem;line-height:1.5;color:#1d2939}a{color:#155eef}</style></head><body><main><h1>Open the team console</h1><p>Open the team console to access this Agent.</p><p><a href="${escapeHtml(publicOrigin)}/console/#native-agent=${agentKey}">Open the team console</a></p><p>Request ID: ${escapeHtml(request.id)}</p></main></body></html>`,
-          );
+          .header("x-request-id", request.id)
+          .redirect(consoleUrl.href, 302);
         return true;
       }
       canonicalFailure(

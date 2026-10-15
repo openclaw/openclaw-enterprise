@@ -82,6 +82,11 @@ test("Agent delete confirmation can be canceled without sending a write request"
   );
   await cancel.click();
   await assert.rejects(unexpectedDelete, /Timeout/);
+  // Cancel returns focus to the control that opened the dialog.
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Delete Agent",
+  );
 
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
@@ -118,6 +123,14 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
+  // The dialog's close event arrives after the request put focus on the status check. It must
+  // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).
+  // A closed dialog has no dialog role, so wait for the close handler to remove the element.
+  await page.locator("dialog.agent-delete-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Refresh deletion status",
+  );
   assert.deepEqual(
     agentDeleteRequests(requests, namespace.id, agent.id).map((request) => [
       request.method,

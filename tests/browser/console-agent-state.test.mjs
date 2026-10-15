@@ -171,6 +171,77 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await activity.getByText("Recorded status: failed").waitFor();
 });
 
+// A pending deployment is reread every few seconds and its summary usually stays the same.
+// Rewriting the summary cards and status line with the same text repainted them on every
+// poll (finding 1424); only the changed attempt details in Deployment activity may change.
+test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Quiet polls", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Quiet Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let attempt = 1;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: revision.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+            progress: {
+              lastAttempt: {
+                at: `2026-09-30T12:00:0${attempt}.000Z`,
+                code: "REVISION_INCOMPLETE",
+                message: `Waiting for the runtime to become ready (attempt ${attempt}).`,
+              },
+              nextAttemptAt: null,
+            },
+          },
+          meta: { requestId: "req_test_quiet_polls" },
+        }),
+      }),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
+  await page.getByText("v1 · In progress", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    globalThis.summaryRewrites = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        globalThis.summaryRewrites.push(record.target.textContent);
+      }
+    });
+    for (const selector of [".agent-current-summary", ".agent-status-line"]) {
+      observer.observe(globalThis.document.querySelector(selector), {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+  });
+
+  // The poll renders the new attempt and the summary in the same pass.
+  attempt = 2;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await activity.getByText("Waiting for the runtime to become ready (attempt 2).").waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), []);
+});
+
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

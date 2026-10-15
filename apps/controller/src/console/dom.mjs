@@ -17,6 +17,21 @@ export function element(tag, attributes = {}, ...children) {
   return node;
 }
 
+// Polls usually read back what is already shown. Rewriting it anyway repaints, and makes screen
+// readers announce live regions again (findings 1420, 1424), so these write only real changes.
+export function setText(node, text) {
+  if (node.textContent !== text) {
+    node.textContent = text;
+  }
+}
+
+/** Replaces `parent`'s children with `children` (elements) unless they render the same markup. */
+export function replaceChildrenIfChanged(parent, children) {
+  if (parent.innerHTML !== children.map((child) => child.outerHTML).join("")) {
+    parent.replaceChildren(...children);
+  }
+}
+
 export function button(label, action, attributes = {}) {
   const node = element("button", { type: "button", ...attributes }, label);
   node.addEventListener("click", action);

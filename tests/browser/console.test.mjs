@@ -597,7 +597,7 @@ async function expectHeldPage(page, shownText, hidden) {
   await held.getByText(shownText, { exact: true }).first().waitFor();
   assert.equal(await held.count(), 1);
   assert.equal(await page.locator(".shell[inert]").count(), 0);
-  await expectNoText(page, /Checking your session|Checking your session and Namespace access/);
+  await expectNoText(page, /Checking session|Checking Namespace access/);
   if (hidden) {
     assert.equal(
       await hidden.count(),
@@ -2125,6 +2125,38 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
       null,
     );
   }
+});
+
+test("a cold console visit shows neither navigation nor sign-in until its session is known", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const pattern = "**/api/auth/session";
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  const username = page.getByLabel("Username");
+
+  async function visitWithSessionPending() {
+    const held = await holdRoute(t, page, pattern, (route, response) =>
+      route.fulfill({ response }),
+    );
+    t.after(() => held.release());
+    await page.goto(`${fixture.origin}/console/`);
+    await held.waitForRelease();
+    await page.getByRole("status").filter({ hasText: "Checking session…" }).waitFor();
+    assert.equal(await navigation.count(), 0);
+    assert.equal(await username.count(), 0);
+    await releaseHeldRoute(page, pattern, held);
+  }
+
+  await visitWithSessionPending();
+  await username.waitFor();
+  const signedIn = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+    headers: { origin: fixture.origin },
+    data: { email: fixture.credentials.email, password: fixture.credentials.password },
+  });
+  assert.equal(signedIn.status(), 200);
+  await visitWithSessionPending();
+  await navigation.waitFor();
 });
 
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {

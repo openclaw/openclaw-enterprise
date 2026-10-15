@@ -100,8 +100,9 @@ owns each subsequent request-time approval decision.
   AgentRevision. A successful save does not prove the running gateway applies
   the new policy; check deployment status and use a real plugin approval request
   to verify the runtime image.
-- Raw Slack user IDs can be pasted when directory lookup is unavailable. Directory
-  selection still stores workspace-qualified IDs.
+- Selecting a directory result displays its name and handle immediately. The Console
+  saves the workspace-qualified user ID and resolves its current name when reopened.
+  If lookup is unavailable, the selection stays in place and exact IDs can still be pasted.
 - The channel directory flow describes Secret permissions and lookup failures.
   Approval enforcement needs a compatible runtime and an authorized test bot.
 - For a gateway that remains unready, check its runtime startup evidence and

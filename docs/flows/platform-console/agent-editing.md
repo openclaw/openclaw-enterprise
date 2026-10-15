@@ -289,7 +289,7 @@ revision; the Console cannot inspect history or candidate cleanup. With no selec
 and no readable versions yet (`setNoReadableVersions`), it shows no Stop control.
 
 Refresh reads desired state and selected revision, not live health. Denial stays inline; changed
-state reloads the page. An uncertain write blocks another Stop until readback succeeds.
+state updates panels in place. An uncertain write blocks another Stop until readback succeeds.
 [Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
 reference covers worker shutdown and preservation of revisions, credentials, and state.
 
