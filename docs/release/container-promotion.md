@@ -1,6 +1,6 @@
 # Docker Hub promotion
 
-[`container-promote.yml`](workflows/container-promote.yml) copies the exact
+[`container-promote.yml`](../../.github/workflows/container-promote.yml) copies the exact
 controller and runtime digests already published by
 [Enterprise Containers](containers.md). It never builds images, creates a
 repository, changes visibility, or falls back to an alternate destination.
@@ -12,7 +12,7 @@ not create a promotion source.
 
 ## Operator setup
 
-Complete the [publication configuration](../docs/testing/ci.md#publication-configuration),
+Complete the [publication configuration](configuration.md#publication-configuration),
 including the separately authorized private Docker Hub destinations and scoped
 credentials. That page owns the environment, variable, and secret requirements.
 

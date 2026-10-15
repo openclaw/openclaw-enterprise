@@ -3,7 +3,7 @@
 The [OCC CLI release](cli-publication.md) publishes matching versioned command
 line binaries through a separate protected workflow.
 
-[`container-publish.yml`](workflows/container-publish.yml) prepares the existing
+[`container-publish.yml`](../../.github/workflows/container-publish.yml) prepares the existing
 controller (`Dockerfile`, target `runtime`) and combined gateway/Agent runtime
 (`deploy/runtime/Dockerfile`) as OCI archives containing both `linux/amd64` and
 `linux/arm64`. Each image has one multi-platform index digest; Docker selects
@@ -33,8 +33,8 @@ before source images or the chart publish.
 
 ## Operator setup
 
-Configure [publication settings](../docs/testing/ci.md#publication-configuration)
-and [native runners](../docs/testing/ci.md#shared-settings) before dispatching.
+Configure [publication settings](configuration.md#publication-configuration)
+and [native runners](configuration.md#build-settings) before dispatching.
 That page owns environment policies, variables, secrets, and package requirements.
 Then [confirm package linkage](#confirm-package-linkage) and use the
 [marker bootstrap](#bootstrap-ghcr-packages) for missing packages.
@@ -62,14 +62,14 @@ not claim to verify omitted linkage through the API.
 
 To migrate an existing environment, first merge this manual-publication change
 and wait for its main-push CI. Then apply the current
-[publication configuration](../docs/testing/ci.md#publication-configuration).
+[publication configuration](configuration.md#publication-configuration).
 Old runs execute their original workflow code; use a new recovery dispatch to
 publish retained artifacts under the updated policy.
 
 ## Bootstrap GHCR packages
 
 After configuring the environment and both destination variables, merge the
-reviewed [bootstrap workflow](workflows/container-bootstrap.yml) and wait for
+reviewed [bootstrap workflow](../../.github/workflows/container-bootstrap.yml) and wait for
 its exact main-push CI run to succeed. An operator must first confirm that the
 organization permits creation of container packages under those names.
 Dispatch **Bootstrap Enterprise Container Packages** on `main` with that
@@ -93,7 +93,7 @@ does not change visibility or access grants; if verification fails, inspect the
 package settings and fix the reported cause before retrying. A partial result is retained,
 and a subsequent dispatch leaves valid existing packages untouched. The ordinary
 publisher still requires verified public packages before copying any source.
-See the [bootstrap execution flow](../docs/flows/container-package-bootstrap.md).
+See the [bootstrap execution flow](../flows/container-package-bootstrap.md).
 
 Public GHCR image pulls do not require a workstation login. Authenticated pulls
 are still required for private marker packages before they are made public and
@@ -147,7 +147,7 @@ The final summary reports both outcomes. Chart publication produces its own
 The multi-platform publisher requires both architectures in every seal. Earlier
 amd64-only tags retain their original bytes and digests; building this workflow
 requires a new source SHA. Old single-platform archives are not accepted by the
-current recovery or promotion validator. See the [publication execution flow](../docs/flows/container-publication.md).
+current recovery or promotion validator. See the [publication execution flow](../flows/container-publication.md).
 
 OCI archives are retained for seven days and publication receipts for 30 days.
 Uploaded archives follow the repository's
@@ -178,7 +178,7 @@ attempt identity must remain unchanged. If those archives have expired, this
 recovery path cannot reconstruct their exact bytes.
 
 After merging reviewed recovery code and waiting for its successful main-push CI,
-dispatch [Resume Enterprise Container Publication](workflows/container-resume.yml)
+dispatch [Resume Enterprise Container Publication](../../.github/workflows/container-resume.yml)
 on `main` with:
 
 - `source_sha`: the original image source SHA.
@@ -228,7 +228,7 @@ end-to-end tests.
 Local gate and recovery tests: `node --test tests/integration/container-{release,resume,promote}.test.mjs`.
 Recovery tests use HTTP and transport fixtures; they prove gate ordering, original
 identity, conflict rejection, unchanged existing images, and receipt behavior.
-The [registry integration](../docs/testing/docker.md#container-publication-registry-proof)
+The [registry integration](../testing/docker.md#container-publication-registry-proof)
 uses real Skopeo and a disposable registry to check alias replacement and both
 platforms. Neither test proves a live GHCR transfer.
 Workflow syntax: `actionlint .github/workflows/*.yml`.

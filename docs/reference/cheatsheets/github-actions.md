@@ -37,13 +37,13 @@ secrets, environments, and runner overrides in [CI configuration](../../testing/
 ## Merge, publication, and deployment
 
 See [CI checks and gates](../../testing/ci.md#checks-and-gates) for the distinction
-between required checks and advisory jobs. [Publication configuration](../../testing/ci.md#publication-configuration)
+between required checks and advisory jobs. [Publication configuration](../../release/configuration.md#publication-configuration)
 explains release prerequisites; these workflows do not gate every Agent/platform deployment.
 
 ## Details
 
 - [CI selection, integration lanes, and results](../../testing/ci.md)
 - [QA matrix scenarios and credentials](../../testing/ci.md#qa-matrix)
-- [Container publication and recovery](../../../.github/containers.md), [chart publication](../../../.github/chart-publication.md), and [Docker Hub promotion](../../../.github/container-promotion.md)
-- [CLI publication](../../../.github/cli-publication.md)
+- [Container publication and recovery](../../release/containers.md), [chart publication](../../release/chart-publication.md), and [Docker Hub promotion](../../release/container-promotion.md)
+- [CLI publication](../../release/cli-publication.md)
 - [Storybook previews](../../contributing/console-storybook.md), [documentation hosting](../../contributing/documentation-hosting.md), and [ClawSweeper dispatch](../../flows/clawsweeper-dispatch.md)

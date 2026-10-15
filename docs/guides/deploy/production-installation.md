@@ -30,7 +30,7 @@ Workstation `docker login` does not authenticate cluster nodes.
 
 ## Build and publish production images
 
-Use the separately approved [publication workflow](../../../.github/containers.md)
+Use the separately approved [publication workflow](../../release/containers.md)
 or build these images for your registry:
 
 | Image      | Source                                                                                                         | Used by                                     |
@@ -411,7 +411,7 @@ helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --wait --timeout 5m
 ```
 
-For an explicitly [published chart release](../../../.github/chart-publication.md#pull-and-install)
+For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
 verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
 with `--version "$OCE_VERSION"`.
