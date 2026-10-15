@@ -1134,11 +1134,26 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
-      { selector: '[aria-label="Default plugin approvers people"]', focus: true },
     ],
     description:
-      "New Agents inherit OpenClaw's existing approval routing until an operator selects a default. The directory explains that a Slack bot Secret must be selected under Channels before names can be resolved.",
+      "Choose a Slack bot Secret here to search by name, or enter exact IDs. The search choice does not bind the Secret to the Agent.",
     gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
+  },
+  createPluginApproversLookup: {
+    group: "Pages/Create Agent",
+    name: "Search for plugin approvers",
+    path: create,
+    pluginCapabilities,
+    actions: [
+      ...form,
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      { selector: "#approver-directory-secret", value: "Slack bot token (simulated)" },
+      { selector: '[aria-label="Default plugin approvers people"]', value: "Alex" },
+      { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
+    ],
+    description:
+      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select a result to add its workspace-qualified user ID.",
+    gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",

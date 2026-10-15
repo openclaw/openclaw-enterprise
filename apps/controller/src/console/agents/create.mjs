@@ -912,8 +912,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let configurationSecretBindings = structuredClone(
     draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
   );
+  let directorySecretSource = null;
+  const getDirectorySecretSource = () =>
+    directorySecretSource ?? configurationSecretBindings.SLACK_BOT_TOKEN?.source;
   const getSlackBotSecretId = () => {
     const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+  };
+  const getDirectorySecretId = () => {
+    const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
   const pluginDiscovery = createPluginDiscovery({
@@ -953,10 +960,30 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let pluginApprovers = structuredClone(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
   );
+  const directorySecret = createSecretReferenceField({
+    context,
+    id: "approver-directory-secret",
+    label: "Slack bot token Secret for people search",
+    getCurrentSource: getDirectorySecretSource,
+    onSecretSelected: async (secret) => {
+      directorySecretSource = secret.ref;
+      defaultApprovers.refreshDirectory();
+    },
+    createSecretName: () => `${name.value.trim() || "Agent"} Slack bot token`,
+    metadataLabel: "View Slack bot Secret metadata",
+    stagedHint: "Ready to search.",
+  });
+  directorySecret.field.append(
+    element(
+      "p",
+      { className: "hint" },
+      "Choose a Slack bot token to search by name. This choice is only for search and does not configure the Agent's Slack channel.",
+    ),
+  );
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
-    getSecretId: getSlackBotSecretId,
+    getSecretId: getDirectorySecretId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
@@ -964,6 +991,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     lazyNames: true,
+    directorySetup: directorySecret.field,
   });
   defaultApprovers.hidden = true;
   pluginFields.section.insertBefore(
@@ -1340,7 +1368,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (options.secretBindings !== undefined) {
           configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
-          defaultApprovers.refreshValue();
+          directorySecret.refresh();
+          defaultApprovers.refreshDirectory();
           pluginDiscovery.update();
         }
         configuration.setCustomValidity("");
