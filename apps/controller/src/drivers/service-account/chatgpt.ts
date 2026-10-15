@@ -19,14 +19,25 @@ interface CredentialStorage {
   storeServiceAccountCredential(input: {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
+    /** Stored beside the token, so a Secret an issuance leaves behind names what to revoke. */
+    readonly credentialId: string;
     readonly accessToken: string;
   }): Promise<SecretReference>;
+  /** The account's token Secret and the provider credential it records; never the token. */
+  findServiceAccountCredential(input: {
+    readonly namespaceId: string;
+    readonly serviceAccountId: string;
+  }): Promise<
+    { readonly secretRef: SecretReference; readonly credentialId: string | undefined } | undefined
+  >;
   deleteServiceAccountCredential(input: {
     readonly namespaceId: string;
     readonly serviceAccountId: string;
     readonly secretRef: SecretReference;
     /** Set by a failed issuance's compensation: delete only a Secret holding this token. */
     readonly accessToken?: string;
+    /** Set when reclaiming a leftover: delete only a Secret recording this credential. */
+    readonly credentialId?: string;
   }): Promise<void>;
 }
 
@@ -102,6 +113,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     if (linked.externalCredentialId !== null || account.credential !== undefined) {
       throw new ResourceConflictError("The service account already has a credential.");
     }
+    await this.reclaimUnrecordedCredential(account, linked, false);
 
     const credential = await this.client.createCredential({
       accountId: linked.externalAccountId,
@@ -117,6 +129,7 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
     const secretRef = await this.compute.storeServiceAccountCredential({
       namespaceId: account.namespaceId,
       serviceAccountId: account.id,
+      credentialId: credential.id,
       accessToken: credential.accessToken,
     });
     // Compensations run after ROLLBACK released the account row lock, when another issuance
@@ -160,8 +173,57 @@ export class ChatGPTServiceAccountDriver implements ServiceAccountDriver {
         serviceAccountId: account.id,
         secretRef: account.credential.secretRef,
       });
+    } else {
+      await this.reclaimUnrecordedCredential(account, linked, true);
     }
     await this.client.deleteServiceAccount(linked.externalAccountId);
+  }
+
+  /**
+   * Removes what an issuance that never committed left behind: its account-owned token Secret
+   * and the provider credential that Secret records (finding 1397). A crash, or an unknown
+   * COMMIT that really failed, skips the compensations, so both stay. Callers hold the OCC
+   * account row lock and have read that OCC records no credential, and an issuance records its
+   * credential before releasing that lock, so a Secret found now belongs to no committed
+   * issuance. The credential is revoked first, under this account's own provider path (so no
+   * other account's credential can be named), and the Secret is deleted only while it still
+   * records that credential, so a failure leaves the Secret to retry from. A Secret recording
+   * no credential is removed only when the account itself is being deleted, since deleting
+   * the provider account follows; issuance leaves it, and storing then answers the 409 that
+   * names it for an operator.
+   */
+  private async reclaimUnrecordedCredential(
+    account: ServiceAccount,
+    linked: ServiceAccountBinding,
+    deletingAccount: boolean,
+  ): Promise<void> {
+    const leftover = await this.compute.findServiceAccountCredential({
+      namespaceId: account.namespaceId,
+      serviceAccountId: account.id,
+    });
+    if (leftover === undefined) {
+      return;
+    }
+    if (leftover.credentialId === undefined) {
+      if (deletingAccount) {
+        await this.compute.deleteServiceAccountCredential({
+          namespaceId: account.namespaceId,
+          serviceAccountId: account.id,
+          secretRef: leftover.secretRef,
+        });
+      }
+      return;
+    }
+    await this.client.deleteCredential({
+      accountId: linked.externalAccountId,
+      credentialId: leftover.credentialId,
+    });
+    await this.compute.deleteServiceAccountCredential({
+      namespaceId: account.namespaceId,
+      serviceAccountId: account.id,
+      secretRef: leftover.secretRef,
+      credentialId: leftover.credentialId,
+    });
   }
 
   private async findBinding(account: ServiceAccount): Promise<ServiceAccountBinding | undefined> {
