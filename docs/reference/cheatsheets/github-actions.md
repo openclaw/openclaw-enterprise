@@ -28,15 +28,8 @@ secrets, environments, and runner overrides in [CI configuration](../../testing/
 
 ## Merge, publication, and deployment
 
-`CI Required` is the required status check on `main`. First Agent Smoke is outside
-that aggregate: it can fail without failing the merge gate. Container and CLI
-publication require the **entire** exact-source main-push CI run to succeed, so a
-First Agent Smoke failure blocks publication. QA advisory and Full Integration
-are separate workflows and are not publication prerequisites.
-
-These workflows do not automatically run integration tests for each Agent or
-platform deployment. GitHub branch rules can change which checks block merge;
-workflow dependencies define the publication gates above.
+See [CI checks and gates](../../testing/ci.md#checks-and-gates) for the distinction
+between required checks, advisory jobs, publication prerequisites, and deployments.
 
 ## Details
 

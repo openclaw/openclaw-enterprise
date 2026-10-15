@@ -15,23 +15,8 @@ setup for suites that need external services.
 
 ## Automatic checks and blocking failures
 
-| Checks                                                                      | When they run                                                                                  | Blocks merge               | Blocks container publication                  |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------- | --------------------------------------------- |
-| Selected CI suites, including integration tests                             | PRs, pushes to `main`, merge groups, and manual CI runs                                        | Yes, through `CI Required` | Yes, for the exact source's main-push CI run  |
-| First Agent Smoke                                                           | Full CI mode; installs, chats with, stops, and restarts Agents using a stand-in model provider | No; outside `CI Required`  | Yes; the entire main-push CI run must succeed |
-| QA advisory: Codex model/UI and Calendar, OpenShell, and local installation | Trusted PRs or manual advisory dispatch                                                        | No                         | No                                            |
-| Full Integration: selected lanes; `all` includes the complete QA matrix     | Manual dispatch                                                                                | No                         | No                                            |
-| Native controller and runtime image smoke tests on AMD64 and ARM64          | Container preparation before publication, or manual image checks                               | No                         | Yes                                           |
-
-Docs-only PRs run static checks without product tests. Test-only PRs select
-affected CI suites; other changes and main pushes run full CI. See
-[CI selection and lane coverage](ci.md) and [QA advisory coverage](qa-matrix.md#ci-evidence-and-recovery).
-
-These workflows check source changes and publication artifacts. They do not run
-integration tests automatically for each deployment. A successful publication
-requires the exact source's successful main-push CI run and native image checks;
-it does not require Full Integration or QA advisory. See the
-[container publication gates](../flows/container-publication.md).
+See [CI checks and gates](ci.md#checks-and-gates) for what runs automatically
+and which failures block merge, publication, or deployment.
 
 ## Requirements and credentials
 

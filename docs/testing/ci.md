@@ -4,6 +4,27 @@
 
 Configure GitHub Actions variables, secrets, environments, and local runner overrides. Use this page to run integration lanes and inspect their results; the [workflow cheat sheet](../reference/cheatsheets/github-actions.md) lists triggers and blocking failures.
 
+## Checks and gates
+
+| Checks                                                                  | When they run                                                             | Blocks merge               | Blocks publication                                                            | Blocks deployment                       |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------- | --------------------------------------- |
+| Selected CI suites, including integration tests                         | PRs, pushes to `main`, merge groups, manual CI                            | Yes, through `CI Required` | Container and CLI releases require successful exact-source main-push CI       | No automatic Agent/platform gate        |
+| First Agent Smoke                                                       | Full CI mode; install, chat, stop, restart with a stand-in model provider | No; outside `CI Required`  | Yes, for container and CLI releases: the entire main-push CI run must succeed | No automatic Agent/platform gate        |
+| QA advisory: Codex model/UI and Calendar, OpenShell, local installation | Trusted PRs or manual advisory dispatch                                   | No                         | No                                                                            | No                                      |
+| Full Integration                                                        | Manual dispatch                                                           | No                         | No                                                                            | No                                      |
+| Native controller/runtime image checks on AMD64 and ARM64               | Container preparation or manual image checks                              | No                         | Yes, for container publication                                                | No automatic Agent/platform gate        |
+| Documentation deployment build                                          | Every `main` push or manual Pages dispatch on `main`                      | No                         | No                                                                            | Yes, for that documentation update only |
+
+Docs-only PRs run static checks without product tests. Test-only PRs select
+affected CI suites; other changes and main pushes run full CI. QA advisory and
+Full Integration are separate workflows, not prerequisites for publication.
+
+`CI Required` is the required status check on `main`; branch rules can change.
+There is no automatic integration-test gate for each Agent or platform deployment.
+The documentation deployment is separate. See the [workflow cheat sheet](../reference/cheatsheets/github-actions.md)
+for the complete workflow index and the [publication flow](../flows/container-publication.md)
+for artifact gates.
+
 ## CI configuration
 
 Configure Actions variables and secrets under repository **Settings → Secrets
@@ -148,7 +169,7 @@ verifies imported image references on every node and fails on import timeout.
 
 ## GitHub Actions
 
-[CI](../../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, merge groups, and manual dispatch. `CI Required` checks the selected lanes and their results at the same source commit. Docs-only changes run static checks without product tests; test-only changes select affected CI lanes. Other changes and unverifiable selection evidence use full CI. See the [CI flow](../flows/github-actions-testing.md) for selection and result accounting.
+[CI](../../.github/workflows/ci.yml) checks selected lanes and their results at the same source commit. Unverifiable selection evidence uses full CI. See [checks and gates](#checks-and-gates) for triggers and blocking failures, and the [CI flow](../flows/github-actions-testing.md) for selection and result accounting.
 
 The [suite index](../../scripts/ci/test-suites.json) and its lane files define test ownership, inputs, and resources. Check ownership with:
 
