@@ -39,6 +39,10 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 import {
+  run as runFixtureCommand,
+  temporaryDirectory,
+} from "../fixtures/repository-credentials/process.mjs";
+import {
   codexOpenClawConfiguration,
   codexRuntimeArtifact,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
@@ -1439,6 +1443,7 @@ test(
       tls,
       autoOpen: false,
       gateway: { publicOrigin: "https://git.oce.svc", listen: "0.0.0.0:0" },
+      limits: { gitResponseBytes: 4096, gitFetchResponseBytes: 200000 },
       repositories: [
         {
           repositoryRef: "guarded",
@@ -1459,6 +1464,14 @@ test(
         },
       ],
     });
+    const seed = join(await temporaryDirectory(t, "runtime-git-seed-"), "seed");
+    await runFixtureCommand("git", ["clone", fixture.byRef.get("guarded").git.bare, seed]);
+    await runFixtureCommand("git", ["config", "user.name", "Fixture"], { cwd: seed });
+    await runFixtureCommand("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });
+    await writeFile(join(seed, "data.bin"), randomBytes(128 * 1024));
+    await runFixtureCommand("git", ["add", "data.bin"], { cwd: seed });
+    await runFixtureCommand("git", ["commit", "-m", "Add fixture data"], { cwd: seed });
+    await runFixtureCommand("git", ["push", "origin", "HEAD:main"], { cwd: seed });
     await fixture.open("guarded");
     await fixture.open("read-only");
     const unadmitted = fixture.byRef.get("unadmitted");
@@ -1621,6 +1634,8 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
       "mkdir -p /home/node/workspace",
       "cd /home/node/workspace",
       "git clone https://github.com/fixture/repository.git guarded",
+      "test $(wc -c < guarded/data.bin) -eq 131072",
+      "git -C guarded fsck --full",
       "git -C guarded fetch origin refs/heads/existing-branch:refs/remotes/origin/fetched-fixture",
       "git -C guarded rev-parse --verify refs/remotes/origin/fetched-fixture",
       `git -C guarded switch -c ${workspaceBranch}`,

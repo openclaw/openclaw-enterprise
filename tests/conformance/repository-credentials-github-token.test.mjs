@@ -428,3 +428,22 @@ test("a factory binding must name the configured provider instance and repositor
     owner.close();
   }
 });
+
+test("development token upload-pack deadlines fit the configured lease", () => {
+  const token = tokenFactory({
+    configuration: { leaseSeconds: 900 },
+    limits: { gitFetchExchangeMs: 1800000, maxExchangeMs: 1800000 },
+  });
+  const bound = bind(token, "git-read");
+  const upload = bound.plan(
+    head("POST", "/fixture/repository.git/git-upload-pack", {
+      "content-type": "application/x-git-upload-pack-request",
+    }),
+  );
+  assert.equal(upload.limits.totalMs, 780000);
+  const discovery = bound.plan(
+    head("GET", "/fixture/repository.git/info/refs?service=git-upload-pack"),
+  );
+  assert.equal(discovery.limits.totalMs, 300000);
+  token.owner.close();
+});
