@@ -109,6 +109,7 @@ only resources created by the run.
 
 ## Further reading
 
+- [GitHub Actions cheat sheet](../reference/cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
 - [Local, browser, and metrics tests](local.md)
 - [CI and hosted test lanes](ci.md)
 - [QA matrix](qa-matrix.md)

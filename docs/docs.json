@@ -673,6 +673,10 @@
                   {
                     "page": "reference/cheatsheets/environment-variables",
                     "label": "Environment Variables"
+                  },
+                  {
+                    "page": "reference/cheatsheets/github-actions",
+                    "label": "GitHub Actions"
                   }
                 ]
               },
