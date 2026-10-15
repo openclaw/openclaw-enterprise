@@ -17216,8 +17216,9 @@ test("Kubernetes preparation diagnostics name a request timeout and keep real AP
       message: "Kubernetes API request timed out.",
     });
   }
-  // A 500 reaches the worker as the Kubernetes API's own TransientDependencyError, and the
-  // diagnostic walks past it to the answer, so it keeps the status (from 500 up, unavailable).
+  // A 403 stays the raw ApiException. A 500 reaches the worker as the Kubernetes API's own
+  // TransientDependencyError, and the diagnostic walks past it to the answer, so it keeps the
+  // status (from 500 up, unavailable).
   for (const [status, code] of [
     [403, "KUBERNETES_API_REJECTED"],
     [500, "KUBERNETES_API_UNAVAILABLE"],
