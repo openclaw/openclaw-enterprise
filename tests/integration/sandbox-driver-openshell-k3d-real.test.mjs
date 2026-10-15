@@ -1701,26 +1701,24 @@ function createIntegrationSandboxDriverFactory(
       });
     }
 
+    // Preserve the real Driver's HOME so Compute and the Harness agree on hook paths.
+    // These configuration and identity methods perform no gateway I/O.
+    const configurationDriver = new OpenShellSandboxDriver(selection.configuration, {
+      id: selection.id,
+      implementation: "openshell",
+      backend: backendFor(undefined),
+    });
     return {
       id: selection.id,
       capability: "sandbox",
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
+      harnessHome: configurationDriver.harnessHome,
       configureAgent(configuration, harness) {
-        // Configuration admission performs no gateway I/O.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).configureAgent(configuration, harness);
+        return configurationDriver.configureAgent(configuration, harness);
       },
       harnessResource(context) {
-        // The bridge provisions through the real Driver, so its Sandbox identity is the same.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).harnessResource(context);
+        return configurationDriver.harnessResource(context);
       },
       async ensureNamespace(context) {
         try {
