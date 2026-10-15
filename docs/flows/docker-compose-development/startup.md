@@ -298,9 +298,9 @@ and OpenShell Gateway in k3d and selects operator workspace mode. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns their placement and resources.
 
-`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` builds the API,
-worker and enabled browser proxy before startup uses `--no-build`, assigning
-private routing files to the API/worker container identity before starting them.
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` builds selected services
+before `--no-build` startup. Routing files belong to the API/worker identity; browser
+TLS files belong to the proxy identity. Both retain mode `0600`.
 
 The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
 and routing settings. A name-constrained CA signs only the console and wildcard Agent
