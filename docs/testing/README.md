@@ -65,11 +65,11 @@ pnpm test:integration
 
 Choose the scope you need:
 
-| Scope                     | What it runs                                                                                                                     | Setup and commands                                                                                                 |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                           | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
-| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` excludes `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci.md#run-a-protected-integration-lane).                                       |
-| QA matrix                 | Agent journeys across Compose and Kubernetes installations: model/UI, Git, Calendar, and Slack. PR advisory runs a subset.       | [Scenarios, credentials, and commands](qa-matrix.md).                                                              |
+| Scope                     | What it runs                                                                                                                                                  | Setup and commands                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                                                        | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
+| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci.md#run-a-protected-integration-lane).                                       |
+| QA matrix                 | Agent journeys across Compose and Kubernetes installations: model/UI, Git, Calendar, and Slack. PR advisory runs a subset.                                    | [Scenarios, credentials, and commands](qa-matrix.md).                                                              |
 
 For real-service cases, prepare the selected suite first. Some create remote
 resources or send messages. Use authorized disposable resources, scope selectors

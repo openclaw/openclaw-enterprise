@@ -34,7 +34,7 @@ Set `OCC_FIRST_AGENT_SMOKE_DIRECTORY` to choose the work directory. The script c
 
 ## Run a protected integration lane
 
-[Full Integration](../../.github/workflows/full-integration.yml) is manually dispatched. `all` excludes `qa-matrix` and `dev-up-k3d`; select either explicitly. Most lanes use `main`. Users with repository write access can dispatch credentialed lanes without separate environment approval. `dev-up-k3d` is credential-free and can run on a reviewed branch. `helper-timeout` and standalone `logging-collector` have no environment gate. `provider-account` is main-only and has no per-run approval.
+[Full Integration](../../.github/workflows/full-integration.yml) is manually dispatched. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`, plus the ordinary CI suites. It requires every lane’s credentials and successful results. Most lanes use `main`. Users with repository write access can dispatch credentialed lanes without separate environment approval. `dev-up-k3d` is credential-free and can run on a reviewed branch. `helper-timeout` and standalone `logging-collector` have no environment gate. `provider-account` is main-only and has no per-run approval.
 
 An administrator can permit an exact branch for `k3d-model` in `integration-model` or `openshell` in `integration-openshell`, preserving `main` and no required reviewers. Wildcards fail preflight. Inspect the commit before dispatch; the workflow tests that immutable event commit. Remove the branch rule after the run.
 
@@ -42,6 +42,14 @@ An administrator can permit an exact branch for `k3d-model` in `integration-mode
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=k3d-model
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=openshell
 ```
+
+To run every Full Integration lane on `main`:
+
+```sh
+gh workflow run full-integration.yml --ref main -f lane=all
+```
+
+The QA matrix starts after the focused Slack job finishes, even when that job fails. The aggregate requires both results. The `qa_repository_fixture` choice applies to `all` as well as `qa-matrix`.
 
 ### Run the hosted local installation lane
 
@@ -51,7 +59,7 @@ Run the credential-free `dev-up-k3d` lane on a reviewed branch:
 gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
 ```
 
-Check the run's `headSha` and `full-results-dev-up-k3d` artifact: all six cases must pass without skips. The job allows 180 minutes, including setup and cleanup. Trusted PRs also run this lane in QA advisory, with artifact `qa-advisory-local-installation-dev-up-k3d`. It is excluded from `CI Required` and Full Integration `all`.
+Check the run's `headSha` and `full-results-dev-up-k3d` artifact: all six cases must pass without skips. The job allows 180 minutes, including setup and cleanup. Trusted PRs also run this lane in QA advisory, with artifact `qa-advisory-local-installation-dev-up-k3d`. It is included in Full Integration `all` and excluded from `CI Required`.
 
 ## Manual Full Integration lanes
 

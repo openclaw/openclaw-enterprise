@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
 updated: 2026-10-14
-last_updated_session: authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb
+last_updated_session: authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c
 ---
 
 # GitHub Actions testing flow
@@ -40,7 +40,7 @@ graph TD
   L --> R["Full CI coverage result"]
   C["Manual integration dispatch"] --> P["Source and environment preflight"]
   P -->|eligible source and environment| E["Protected test jobs"]
-  P -->|explicit dev-up-k3d| U["Credential-free installation job"]
+  P -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
   E --> T["Owned preparation, tests, cleanup and aggregation"]
@@ -76,16 +76,16 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out immutable `github.sha`. Every lane admits `main`;
-`k3d-model` and `openshell` also admit exact environment-granted branches.
-Administrators remove temporary grants after verification. Other non-main
-credentialed lanes and tags fail preflight. Credential-free `dev-up-k3d` accepts
-branches, stays outside `all` and PR gates, and prepares Go, the same-source CLI,
-Chromium and k3d on disposable Ubuntu 22.04; file/job deadlines are 150/180 minutes.
-Dispatches serialize without cancellation: `dev-up-k3d` per branch, others in
-`full-integration`. The provider environment admits only `main`. Preflight rejects
-required reviewers and retains branch restrictions. Maintainers inspect commits
-before dispatch; no second approval is needed. Results prove only selected lanes.
+Full Integration checks out immutable `github.sha`. `all` selects every dispatch
+lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to finish, regardless of success.
+Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
+`all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
+branches; administrators remove temporary grants after verification.
+Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
+and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
+Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
+others in `full-integration`. Preflight rejects required reviewers and retains
+branch restrictions. Dispatchers inspect commits; no approval is needed.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -229,6 +229,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 22:31: Complete all selection. (authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c - 9b50982b75a578d6967ee12befb1fa3904e20a38)
 
 - 2026-10-14 14:09: Remove environment approvals. (authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb - 909b0b9d4)
 
