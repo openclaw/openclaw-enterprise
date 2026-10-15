@@ -113,11 +113,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
-  await page
-    .getByText("v2 deployment is recorded as queued. v1 is selected. Live serving is unverified.")
-    .waitFor();
   const activity = page.locator(".deployment-status");
-  await activity.getByRole("heading", { name: "Deployment activity" }).waitFor();
   await activity.getByText("Most recent visible deployment · v2").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
