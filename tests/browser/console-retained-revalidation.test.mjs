@@ -18,6 +18,11 @@ test("Returning to a loaded page keeps its header selection and controls steady 
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   const create = page.getByRole("button", { name: "Create Agent" });
   assert.equal(await create.isEnabled(), true);
+  const lookOf = (node) => {
+    const style = node.ownerDocument.defaultView.getComputedStyle(node);
+    return { opacity: style.opacity, color: style.color, background: style.backgroundColor };
+  };
+  const createLook = await create.evaluate(lookOf);
 
   let releaseSession;
   const sessionHeld = new Promise((resolve) => {
@@ -47,16 +52,18 @@ test("Returning to a loaded page keeps its header selection and controls steady 
     await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
     "Steady return",
   );
-  // and the inert view blocks its controls without restyling them as disabled.
+  // and the view's controls are blocked (inert and disabled) without being restyled as
+  // disabled, so an unchanged page does not dim and brighten on every return.
   assert.equal(await view.evaluate((node) => node.inert), true);
-  assert.equal(await create.isEnabled(), true);
-  assert.equal(await page.locator(".content [aria-live] :disabled").count(), 0);
+  assert.equal(await create.isDisabled(), true);
+  assert.deepEqual(await create.evaluate(lookOf), createLook);
 
   releaseSession();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   assert.equal(await selector.locator(`option[value="${namespace.id}"]`).count(), 1);
   assert.equal(await create.isEnabled(), true);
+  assert.equal(await create.getAttribute("data-admission-blocked"), null);
   await create.click();
   await page.waitForURL("**/console/agents/new**");
 });
