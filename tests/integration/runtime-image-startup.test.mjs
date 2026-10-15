@@ -1597,10 +1597,16 @@ server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
     ]);
     await waitForDockerLog(proxyName, /broker-forwarder-ready/);
 
-    const brokerCodexConfiguration = codexOpenClawConfiguration({}, [], {
-      host: "git.oce.svc",
-      domains: {},
-    }).plugins.entries.codex.config;
+    const brokerCodexConfiguration = codexOpenClawConfiguration(
+      {},
+      [],
+      {
+        host: "git.oce.svc",
+        domains: {},
+      },
+      undefined,
+      true,
+    ).plugins.entries.codex.config;
     const pluginRuntime = {
       manifest: { kind: "codex", selections: {} },
       brokerCodexConfiguration,
@@ -1789,6 +1795,9 @@ environment.OPENCLAW_PLUGIN_RUNTIME_JSON = JSON.stringify({
   manifest: runtimeForConfig.manifest,
   codexConfigurationToml: codexConfigPatchToml(configPatch),
 });
+const codexAuthFixturePath = "/home/node/.codex/auth.json";
+fs.mkdirSync("/home/node/.codex", { recursive: true });
+fs.writeFileSync(codexAuthFixturePath, JSON.stringify({ OPENAI_API_KEY: "synthetic-offline-key" }), { mode: 0o600 });
 const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentinel.txt";
 const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
 fs.writeFileSync(homeControlSentinelPath, homeControlSentinel, { mode: 0o600 });
@@ -1890,6 +1899,17 @@ const timeout = setTimeout(() => {
     markStockBrokerStage("initialize");
     await rpc("initialize", { clientInfo: { name: "repository-broker-stock-codex-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
+
+    markStockBrokerStage("bundled-system-skill");
+    const skillPath = "/home/node/.codex/skills/.system/skill-creator/SKILL.md";
+    const skillBefore = fs.readFileSync(skillPath, "utf8");
+    assert.ok(skillBefore.length > 0, "Codex must install its bundled skill before the probe");
+    const skillRead = await execShell("cat " + skillPath);
+    assert.equal(skillRead.exitCode, 0, "bundled skill read failed: " + skillRead.stderr);
+    assert.equal(skillRead.stdout, skillBefore);
+    await expectFailure("bundled-system-skill-write-denied", "printf modified >> " + skillPath, "Read-only file system|Permission denied|Operation not permitted|EROFS|EACCES");
+    assert.equal(fs.readFileSync(skillPath, "utf8"), skillBefore, "the real system skill must remain unchanged");
+    await expectFailure("codex-credential-read-denied", "cat " + codexAuthFixturePath, "No such file|Permission denied|Operation not permitted|EACCES|ENOENT");
 
     markStockBrokerStage("proxy-env");
     const proxyState = await execShell(${JSON.stringify(proxyEnvironmentProbe)});

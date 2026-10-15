@@ -1097,6 +1097,7 @@ function openClawPluginConfiguration(runtime, failures = [], base) {
       failures,
       runtime.manifest.repositoryBrokerNetworkPolicy,
       runtime.manifest.pluginApprovers,
+      process.env.APP_SERVER_URL !== undefined,
     );
   }
   return undefined;

@@ -5171,8 +5171,12 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.equal(gateway.children.length, 6);
 });
 
-for (const withBroker of [false, true]) {
-  test(`Codex gateway supervisor applies plugin-free bridge runtime (broker=${withBroker})`, async () => {
+for (const [dedicated, withBroker] of [
+  [true, true],
+  [true, false],
+  [false, true],
+]) {
+  test(`Codex gateway supervisor applies plugin-free bridge runtime (dedicated=${dedicated}, broker=${withBroker})`, async () => {
     const revisionId = "revision-plugin-compute-1";
     const runtime = pluginRuntimeSpecForRevision(
       revision({ plugins: codexNoPluginState() }),
@@ -5187,8 +5191,13 @@ for (const withBroker of [false, true]) {
       [
         "/etc/openclaw/openclaw.json",
         JSON.stringify({
+          ...JSON.parse(
+            readFileSync(
+              new URL("../../deploy/presets/standard-codex.json", import.meta.url),
+              "utf8",
+            ),
+          ).template.configuration.values,
           gateway: { port: 8080 },
-          plugins: { entries: { codex: { enabled: true, config: { keep: true } } } },
         }),
       ],
     ]);
@@ -5205,6 +5214,7 @@ for (const withBroker of [false, true]) {
       process: {
         env: {
           APP_SERVER_TOKEN: "base-app-server-token",
+          ...(dedicated ? { APP_SERVER_URL: "ws://harness.example.test:4500" } : {}),
           HOME: "/home/node",
           OPENCLAW_AGENT_REVISION_ID: revisionId,
           OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
@@ -5273,26 +5283,37 @@ for (const withBroker of [false, true]) {
     assert.equal(intervals.length, 0);
 
     const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-    assert.equal(effective.plugins.entries.codex.config.keep, true);
     assert.equal(effective.plugins.entries.codex.config.codexPlugins, undefined);
-    assert.deepEqual(
-      effective.plugins.entries.codex.config.appServer.networkProxy,
-      withBroker
+    const proxy = effective.plugins.entries.codex.config.appServer.networkProxy;
+    const presetProxy = JSON.parse(
+      readFileSync(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ).template.configuration.values.plugins.entries.codex.config.appServer.networkProxy;
+    assert.deepEqual(proxy, {
+      ...presetProxy,
+      ...(withBroker
         ? {
             enabled: true,
             mode: "full",
             allowLocalBinding: true,
-            readOnlyPaths: [
-              "/app/node_modules/openclaw",
-              "/home/node/.openclaw/plugin-skills",
-              "/home/node/openclaw-runtime-assets/plugin-skills",
-              "/opt/oce/repository-credentials",
-              "/run/oce/repository-credentials",
-            ],
-            domains: { "github.com": "allow", "*.oce.svc": "deny", "git.oce.svc": "allow" },
+            domains: {
+              ...presetProxy.domains,
+              "github.com": "allow",
+              "*.oce.svc": "deny",
+              "git.oce.svc": "allow",
+            },
           }
-        : { readOnlyPaths: ["/app/node_modules/openclaw"] },
-    );
+        : {}),
+      readOnlyPaths: withBroker
+        ? [
+            "/app/node_modules/openclaw",
+            "/home/node/.openclaw/plugin-skills",
+            "/home/node/openclaw-runtime-assets/plugin-skills",
+            "/opt/oce/repository-credentials",
+            "/run/oce/repository-credentials",
+            ...(dedicated ? ["/home/node/.codex/skills/.system"] : []),
+          ]
+        : ["/app/node_modules/openclaw"],
+    });
     const status = readStatusFromHandler(statusHandler);
     assert.deepEqual(status, {
       revisionId,

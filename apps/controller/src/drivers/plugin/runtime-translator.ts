@@ -798,7 +798,10 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
-  function codexBrokerOpenClawConfiguration(policy: unknown): Record<string, unknown> | undefined {
+  function codexBrokerOpenClawConfiguration(
+    policy: unknown,
+    dedicatedCodex: boolean,
+  ): Record<string, unknown> | undefined {
     if (!isRecord(policy)) {
       return undefined;
     }
@@ -815,7 +818,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           enabled: true,
           mode: "full",
           allowLocalBinding: true,
-          readOnlyPaths: CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS,
+          readOnlyPaths: dedicatedCodex
+            ? [...CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS, "/home/node/.codex/skills/.system"]
+            : CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS,
           domains: { ...domains, [host]: "allow" },
         },
       },
@@ -827,10 +832,14 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     failures: unknown = [],
     repositoryBrokerNetworkPolicy: unknown = undefined,
     defaultApprovers?: unknown,
+    dedicatedCodex = false,
   ): Record<string, unknown> | undefined {
     validatePolicies("codex", selections, defaultApprovers);
     const selected = selectionEntries(selections);
-    const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
+    const brokerConfiguration = codexBrokerOpenClawConfiguration(
+      repositoryBrokerNetworkPolicy,
+      dedicatedCodex,
+    );
     const failedPluginIds = failedPluginIdSet(failures);
     const pluginFilesystemConfiguration =
       brokerConfiguration !== undefined
@@ -1084,12 +1093,14 @@ export function codexOpenClawConfiguration(
   failures: PluginRuntimeFailureInput = [],
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   defaultApprovers?: PluginApprovers,
+  dedicatedCodex = false,
 ): OpenClawConfigurationDocument | undefined {
   return pluginRuntimeTranslator.codexOpenClawConfiguration(
     selections,
     failures,
     repositoryBrokerNetworkPolicy,
     defaultApprovers,
+    dedicatedCodex,
   ) as OpenClawConfigurationDocument | undefined;
 }
 
