@@ -435,9 +435,22 @@ export function createLifecycle(options: {
       if (options.admitted() && record === state.current && record.accepted) {
         continue;
       }
-      if (driver.cleanup === "revocable" && !record.retirementAttempted && !state.cleanupWaiting) {
-        retire(record);
+      if (driver.cleanup === "revocable") {
+        if (!record.retirementAttempted && !state.cleanupWaiting) {
+          retire(record);
+        }
+        continue;
       }
+      // Expiry-only: no provider call ever ends this credential, so a settled copy
+      // that is not the admitted current credential and has no active use has no
+      // further purpose. Release it now instead of holding it to its lease end.
+      // For these backends `expired` counts custody leases ended, not upstream expiry.
+      record.disposition = "expired";
+      state.expired++;
+      if (state.current === record) {
+        state.current = undefined;
+      }
+      custody.release(record);
     }
     armExpiry();
     if (

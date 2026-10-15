@@ -10,7 +10,7 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
 ```
 
 Helm and yq are also required. This suite needs no database or model credential;
-it runs in the required `k3d-fixture-configuration` CI lane. Probe Pods use the
+it runs in the required `k3d-fixture-state` CI lane. Probe Pods use the
 chart's actual workload labels and rendered NetworkPolicies. The matrix checks
 connections through the enforcing CNI, with reachable controls around denials:
 

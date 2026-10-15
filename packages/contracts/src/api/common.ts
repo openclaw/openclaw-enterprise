@@ -1,4 +1,21 @@
 import { Type } from "typebox";
+import {
+  BACKEND_ID_MAX_CHARACTERS,
+  BACKEND_ID_PATTERN,
+  NAME_MAX_CHARACTERS,
+  PLAIN_TEXT_PATTERN,
+} from "./plain-text.ts";
+
+// The Name and Backend ID text rules live in a module with no dependencies, so the
+// installation profile renderer can load them without `pnpm install`.
+export {
+  BACKEND_ID_MAX_CHARACTERS,
+  BACKEND_ID_PATTERN,
+  isBackendId,
+  isName,
+  NAME_MAX_CHARACTERS,
+  NAME_RULE,
+} from "./plain-text.ts";
 
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -11,6 +28,7 @@ export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });
 export const IAMAccessBindingId = Type.String({ minLength: 1, maxLength: 200 });
+export const IAMServicePrincipalId = Type.String({ minLength: 1, maxLength: 200 });
 export const ConfigurationKindSchema = Type.Literal("agent");
 export const HarnessExecutionModeSchema = Type.Union([
   Type.Literal("embedded"),
@@ -31,8 +49,8 @@ export const AgentProvisioningWorkId = Type.String({
 });
 export const BackendId = Type.String({
   minLength: 1,
-  maxLength: 200,
-  pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
+  maxLength: BACKEND_ID_MAX_CHARACTERS,
+  pattern: BACKEND_ID_PATTERN,
 });
 
 export const Timestamp = Type.String({
@@ -40,10 +58,11 @@ export const Timestamp = Type.String({
   pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
 });
 
+/** A resource Name: 1 to 200 code points that follow the plain text rule. */
 export const Name = Type.String({
   minLength: 1,
-  maxLength: 200,
-  pattern: /^(?!\s)(?!.*\s$)(?!.*[\u0000-\u001f\u007f]).+$/.source,
+  maxLength: NAME_MAX_CHARACTERS,
+  pattern: PLAIN_TEXT_PATTERN,
 });
 
 export const PluginApproversSchema = Type.Array(
@@ -129,6 +148,11 @@ export const IAMAccessBindingParams = Type.Object(
   { additionalProperties: false },
 );
 
+export const IAMServicePrincipalParams = Type.Object(
+  { namespaceId: NamespaceId, servicePrincipalId: IAMServicePrincipalId },
+  { additionalProperties: false },
+);
+
 export const RevisionParams = Type.Object(
   { namespaceId: NamespaceId, agentId: AgentId, revisionId: RevisionId },
   { additionalProperties: false },
@@ -139,12 +163,34 @@ export const DeploymentParams = Type.Object(
   { additionalProperties: false },
 );
 
+/** Query strings are not coerced; boolean values are exact text. */
+export const ServiceAccountDeleteQuery = Type.Object(
+  {
+    force: Type.Optional(
+      Type.Union([Type.Literal("true"), Type.Literal("false")], {
+        description:
+          "`true` deletes an account whose issued access token no ChatGPT Backend can revoke, and leaves the token for an administrator to revoke at the provider. With a ChatGPT Backend configured it is ignored and the token is revoked as usual.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 /** Query strings are not coerced; numeric and boolean values are exact decimal text. */
 export const AgentRuntimeLogsQuery = Type.Object(
   {
     source: Type.Union([Type.Literal("gateway"), Type.Literal("agent"), Type.Literal("sandbox")]),
     pod: Type.Optional(
       Type.String({ minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }),
+    ),
+    container: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 253,
+        pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+        description:
+          "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+      }),
     ),
     previous: Type.Optional(Type.Union([Type.Literal("true"), Type.Literal("false")])),
     tailLines: Type.Optional(
@@ -171,7 +217,7 @@ export const AgentRuntimeLogsQuery = Type.Object(
     cursor: Type.Optional(
       Type.String({
         maxLength: 2048,
-        pattern: "^v1\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
+        pattern: "^v[12]\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
         description: "Opaque cursor returned by the previous page of the same view.",
       }),
     ),
@@ -179,6 +225,31 @@ export const AgentRuntimeLogsQuery = Type.Object(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
           "`true` returns the last 1000 lines as a text/plain attachment and is audited per download; it cannot be combined with `cursor`.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * Query strings are not coerced; `limit` is exact decimal text. The cursor holds only the
+ * revision number the next page starts below (at most 15 digits, so always a safe integer). It
+ * needs no signature: every listed revision is still authorized one by one, and the server only
+ * issues a cursor naming a revision the caller can read.
+ */
+export const AgentRevisionListQuery = Type.Object(
+  {
+    limit: Type.Optional(
+      Type.String({
+        pattern: "^(?:[1-9][0-9]?|100)$",
+        description: "Revisions per page, 1 to 100; default 50.",
+      }),
+    ),
+    cursor: Type.Optional(
+      Type.String({
+        maxLength: 32,
+        pattern: "^v1\\.[1-9][0-9]{0,14}$",
+        description: "Opaque cursor from `meta.nextCursor` of the previous page.",
       }),
     ),
   },
@@ -235,7 +306,16 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("codex_pat"), source: SecretReference },
+    {
+      method: Type.Literal("codex_pat"),
+      source: Type.Union([
+        SecretReference,
+        Type.Object(
+          { kind: Type.Literal("service_account"), namespaceId: NamespaceId, id: ServiceAccountId },
+          { additionalProperties: false },
+        ),
+      ]),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -243,14 +323,20 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("chatgpt_service_account"), serviceAccountId: ServiceAccountId },
-    { additionalProperties: false },
-  ),
-  Type.Object(
     { method: Type.Literal("credential_source"), sourceId: CredentialSourceId },
     { additionalProperties: false },
   ),
 ]);
+
+export const AgentCredentialSourcesSchema = Type.Array(
+  Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
+  {
+    maxItems: 8,
+    uniqueItems: true,
+    description:
+      "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+  },
+);
 
 export const CredentialSourceReference = Type.Object(
   { kind: Type.Literal("credential_source"), namespaceId: NamespaceId, id: CredentialSourceId },
@@ -306,7 +392,7 @@ export const UpdateCredentialSourceBody = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. Non-secret config is immutable.",
+      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
   },
 );
 
@@ -498,6 +584,8 @@ export const CreateIAMRoleBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const CreateIAMServicePrincipalBody = Type.Object({}, { additionalProperties: false });
+
 export const CreateIAMAccessBindingBody = Type.Object(
   {
     subjectKind: Type.Literal("identity"),
@@ -619,6 +707,7 @@ export const CreateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -645,7 +734,12 @@ export const ProvisionAgentBody = Type.Object(
     name: Name,
     configuration: ProvisionAgentConfigurationBody,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
-    harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    harnessAuth: Type.Optional(
+      Type.Union([HarnessAuthBindingSchema, Type.Null()], {
+        description:
+          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
+      }),
+    ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -660,6 +754,7 @@ export const UpdateAgentBody = Type.Object(
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
+    credentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
@@ -754,6 +849,9 @@ export const ERROR_CODES = Object.freeze([
   "NOT_IMPLEMENTED",
   "INTERNAL_ERROR",
   "DEPENDENCY_UNAVAILABLE",
+  "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
+  "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
   "MODEL_DISCOVERY_RATE_LIMITED",
@@ -781,6 +879,7 @@ export const ERROR_CODES = Object.freeze([
   "RUNTIME_LOGS_UNAVAILABLE",
   "RUNTIME_LOGS_AUDIT_UNAVAILABLE",
   "RUNTIME_LOGS_TIMEOUT",
+  "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
 ] as const);
 
 export const ErrorDetail = Type.Object(
@@ -823,6 +922,18 @@ export const ErrorResponse = Type.Object(
           Type.Literal("NOT_IMPLEMENTED"),
           Type.Literal("INTERNAL_ERROR"),
           Type.Literal("DEPENDENCY_UNAVAILABLE"),
+          Type.Literal("CREDENTIAL_GATEWAY_NOT_CONFIGURED", {
+            description:
+              "The Installation selects no Credential Gateway, so credential sources cannot be registered.",
+          }),
+          Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
+            description:
+              "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+          }),
+          Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
+            description:
+              "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
+          }),
           Type.Literal("REPOSITORY_OPTIONS_UNAVAILABLE", {
             description:
               "Only repository-option discovery is unavailable after Agent create authorization. An Agent without repository bindings may be submitted and is authorized again. Other dependency failures do not carry this meaning.",
@@ -853,6 +964,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_LOGS_UNAVAILABLE"),
           Type.Literal("RUNTIME_LOGS_AUDIT_UNAVAILABLE"),
           Type.Literal("RUNTIME_LOGS_TIMEOUT"),
+          Type.Literal("RUNTIME_CREDENTIALS_CLUSTER_RBAC"),
         ]),
         message: Type.String({ minLength: 1, maxLength: 256 }),
         details: Type.Optional(Type.Array(ErrorDetail, { maxItems: 32 })),
@@ -871,6 +983,7 @@ export type ServiceAccountId = Type.Static<typeof ServiceAccountId>;
 export type SecretId = Type.Static<typeof SecretId>;
 export type IAMRoleId = Type.Static<typeof IAMRoleId>;
 export type IAMAccessBindingId = Type.Static<typeof IAMAccessBindingId>;
+export type IAMServicePrincipalId = Type.Static<typeof IAMServicePrincipalId>;
 export type ConfigurationGeneration = Type.Static<typeof ConfigurationGeneration>;
 export type AgentId = Type.Static<typeof AgentId>;
 export type RevisionId = Type.Static<typeof RevisionId>;
@@ -888,15 +1001,19 @@ export type ServiceAccountParams = Type.Static<typeof ServiceAccountParams>;
 export type SecretParams = Type.Static<typeof SecretParams>;
 export type IAMRoleParams = Type.Static<typeof IAMRoleParams>;
 export type IAMAccessBindingParams = Type.Static<typeof IAMAccessBindingParams>;
+export type IAMServicePrincipalParams = Type.Static<typeof IAMServicePrincipalParams>;
 export type AgentParams = Type.Static<typeof AgentParams>;
 export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
+export type ServiceAccountDeleteQuery = Type.Static<typeof ServiceAccountDeleteQuery>;
 export type AgentRuntimeLogsQuery = Type.Static<typeof AgentRuntimeLogsQuery>;
+export type AgentRevisionListQuery = Type.Static<typeof AgentRevisionListQuery>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;
 export type CreateIAMRoleBody = Type.Static<typeof CreateIAMRoleBody>;
 export type CreateIAMAccessBindingBody = Type.Static<typeof CreateIAMAccessBindingBody>;
+export type CreateIAMServicePrincipalBody = Type.Static<typeof CreateIAMServicePrincipalBody>;
 export type ConfigurationValues = Type.Static<typeof ConfigurationValues>;
 export type CreateSecretBody = Type.Static<typeof CreateSecretBody>;
 export type UpdateSecretBody = Type.Static<typeof UpdateSecretBody>;
@@ -921,24 +1038,26 @@ export type ErrorResponse = Type.Static<typeof ErrorResponse>;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export type ErrorDetailCode = (typeof ERROR_DETAIL_CODES)[number];
 
-export const PresetVariableSchema = Type.Union([
-  Type.Object(
-    { type: Type.Literal("password"), description: Type.Optional(Type.String()) },
-    { additionalProperties: false },
-  ),
-  ...(["string", "number", "boolean"] as const).map((type) =>
-    Type.Object(
-      {
-        type: Type.Literal(type),
-        description: Type.Optional(Type.String()),
-        default: Type.Optional(
-          type === "string" ? Type.String() : type === "number" ? Type.Number() : Type.Boolean(),
-        ),
-      },
-      { additionalProperties: false },
+// One object shape, so a bad field gets one error at its own path rather than one per
+// variable kind. Preset admission checks that a default matches `type` and that password
+// variables have none, and names the variable when they do not.
+export const PresetVariableSchema = Type.Object(
+  {
+    type: Type.Union([
+      Type.Literal("string"),
+      Type.Literal("number"),
+      Type.Literal("boolean"),
+      Type.Literal("password"),
+    ]),
+    description: Type.Optional(Type.String()),
+    default: Type.Optional(
+      Type.Union([Type.String(), Type.Number(), Type.Boolean()], {
+        description: "A value of the declared type. Password variables take no default.",
+      }),
     ),
-  ),
-]);
+  },
+  { additionalProperties: false },
+);
 
 export const PresetTemplateSchema = Type.Object(
   {

@@ -1,0 +1,6 @@
+# Development only: overlay on compose.yaml that selects the GitHub token
+# authority. The token file stays in the service's read-only input mount; the
+# client service is unchanged and still mounts only /session and /workspace.
+services:
+  service:
+    command: ["--config", "/run/repository-credentials/config.json", "--development-authority"]

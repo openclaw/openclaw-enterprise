@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
-const reviewedCodexVersions = Object.freeze(["0.152.1", "0.154.0", "0.156.0", "0.158.0"]);
+const reviewedCodexVersions = Object.freeze([
+  "0.152.1",
+  "0.154.0",
+  "0.156.0",
+  "0.158.0",
+  "0.160.0",
+  "0.163.0-alpha.1",
+  "0.163.0-alpha.2",
+]);
 const supportedSeccompArchitectureGroups = Object.freeze([
   Object.freeze({
     native: "SCMP_ARCH_X86_64",
@@ -16,7 +24,11 @@ const supportedSeccompArchitectureGroups = Object.freeze([
 // The vendored Bubblewrap sources are byte-identical across the reviewed releases.
 // Codex 0.156.0 adds socket masking with existing tmpfs and remount flags.
 // Codex 0.158.0 extends mount masking without changing the default namespace flags.
+// Codex 0.160.0 adjusts root aliases and device masks using the same mount flags.
 // Its opt-in inherited PID namespace mode is outside this profile's reviewed scope.
+// Codex 0.163.0-alpha.1 changes executable discovery and bind-data descriptor reuse,
+// without changing the default namespace flags or mount operations.
+// Codex 0.163.0-alpha.2 keeps every listed sandbox source byte-identical to 0.163.0-alpha.1.
 // Version admission does not change the syscall rules or the live positive/negative probes.
 const codexBwrapSourceProvenance = Object.freeze([
   {
@@ -39,20 +51,44 @@ const codexBwrapSourceProvenance = Object.freeze([
     sha256: "0049ed2a31ad66150d1f7e07056bf1732b6ae3c5e8f6ac33749b36475e069069",
   },
   {
-    name: "Codex 0.158.0 sandbox entry point",
-    source: "openai/codex rust-v0.158.0 codex-rs/linux-sandbox/src/linux_run_main.rs",
+    name: "Codex 0.160.0 bubblewrap launcher",
+    source: "openai/codex rust-v0.160.0 codex-rs/linux-sandbox/src/bwrap.rs",
+    sha256: "1d3dfe853f9b5f1cafd7283cf760e38ff739eb7c1ac54650ae2ed510b92b870a",
+  },
+  {
+    name: "Codex 0.158.0 and 0.160.0 sandbox entry point",
+    source:
+      "openai/codex rust-v0.158.0 and rust-v0.160.0 codex-rs/linux-sandbox/src/linux_run_main.rs",
     sha256: "0dd784f70ff95b16c97dd9e8420c30db2ff39002a57e357c6da686c353464270",
+  },
+  {
+    name: "Codex 0.163.0-alpha.1 and 0.163.0-alpha.2 bubblewrap launcher",
+    source:
+      "openai/codex rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/linux-sandbox/src/bwrap.rs",
+    sha256: "4249718b4b50fa385ce27c539961d68c46a59f63fce4428a6380e43aa02c7b89",
+  },
+  {
+    name: "Codex 0.163.0-alpha.1 and 0.163.0-alpha.2 sandbox entry point",
+    source:
+      "openai/codex rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/linux-sandbox/src/linux_run_main.rs",
+    sha256: "3109246473ef2f8132c2d6555bec5b8116612ce58f28927608f322ac5c3fd8b1",
+  },
+  {
+    name: "Codex 0.163.0-alpha.1 and 0.163.0-alpha.2 permission-aware launcher selection",
+    source:
+      "openai/codex rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/linux-sandbox/src/launcher.rs",
+    sha256: "28da335d8f5647d1b401df74fe0fb4c67d4f59bc1e7f6f566cf7e9d7e28da45a",
   },
   {
     name: "bubblewrap mount setup",
     source:
-      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0 and rust-v0.158.0 codex-rs/vendor/bubblewrap/bubblewrap.c",
+      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/vendor/bubblewrap/bubblewrap.c",
     sha256: "9bc38fb46080b6854e0c414ccb5fbd369d9d7c0230fdfa877283d31aef0c5720",
   },
   {
     name: "bubblewrap bind mount flags",
     source:
-      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0 and rust-v0.158.0 codex-rs/vendor/bubblewrap/bind-mount.c",
+      "openai/codex rust-v0.152.1, rust-v0.154.0, rust-v0.156.0, rust-v0.158.0, rust-v0.160.0, rust-v0.163.0-alpha.1 and rust-v0.163.0-alpha.2 codex-rs/vendor/bubblewrap/bind-mount.c",
     sha256: "19a6ae020803e342667dd562efab027967b1c1f2965525ec7ee09521554f8f71",
   },
 ]);
@@ -257,7 +293,7 @@ function validateRuntimeDefaultSeccompProfile(
   );
 }
 
-function deriveCodexBwrapProfile(baseline, { codexVersion = "0.158.0" } = {}) {
+function deriveCodexBwrapProfile(baseline, { codexVersion = "0.163.0-alpha.2" } = {}) {
   assertReviewedCodexVersion(codexVersion);
   validateRuntimeDefaultSeccompProfile(baseline);
   const profile = structuredClone(baseline);
@@ -279,7 +315,7 @@ function buildCodexBwrapProfileArtifact({ baseline, codexVersion }) {
       architectures: profile.architectures,
       runtimeDefaultSha256: sha256Hex(baselineJson),
       profileSha256: sha256Hex(profileJson),
-      addedRules: codexBwrapAdditionalSyscalls().length,
+      addedRules: profile.syscalls.length - baseline.syscalls.length,
       proofLimits: [
         "Generated from an operator-captured RuntimeDefault OCI seccomp profile.",
         "Architecture proof is limited to native x86_64 with x86/x32 compat entries or native aarch64 with ARM compat entries.",

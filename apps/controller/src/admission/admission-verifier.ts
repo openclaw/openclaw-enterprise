@@ -45,12 +45,22 @@ export type AdmittedCaller =
       readonly session: AdmittedSession;
     })
   | (AdmittedCallerBase & {
-      readonly method: "api_key" | "oag";
+      readonly method: "api_key";
+      /** The non-secret ID of the verified service key, recorded on the request's audit rows. */
+      readonly serviceKeyId?: string;
+    })
+  | (AdmittedCallerBase & {
+      readonly method: "oag";
     });
 
 export interface AdmissionVerifier {
   verify(request: AdmissionRequest): Promise<AdmittedCaller>;
 }
+
+// The only admission reason explained to callers, shared by the API error mapper and the
+// auth endpoints (sign-in, sign-out, provider start and result) so both say the same thing.
+export const UNTRUSTED_ORIGIN_MESSAGE =
+  "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header.";
 
 export class AdmissionFailure extends Error {
   readonly status: 401 | 403;

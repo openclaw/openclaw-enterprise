@@ -60,7 +60,18 @@ THE REVISED DESIGN RESOLVES THE BOUNDARY VIOLATION AND THE USER APPROVES IT.
    integration requirements for new functionality. For instruction-only changes,
    check docs, links, skill resources, and any bundled executable; do not run
    product runtime suites solely for prose. Never run `npm run precommit`.
-6. Report changed behavior, the flow updated (or a short reason none is needed),
+   When changing a default image version, source pin, or bundled runtime version,
+   always complete [image version verification](./references/image-version-verification.md)
+   before merging. A green ordinary PR check does not replace this workflow.
+6. When publication is authorized, follow the
+   [PR policy](../../../CONTRIBUTING.md#prepare-a-pull-request).
+   Verify identity, repository URLs, and the push destination. Preserve existing
+   remotes; their names do not establish ownership. Preserve the head repository
+   and branch when updating an assigned existing PR. Use the verified base for
+   branch comparisons and reviews.
+   Complete the [PR readiness checklist](./references/pr-readiness.md) before
+   requesting review and recheck its merge requirements at the final PR head.
+7. Report changed behavior, the flow updated (or a short reason none is needed),
    checks run, and remaining verification gaps. Do not equate a structural doc
    check with proof of runtime behavior.
 
@@ -88,6 +99,10 @@ for an instruction change merely to satisfy this skill.
 
 ## Resources and validation
 
+- [Image version verification](./references/image-version-verification.md): mandatory
+  native image checks before merging version changes and publication follow-through.
+- [PR readiness checklist](./references/pr-readiness.md): evidence and handoff
+  requirements before review and merge.
 - [Flow workflow](./references/flow-doc/workflow.md): source gathering, sections,
   preservation, provenance, and the required validator command.
 - [Flow template](./references/flow-doc/template.md): scaffold for new flow docs.

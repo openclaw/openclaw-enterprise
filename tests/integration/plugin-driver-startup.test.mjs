@@ -1,24 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 
 async function load(t, plugin) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-plugin-startup-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const configuration = createInstallationDriverConfiguration();
   if (plugin !== undefined) {
     configuration.drivers.plugin = plugin;
   }
-  const path = join(directory, "installation.yaml");
-  await writeFile(path, JSON.stringify(configuration));
-  return loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: path },
-  });
+  return loadInstallationFile(t, configuration);
 }
 
 test("Installation startup selects one bundled Agent PluginDriver or leaves it absent", async (t) => {

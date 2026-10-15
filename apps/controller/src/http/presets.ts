@@ -1,5 +1,5 @@
 import type { PresetTemplate } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 export const presetHandlers = {
   async createPreset({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
@@ -16,7 +16,15 @@ export const presetHandlers = {
   },
   async listPresets({ controller, context, request, reply, namespaceId }) {
     const presets = await controller.listPresets(context.actorId, namespaceId);
-    reply.send({ data: presets, meta: { requestId: request.id } });
+    reply.send({
+      data: presets.map(({ id, namespaceId, name, createdAt }) => ({
+        id,
+        namespaceId,
+        name,
+        createdAt,
+      })),
+      meta: { requestId: request.id },
+    });
   },
   async getPreset({ controller, context, request, reply, params, namespaceId }) {
     const preset = await controller.getPreset(
@@ -50,9 +58,16 @@ export const presetHandlers = {
   },
   async deletePreset({ controller, context, reply, params, namespaceId, mutationEvent }) {
     await controller.transact(async (unit) => {
-      await controller.deletePreset(context.actorId, namespaceId, params.presetId as string);
+      const removed = await controller.deletePreset(
+        context.actorId,
+        namespaceId,
+        params.presetId as string,
+      );
       await unit.audit.append(
-        mutationEvent({ kind: "preset", id: params.presetId as string, namespaceId }),
+        mutationEvent(
+          { kind: "preset", id: params.presetId as string, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
       );
     });
     reply.status(204).send();

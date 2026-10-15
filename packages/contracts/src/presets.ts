@@ -42,6 +42,9 @@ export interface Preset {
   readonly createdAt: string;
 }
 
+/** A Preset without its template, as list routes return it. */
+export type PresetSummary = Pick<Preset, "id" | "namespaceId" | "name" | "createdAt">;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -130,9 +133,13 @@ function validateCredentials(template: PresetTemplate, namespaceId: string) {
           Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
         ) &&
         reference(auth.source, value.source)) ||
-      (hasFields(auth, ["method", "serviceAccountId"]) &&
-        scalar(auth.method, value.method, Type.Literal("chatgpt_service_account")) &&
-        scalar(auth.serviceAccountId, value.serviceAccountId, ServiceAccountId)))
+      (hasFields(auth, ["method", "source"]) &&
+        scalar(auth.method, value.method, Type.Literal("codex_pat")) &&
+        hasFields(auth.source, ["kind", "namespaceId", "id"]) &&
+        isRecord(value.source) &&
+        scalar(auth.source.kind, value.source.kind, Type.Literal("service_account")) &&
+        scalar(auth.source.namespaceId, value.source.namespaceId, Type.Literal(namespaceId)) &&
+        scalar(auth.source.id, value.source.id, ServiceAccountId)))
   ) {
     return;
   }

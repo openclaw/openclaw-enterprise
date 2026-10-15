@@ -24,7 +24,6 @@ const SECRET_KEY = `${KEY_AFFIX}${SECRET_KEY_TAIL}`;
 const HEADER_NAMES = "authorization|proxy-authorization|cookie|set-cookie|x-api-key";
 
 interface Rule {
-  readonly name: string;
   readonly pattern: RegExp;
   readonly replace: (match: string, ...groups: string[]) => string;
 }
@@ -94,22 +93,33 @@ function redactPathQuery(token: string): string {
 
 const RULES: readonly Rule[] = [
   {
-    name: "pem",
     pattern: /-----BEGIN [A-Z0-9 ]{0,64}-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,64}-----|$)/g,
     replace: () => mark("pem"),
   },
   {
     // Header values, including inside `-H '...'` and `--header "..."` arguments and JSON.
-    name: "header",
     pattern: new RegExp(`\\b(${HEADER_NAMES})("?\\s*[:=]\\s*"?)${notRedacted}[^"'\\r\\n]+`, "gi"),
     replace: (_match, name, separator) => `${name}${separator}${mark("header")}`,
   },
   {
     // `Bearer <token>` and `bearer token <token>` outside a header, whatever the token's
     // length or prefix. Words without a digit (`bearer authentication failed`) stay.
-    name: "bearer",
     pattern: /\b(bearer\s+(?:token\s+)?)(?!\[redacted:)([A-Za-z0-9._~+/-]{8,}=*)/gi,
     replace: (match, prefix, value) => (/[0-9]/.test(value) ? `${prefix}${mark("bearer")}` : match),
+  },
+  {
+    // `Basic <base64 of user:password>` outside a header. Only a value that decodes to a
+    // `user:password` pair is masked, so prose such as `basic authentication` stays.
+    pattern: /\b(basic\s+)(?!\[redacted:)([A-Za-z0-9+/]{8,}={0,2})(?![A-Za-z0-9+/=])/gi,
+    replace: (match, prefix, value) =>
+      Buffer.from(value, "base64").toString("latin1").includes(":")
+        ? `${prefix}${mark("basic")}`
+        : match,
+  },
+  {
+    // netrc lines: `machine <host> login <user> password <secret>`.
+    pattern: /\b(login\s+\S{1,512}\s+password\s+)(?!\[redacted:)\S+/gi,
+    replace: (_match, prefix) => `${prefix}${mark("netrc")}`,
   },
   {
     // `eyJ<4+>.<4+>.<sig>` starting at a word boundary. The regex only takes each maximal
@@ -117,35 +127,35 @@ const RULES: readonly Rule[] = [
     // `maskJwts` then finds the tokens inside the run in linear time. A plain
     // `\beyJ[A-Za-z0-9_-]{4,}\.` backtracks quadratically on runs such as `-eyJa-eyJa-...`,
     // where `\b` holds before every `eyJ` and `-` is inside the segment alphabet.
-    name: "jwt",
     pattern: /(?<![A-Za-z0-9_.-])(?=([A-Za-z0-9_.-]{11,}))\1/g,
     replace: (match) => (match.includes("eyJ") ? maskJwts(match) : match),
   },
   {
     // URL userinfo: `scheme://user:password@host` and `scheme://token@host`.
-    name: "userinfo",
     pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s@"'<>]+@/gi,
     replace: (_match, scheme) => `${scheme}${mark("userinfo")}@`,
   },
   {
-    name: "token",
     pattern:
-      /\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_)[A-Za-z0-9_-]{8,}/g,
+      /\b(?:sk-ant-|sk-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|xox[abpr]-|xapp-|glpat-|npm_|[sr]k_(?:live|test)_)[A-Za-z0-9_-]{8,}/g,
     replace: () => mark("token"),
   },
   {
-    name: "aws-key",
+    // Hugging Face access tokens. The length floor keeps identifiers such as
+    // `hf_hub_download` readable.
+    pattern: /\bhf_[A-Za-z0-9]{30,}/g,
+    replace: () => mark("token"),
+  },
+  {
     pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
     replace: () => mark("aws-key"),
   },
   {
-    name: "google-key",
     pattern: /\bAIza[0-9A-Za-z_-]{30,}/g,
     replace: () => mark("google-key"),
   },
   {
     // Every query value and fragment of absolute URLs.
-    name: "url",
     pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'<>]+/gi,
     replace: (match) => redactUrl(match),
   },
@@ -154,13 +164,11 @@ const RULES: readonly Rule[] = [
     // selects whole whitespace- or quote-delimited tokens that contain `?` (the lookbehind
     // anchors each attempt at a token start), and `redactPathQuery` scans the token once,
     // so runs such as `=/=/=/...` stay linear.
-    name: "path-query",
     pattern: /(?<![^\s"'])[^\s"']*\?[^\s"']*/g,
     replace: (token) => redactPathQuery(token),
   },
   {
     // `"api_key": "value"` and `"password":value` in embedded JSON.
-    name: "key-value",
     pattern: new RegExp(
       `("${SECRET_KEY}"\\s*:\\s*)${notRedacted}("(?:[^"\\\\]|\\\\.)*"|[^\\s,}\\]]+)`,
       "gi",
@@ -169,7 +177,6 @@ const RULES: readonly Rule[] = [
   },
   {
     // `--password value`, `--token=value`.
-    name: "key-value",
     pattern: new RegExp(
       `(?<![A-Za-z0-9_.-])(--${SECRET_KEY})(\\s+|=)(?!-)${notRedacted}("[^"]*"|'[^']*'|\\S+)`,
       "gi",
@@ -178,7 +185,6 @@ const RULES: readonly Rule[] = [
   },
   {
     // `password=value`, `token: value`.
-    name: "key-value",
     pattern: new RegExp(
       `(${SECRET_KEY_TAIL})(\\s*[=:]\\s*)${notRedacted}("[^"]*"|'[^']*'|[^\\s,;&"']+)`,
       "gi",
@@ -186,9 +192,13 @@ const RULES: readonly Rule[] = [
     replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
   },
   {
+    // Upper-case environment assignments of a key: `MY_SERVICE_KEY=value`.
+    pattern: /\b([A-Z][A-Z0-9_]{0,63}_KEY)(\s*=\s*)(?!\[redacted:)("[^"]*"|'[^']*'|[^\s,;&"']+)/g,
+    replace: (_match, key, separator) => `${key}${separator}${mark("key-value")}`,
+  },
+  {
     // Hex and standard base64 runs of 40 or more characters. Slash-separated lowercase
     // paths such as `/api/v1/namespaces/...` are not credential-shaped and stay.
-    name: "long-token",
     pattern: /[A-Za-z0-9+/]{40,}={0,2}/g,
     replace: (match) =>
       /^[0-9A-Fa-f]+$/.test(match) || (/[0-9+]/.test(match) && /[A-Z]/.test(match))
@@ -197,7 +207,6 @@ const RULES: readonly Rule[] = [
   },
   {
     // base64url runs of 40 or more characters that mix upper case, lower case and digits.
-    name: "long-token",
     pattern: /[A-Za-z0-9_-]{40,}/g,
     replace: (match) =>
       /[A-Z]/.test(match) && /[a-z]/.test(match) && /[0-9]/.test(match)
@@ -532,42 +541,35 @@ export function redactArgvCredentials(value: string): string {
 const EVENT_RULES: readonly Rule[] = [
   {
     // `Successfully assigned <namespace>/<pod> to <node>`.
-    name: "node",
     pattern: /\b(assigned\s+\S{1,512}\s+to\s+)[^\s,;:"']+/gi,
     replace: (_match, prefix) => `${prefix}${mark("node")}`,
   },
   {
     // `node "<name>"`, `nodes "<name>" not found`.
-    name: "node",
     pattern: /\b(nodes?\s+)"[^"]*"/gi,
     replace: (_match, prefix) => `${prefix}"${mark("node")}"`,
   },
   {
     // `... on node <name>`.
-    name: "node",
     pattern: /\b(on\s+node\s+)[^\s,;:"']+/gi,
     replace: (_match, prefix) => `${prefix}${mark("node")}`,
   },
   {
     // `Pulling image "<ref>"`, `failed to resolve reference "<ref>"`.
-    name: "image",
     pattern: /\b(image|reference)(\s+)"[^"]*"/gi,
     replace: (_match, keyword, space) => `${keyword}${space}"${mark("image")}"`,
   },
   {
-    name: "image",
     pattern: /\b(pull access denied for\s+)[^\s,;]+/gi,
     replace: (_match, prefix) => `${prefix}${mark("image")}`,
   },
   {
     // `secret "<name>" not found`, `configmap "<name>" not found`.
-    name: "secret",
     pattern: /\b(secrets?|configmaps?)(\s+)"[^"]*"/gi,
     replace: (_match, keyword, space) => `${keyword}${space}"${mark("secret")}"`,
   },
   {
     // `couldn't find key <key> in Secret <namespace>/<name>`.
-    name: "secret",
     pattern: /\b(Secret|ConfigMap)(\s+)[A-Za-z0-9.-]{1,253}\/[A-Za-z0-9.-]{1,253}/g,
     replace: (_match, keyword, space) => `${keyword}${space}${mark("secret")}`,
   },

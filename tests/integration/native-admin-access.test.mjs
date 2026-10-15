@@ -10,9 +10,18 @@ import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
+import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import { createOccLogger } from "../../apps/controller/src/logging.ts";
+import {
+  InMemoryPlatformState,
+  NoActiveAgentRevisionError,
+  OpenClawController,
+  ResourceConflictError,
+} from "../../packages/occ/src/index.ts";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -54,8 +63,10 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
   };
 }
 
-function nativeComputeDriver(upstreamPort) {
+function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
   return {
+    // Kubernetes dedicated revisions stop their predecessors before they start.
+    ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
     id: "native-admin-compute",
     capability: "compute",
     implementation: "native-admin-test-upstream",
@@ -122,6 +133,12 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (request.url?.includes("/upstream-unavailable")) {
+      // OpenClaw's answer when a Gravatar fallback cannot be fetched.
+      response.writeHead(502, { "content-type": "application/json" });
+      response.end('{"ok":false,"error":{"type":"avatar_upstream_unavailable"}}');
+      return;
+    }
     if (request.url?.endsWith("/redirect-root")) {
       response.writeHead(302, {
         "content-security-policy": "default-src 'self'",
@@ -169,19 +186,25 @@ async function startNativeHttpsUpstream(t) {
 async function createNativeAdminFixture(t, options = {}) {
   const upstream = await startNativeHttpsUpstream(t);
   const fixture = await createConsoleAppFixture(t, {
+    ...(options.state === undefined ? {} : { state: options.state }),
     publicOrigin: options.publicOrigin ?? publicOrigin,
     authBaseURL: options.authBaseURL ?? authBaseURL,
     authCookieDomain: options.cookieDomain ?? cookieDomain,
     authSecureCookies: options.authSecureCookies ?? true,
     development: options.development ?? { enabled: false },
     auditSink: options.auditSink,
+    ...(options.recordOperations === undefined
+      ? {}
+      : { recordOperations: options.recordOperations }),
     nativeAdmin: {
       enabled: options.nativeAdminEnabled ?? true,
       domain: options.nativeDomain ?? nativeDomain,
       sharedCookieDomain: options.cookieDomain ?? cookieDomain,
     },
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
-    computeDriver: nativeComputeDriver(upstream.port),
+    computeDriver: nativeComputeDriver(upstream.port, {
+      exclusiveReplacement: options.exclusiveReplacement,
+    }),
   });
   await fixture.bootstrap("Native admin access test");
   const namespace = await fixture.createNamespace("Native admin", {
@@ -321,6 +344,21 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(exactAvailable.status, 200);
   assert.equal(exactAvailable.data.status, "available");
 
+  // An IAM outage is a dependency failure, never an Agent lifecycle state: the console must
+  // not read it as "unavailable" (deploying) for an Agent the caller may not even administer.
+  const authorize = context.fixture.iamDriver.authorize;
+  context.fixture.iamDriver.authorize = async () => {
+    throw new Error("IAM outage");
+  };
+  let iamOutage;
+  try {
+    iamOutage = await nativeStatus(context);
+  } finally {
+    context.fixture.iamDriver.authorize = authorize;
+  }
+  assert.equal(iamOutage.status, 503);
+  assert.equal(iamOutage.body.error.code, "DEPENDENCY_UNAVAILABLE");
+
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });
   assert.equal(denied.status, 403);
@@ -375,10 +413,15 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   );
   assert.equal(serviceDenied.statusCode, 403);
   assert.equal(serviceDenied.json().error.code, "FORBIDDEN");
+  // The denial tells key holders what to use instead; it names no Agent state.
+  assert.equal(
+    serviceDenied.json().error.message,
+    "Native admin UI requires a signed-in console session; service API keys cannot open it.",
+  );
 
   // Redeployment makes the Agent desired-running before a worker selects the new revision.
   const pending = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
-  await assert.rejects(controllerStatus, DependencyUnavailableError);
+  await assert.rejects(controllerStatus, NoActiveAgentRevisionError);
   const unavailable = await nativeStatus(context, { session: exactAdministerOnlySession });
   assert.equal(unavailable.status, 200);
   assert.deepEqual(unavailable.data, { status: "unavailable" });
@@ -387,6 +430,41 @@ test("native admin status requires exact Agent administer and reports lifecycle 
   assert.equal(restored.status, 200);
   assert.equal(restored.data.status, "available");
   assert.equal(restored.data.activeRevisionId, pending.id);
+});
+
+test("native admin status is unavailable while a newer revision replaces the active workload", async (t) => {
+  // Without exclusive replacement the active revision keeps serving during a redeploy.
+  const shared = await createNativeAdminFixture(t);
+  await shared.fixture.deployAgent(shared.namespace.id, shared.agent.id);
+  const stillServing = await nativeStatus(shared);
+  assert.equal(stillServing.status, 200);
+  assert.equal(stillServing.data.status, "available");
+  assert.equal(stillServing.data.activeRevisionId, shared.revision.id);
+
+  const context = await createNativeAdminFixture(t, { exclusiveReplacement: true });
+  const available = await nativeStatus(context);
+  assert.equal(available.data.status, "available");
+  // The worker stops the active revision before the newer one starts; if that one fails,
+  // the old revision stays recorded as active with nothing serving.
+  const replacement = await context.fixture.deployAgent(context.namespace.id, context.agent.id);
+  const replacing = await nativeStatus(context);
+  assert.equal(replacing.status, 200);
+  assert.deepEqual(replacing.data, { status: "unavailable" });
+  const agent = await context.fixture.request(
+    "GET",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}`,
+  );
+  assert.equal(agent.data.activeRevisionId, context.revision.id);
+
+  await context.fixture.activateRevision(
+    context.namespace.id,
+    context.agent.id,
+    replacement.id,
+    context.revision.id,
+  );
+  const restored = await nativeStatus(context);
+  assert.equal(restored.data.status, "available");
+  assert.equal(restored.data.activeRevisionId, replacement.id);
 });
 
 test("native admin disabled status still requires exact Agent administer", async (t) => {
@@ -624,6 +702,24 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(collision.body, "native admin upstream\n");
   assert.equal(context.upstream.requests.length, 2);
 
+  // A user photo the Gateway cannot fetch is a missing photo, not a Gateway failure.
+  const avatar = await injectJson(
+    context.fixture,
+    "GET",
+    "/api/users/upstream-unavailable/avatar?v=1",
+    { headers: nativeHeaders },
+  );
+  assert.equal(avatar.statusCode, 404, avatar.body);
+  assert.equal(avatar.body, "");
+  assert.equal(avatar.headers["cache-control"], "no-store");
+  assert.equal(context.upstream.requests.length, 3);
+  const otherFailure = await injectJson(context.fixture, "GET", "/upstream-unavailable", {
+    headers: nativeHeaders,
+  });
+  assert.equal(otherFailure.statusCode, 502, otherFailure.body);
+  assert.match(otherFailure.body, /avatar_upstream_unavailable/);
+  assert.equal(context.upstream.requests.length, 4);
+
   const rootRedirect = await injectJson(context.fixture, "GET", "/redirect-root", {
     headers: nativeHeaders,
   });
@@ -634,21 +730,21 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   );
   assert.match(String(rootRedirect.headers["content-security-policy"]), /default-src 'self'/);
   assert.match(String(rootRedirect.headers["content-security-policy"]), /worker-src 'none'/);
-  assert.equal(context.upstream.requests.length, 3);
+  assert.equal(context.upstream.requests.length, 5);
 
   const externalRedirect = await injectJson(context.fixture, "GET", "/redirect-external", {
     headers: nativeHeaders,
   });
   assert.equal(externalRedirect.statusCode, 502, externalRedirect.body);
   assert.equal(externalRedirect.headers.location, undefined);
-  assert.equal(context.upstream.requests.length, 4);
+  assert.equal(context.upstream.requests.length, 6);
 
   const reservedRedirect = await injectJson(context.fixture, "GET", "/redirect-reserved", {
     headers: nativeHeaders,
   });
   assert.equal(reservedRedirect.statusCode, 502, reservedRedirect.body);
   assert.equal(reservedRedirect.headers.location, undefined);
-  assert.equal(context.upstream.requests.length, 5);
+  assert.equal(context.upstream.requests.length, 7);
 
   context.fixture.policy.restrictions.push({
     id: `restriction-native-admin-proxy-${randomUUID()}`,
@@ -665,10 +761,90 @@ test("native admin proxy strips browser credentials and preserves the Agent gate
   assert.equal(iamDenied.headers["set-cookie"], undefined);
   assert.equal(
     context.upstream.requests.length,
-    5,
+    7,
     "authorization-denied proxy requests must not reach native gateway",
   );
 });
+test("native admin proxy resolves a host only to the live Agent it names", async (t) => {
+  const state = new InMemoryPlatformState();
+  const context = await createNativeAdminFixture(t, { state, recordOperations: true });
+  const { fixture, namespace, agent, upstream } = context;
+  trustLocalUpstreamCertificate(t, upstream.cert);
+  const installationId = fixture.controller.installation.id;
+  // The installation administrator's session administers every Agent, so each refusal below
+  // comes from host resolution, not from IAM.
+  const proxied = (namespaceId, agentId) => {
+    const origin = nativeOriginForAgent(installationId, namespaceId, agentId);
+    return injectJson(fixture, "GET", "/settings/profile", {
+      headers: { host: new URL(origin).host, origin, cookie: context.session.cookie },
+    });
+  };
+
+  const own = await proxied(namespace.id, agent.id);
+  assert.equal(own.statusCode, 200, own.body);
+  assert.equal(upstream.requests.length, 1);
+
+  const other = await fixture.createNamespace("Native admin other", { ready: true });
+  const otherAgent = await fixture.createAgent(
+    other.id,
+    "Native admin other Agent",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  for (const [label, namespaceId, agentId] of [
+    ["an Agent that does not exist", namespace.id, `agt_${randomUUID()}`],
+    ["this Agent under another Namespace", other.id, agent.id],
+    ["another Namespace's Agent under this Namespace", namespace.id, otherAgent.id],
+  ]) {
+    const denied = await proxied(namespaceId, agentId);
+    assert.equal(denied.statusCode, 403, `${label}: ${denied.body}`);
+  }
+  // Another Namespace's Agent resolves to itself alone; it has no active revision to serve.
+  const otherHost = await proxied(other.id, otherAgent.id);
+  assert.notEqual(otherHost.statusCode, 200, otherHost.body);
+  assert.equal(upstream.requests.length, 1, "no refused host may reach a native gateway");
+
+  // A deleted Agent's host names nothing.
+  const deleted = await fixture.request("DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(deleted.status, 202);
+  assert.equal(await state.completeAgentDeletion(namespace.id, agent.id), true);
+  const afterDeletion = await proxied(namespace.id, agent.id);
+  assert.equal(afterDeletion.statusCode, 403, afterDeletion.body);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test("native admin status decodes only the revisions it uses", async (t) => {
+  // bughunt-69: status and proxy admission decoded every revision of the Agent to find the
+  // newest. Seed 64 later revisions of about 0.9 MB each; the newest is the only one read.
+  const state = new InMemoryPlatformState();
+  const context = await createNativeAdminFixture(t, { state });
+  const active = await state.read((view) =>
+    view.revisions.findRevision(context.namespace.id, context.agent.id, context.revision.id),
+  );
+  const large = Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"]));
+  await state.transact(async (transaction) => {
+    for (let number = 2; number <= 65; number += 1) {
+      await transaction.revisions.createRevision({
+        ...active,
+        id: `rev_${randomUUID()}`,
+        revision: number,
+        configuration: { ...active.configuration, env: { vars: large } },
+      });
+    }
+  });
+  const timings = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const started = performance.now();
+    const status = await nativeStatus(context);
+    timings.push(performance.now() - started);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, "available");
+    assert.equal(status.data.activeRevisionId, context.revision.id);
+  }
+  // Decoding all 65 took about 2.5 s on two CPUs; decoding two takes well under a second.
+  const fastest = Math.min(...timings);
+  assert.ok(fastest < 1_000, `native admin status took ${Math.round(fastest)} ms`);
+});
+
 test("native Agent requests retain their own origin boundary", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);
@@ -794,3 +970,145 @@ test("sign-out requires the console origin for session requests", async (t) => {
   });
   assert.equal(allowed.statusCode, 200, allowed.body);
 });
+
+for (const changedField of [undefined, "id", "implementation"]) {
+  test(`native admin retains the revision Compute owner after restart: ${changedField ?? "matching"}`, async (t) => {
+    const state = new InMemoryPlatformState();
+    const context = await createNativeAdminFixture(t, { state });
+    const { fixture, upstream, namespace, agent, revision } = context;
+    trustLocalUpstreamCertificate(t, upstream.cert);
+    const originalCompute = fixture.controller.selectedDriver("compute");
+    assert.deepEqual(revision.compute, {
+      id: originalCompute.id,
+      implementation: originalCompute.implementation,
+    });
+
+    // Reopen the same committed revision with a fresh registry, as on controller restart.
+    // In particular, changing only implementation must not mutate a registered Driver.
+    const controller = new OpenClawController(fixture.controller.installation, {
+      state,
+      recordOperations: false,
+    });
+    controller.registerDriver(fixture.iamDriver);
+    controller.selectDriver("iam", fixture.iamDriver.id);
+    const calls = { endpoint: 0, key: 0 };
+    const compute = {
+      ...nativeComputeDriver(upstream.port),
+      ...(changedField === undefined ? {} : { [changedField]: `replacement-${changedField}` }),
+      getGatewayEndpoint(selectedRevision) {
+        calls.endpoint += 1;
+        assert.equal(selectedRevision.id, revision.id);
+        return originalCompute.getGatewayEndpoint(selectedRevision);
+      },
+    };
+    controller.registerDriver(compute);
+    controller.selectDriver("compute", compute.id);
+    const auth = createControllerAuth({
+      installationId: controller.installation.id,
+      mode: "development",
+      baseURL: authBaseURL,
+      secret: `native-restart-test-${randomUUID()}-${randomUUID()}`,
+      memoryDatabase: fixture.memoryDatabase,
+      sharedCookieDomain: cookieDomain,
+      secureCookies: true,
+    });
+    const logLines = [];
+    const app = createFastifyApp({
+      controller,
+      iamDriver: fixture.iamDriver,
+      auth,
+      logger: createOccLogger({
+        component: "native-admin-test",
+        level: "info",
+        destination: {
+          write(chunk) {
+            logLines.push(...String(chunk).split("\n").filter(Boolean));
+            return true;
+          },
+        },
+      }),
+      auditSink: new InMemoryAuditSink(),
+      development: { enabled: false },
+      resolveHarness: resolveApprovedHarness,
+      publicOrigin,
+      nativeAdmin: { enabled: true, domain: nativeDomain, sharedCookieDomain: cookieDomain },
+      nativeAdminGatewayApiKey: async () => {
+        calls.key += 1;
+        return nativeGatewayApiKey;
+      },
+    });
+    t.after(() => app.close());
+    const session = await signInToControllerApp(app, fixture.credentials);
+    const headers = { cookie: session.cookie, origin: publicOrigin };
+    const status = await injectJson(
+      { app },
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      { headers },
+    );
+    const host = new URL(nativeOriginForAgent(controller.installation.id, namespace.id, agent.id))
+      .host;
+    const proxy = await injectJson({ app }, "GET", "/", {
+      headers: { ...headers, host, origin: `https://${host}` },
+    });
+    // A console poll repeats the status read; the mismatch is still warned only once.
+    const repeated = await injectJson(
+      { app },
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
+      { headers },
+    );
+    assert.equal(repeated.statusCode, status.statusCode);
+    const mismatchLogs = logLines
+      .map((line) => JSON.parse(line))
+      .filter((line) => line.event === "native_admin.compute_owner_mismatch");
+    if (changedField === undefined) {
+      assert.deepEqual(mismatchLogs, []);
+      assert.equal(status.statusCode, 200);
+      assert.equal(status.json().data.status, "available");
+      assert.equal(proxy.statusCode, 200);
+      assert.equal(proxy.body, "native admin upstream\n");
+      assert.equal(calls.endpoint, 3);
+      assert.equal(calls.key, 1);
+      assert.equal(upstream.requests.length, 1);
+    } else {
+      assert.equal(status.statusCode, 503);
+      assert.equal(status.json().error.code, "DEPENDENCY_UNAVAILABLE");
+      // Agent-host admission retains its existing non-disclosing refusal envelope.
+      assert.equal(proxy.statusCode, 403);
+      assert.deepEqual(calls, { endpoint: 0, key: 0 });
+      assert.equal(upstream.requests.length, 0);
+      // One operator line names both owners and the recovery; no endpoint or key.
+      assert.equal(mismatchLogs.length, 1, logLines.join("\n"));
+      const [logged] = mismatchLogs;
+      assert.equal(logged.severity, "WARN");
+      assert.deepEqual(
+        {
+          namespaceId: logged.namespaceId,
+          agentId: logged.agentId,
+          revisionId: logged.revisionId,
+          revisionCompute: logged.revisionCompute,
+          selectedCompute: logged.selectedCompute,
+        },
+        {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          revisionId: revision.id,
+          revisionCompute: revision.compute,
+          selectedCompute: { id: compute.id, implementation: compute.implementation },
+        },
+      );
+      assert.match(logged.message, /Select that Compute Driver again/);
+      const text = logLines.join("\n");
+      assert.ok(!text.includes(nativeGatewayApiKey), "the gateway key must not be logged");
+      assert.ok(
+        !text.includes(originalCompute.getGatewayEndpoint(revision)),
+        "the private gateway endpoint must not be logged",
+      );
+    }
+    const persisted = await state.read((view) =>
+      view.revisions.findRevision(namespace.id, agent.id, revision.id),
+    );
+    assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
+  });
+}

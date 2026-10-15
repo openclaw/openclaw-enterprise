@@ -1,9 +1,27 @@
 import { button, element } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import { assertReadableConfiguration, message } from "./list.mjs";
+import { assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
+
+export const API_KEY_PLUGIN_MESSAGE =
+  "Codex plugins need a ChatGPT login. This Agent uses an API key, so each selected plugin is disabled when it deploys (PLUGIN_AUTH_REQUIRED). Change its Harness authentication under Credentials to use plugins.";
+
+const PLUGIN_WARNING_EXPLANATIONS = Object.freeze({
+  PLUGIN_AUTH_REQUIRED:
+    "was disabled for this startup because it is not authenticated: Codex plugins need a ChatGPT login rather than an API key, and some also need their app connected to that account.",
+  PLUGIN_INSTALL_FAILED:
+    "was disabled for this startup because it could not be installed. Check the Agent's runtime logs.",
+});
+
+/** One sentence per deployment startup warning, keeping its code for lookup. */
+export function pluginWarningText(warning) {
+  const explanation = Object.hasOwn(PLUGIN_WARNING_EXPLANATIONS, warning.code)
+    ? PLUGIN_WARNING_EXPLANATIONS[warning.code]
+    : "reported a startup warning.";
+  return `${warning.pluginId} ${explanation} (${warning.code})`;
+}
 
 export function renderAgentPlugins(
   context,
@@ -25,10 +43,10 @@ export function renderAgentPlugins(
         "p",
         { className: "muted" },
         snapshot.pluginApprovers === undefined
-          ? "No Agent default was set when this revision was admitted; the existing OpenClaw approval routing applies."
+          ? "No Agent default was set when this version was created; the existing OpenClaw approval routing applies."
           : snapshot.pluginApprovers.length === 0
-            ? "Explicit empty list: no Slack user can approve plugins in this revision by default."
-            : "This revision's Agent default approvers are immutable.",
+            ? "Explicit empty list: no Slack user can approve plugins in this version by default."
+            : "This version's Agent default approvers are immutable.",
       ),
       ...(snapshot.pluginApprovers?.length
         ? [
@@ -72,11 +90,14 @@ export function renderAgentPlugins(
   const hasBoundCredential =
     agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret";
   const codex = configuredHarnessId(snapshot.values) === "codex";
+  // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
+  // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
+  const apiKeyAuth = codex && agent.harnessAuth?.method === "api_key";
   const oauthLogin = createDeviceLogin({
     context,
     agentId: agent.id,
     initial: retained?.oauthLogin,
-    hint: "Use a separate ChatGPT login to browse plugins for this revision. This does not replace or refresh the deployed Agent's credential. Discard this login when you finish.",
+    hint: "Use a separate ChatGPT login to browse plugins for this version. This does not replace or refresh the deployed Agent's credential. Discard this login when you finish.",
     onChange() {
       discovery.reset();
     },
@@ -95,20 +116,23 @@ export function renderAgentPlugins(
     requestBody: (body) => (oauthLogin.source ? { ...body, oauthLogin: oauthLogin.source } : body),
     canDiscover: () =>
       codex &&
+      !apiKeyAuth &&
       (catalogCredential === "none" ||
         (catalogCredential === "required" && (hasBoundCredential || Boolean(oauthLogin.source)))),
-    canPrefetch: () => codex && (hasBoundCredential || Boolean(oauthLogin.source)),
+    canPrefetch: () => codex && !apiKeyAuth && (hasBoundCredential || Boolean(oauthLogin.source)),
     isPending: () => pending,
     unavailableMessage: () =>
       !codex
         ? "Plugin browsing requires the Codex harness. You can still edit existing plugin selections."
-        : !catalogCapabilityChecked
-          ? "Checking plugin catalog availability…"
-          : catalogCapabilityError
-            ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
-            : agent.harnessAuth?.method === "oauth"
-              ? "Use experimental ChatGPT OAuth below to browse plugins without changing the deployed Agent's login."
-              : "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+        : apiKeyAuth
+          ? "Plugin browsing is unavailable with API-key authentication."
+          : !catalogCapabilityChecked
+            ? "Checking plugin catalog availability…"
+            : catalogCapabilityError
+              ? "Could not check plugin catalog availability. Refresh this page or edit existing plugin selections."
+              : agent.harnessAuth?.method === "oauth"
+                ? "Use experimental ChatGPT OAuth below to browse plugins without changing the deployed Agent's login."
+                : "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     saveHint: "Changes are saved when you choose Save plugin selections.",
     deniedMessage:
       "Check Agent edit access. Hosted browsing also requires that both you and this Agent can use its bound Secret. Saved selections can still be edited.",
@@ -169,6 +193,7 @@ export function renderAgentPlugins(
       "Save selections on this Agent, then deploy a new version to apply them.",
     ),
     oauthLogin.section,
+    ...(apiKeyAuth ? [element("p", { className: "notice" }, API_KEY_PLUGIN_MESSAGE)] : []),
     discovery.fields.section,
     capabilitiesStatus,
     element("div", { className: "form-actions" }, save, discard, reload),
@@ -247,6 +272,7 @@ export function renderAgentPlugins(
     feedback.textContent = "Checking saved plugin selections…";
     updateState();
     let mutationStarted = false;
+    let saved = false;
     try {
       const freshAgent = await context.request(path);
       if (!context.isCurrent()) {
@@ -274,6 +300,7 @@ export function renderAgentPlugins(
             : { pluginApprovers }),
         },
       });
+      saved = true;
       if (context.isCurrent()) {
         pending = false;
         updateState();
@@ -295,13 +322,15 @@ export function renderAgentPlugins(
       feedback.textContent =
         error.status === 403
           ? "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account."
-          : error.status === 400
-            ? "Plugin selections were rejected. Check plugin IDs and policy JSON, then retry."
-            : error.status === 409
-              ? "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying."
-              : error.status === 501
-                ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
-                : message(error, mutationStarted);
+          : error.status === 400 && !saved && error.serverMessage !== undefined
+            ? rejectionMessage(error, mutationStarted)
+            : error.status === 400
+              ? "Plugin selections were rejected. Check plugin IDs and policy JSON, then retry."
+              : error.status === 409
+                ? "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying."
+                : error.status === 501
+                  ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
+                  : message(error, mutationStarted);
     } finally {
       if (context.isCurrent()) {
         pending = false;

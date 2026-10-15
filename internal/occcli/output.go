@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"strconv"
 	"strings"
 	"text/tabwriter"
+	"unicode"
+	"unicode/utf16"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -42,8 +45,79 @@ func (app *application) printSecret(value any, collection bool) error {
 	})
 }
 
+// printSecretDetail adds a CONSUMERS column to the single-Secret table: the
+// referencing resource IDs the caller may read, the count of those it may not,
+// and whether OCC stopped examining references. Structured output keeps the
+// full consumers object.
+func (app *application) printSecretDetail(value any) error {
+	if app.output == "table" {
+		if resource, ok := value.(map[string]any); ok {
+			row := maps.Clone(resource)
+			row["consumers"] = secretConsumersText(resource["consumers"])
+			value = row
+		}
+	}
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "CONSUMERS", key: "consumers"},
+	})
+}
+
+// secretConsumersText renders consumers as "kind:id" pairs, then "N unreadable"
+// and "more" when present, or nil (shown as "-") when nothing references the
+// Secret.
+func secretConsumersText(value any) any {
+	consumers, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	parts := []string{}
+	for _, kind := range []struct{ key, label string }{
+		{"agents", "agent"},
+		{"configurations", "configuration"},
+		{"credentialSources", "credential-source"},
+		{"provisioningRequests", "provisioning"},
+	} {
+		ids, _ := consumers[kind.key].([]any)
+		for _, id := range ids {
+			parts = append(parts, kind.label+":"+displayValue(id))
+		}
+	}
+	if unreadable, ok := consumers["unreadable"].(float64); ok && unreadable > 0 {
+		parts = append(parts, strconv.FormatFloat(unreadable, 'f', -1, 64)+" unreadable")
+	}
+	if truncated, _ := consumers["truncated"].(bool); truncated {
+		parts = append(parts, "more")
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return strings.Join(parts, ", ")
+}
+
+// printPreset shows Preset identity in tables; structured output includes the template.
+func (app *application) printPreset(value any, collection bool) error {
+	return app.printItems(value, collection, []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "CREATED", key: "createdAt"},
+	})
+}
+
 func (app *application) printCredentialSource(value any, collection bool) error {
-	if app.output == "table" && !collection {
+	columns := []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "TYPE", key: "type"},
+		{title: "STATE", key: "state"},
+	}
+	// List responses carry no live gateway status (that takes a gateway call per source),
+	// so only single-resource tables get the column.
+	if collection {
+		return app.printItems(value, collection, columns)
+	}
+	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			if status, ok := resource["status"].(map[string]any); ok {
 				// Table output shows the live gateway state; structured output keeps the full status.
@@ -53,13 +127,7 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 			}
 		}
 	}
-	return app.printItems(value, collection, []column{
-		{title: "ID", key: "id"},
-		{title: "NAME", key: "name"},
-		{title: "TYPE", key: "type"},
-		{title: "STATE", key: "state"},
-		{title: "GATEWAY STATUS", key: "gatewayStatus"},
-	})
+	return app.printItems(value, collection, append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"}))
 }
 
 func (app *application) printCredentialWithdrawal(value any) error {
@@ -70,6 +138,7 @@ func (app *application) printCredentialWithdrawal(value any) error {
 		{title: "STATE", key: "state"},
 		{title: "REQUESTED BY", key: "requestedBy"},
 		{title: "REASON", key: "reason"},
+		{title: "IN PROGRESS", key: "withdrawalInProgress"},
 	})
 }
 
@@ -91,8 +160,25 @@ func (app *application) printIAMAccessBinding(value any, collection bool) error 
 	})
 }
 
-func (app *application) printAgent(value any, collection bool) error {
+func (app *application) printIAMServicePrincipal(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
+		{title: "ID", key: "id"},
+		{title: "NAMESPACE", key: "namespaceId"},
+	})
+}
+
+func (app *application) printServiceKey(value any) error {
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
+		{title: "NAMESPACE", key: "namespaceId"},
+		{title: "NAME", key: "name"},
+		{title: "EXPIRES", key: "expiresAt"},
+	})
+}
+
+func (app *application) printAgent(value any, collection bool) error {
+	return app.printBrowsingItems(value, collection, []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
 		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
@@ -121,7 +207,7 @@ func (app *application) printAgentRevisionList(rows []any) error {
 		}
 		table = append(table, row)
 	}
-	return printTable(app.out, table, []column{
+	return app.printBrowsingItems(table, true, []column{
 		{title: "ACTIVE", key: "active"},
 		{title: "ID", key: "id"},
 		{title: "REVISION", key: "revision"},
@@ -130,6 +216,50 @@ func (app *application) printAgentRevisionList(rows []any) error {
 		{title: "CONFIGURATION", key: "configurationId"},
 		{title: "CREATED", key: "createdAt"},
 	})
+}
+
+// printDeploymentStatus shows startup warnings in the table too: a succeeded
+// deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
+// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+func (app *application) printDeploymentStatus(value any) error {
+	if app.output == "table" {
+		if resource, ok := value.(map[string]any); ok {
+			row := maps.Clone(resource)
+			row["warnings"] = deploymentWarningsText(resource["warnings"])
+			value = row
+		}
+	}
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "deploymentId"},
+		{title: "AGENT", key: "agentId"},
+		{title: "STATUS", key: "status"},
+		{title: "ERROR", key: "error"},
+		{title: "WARNINGS", key: "warnings"},
+	})
+}
+
+// deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil
+// (shown as "-") when there are none.
+func deploymentWarningsText(value any) any {
+	warnings, ok := value.([]any)
+	if !ok || len(warnings) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(warnings))
+	for _, item := range warnings {
+		warning, ok := item.(map[string]any)
+		if !ok {
+			parts = append(parts, displayValue(item))
+			continue
+		}
+		code := displayValue(warning["code"])
+		if plugin, ok := warning["pluginId"].(string); ok && plugin != "" {
+			parts = append(parts, plugin+" ("+code+")")
+		} else {
+			parts = append(parts, code)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (app *application) printRuntimeCredentials(value any) error {
@@ -147,6 +277,33 @@ func (app *application) printDeletion(kind, id string) error {
 	return app.printStructured(value)
 }
 
+// printUnrevokedServiceAccountDeletion reports a forced deletion that left the account's
+// access token valid at the provider, with a warning naming who must revoke it.
+func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer, id string, value any) error {
+	data, _ := value.(map[string]any)
+	backend := "its former ChatGPT Backend"
+	if backendID, ok := data["backendId"].(string); ok && backendID != "" {
+		backend = "ChatGPT Backend " + strconv.Quote(backendID)
+	}
+	noticef(
+		warnings,
+		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		id,
+		backend,
+	)
+	result := map[string]any{"deleted": true, "kind": "service account", "id": id}
+	for key, entry := range data {
+		if key != "id" {
+			result[key] = entry
+		}
+	}
+	if app.output == "table" {
+		_, err := fmt.Fprintf(app.out, "Deleted service account %s; its access token was not revoked.\n", id)
+		return err
+	}
+	return app.printStructured(result)
+}
+
 func (app *application) printItems(value any, collection bool, columns []column) error {
 	if app.output != "table" {
 		return app.printStructured(value)
@@ -162,10 +319,44 @@ func (app *application) printItems(value any, collection bool, columns []column)
 	return printTable(app.out, items, columns)
 }
 
+// printBrowsingItems keeps metadata readable while making saved-settings errors visible.
+// Structured output preserves the API's typed error; tables add a column only when needed.
+func (app *application) printBrowsingItems(value any, collection bool, columns []column) error {
+	if app.output != "table" {
+		return app.printItems(value, collection, columns)
+	}
+	items := []any{value}
+	if collection {
+		var ok bool
+		items, ok = value.([]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource collection")
+		}
+	}
+	rows := make([]any, 0, len(items))
+	hasError := false
+	for _, item := range items {
+		resource, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource")
+		}
+		row := maps.Clone(resource)
+		if readError, ok := resource["configurationReadError"].(map[string]any); ok {
+			row["configurationReadError"] = fmt.Sprintf("%s (%s)", displayValue(readError["code"]), displayValue(readError["field"]))
+			hasError = true
+		}
+		rows = append(rows, row)
+	}
+	if hasError {
+		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError"})
+	}
+	return printTable(app.out, rows, columns)
+}
+
 func (app *application) printStructured(value any) error {
 	switch app.output {
 	case "json":
-		if err := json.MarshalWrite(app.out, value, jsontext.WithIndent("  ")); err != nil {
+		if err := json.MarshalWrite(app.out, value, jsontext.WithIndent("  "), json.Deterministic(true)); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintln(app.out)
@@ -203,7 +394,7 @@ func printTable(out io.Writer, items []any, columns []column) error {
 		}
 		row := make([]string, len(columns))
 		for index, column := range columns {
-			row[index] = displayValue(resource[column.key])
+			row[index] = tableCell(resource[column.key])
 		}
 		if _, err := fmt.Fprintln(writer, strings.Join(row, "\t")); err != nil {
 			return err
@@ -219,9 +410,43 @@ func displayValue(value any) string {
 	if text, ok := value.(string); ok {
 		return text
 	}
-	encoded, err := json.Marshal(value)
+	encoded, err := json.Marshal(value, json.Deterministic(true))
 	if err != nil {
 		return "-"
 	}
 	return string(encoded)
+}
+
+// tableCell is displayValue with every non-graphic rune escaped. Names may hold
+// bidirectional overrides, zero-width or C1 control characters (the Name
+// contract rejects only C0 and DEL); printed raw they reorder or hide columns.
+// A string is Go-quoted, as is one that starts with a quote so that a quoted
+// cell always means escaping; a structured value keeps valid JSON \u escapes.
+func tableCell(value any) string {
+	text := displayValue(value)
+	_, isString := value.(string)
+	if isString && strings.HasPrefix(text, `"`) {
+		return strconv.QuoteToGraphic(text)
+	}
+	if strings.IndexFunc(text, isHiddenRune) < 0 {
+		return text
+	}
+	if isString {
+		return strconv.QuoteToGraphic(text)
+	}
+	var escaped strings.Builder
+	for _, character := range text {
+		if !isHiddenRune(character) {
+			escaped.WriteRune(character)
+			continue
+		}
+		for _, unit := range utf16.Encode([]rune{character}) {
+			fmt.Fprintf(&escaped, `\u%04x`, unit)
+		}
+	}
+	return escaped.String()
+}
+
+func isHiddenRune(character rune) bool {
+	return !unicode.IsGraphic(character)
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,16 +10,18 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
-import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import {
-  kubernetesNamespaceName,
-  kubernetesGatewayNamespaceName,
-} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "../../apps/controller/src/auth/configuration.ts";
+import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 function jsonLines(text) {
   return text
@@ -55,10 +57,16 @@ test("Installation startup validates the optional external observability URL", a
   assert.equal(loaded.installation.observability.url, configuration.observability.url);
 
   const url = configuration.observability.url;
+  const rewrittenIpv4ObservabilityUrl =
+    /observability\.url IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
   for (const [observability, message] of [
     ...[
       "javascript:alert(1)",
-      "https://user:pass@example.test",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "pass",
+        host: "example.test",
+      }),
       "relative",
       "https://x.example/#f",
     ].map((invalid) => [{ url: invalid }, /observability\.url/]),
@@ -71,9 +79,171 @@ test("Installation startup validates the optional external observability URL", a
         mode: "development",
         environment: { OCC_CONFIG_PATH: path },
       }),
-      message,
+      (error) => {
+        assert.match(error.message, message);
+        assert.doesNotMatch(error.message, rewrittenIpv4ObservabilityUrl);
+        return true;
+      },
     );
   }
+  // URL parsing drops an empty user info and keeps the host alone; profile preflight refuses
+  // any @ before the host, and so does startup.
+  for (const userinfo of [
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
+  ]) {
+    configuration.observability = { url: userinfo };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain user info or an @ before the host\./,
+      JSON.stringify(userinfo),
+    );
+  }
+  for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      (error) => {
+        assert.match(error.message, rewrittenIpv4ObservabilityUrl);
+        assert.doesNotMatch(error.message, /must be an absolute HTTP or HTTPS URL/);
+        return true;
+      },
+    );
+  }
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    configuration.observability = { url: raw };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./,
+      JSON.stringify(raw),
+    );
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const canonical = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(canonical.installation.observability.url, "http://192.168.1.1/");
+  assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
+  configuration.observability = {
+    url: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+  };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const queryBackslash = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(
+    new URL(queryBackslash.installation.observability.url).hostname,
+    "grafana.example.test",
+  );
+});
+
+test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
+  const configuration = installation();
+  configuration.occ.cluster = "production-west";
+  const path = await fixture(t, configuration);
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const processes = [
+    [
+      "apps/controller/src/server.mjs",
+      "startup-error",
+      {
+        ...shared,
+        OCC_HOST: "192.0.2.10",
+        OCC_PORT: "8080",
+        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+        OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+      },
+    ],
+    ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
+  ];
+  const boot = (script, event, env) => {
+    const result = spawnSync(process.execPath, [script], {
+      cwd: process.cwd(),
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.status, 1, script);
+    assert.ok(!result.stderr.includes(path), result.stderr);
+    return startupDiagnostic(result.stderr, event);
+  };
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://@192.168.1.1",
+    "http://@grafana.example.internal/d",
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    "javascript:alert(1)",
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+  ]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    for (const [script, event, env] of processes) {
+      const diagnostic = boot(script, event, env);
+      assert.equal(diagnostic.code, "OBSERVABILITY_URL_INVALID", `${script} ${shorthand}`);
+      assert.equal(diagnostic.message, undefined);
+    }
+  }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  for (const role of ["gateway", "agent"]) {
+    const original = images[role];
+    for (const refused of [
+      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
+      original.replace(/^([^/]*\/)/, "$1re..po/"),
+    ]) {
+      assert.notEqual(refused, original);
+      images[role] = refused;
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      for (const [script, event, env] of processes) {
+        const diagnostic = boot(script, event, env);
+        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+        assert.equal(diagnostic.message, undefined);
+      }
+    }
+    images[role] = original;
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  for (const [script, event, env] of processes) {
+    const diagnostic = boot(script, event, env);
+    assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE", script);
+  }
+  const corrected = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(corrected.occ.cluster, "production-west");
+  assert.equal(corrected.observability.url, "http://192.168.1.1");
 });
 
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
@@ -220,7 +390,7 @@ async function repositoryInstallation(t) {
 }
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
-  const { configuration } = await repositoryInstallation(t);
+  const { configuration, registry, registrySource } = await repositoryInstallation(t);
   const path = await fixture(t, configuration);
   const api = await loadInstallationConfiguration({
     mode: "production",
@@ -259,6 +429,30 @@ test("repository startup constructs the same local resolver without a private so
     combinedDrivers.installation.backend.map((backend) => backend.type),
     ["github", "chatgpt"],
   );
+  // Repository bindings store a GitHub Backend ID under a 200 UTF-16 code unit bound, so
+  // 101 emoji (101 characters, 202 units) is refused for a GitHub Backend only.
+  const astral = structuredClone(configuration);
+  astral.backend[0].id = "😀".repeat(101);
+  await assert.rejects(
+    loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
+    }),
+    /backend\[0\]\.id must fit in 200 UTF-16 code units for a GitHub Backend, because/,
+  );
+  // 100 emoji is exactly 200 units, so it fits; its registry names the same Backend ID.
+  astral.backend[0].id = "😀".repeat(100);
+  astral.backend[0].configuration.registryPath = join(dirname(registrySource), "astral.json");
+  await writeFile(
+    astral.backend[0].configuration.registryPath,
+    JSON.stringify({ ...registry, backendId: astral.backend[0].id }),
+    { mode: 0o644 },
+  );
+  const fits = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, astral) },
+  });
+  assert.equal(fits.installation.backend[0].id, astral.backend[0].id);
 
   // The actual API reaches its ordinary database dependency while the configured
   // Unix directory is absent. No private service inputs are supplied to it.
@@ -330,6 +524,18 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghu_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghs_notarealtoken123456"),
+      /plaintext credential/,
+    ],
+    [
+      (value) => (value.backend[0].drivers.repo = "ghr_notarealtoken123456"),
       /plaintext credential/,
     ],
   ]) {
@@ -436,6 +642,28 @@ test("ChatGPT startup rejects retired integrations and unsafe backend configurat
       (value) => (value.backend[0].configuration.adminKeyPath = "/tmp/old-admin-key"),
       /adminKeyPath.*unsupported/,
     ],
+    [
+      (value) => (value.backend[0].id = " openai"),
+      /backend\[0\]\.id must be a string of 1 to 200 characters with no leading or trailing whitespace and no control characters or line or paragraph separators\./,
+    ],
+    [
+      (value) => (value.backend[0].id = "a".repeat(201)),
+      /backend\[0\]\.id must be a string of 1 to 200/,
+    ],
+    // 201 code points, a C1 control and a line separator, refused as the API refuses them, and
+    // a lone surrogate, which has no UTF-8 spelling.
+    ...[
+      "openai ",
+      "open\u0007ai",
+      7,
+      "😀".repeat(201),
+      "open\u0085ai",
+      "open\u2028ai",
+      "open\ud800ai",
+    ].map((id) => [
+      (value) => (value.backend[0].id = id),
+      /backend\[0\]\.id must be a string of 1 to 200/,
+    ]),
     [(value) => (value.backend[0].type = "installed"), /must be chatgpt/],
     [(value) => (value.backend[0].package = "@example/backend"), /unsupported option package/],
     [
@@ -469,6 +697,15 @@ test("ChatGPT startup rejects retired integrations and unsafe backend configurat
       expected,
     );
   }
+
+  // The stated rule's upper edge: 200 characters, interior whitespace allowed.
+  const longest = chatgptInstallation();
+  longest.backend[0].id = `open ${"a".repeat(195)}`;
+  const accepted = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, longest) },
+  });
+  assert.equal(accepted.installation.backend[0].id, longest.backend[0].id);
 });
 
 test("production embedded replacements preserve their active Service across failed activation", async (t) => {
@@ -479,7 +716,7 @@ test("production embedded replacements preserve their active Service across fail
   const { computeDriver } = drivers;
   // This worker activation unit uses managed placement without claiming live Kubernetes discovery.
   t.mock.method(computeDriver, "resolveNamespace", async (namespaceId) => ({
-    name: kubernetesNamespaceName(namespaceId),
+    name: { name: kubernetesNamespaceName(namespaceId), plane: "execution" },
     external: false,
   }));
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
@@ -533,7 +770,7 @@ test("production embedded replacements preserve their active Service across fail
     harnessAuth: {
       ...candidate.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(namespaceId),
+        namespaceName: kubernetesNamespaceName(namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -613,12 +850,22 @@ test("production embedded replacements preserve their active Service across fail
     desiredRuntimeState: "running",
   };
   const retries = [];
+  const locks = [];
   let compareAndSetAttempts = 0;
   worker.state.transactWithQueue = async (transaction) =>
     transaction(
       {
+        namespaces: {
+          lockNamespace: async (...arguments_) => {
+            locks.push(["namespace", ...arguments_]);
+            return { id: namespaceId };
+          },
+        },
         agents: {
-          lockAgent: async () => activeAgent,
+          lockAgent: async (...arguments_) => {
+            locks.push(["agent", ...arguments_]);
+            return activeAgent;
+          },
           compareAndSetActiveRevision: async (...arguments_) => {
             compareAndSetAttempts++;
             assert.deepEqual(arguments_, [namespaceId, agentId, predecessor.id, candidate.id]);
@@ -632,6 +879,11 @@ test("production embedded replacements preserve their active Service across fail
       },
     );
   await worker.finalizeRevision(claim, observation);
+  // Admission order: the Namespace before the Agent.
+  assert.deepEqual(locks, [
+    ["namespace", namespaceId, { includeDeleted: true }],
+    ["agent", namespaceId, agentId],
+  ]);
   assert.equal(compareAndSetAttempts, 1);
   assert.deepEqual(retries, [{ code: "ACTIVE_REVISION_CHANGED" }]);
   assert.equal(activeAgent.activeRevisionId, predecessor.id);
@@ -652,7 +904,7 @@ test("production embedded replacements preserve their active Service across fail
     true,
     servicePrincipalId,
     computeDriver.harnessAuthForRevision(candidate, authContext, {
-      name: kubernetesGatewayNamespaceName(namespaceId),
+      name: kubernetesNamespaceName(namespaceId),
       plane: "control",
     }),
   );
@@ -701,7 +953,7 @@ test("startup accepts actual block-style YAML instead of requiring JSON", async 
   assert.equal(loaded.installation.occ.cluster, "production-west");
 });
 
-test("production requires one YAML while development may start without a ConfigurationDriver", async () => {
+test("production requires one YAML while development may start without a ConfigurationDriver", async (t) => {
   await assert.rejects(
     loadInstallationConfiguration({ mode: "production", environment: {} }),
     /OCC_CONFIG_PATH/,
@@ -710,6 +962,84 @@ test("production requires one YAML while development may start without a Configu
     await loadInstallationConfiguration({ mode: "development", environment: {} }),
     undefined,
   );
+  // Unusable paths and unparsable files get fixed messages that never echo the path or the
+  // filesystem or parser error.
+  const invalidYaml = await fixture(t);
+  await writeFile(invalidYaml, "drivers: [\n", "utf8");
+  for (const [path, message] of [
+    [" ", "OCC_CONFIG_PATH must identify the Installation startup YAML."],
+    [
+      "relative/installation.yaml",
+      "OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.",
+    ],
+    [`${invalidYaml}.missing`, "The configured Installation startup YAML is unavailable."],
+    [invalidYaml, "The configured Installation startup file must contain valid YAML."],
+  ]) {
+    await assert.rejects(
+      loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
+      { message },
+      JSON.stringify(path),
+    );
+  }
+});
+
+test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localhost subdomain", async (t) => {
+  for (const accepted of [
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+    "http://localhost:3000",
+    "https://console.occ-dev-example.oce.localhost:8443",
+  ]) {
+    assert.equal(isDevelopmentBrowserOrigin(accepted), true, accepted);
+  }
+  const refused = [
+    "http://x.localhost",
+    "https://.localhost",
+    "https://a..localhost",
+    "http://localhost:3000/auth",
+    "http://localhost:3000/",
+    "http://user@localhost:3000",
+    "https://console.example.com",
+    "ftp://127.0.0.1:3000",
+    // A bind-all address is not loopback, and "localhost" counts only as the whole last label.
+    "http://0.0.0.0:3000",
+    "https://console.notlocalhost",
+    "https://localhost.example.com",
+  ];
+  for (const value of refused) {
+    assert.equal(isDevelopmentBrowserOrigin(value), false, value);
+  }
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /HTTPS localhost subdomain/);
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /no path, query, fragment or user info/);
+
+  // The server refuses each spelling in configuration(), before reading the Installation, so the
+  // startup diagnostic names the setting instead of a later generic failure.
+  const path = await fixture(t);
+  for (const authBaseURL of [
+    "http://x.localhost",
+    "https://.localhost",
+    "http://localhost:3000/auth",
+  ]) {
+    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "development",
+        OCC_CONFIG_PATH: path,
+        OCC_HOST: "127.0.0.1",
+        OCC_PORT: "8080",
+        OCC_AUTH_BASE_URL: authBaseURL,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(server.status, 1, authBaseURL);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "AUTH_BASE_URL_INVALID",
+      authBaseURL,
+    );
+  }
 });
 
 test("production server and worker resolve singleton startup without an Installation ID", async (t) => {
@@ -892,6 +1222,19 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
           value.drivers.compute.configuration.runtime.transportSecretPrefix),
       /schema|unsupported option/,
     ],
+    // The reader refuses these anywhere in the file, before any Driver schema runs.
+    [
+      (value) => (value.drivers.compute.configuration.unexpected = 2 ** 53 + 2),
+      /\.unexpected must be a safe integer\.$/,
+    ],
+    [
+      (value) => (value.drivers.compute.configuration.constructor = {}),
+      /contains an unsafe configuration key\.$/,
+    ],
+    [
+      (value) => (value.drivers.compute.configuration.secretRef = "installation-secret"),
+      /Installation-scoped secret references cannot be resolved safely\.$/,
+    ],
   ]) {
     const configuration = installation();
     mutate(configuration);
@@ -926,6 +1269,7 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
   assert.deepEqual(enabledRuntime.defaultPresets.map((preset) => preset.name).sort(), [
     "Standard Codex",
     "Standard OpenClaw",
+    "default-codex",
   ]);
   for (const presets of [
     { includeDefaults: "true" },
@@ -948,6 +1292,50 @@ test("Installation default Presets are opt-in and reject ambiguous YAML settings
   }
 });
 
+test("an Installation Preset file named like a bundled default replaces that default", async (t) => {
+  // default-codex became a bundled default after operators could already name a file
+  // default-codex. Startup must keep the operator's file instead of refusing to start.
+  const operatorCodex = {
+    name: "default-codex",
+    template: { agent: { name: "Operator Codex", executionMode: "dedicated" } },
+  };
+  const configuration = installation();
+  configuration.presets = { includeDefaults: true, files: ["presets/codex.json"] };
+  const path = await fixture(t, configuration);
+  await mkdir(join(dirname(path), "presets"), { recursive: true });
+  const presetPath = join(dirname(path), "presets", "codex.json");
+  await writeFile(presetPath, JSON.stringify(operatorCodex));
+  const runtime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), [
+    "Standard Codex",
+    "Standard OpenClaw",
+    "default-codex",
+  ]);
+  assert.deepEqual(
+    runtime.defaultPresets.find((preset) => preset.name === "default-codex").template,
+    operatorCodex.template,
+  );
+  // The resolved path names the file the operator must keep or rename.
+  assert.deepEqual(runtime.shadowedDefaultPresets, [
+    { presetName: "default-codex", presetFile: presetPath },
+  ]);
+  // Without includeDefaults nothing is shadowed: the file is an ordinary default.
+  configuration.presets.includeDefaults = false;
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const filesOnly = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.deepEqual(
+    filesOnly.defaultPresets.map((preset) => preset.name),
+    ["default-codex"],
+  );
+  assert.deepEqual(filesOnly.shadowedDefaultPresets, []);
+});
+
 test("Installation Preset JSON files resolve beside startup YAML and fail closed", async (t) => {
   const validPreset = {
     name: "from-file",
@@ -963,7 +1351,12 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
     },
   };
   const relativeConfiguration = installation();
-  relativeConfiguration.presets = { includeDefaults: false, files: ["presets/from-file.json"] };
+  // Entries are trimmed before they resolve, so whitespace inside a quoted YAML entry does not
+  // change the path.
+  relativeConfiguration.presets = {
+    includeDefaults: false,
+    files: ["  presets/from-file.json\t"],
+  };
   const relativePath = await fixture(t, relativeConfiguration);
   const relativeDirectory = dirname(relativePath);
   await mkdir(join(relativeDirectory, "presets"), { recursive: true });
@@ -994,9 +1387,32 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
   });
   assert.equal(absoluteRuntime.defaultPresets[0].name, "absolute-file");
 
+  // Editors on Windows often save JSON with a UTF-8 byte order mark. Like Driver package
+  // manifests and the startup YAML, a Preset file may carry one leading mark.
+  const markedConfiguration = installation();
+  const markedPreset = join(relativeDirectory, "marked.json");
+  markedConfiguration.presets = { includeDefaults: false, files: [markedPreset] };
+  await writeFile(markedPreset, `\uFEFF${JSON.stringify({ ...validPreset, name: "marked-file" })}`);
+  const markedRuntime = await loadInstallationConfiguration({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: await fixture(t, markedConfiguration) },
+  });
+  assert.equal(markedRuntime.defaultPresets[0].name, "marked-file");
+
   for (const [filename, contents, expected] of [
     ["missing.json", undefined, /Preset file .* is unavailable/],
     ["malformed.json", '{"name":', /Preset file .* must contain valid JSON/],
+    // Only one leading mark is stripped; a second is not JSON.
+    [
+      "double-mark.json",
+      `\uFEFF\uFEFF${JSON.stringify(validPreset)}`,
+      /Preset file .* must contain valid JSON/,
+    ],
+    [
+      "missing-name.json",
+      JSON.stringify({ template: {} }),
+      /Preset file .*missing-name\.json\.name must be a nonempty string/,
+    ],
     [
       "unsupported.json",
       JSON.stringify({ name: "unsupported", template: {}, unexpected: true }),
@@ -1008,21 +1424,33 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
       /Preset agent: contains unsupported fields/,
     ],
     [
+      "invalid-name.json",
+      JSON.stringify({ name: "edge\u00a0", template: {} }),
+      /Preset file .*invalid-name\.json\.name must follow the Name rule: 1 to 200 characters/,
+    ],
+    [
       "duplicate.json",
       JSON.stringify({ name: "Standard Codex", template: {} }),
-      /configured more than once/,
+      /Default Preset Standard Codex is configured more than once: .*duplicate\.json and .*duplicate-b\.json/,
     ],
   ]) {
     const configuration = installation();
+    // Two operator files may not share a name, even one that shadows a bundled default.
     configuration.presets = {
       includeDefaults: filename === "duplicate.json",
-      files: [`cases/${filename}`],
+      files:
+        filename === "duplicate.json"
+          ? [`cases/${filename}`, "cases/duplicate-b.json"]
+          : [`cases/${filename}`],
     };
     const path = await fixture(t, configuration);
     const directory = dirname(path);
     await mkdir(join(directory, "cases"), { recursive: true });
     if (contents !== undefined) {
       await writeFile(join(directory, "cases", filename), contents);
+    }
+    if (filename === "duplicate.json") {
+      await writeFile(join(directory, "cases", "duplicate-b.json"), contents);
     }
     await assert.rejects(
       loadInstallationConfiguration({
@@ -1031,5 +1459,66 @@ test("Installation Preset JSON files resolve beside startup YAML and fail closed
       }),
       expected,
     );
+  }
+});
+
+test("API and worker name a Preset file failure in their startup error code", async (t) => {
+  // An operator who lists a file the image lacks, or a broken one, needs a cause rather
+  // than STARTUP_FAILED. The file path and the loader message stay out of the log.
+  const duplicate = JSON.stringify({ name: "twice", template: {} });
+  for (const [filename, contents, files] of [
+    ["missing.json", undefined],
+    [
+      "invalid-template.json",
+      JSON.stringify({ name: "invalid", template: { agent: { unsupported: true } } }),
+    ],
+    ["invalid-name.json", JSON.stringify({ name: "line\u2028break", template: {} })],
+    ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
+    ["not-a-list.json", undefined, "cases/not-a-list.json"],
+    ["blank-entry", undefined, ["  "]],
+  ]) {
+    const configuration = installation();
+    configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
+    const path = await fixture(t, configuration);
+    await mkdir(join(dirname(path), "cases"), { recursive: true });
+    if (contents !== undefined) {
+      await writeFile(join(dirname(path), "cases", filename), contents);
+      await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
+    }
+    const shared = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    };
+    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        ...shared,
+        OCC_HOST: "192.0.2.10",
+        OCC_PORT: "8080",
+        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+        OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(server.status, 1, filename);
+    const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
+    assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
+    assert.equal(apiDiagnostic.message, undefined);
+    assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
+
+    const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
+      cwd: process.cwd(),
+      env: shared,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(worker.status, 1, filename);
+    const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+    assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
+    assert.equal(workerDiagnostic.message, undefined);
+    assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
   }
 });

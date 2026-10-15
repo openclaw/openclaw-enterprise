@@ -127,9 +127,10 @@ export async function exchangeGoogleSubject(
   codeVerifier: string,
   redirectURI: string,
   nonce: string,
+  deadlineMs = 10_000,
 ): Promise<ProviderExchange> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10_000);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   timer.unref();
   try {
     const request = await authorizationCodeRequest({

@@ -8,32 +8,41 @@ The Slack card shows **Not configured**, **Disabled**, or
 **Configured (enabled)** based on saved settings: Socket Mode, selected channels, and allowed users. This is not a
 live connection indicator.
 
-Version cards are read-only. On the new version draft, **Configure** or **Edit** opens
-a drawer; **Disable** saves a disabled channel setting. These changes affect
+Version cards are read-only. On the new version draft, **Configure Slack** or **Edit Slack**
+opens a drawer; **Disable Slack** saves a disabled channel setting. These changes affect
 future deployments, including other Agents sharing that Configuration. They do
-not stop a running channel or modify an existing revision. Channels require
+not stop a running channel or modify an existing version. Channels require
 Dedicated execution; unsupported native settings can make the simple editor
 unavailable.
 
 ### Slack editor
 
-| Control                                                   | Purpose                                                                                                           |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Enable Slack**                                          | Enables Slack in the draft when saved.                                                                            |
-| **Slack channel IDs**                                     | Comma-separated channel IDs, not channel names. Existing properties of retained channels are preserved.           |
-| **Allowed channel user IDs**                              | Comma-separated Slack user IDs allowed to mention the Agent in the selected channels.                             |
-| **Allow everyone in these channels to mention the agent** | Allows any Slack user in the selected channels to mention the Agent. Direct-message access is unchanged.          |
-| **Require a mention**                                     | Applies the mention requirement to the listed channels.                                                           |
-| **Slack app token** / **Slack bot token**                 | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. |
-| **Create new Secret...**                                  | Opens a modal with an editable Agent-prefixed Name, the fixed binding key, and a masked Value.                    |
-| **Open Agent Credentials**                                | Opens Credentials in a new tab, keeping unsaved drawer inputs. Save channel edits before changing credentials.    |
-| **Save configuration**                                    | Saves channel settings and selected Secret bindings to the shared draft.                                          |
-| **Cancel** / **Close**                                    | Discards the drawer's unsaved inputs.                                                                             |
+| Control                                                                 | Purpose                                                                                                                                                                                                         |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Enable Slack**                                                        | Enables Slack in the draft when saved.                                                                                                                                                                          |
+| **Slack bot token** / **Slack app token**                               | Search readable Secrets by name or ID, then select with arrow keys and Enter, or choose **Create new Secret...**. The bot token Secret also enables name search below.                                          |
+| **Create new Secret...**                                                | Opens a modal with an editable Name (the Agent name and token by default), the fixed binding key, and a masked Value.                                                                                           |
+| **View bot token Secret metadata** / **View app token Secret metadata** | Opens the selected Secret's metadata in a new tab, keeping unsaved drawer inputs.                                                                                                                               |
+| **Channels**                                                            | Search channels by name with the bot token Secret, or paste exact channel IDs. Existing properties of retained channels are preserved.                                                                          |
+| **Who can use the agent in these channels?**                            | **Specific people** limits mentions to **Allowed people in these channels**; **Everyone in these channels** allows any Slack user there. Direct-message access is separate.                                     |
+| **Allowed people in these channels**                                    | Slack users, by name search or exact user ID, who may mention the Agent in the selected channels.                                                                                                               |
+| **Require a mention**                                                   | Applies the mention requirement to the listed channels.                                                                                                                                                         |
+| **Direct-message policy**                                               | **Pairing** (approve new senders), **Allowlist** (selected users only, the default for a new setup), **Open** (anyone) or **Disabled**. An existing setup without a policy shows **Runtime default (pairing)**. |
+| **Allowed people in direct messages**                                   | Users allowed to send direct messages under Allowlist, or preapproved under Pairing. Allowlist needs at least one.                                                                                              |
+| **Save configuration**                                                  | Saves channel settings and selected Secret bindings to the shared draft.                                                                                                                                        |
+| **Cancel** / **Close**                                                  | Discards the drawer's unsaved inputs.                                                                                                                                                                           |
 
-Saving preserves existing direct-message and group policies. Channel user IDs do
-not edit `allowFrom`, and **No selected channels** describes the saved channel
-list; it does not by itself determine whether DMs work.
+Name search needs a reachable Slack directory; when it is unavailable, the drawer says so and
+exact IDs still work. Channel access and direct-message access are independent:
+channel people edit the selected channels' `users`. Switching to **Open** writes
+`allowFrom: ["*"]`, Pairing or Allowlist write the listed people to `allowFrom`, and Disabled
+keeps the saved list. Save channel edits before changing
+credentials on the Credentials tab.
 See [Slack setup](../integrations/slack.md) for credentials and policy details.
+
+In any Secret picker, typing a Secret's exact name selects it when you press
+Enter or leave the field, as choosing its suggestion does; other text restores
+the bound Secret.
 
 **Create Secret** stores the value immediately. Cancelling the channel drawer
 discards token selections but does not delete that Namespace Secret. The modal
@@ -53,13 +62,14 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------ |
-| **None**                         | No binding; deployment remains blocked.                                                          |
-| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.              |
-| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for Dedicated execution. |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                          |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.    |
+| Choice                           | Required input and effect                                                                                         |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **None**                         | No binding; deployment remains blocked.                                                                           |
+| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.                               |
+| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for the Codex Harness.                    |
+| **ChatGPT OAuth (Experimental)** | Codex Harness only: sign in through a device code; see [credential lifecycle](../deploy/credential-lifecycle.md). |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                                           |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.                     |
 
 **Save authentication source** saves the Agent binding for a future deployment.
 For API keys and Service Accounts tokens, it also grants the Agent access to

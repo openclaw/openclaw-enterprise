@@ -44,7 +44,7 @@ test("actual starved-case callback accepts READY; guard-removal control does not
     "utf8",
   );
   const body = source.slice(
-    source.indexOf('"runtime image embedded Gateway reports a CPU-starved model probe at its cap"'),
+    source.indexOf('"runtime image embedded Gateway settles its model probe under CPU contention"'),
   );
   const start = body.indexOf("until: ") + 7;
   const end = body.indexOf("\n      },", start) + 8;
@@ -107,7 +107,7 @@ test(
     await writeFile(
       fixture,
       `import test from 'node:test'; import assert from 'node:assert/strict';
-    test('owned failure',()=>{ const error=new assert.AssertionError({message:'must-not-be-retained'});
+    test('owned failure',()=>{ const error=new assert.AssertionError({message:'probe failed'});
     error.openclawCiDiagnostic={kind:'runtime-model-probe',reason:'outer-timeout',
     readyObserved:true,pluginReadyObserved:true,running:true,probeStage:'cleanup',probe:'READY',modelPhase:'ok',nativeSpawnPhaseObserved:true,failureObserved:false,
     capMs:110000,elapsedMs:120000,cpuWaitMs:null,loadClientsSubmitted:8,loadClientsStarted:7,loadClientsSettled:1,loadClientsRejected:1,
@@ -170,7 +170,8 @@ test("reporter rejects unknown categories and strips unbounded or arbitrary fiel
     for await (const chunk of reporter(source)) {
       text += chunk;
     }
-    return JSON.parse(text).data.error.diagnostic;
+    // A failed case is followed by the file's output tail event.
+    return JSON.parse(text.split("\n")[0]).data.error.diagnostic;
   };
   assert.equal(await render({ kind: "runtime-model-probe", reason: "arbitrary" }), undefined);
   const result = await render({
@@ -228,10 +229,13 @@ test("reporter rejects unknown categories and strips unbounded or arbitrary fiel
 });
 
 test("real generated probe marks spawn return and cleanup without changing CAP", () => {
-  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
-    "function runOpenClawAuthenticationProbe(fs, capMs) {",
-  );
-  const end = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\n}\n", begin) + 2;
+  // From the upfront credential check, which a fixture provider skips.
+  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
+  const end =
+    GATEWAY_RUNTIME_ENTRYPOINT.indexOf(
+      "\n}\n",
+      GATEWAY_RUNTIME_ENTRYPOINT.indexOf("function runOpenClawAuthenticationProbe(fs, capMs) {"),
+    ) + 2;
   const helper = GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end);
   assert.ok(begin >= 0 && end > begin);
   const events = [];
@@ -276,4 +280,138 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
     assert.deepEqual(Object.keys(event).sort(), ["capMs", "elapsedMs", "event", "stage"]);
     assert.equal(event.capMs, 110000);
   }
+});
+
+// The generated upfront credential check, run with a recording spawnSync.
+function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {
+  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
+  const end = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe(");
+  assert.ok(begin >= 0 && end > begin);
+  const calls = [];
+  const stages = [];
+  const rejected = vm.runInNewContext(
+    GATEWAY_RUNTIME_ENTRYPOINT.slice(begin, end) +
+      "\ncredentialRejectedUpfront(provider, fragment, key, stage)",
+    {
+      provider,
+      fragment,
+      key,
+      stage: (name) => stages.push(name),
+      JSON,
+      process: { execPath: "/node", env: { NODE_EXTRA_CA_CERTS: "/ca.pem" } },
+      require: () => ({
+        spawnSync(command, args, options) {
+          calls.push({ command, args, options });
+          return { status };
+        },
+      }),
+    },
+  );
+  return { rejected, calls, stages };
+}
+
+test("the upfront credential check runs only where OpenClaw would send the same request", () => {
+  const openai = upfrontCheck("openai", undefined);
+  assert.equal(openai.rejected, true);
+  assert.deepEqual(openai.stages, ["preflight"]);
+  assert.equal(openai.calls.length, 1);
+  assert.equal(openai.calls[0].options.env.U, "https://api.openai.com/v1/responses");
+  assert.deepEqual(JSON.parse(openai.calls[0].options.env.H), {
+    authorization: "Bearer fixture-key",
+    "content-type": "application/json",
+  });
+  // The request goes to the configured API's own path: OpenAI answers 401 to a key
+  // that lacks the scope of an endpoint OpenClaw would never call.
+  assert.equal(
+    upfrontCheck("openai", { api: "openai-completions" }).calls[0].options.env.U,
+    "https://api.openai.com/v1/chat/completions",
+  );
+  assert.equal(
+    upfrontCheck("openai", {
+      api: "openai-completions",
+      models: [{ id: "gpt-5", api: "openai-completions" }],
+    }).calls[0].options.env.U,
+    "https://api.openai.com/v1/chat/completions",
+  );
+  assert.equal(
+    upfrontCheck("openai", { api: "openai-responses" }).calls[0].options.env.U,
+    "https://api.openai.com/v1/responses",
+  );
+  assert.equal(
+    upfrontCheck("anthropic", undefined, "sk-ant-api03-fixture").calls[0].options.env.U,
+    "https://api.anthropic.com/v1/messages",
+  );
+  // Only the provider's 401 (exit 3) is a rejection.
+  for (const status of [0, 1, null]) {
+    assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false);
+  }
+  for (const [provider, fragment, key] of [
+    ["openai", { baseUrl: "https://api.openai.com/v1/" }],
+    ["openai", { api: "openai-completions", models: [{ id: "gpt-5" }] }],
+    ["openai", { request: { allowPrivateNetwork: true } }],
+    ["openai", null],
+    ["anthropic", { baseUrl: "https://api.anthropic.com", api: "anthropic-messages" }],
+    ["anthropic", undefined, "sk-ant-api03-fixture"],
+  ]) {
+    assert.equal(upfrontCheck(provider, fragment, key).calls.length, 1, JSON.stringify(fragment));
+  }
+  for (const [provider, fragment, key] of [
+    ["openai", { baseUrl: "https://gateway.example/v1" }],
+    ["openai", { api: "anthropic-messages" }],
+    ["openai", { headers: { "OpenAI-Project": "proj_fixture" } }],
+    ["openai", { authHeader: false }],
+    ["openai", { request: { allowPrivateNetwork: true, proxy: { url: "http://proxy" } } }],
+    ["openai", { models: [{ id: "gpt-5", headers: { "x-fixture": "1" } }] }],
+    ["openai", { models: [{ id: "gpt-5", api: "openai-completions" }] }],
+    ["openai", { models: [{ id: "gpt-5", baseUrl: "https://gateway.example/v1" }] }],
+    ["openai", { api: "__proto__" }],
+    ["anthropic", { baseUrl: "https://api.openai.com/v1" }],
+    ["anthropic", undefined, "sk-ant-oat01-fixture"],
+    ["codex", undefined],
+    ["fixture", undefined],
+  ]) {
+    const skipped = upfrontCheck(provider, fragment, key);
+    assert.deepEqual([skipped.rejected, skipped.calls, skipped.stages], [false, [], []]);
+  }
+});
+
+test("the upfront request exits 3 only when the provider answers 401", async (t) => {
+  const { createServer } = await import("node:http");
+  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
+  const source = /\["-e",\s*'([^']+)',/.exec(GATEWAY_RUNTIME_ENTRYPOINT.slice(begin))?.[1];
+  assert.ok(source);
+  const received = [];
+  let answer = 401;
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => {
+      received.push({
+        method: request.method,
+        url: request.url,
+        auth: request.headers.authorization,
+        body,
+      });
+      response.writeHead(answer, { "content-type": "application/json" }).end("{}");
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/v1/responses`;
+  const run = (U) =>
+    execute(process.execPath, ["-e", source], {
+      env: { U, H: JSON.stringify({ authorization: "Bearer fixture-key" }) },
+    }).then(
+      () => 0,
+      (error) => error.code,
+    );
+  assert.equal(await run(url), 3);
+  assert.deepEqual(received, [
+    { method: "POST", url: "/v1/responses", auth: "Bearer fixture-key", body: "{}" },
+  ]);
+  for (const status of [400, 403, 429, 500]) {
+    answer = status;
+    assert.equal(await run(url), 0, `HTTP ${status}`);
+  }
+  assert.equal(await run("http://127.0.0.1:1/v1/responses"), 0, "an unreachable endpoint");
 });

@@ -37,8 +37,10 @@ import {
   githubProviderId,
   googleProviderId,
   type GitHubLoginConfiguration,
+  CALLBACK_DENIALS,
   PASSWORD_DENIAL_AUDIT_UNAVAILABLE,
 } from "./github.ts";
+import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
@@ -50,6 +52,7 @@ import {
   passwordFailureAdmission,
   passwordFailureBudget,
   type PasswordSignInAdmission,
+  type PasswordSlowLaneOptions,
 } from "./admission.ts";
 import {
   issueKnownDevice,
@@ -76,6 +79,12 @@ export {
  * (`all`, the default) or only the recovery account (`recovery-only`).
  */
 export type PasswordSignInPolicy = "all" | "recovery-only";
+
+/** The slow-lane floors a composition may shorten or observe (see `passwordSlowLaneFloors`). */
+export type PasswordSlowLaneFloors = Pick<
+  PasswordSlowLaneOptions,
+  "floorMs" | "maxFloorMs" | "waitFloor"
+>;
 
 export interface HumanLoginConfiguration {
   readonly github?: GitHubLoginConfiguration;
@@ -152,15 +161,23 @@ import type {
   AdmittedCaller,
   AdmittedSession,
 } from "../admission/admission-verifier.ts";
-import { AdmissionFailure } from "../admission/admission-verifier.ts";
+import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
+import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
+import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
 
-export const OCC_BETTER_AUTH_ISSUER_PREFIX = "occ:installation:";
+export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
+
 export const OCC_AUTH_COOKIE_PREFIX = "openclaw_occ";
 const LOCAL_PASSWORD_MIN_LENGTH = 12;
 const LOCAL_PASSWORD_MAX_LENGTH = 128;
 export const OCC_SHARED_AUTH_COOKIE_PREFIX = "openclaw_occ_shared";
 export const OCC_SERVICE_KEY_HEADER = "x-api-key";
 const SERVICE_KEY_CONFIG = "occ-service";
+// The createServiceKey schema allows 1 to 32 characters, which Ajv counts in code points.
+// Better Auth counts UTF-16 units, so its own cap is twice that: a 32-emoji name is 64 units.
+// The schema stays the authority; storage is unbounded text.
+export const SERVICE_KEY_NAME_MAX_LENGTH = 32;
+const SERVICE_KEY_NAME_MAX_UTF16_UNITS = SERVICE_KEY_NAME_MAX_LENGTH * 2;
 const SAFE_COOKIE_DOMAIN =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 type ControllerPlugins = (
@@ -196,6 +213,12 @@ export interface ControllerAuthOptions {
   readonly passwordAdministrator?: (userId: string) => Promise<boolean>;
   /** Replaces the in-memory failure-counting password admission (both profiles). */
   readonly passwordAdmission?: PasswordSignInAdmission;
+  /**
+   * Replaces the default admission's slow-lane floors; budgets and slots stay
+   * `passwordFailureBudget`. The server leaves it unset; tests shorten the floor cap so
+   * paced refusals do not wait the full eight seconds, and observe when floors start.
+   */
+  readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
   /**
    * The password-only profile's known-device account state (see known-device.ts). Without
    * it, and without an external provider, entries are bound to the user and a hash of its
@@ -237,6 +260,8 @@ export interface PostgresControllerAuthOptions extends Omit<
   readonly passwordSignIn?: "recovery-only";
   /** Receives nonfatal startup conditions as structured log events. */
   readonly onWarning?: (event: { readonly event: string; readonly message: string }) => void;
+  /** Counts an external sign-in callback that matched no pending attempt (not audited). */
+  readonly onUnmatchedCallback?: (provider: ExternalProviderName) => void;
 }
 
 export interface AuthenticatedAccount {
@@ -367,29 +392,6 @@ export interface ControllerAuth {
   revokeServiceKey(key: ServiceKey): Promise<void>;
 }
 
-function validHttpBaseURL(value: string): boolean {
-  try {
-    const parsed = new URL(value);
-    return (
-      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      parsed.username.length === 0 &&
-      parsed.password.length === 0 &&
-      parsed.pathname === "/" &&
-      parsed.search.length === 0 &&
-      parsed.hash.length === 0
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function betterAuthIssuer(installationId: string): string {
-  if (!isNonEmptyString(installationId)) {
-    throw new Error("Better Auth issuer requires an Installation.");
-  }
-  return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
-}
-
 export function normalizeSharedCookieDomain(domain: string | undefined): string | undefined {
   const trimmed = domain?.trim().replace(/^\./, "").replace(/\.$/, "");
   if (!isNonEmptyString(trimmed)) {
@@ -500,7 +502,7 @@ function setAuthHeaders(
 }
 
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
-  if (error instanceof AdmissionFailure) {
+  if (error instanceof AdmissionFailure || error instanceof RequestFailure) {
     return { status: error.status, code: error.code };
   }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
@@ -526,10 +528,39 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
       };
     }
     if (error instanceof APIError) {
+      if (
+        typeof status === "number" &&
+        Number.isSafeInteger(status) &&
+        status >= 500 &&
+        status < 600
+      ) {
+        return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+      }
       return { status: 401, code: "UNAUTHENTICATED" };
     }
   }
   return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+}
+
+/** Better Auth refused a service-key name's length; the route answers 400, not a 503. */
+export class ServiceKeyNameRefused extends Error {
+  constructor(cause: unknown) {
+    super("The service-key name was refused.", { cause });
+    this.name = "ServiceKeyNameRefused";
+  }
+}
+
+function serviceKeyNameRefusal(error: unknown): boolean {
+  const code = (error as { readonly body?: { readonly code?: unknown } } | null)?.body?.code;
+  return error instanceof Error && error.name === "APIError" && code === "INVALID_NAME_LENGTH";
+}
+
+/** A curated auth endpoint answered 5xx: its database or audit store failed. */
+class AuthDependencyUnavailable extends Error {
+  constructor() {
+    super("Authentication dependency unavailable.");
+    this.name = "AuthDependencyUnavailable";
+  }
 }
 
 /**
@@ -540,6 +571,35 @@ class DenialAuditUnavailable extends Error {
   constructor(cause: unknown) {
     super("The sign-in denial could not be audited.", { cause });
     this.name = "DenialAuditUnavailable";
+  }
+}
+
+// The Console reason for each GitHub allowlist refusal (RFC-0061), for an attached identity
+// whose account is disabled, for a provider that could not answer, and for a callback that
+// failed inside OCE (`unavailable`). No other value reaches the redirect.
+const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
+  MEMBERSHIP_REQUIRED: "membership",
+  MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
+  ACCOUNT_DISABLED: "account-disabled",
+  PROVIDER_UNAVAILABLE: "provider-unavailable",
+};
+
+/** An audited callback refusal whose Console reason the callback redirect carries. */
+class CallbackRefusal extends AdmissionFailure {
+  readonly consoleReason: string;
+  constructor(consoleReason: string) {
+    super(401, "UNAUTHENTICATED", "Authentication was not accepted.");
+    this.consoleReason = consoleReason;
+  }
+}
+
+async function callbackRefusal(response: Response): Promise<CallbackRefusal | undefined> {
+  try {
+    const body = (await response.json()) as { readonly code?: unknown } | null;
+    const code = CALLBACK_DENIALS.find((denial) => denial === body?.code);
+    return code === undefined ? undefined : new CallbackRefusal(callbackReasons[code]);
+  } catch {
+    return undefined;
   }
 }
 
@@ -743,7 +803,19 @@ async function sendAuthEndpoint(
       reply.header("retry-after", String(error.retryAfterSeconds));
     }
     reply.status(failure.status).send({
-      error: { code: failure.code, message: failureMessage },
+      error: {
+        code: failure.code,
+        // A malformed request names its offending field, as on every API route. Every caller
+        // checks the Origin before it reads any credential, so naming the refused Origin
+        // reveals nothing about the session or password; keep it that way, because the
+        // endpoint's own message would misdirect a CLI user.
+        message:
+          error instanceof RequestFailure
+            ? error.message
+            : error instanceof AdmissionFailure && error.reason === "untrusted_origin"
+              ? UNTRUSTED_ORIGIN_MESSAGE
+              : failureMessage,
+      },
       meta: { requestId: request.id },
     });
   }
@@ -834,6 +906,7 @@ export class ControllerAdmissionVerifier implements AdmissionVerifier {
         },
         decisionId: `adm_${randomUUID()}`,
         method: "api_key",
+        serviceKeyId: key.id,
       };
     }
 
@@ -982,6 +1055,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         enableMetadata: true,
         enableSessionForAPIKeys: false,
         requireName: true,
+        maximumNameLength: SERVICE_KEY_NAME_MAX_UTF16_UNITS,
         rateLimit: { enabled: false },
         keyExpiration: { defaultExpiresIn: 30 * 24 * 60 * 60 },
       }),
@@ -1058,6 +1132,9 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     options.passwordAdmission ??
     passwordFailureAdmission({
       ...passwordFailureBudget,
+      ...(options.passwordSlowLaneFloors === undefined
+        ? {}
+        : { slow: { ...passwordFailureBudget.slow, ...options.passwordSlowLaneFloors } }),
       countsAsFailure: countsAsSignInFailure,
       ...(options.onOperationalEvent === undefined
         ? {}
@@ -1072,6 +1149,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // Timing differences here are hidden by the slow lane's floor. Lookup failures
       // propagate, so an outage is 503 rather than a refusal.
       async isReserved(email) {
+        // Invalid spellings must not select a reserved account through storage normalization.
+        if (unstorableTextFailure("body", email) !== undefined) {
+          return false;
+        }
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
@@ -1250,7 +1331,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         });
       }
       if (response.status >= 500) {
-        const failure = new Error("Authentication dependency unavailable.");
+        const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
         if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
@@ -1258,7 +1339,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         }
         throw failure;
       }
-      throw new AdmissionFailure(401, "UNAUTHENTICATED", "Authentication was not accepted.");
+      const refusal = path.endsWith("/callback") ? await callbackRefusal(response) : undefined;
+      throw (
+        refusal ?? new AdmissionFailure(401, "UNAUTHENTICATED", "Authentication was not accepted.")
+      );
     }
     return { response: await response.json(), headers: response.headers, status: response.status };
   }
@@ -1300,8 +1384,21 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           const result = await runPrivateEndpoint(request, `/oce/providers/${name}/callback`);
           setAuthHeaders(reply, result.headers);
           reply.redirect("/console/");
-        } catch {
-          reply.redirect(`/console/?authError=${name}`);
+        } catch (error) {
+          // A refusal keeps its reason. A callback that failed inside OCE (its database or
+          // audit store) is an outage, not a refusal of this identity. Every other refusal,
+          // including a provider this API does not configure, stays generic.
+          const reason =
+            error instanceof CallbackRefusal
+              ? error.consoleReason
+              : error instanceof AuthDependencyUnavailable
+                ? "unavailable"
+                : undefined;
+          reply.redirect(
+            reason === undefined
+              ? `/console/?authError=${name}`
+              : `/console/?authError=${name}&authReason=${reason}`,
+          );
         }
       },
       async result(request: FastifyRequest, reply: FastifyReply): Promise<void> {
@@ -1342,30 +1439,37 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         // Read from the validated input, not the credential pair, so the admission key
         // is plainly derived from the email alone.
         const email = String(input.email).trim().toLowerCase();
+        // An email with a NUL character or an unpaired surrogate is a 400, as on every API
+        // route. It is refused inside admission, so it spends budget like the bad-credential
+        // answer it replaces. The password is never stored as text and is not checked.
+        const unstorableEmail = unstorableTextFailure("body", { email: input.email });
         const deviceCookie = knownDeviceFromCookieHeader(request.headers.cookie, knownDeviceSecure);
         // The account's state is read only for an entry issued for this email, so a
         // forged or foreign cookie reads nothing; a stale entry just means no exemption.
         let deviceConstraints: readonly string[] = [];
-        const device = await verifyKnownDevice(
-          options.secret,
-          email,
-          deviceCookie,
-          Date.now(),
-          knownDeviceState,
-          (keys, read) => {
-            deviceConstraints = keys;
-            return knownDeviceReads.admit(
-              keys.map((key) => admissionKey("device", key)),
-              async () => {
-                const state = await read();
-                // A completed fresh read can establish a stale/disabled entry. Only
-                // an unavailable proof retains constraints; it never grants an exemption.
-                deviceConstraints = [];
-                return state;
-              },
-            );
-          },
-        );
+        const device =
+          unstorableEmail === undefined
+            ? await verifyKnownDevice(
+                options.secret,
+                email,
+                deviceCookie,
+                Date.now(),
+                knownDeviceState,
+                (keys, read) => {
+                  deviceConstraints = keys;
+                  return knownDeviceReads.admit(
+                    keys.map((key) => admissionKey("device", key)),
+                    async () => {
+                      const state = await read();
+                      // A completed fresh read can establish a stale/disabled entry. Only
+                      // an unavailable proof retains constraints; it never grants an exemption.
+                      deviceConstraints = [];
+                      return state;
+                    },
+                  );
+                },
+              )
+            : undefined;
         // The address lane needs a trusted proxy: without one, browsers behind the ingress
         // share its address, so only the email (or known-device) lane applies.
         const attempt = {
@@ -1378,9 +1482,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin) {
           // The curated endpoint checks the password, issues the session and marks the
           // browser as a known device; only credential rejections spend budget.
-          return passwordAdmission.admit(attempt, () =>
-            runPrivateEndpoint(request, "/oce/password", body),
-          );
+          return passwordAdmission.admit(attempt, async () => {
+            // Preserve the guarded denial audit without looking up the invalid email.
+            if (unstorableEmail !== undefined) {
+              try {
+                await humanLogin.recordPasswordDenial();
+              } catch (error) {
+                throw new DenialAuditUnavailable(error);
+              }
+              throw unstorableEmail;
+            }
+            return runPrivateEndpoint(request, "/oce/password", body);
+          });
         }
         return passwordAdmission.admit(attempt, async () => {
           const audit = options.passwordSignInAudit;
@@ -1388,9 +1501,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // password reset or account recreation that commits during the sign-in then bumps
           // the state past it and revokes the entry, instead of the old password's sign-in
           // being bound to the new state. A failed read only skips the marking.
-          const accountState = await knownDeviceState(email).catch(() => undefined);
+          const accountState =
+            unstorableEmail === undefined
+              ? await knownDeviceState(email).catch(() => undefined)
+              : undefined;
           let result;
           try {
+            // Audited as a refusal, as Better Auth's own invalid-email answer was.
+            if (unstorableEmail !== undefined) {
+              throw unstorableEmail;
+            }
             result = await api.signInEmail({
               body: { ...body, rememberMe: true },
               headers: authHeaders(request.headers),
@@ -1575,18 +1695,25 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.
-      const created = await api.createApiKey({
-        body: {
-          configId: SERVICE_KEY_CONFIG,
-          userId: principal.id,
-          name,
-          ...(expiresIn === undefined ? {} : { expiresIn }),
-          metadata: {
-            installationId: options.installationId,
-            ...(principal.namespaceId === undefined ? {} : { namespaceId: principal.namespaceId }),
+      let created;
+      try {
+        created = await api.createApiKey({
+          body: {
+            configId: SERVICE_KEY_CONFIG,
+            userId: principal.id,
+            name,
+            ...(expiresIn === undefined ? {} : { expiresIn }),
+            metadata: {
+              installationId: options.installationId,
+              ...(principal.namespaceId === undefined
+                ? {}
+                : { namespaceId: principal.namespaceId }),
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        throw serviceKeyNameRefusal(error) ? new ServiceKeyNameRefused(error) : error;
+      }
       return { ...serviceKeyDetails(created, options.installationId)!, key: created.key };
     },
     async getServiceKey(id) {
@@ -1722,6 +1849,7 @@ export async function createPostgresControllerAuth(
     oidc,
     passwordSignIn,
     onWarning,
+    onUnmatchedCallback,
     ...controllerOptions
   } = options;
   // Sessions from an external provider instance outside this set (removed, or a changed
@@ -1791,6 +1919,7 @@ export async function createPostgresControllerAuth(
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),
+          ...(onUnmatchedCallback === undefined ? {} : { onUnmatchedCallback }),
         },
       );
   const auth = createControllerAuth({

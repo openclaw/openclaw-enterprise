@@ -1,0 +1,57 @@
+{
+  "requiredEnv": [
+    "OCC_TEST_RUNTIME_IMAGE",
+    "OCC_TEST_CODEX_SECCOMP_PROFILE",
+    "OCC_TEST_WORKSPACE_ENVOY_IMAGE"
+  ],
+  "prepare": {
+    "requiresPreparedStateForFile": true,
+    "codexSeccomp": true,
+    "defaultEnv": {
+      "OCC_TEST_WORKSPACE_ENVOY_IMAGE": "docker.io/envoyproxy/envoy:distroless-v1.36.6@sha256:947974108bb93df64469fedaa0ab7191cdf86c608217d6ff9b497c4e96ff1069"
+    },
+    "immutableEnvImages": ["OCC_TEST_WORKSPACE_ENVOY_IMAGE"]
+  },
+  "fileConcurrency": 3,
+  "parallelFiles": [
+    "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-public-github-read.test.mjs",
+    "tests/integration/runtime-image-managed-files.test.mjs",
+    "tests/integration/workspace-files-native.test.mjs"
+  ],
+  "files": [
+    {
+      "path": "tests/integration/runtime-image-public-github-read.test.mjs",
+      "expectedTests": [
+        "stock Codex reads the projected public GitHub skill and returns a provider-only pull title"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-startup.test.mjs",
+      "expectedTests": [
+        "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+        "runtime image gateway ignores inherited OPENCLAW_LOG_LEVEL in favor of native configuration",
+        "runtime image starts an embedded OpenClaw gateway with the Docker driver entrypoint",
+        "runtime image discovers the bundled Codex plugin from a fresh gateway home",
+        "runtime image keeps Codex auth writable with a nested generated images mount",
+        "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+        "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
+        "runtime image validates the configuration dedicated native OpenClaw renders",
+        "runtime image spawns custom-provider subagents with intact native model IDs"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-managed-files.test.mjs",
+      "expectedTests": [
+        "runtime image initializes the Harness workspace without replacing owner edits",
+        "runtime image tells OpenClaw that a read-only Kubernetes configuration is externally managed"
+      ]
+    },
+    {
+      "path": "tests/integration/workspace-files-native.test.mjs",
+      "expectedTests": [
+        "native workspace files follow a sole roster through OCC and preserve explicit targets and grants"
+      ]
+    }
+  ]
+}

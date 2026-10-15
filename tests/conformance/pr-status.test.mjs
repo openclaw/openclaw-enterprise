@@ -11,10 +11,11 @@ function setup(t) {
   const directory = mkdtempSync(join(tmpdir(), "pr-status-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const log = join(directory, "calls");
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   writeFileSync(
     join(directory, "gh"),
     `#!/usr/bin/env node
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.PR_STATUS_CALLS, JSON.stringify(args) + "\\n");
 if (process.env.PR_STATUS_FAIL && args[0] === "pr") {
@@ -82,5 +83,7 @@ test("rejects a malformed PR number before invoking gh", (t) => {
     encoding: "utf8",
   });
   assert.equal(result.status, 2);
-  assert.throws(() => readFileSync(log));
+  assert.equal(result.stderr, "Usage: node scripts/pr-status.mjs PR_NUMBER [OWNER/REPOSITORY]\n");
+  // gh was never invoked, so its call log was never created.
+  assert.throws(() => readFileSync(log), { code: "ENOENT" });
 });

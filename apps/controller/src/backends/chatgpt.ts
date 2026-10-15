@@ -26,7 +26,8 @@ function nonempty(value: unknown): value is string {
 }
 
 function identifier(value: string): string {
-  if (!nonempty(value)) {
+  // A `.` or `..` segment would resolve to a parent path, such as the account itself.
+  if (!nonempty(value) || value === "." || value === "..") {
     throw new DependencyUnavailableError("The ChatGPT account identity is invalid.");
   }
   return encodeURIComponent(value);
@@ -61,6 +62,18 @@ export class ChatGPTClient {
       resource.workspace_id !== this.workspaceId ||
       resource.enabled !== true
     ) {
+      // The create applied: a reply naming an account in this workspace names the one it
+      // made, so remove exactly that one. Without that, nothing proves which account is
+      // this request's, so nothing is deleted (nor for a lost or unreadable reply).
+      if (nonempty(resource.id) && resource.workspace_id === this.workspaceId) {
+        try {
+          await this.deleteServiceAccount(resource.id);
+        } catch {
+          throw new DependencyUnavailableError(
+            "ChatGPT returned an invalid service account that could not be removed.",
+          );
+        }
+      }
       throw new DependencyUnavailableError("ChatGPT returned an invalid service account.");
     }
     return { id: resource.id };
@@ -99,6 +112,22 @@ export class ChatGPTClient {
       resource.scopes[0] !== CODEX_LOCAL_ACCESS_SCOPE ||
       !Number.isSafeInteger(resource.expires_at)
     ) {
+      // The create applied: a reply naming a credential under the requested account in this
+      // workspace names the one it issued, which stays live until revoked, so remove exactly
+      // that one. Without that, nothing proves which credential is this request's.
+      if (
+        nonempty(resource.id) &&
+        resource.workspace_id === this.workspaceId &&
+        resource.service_account_id === input.accountId
+      ) {
+        try {
+          await this.deleteCredential({ accountId: input.accountId, credentialId: resource.id });
+        } catch {
+          throw new DependencyUnavailableError(
+            "ChatGPT returned an invalid service-account credential that could not be removed.",
+          );
+        }
+      }
       throw new DependencyUnavailableError(
         "ChatGPT returned an invalid service-account credential.",
       );
@@ -165,6 +194,7 @@ export class ChatGPTClient {
           return { id: alreadyAbsent.id, deleted: true };
         }
       }
+      await response.body?.cancel().catch(() => {});
       throw new DependencyUnavailableError(
         `ChatGPT Admin API ${method} request failed with HTTP ${response.status}.`,
       );
@@ -177,12 +207,32 @@ export class ChatGPTClient {
     try {
       const declaredLength = Number(response.headers.get("content-length"));
       if (declaredLength > MAX_RESPONSE_BYTES) {
+        await response.body?.cancel().catch(() => {});
         throw new Error("oversized");
       }
-      const contents = await response.text();
-      if (Buffer.byteLength(contents) > MAX_RESPONSE_BYTES) {
-        throw new Error("oversized");
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error("invalid");
       }
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            break;
+          }
+          bytes += chunk.value.byteLength;
+          if (bytes > MAX_RESPONSE_BYTES) {
+            await reader.cancel();
+            throw new Error("oversized");
+          }
+          chunks.push(chunk.value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const contents = Buffer.concat(chunks, bytes).toString("utf8");
       const parsed: unknown = JSON.parse(contents);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("invalid");

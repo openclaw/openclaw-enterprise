@@ -316,6 +316,10 @@ test("runtime fixture blocks later operations after an unknown effect", async ()
           .catch(() => {});
         await assert.rejects(fixture.create("late-container", ["base:fixture"]), /unknown effect/);
       }),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.length === 1 &&
+        /build outcome for fixture:first is unknown/.test(error.errors[0].message),
     );
     assert.equal(engine.calls.filter((args) => args[0] === "create").length, 0);
     assert.equal(imageRemovals(engine).length, 0);
@@ -335,6 +339,11 @@ test("runtime fixture records pending effects and successful cleanup", async () 
         },
         { receiptPath },
       ),
+      (error) =>
+        error instanceof AggregateError &&
+        error.errors.length === 2 &&
+        error.errors[0].message === "image removal response lost" &&
+        /image cleanup incomplete or outcome unknown/.test(error.errors.at(-1).message),
     );
     const result = JSON.parse(await readFile(receiptPath, "utf8"));
     assert.equal(result.status, "unknown");

@@ -22,7 +22,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
     element("p", {}, "Open Codex sign-in and enter this code: ", code),
     signIn,
   );
-  const start = button("Sign in with ChatGPT", () => void begin());
+  const start = button("Sign in with OAuth", () => void begin());
   const cancel = button("Cancel login", () => void discard());
   const section = element(
     "div",
@@ -31,7 +31,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
       "p",
       { className: "hint" },
       element("strong", {}, "Experimental. "),
-      "Codex OAuth is intended for trying a first deployment. Reconnects, later revisions, and credential recovery have known limitations.",
+      "Codex OAuth is intended for trying a first deployment. Reconnects, later versions, and credential recovery have known limitations.",
     ),
     element("p", { className: "hint" }, hint),
     instructions,
@@ -87,7 +87,10 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
             ? "This login expired. Cancel it and start a new login."
             : failure.status === 501
               ? "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method."
-              : `Codex login could not be completed. ${message(failure)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
+              : !login && failure.status === 503 && failure.code === "DEPENDENCY_UNAVAILABLE"
+                ? // Starting reaches the sign-in service from the API; its reply names the cause.
+                  `Codex sign-in failed. ${failure.serverMessage ?? "A required service is unavailable. Try again."}`
+                : `Codex login could not be completed. ${message(failure)} ${login ? "Cancel this login and sign in again." : "Try signing in again."}`;
     }
   }
 

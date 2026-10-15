@@ -3,9 +3,9 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const identifier = (prefix) => `${prefix}_${randomUUID()}`;
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 
 async function exerciseSetup(store, reopened = store) {
   const createdAt = new Date().toISOString();
@@ -235,11 +235,7 @@ test("OCC stages workspace input atomically, isolates it, and clears bytes on co
 
 test(
   "PostgreSQL workspace setup survives reopen and enforces immutable input and completed state",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL for real PostgreSQL workspace setup proof.",
-  },
+  requiresPostgres,
   async (context) => {
     const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
       import("pg"),

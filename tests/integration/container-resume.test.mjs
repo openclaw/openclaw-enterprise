@@ -95,7 +95,7 @@ if (args[0] === "inspect") {
   const ref = args.at(-1);
   if (!ref.startsWith("oci-archive:") && (state.remoteError || !state.remote[ref])) {
     process.stderr.write(state.remoteError ?? ('reading manifest ' + ref.split(':').at(-1) + ' in ' + ref.slice(9).split(':')[0] + ': manifest unknown'));
-    process.exit(1);
+    process.exit(state.remoteStatus ?? 1);
   }
   process.stdout.write(ref.startsWith("oci-archive:") ? readFileSync(ref.slice(12)) : (state.inspectOverride ?? state.remote[ref]));
 } else if (args[0] === "copy") {
@@ -140,6 +140,8 @@ if (args[0] === "inspect") {
     workflow_run: { id: 123, head_sha: sourceSha },
     digest: `sha256:${"c".repeat(64)}`,
   }));
+  const publishWorkflowRecord = { id: 2, path: publishWorkflow, state: "active" };
+  let workflowComparison;
   let packageVisibility = "public";
   let interruptRuntime = false;
   let sourceCiConclusion = "success";
@@ -150,6 +152,9 @@ if (args[0] === "inspect") {
       return Response.json(repo);
     }
     if (path.includes("/compare/")) {
+      if (workflowComparison && path.endsWith(`...${workflowSha}`)) {
+        return Response.json({ status: workflowComparison });
+      }
       return Response.json({
         status:
           path.endsWith(`${sourceSha}...${workflowSha}`) && sourceSha === workflowSha
@@ -161,7 +166,7 @@ if (args[0] === "inspect") {
       return Response.json({ id: 1, path: ".github/workflows/ci.yml", state: "active" });
     }
     if (path.endsWith("/workflows/container-publish.yml")) {
-      return Response.json({ id: 2, path: publishWorkflow, state: "active" });
+      return Response.json(publishWorkflowRecord);
     }
     if (path.endsWith("/runs/123")) {
       return Response.json(run);
@@ -178,12 +183,16 @@ if (args[0] === "inspect") {
     ]) {
       if (path.endsWith(`/runs/${id}`)) {
         return Response.json({
-          ...run,
           id: Number(id),
+          run_attempt: 1,
           workflow_id: 1,
           path: ".github/workflows/ci.yml",
-          event: "push",
+          repository: repo,
+          head_repository: repo,
+          head_branch: "main",
           head_sha: sha,
+          event: "push",
+          status: "completed",
           conclusion: id === "456" ? sourceCiConclusion : "success",
         });
       }
@@ -238,7 +247,7 @@ if (args[0] === "inspect") {
     `
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, artifacts, images, prepared, statePath, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
+const { env, sourceSha, workflowSha, repository, publishWorkflow, repo, run, jobs, artifacts, images, prepared, statePath, publishWorkflowRecord, workflowComparison, packageVisibility, interruptRuntime, sourceCiConclusion, metadataMissing, tag } = JSON.parse(await readFile(${JSON.stringify(fixtureConfig)}, "utf8"));
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 globalThis.fetch = ${fetchFixture.toString()};
 globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
@@ -260,6 +269,8 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
         images,
         prepared,
         statePath,
+        publishWorkflowRecord,
+        workflowComparison,
         packageVisibility,
         interruptRuntime,
         sourceCiConclusion,
@@ -283,67 +294,86 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
   await assert.rejects(readFile(join(directory, "publication.json")), { code: "ENOENT" });
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), initialState);
   interruptRuntime = false;
-  for (const [change, restore] of [
+  // Each refusal names the guard that must refuse it: the child prints only the
+  // error message, and each case plants a value that only one guard reports (in
+  // a message of that guard's form), except the controller ciRunId case below,
+  // which verifyCi's identical run id check also refuses. The CI runs above do
+  // not inherit the producer run, so only the producer's own guards see its fields.
+  const refusedBy = (pattern) => (error) => pattern.test(String(error.stderr));
+  const mismatch = (value) => new RegExp(`^Expected values to be strictly equal:[\\s\\S]*${value}`);
+  const unmatched = (value) =>
+    new RegExp(`^The input did not match the regular expression [^\\n]*\\. Input:\\s+${value}`);
+  const pristine = JSON.stringify({ run, jobs, artifacts, env, publishWorkflowRecord });
+  const writeController = (patch) =>
+    writeFile(
+      join(prepared[0].path, "metadata.json"),
+      JSON.stringify({ ...prepared[0].metadata, ...patch }),
+    );
+  const other = (name) => `.github/workflows/${name}.yml`;
+  for (const [change, guard] of [
+    [() => (env.PREPARATION_RUN_ID = "run-x"), unmatched("'run-x'")],
+    [() => (env.PREPARATION_ATTEMPT = "attempt-x"), unmatched("'attempt-x'")],
     [
-      () => {
-        run.run_attempt = 2;
-      },
-      () => {
-        run.run_attempt = 1;
-      },
+      () => (workflowComparison = "behind"),
+      /^The expression evaluated to a falsy value:[\s\S]*comparison\.status === "ahead"/,
     ],
     [
-      () => {
-        run.workflow_id = 9;
-      },
-      () => {
-        run.workflow_id = 2;
-      },
+      () => (publishWorkflowRecord.path = other("workflow-other")),
+      mismatch("workflow-other\\.yml"),
     ],
+    [() => (publishWorkflowRecord.state = "disabled_manually"), mismatch("'disabled_manually'")],
+    [() => (run.workflow_id = 9), mismatch("\\b9\\b")],
+    [() => (run.path = other("run-other")), mismatch("run-other\\.yml")],
+    [() => (run.id = 124), mismatch("'124'")],
+    [() => (run.run_attempt = 2), /^Select the unchanged producer attempt\./],
+    [() => (run.repository = { full_name: "other/enterprise" }), mismatch("'other/enterprise'")],
+    [() => (run.head_repository = { full_name: "fork/enterprise" }), mismatch("'fork/enterprise'")],
+    [() => (run.head_sha = "e".repeat(40)), mismatch("'e{40}'")],
+    [() => (run.head_branch = "feature"), mismatch("'feature'")],
+    [() => (run.event = "pull_request"), mismatch("'pull_request'")],
+    [() => (run.status = "in_progress"), mismatch("'in_progress'")],
     [
-      () => {
-        jobs[2].conclusion = "skipped";
-      },
-      () => {
-        jobs[2].conclusion = "success";
-      },
+      () => (run.conclusion = "skipped"),
+      /^The expression evaluated to a falsy value:[\s\S]*includes\(run\.conclusion\)/,
     ],
+    [() => jobs.push({ ...jobs[1] }), /^Exactly one successful Prepare controller OCI image job/],
+    [() => (jobs[0].head_sha = "f".repeat(40)), mismatch("'f{40}'")],
+    [() => (jobs[1].status = "queued"), mismatch("'queued'")],
+    [() => (jobs[2].conclusion = "skipped"), /^Both original smoke jobs must have succeeded\./],
     [
-      () => {
-        artifacts[1].expired = true;
-      },
-      () => {
-        artifacts[1].expired = false;
-      },
+      () => artifacts.push({ ...artifacts[0] }),
+      /^One retained artifact named container-controller/,
     ],
+    [() => (artifacts[1].expired = true), mismatch("\\btrue\\b")],
+    [() => (artifacts[1].workflow_run = { id: 125, head_sha: sourceSha }), mismatch("'125'")],
+    [() => (artifacts[1].workflow_run.head_sha = "1".repeat(40)), mismatch("'1{40}'")],
     [
-      () => {
-        artifacts[1].id = 12;
-      },
-      () => {
-        artifacts[1].id = 11;
-      },
+      () => (artifacts[1].id = 0),
+      /^The expression evaluated to a falsy value:[\s\S]*Number\.isSafeInteger\(artifact\.id\)/,
     ],
+    [() => (artifacts[1].digest = "sha256:short"), unmatched("'sha256:short'")],
+    [() => (artifacts[1].id = 12), /^Downloaded artifacts must match the validated producer\./],
+    [() => writeController({ ciRunId: "run-y" }), unmatched("'run-y'")],
+    [() => writeController({ ciAttempt: "attempt-y" }), unmatched("'attempt-y'")],
     [
-      () => {
-        packageVisibility = "private";
-      },
-      () => {
-        packageVisibility = "public";
-      },
+      () => (env.NODE_BASE_IMAGE = "docker.io/library/node:24"),
+      unmatched("'docker\\.io/library/node:24'"),
     ],
-    [
-      () => {
-        sourceCiConclusion = "failure";
-      },
-      () => {
-        sourceCiConclusion = "success";
-      },
-    ],
+    [() => (packageVisibility = "private"), /^GHCR package must already exist and be public\./],
+    [() => (sourceCiConclusion = "failure"), /^The entire CI run must succeed\./],
   ]) {
-    change();
-    await assert.rejects(runRecovery());
-    restore();
+    await change();
+    await assert.rejects(runRecovery(), refusedBy(guard));
+    const restored = JSON.parse(pristine);
+    Object.assign(run, restored.run);
+    jobs.splice(0, Infinity, ...restored.jobs);
+    artifacts.splice(0, Infinity, ...restored.artifacts);
+    Object.assign(env, restored.env);
+    Object.assign(publishWorkflowRecord, restored.publishWorkflowRecord);
+    workflowComparison = undefined;
+    packageVisibility = "public";
+    sourceCiConclusion = "success";
+    await writeController({});
     assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), initialState);
   }
   const runtimeMetadata = join(prepared[1].path, "metadata.json");
@@ -370,7 +400,7 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     statePath,
     JSON.stringify({ ...initialState, remote: { [prepared[0].remote]: "conflicting bytes" } }),
   );
-  await assert.rejects(runRecovery());
+  await assert.rejects(runRecovery(), /Remote source tag has different image bytes/);
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).copies, []);
   for (const remoteError of [
     "unauthorized: authentication required",
@@ -378,9 +408,22 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     "reading manifest other in unrelated: manifest unknown",
   ]) {
     await writeFile(statePath, JSON.stringify({ ...initialState, remoteError }));
-    await assert.rejects(runRecovery());
+    // remoteTagDigest rethrows anything but this tag's manifest-unknown diagnostic.
+    await assert.rejects(runRecovery(), refusedBy(new RegExp(`${remoteError}$`, "m")));
     assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).copies, []);
   }
+  // A missing tag is copied only when its listing omits it and inspection exits 1
+  // with exactly that diagnostic; either other signal must refuse before a copy.
+  const missing = `reading manifest ${tag} in ${env.GHCR_CONTROLLER_IMAGE}: manifest unknown`;
+  const absent = new RegExp(`^${missing}$`, "m");
+  await writeFile(statePath, JSON.stringify({ remote: {}, copies: [], remoteStatus: 2 }));
+  await assert.rejects(runRecovery(), refusedBy(absent));
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).copies, []);
+  metadataMissing = false;
+  await writeFile(statePath, JSON.stringify({ ...initialState, remoteError: missing }));
+  await assert.rejects(runRecovery(), refusedBy(absent));
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")).copies, []);
+  metadataMissing = true;
   await writeFile(statePath, JSON.stringify(initialState));
   const receipt = await runRecovery();
   assert.deepEqual(
@@ -485,8 +528,15 @@ globalThis.setTimeout = (resolve) => queueMicrotask(resolve);
     assert.equal(customState.remote[latestRefs[index]], latestState.remote[latestRefs[index]]);
     assert.equal(customPublication[index].aliasTag, "candidate");
   }
-  for (const invalid of [`sha-${"f".repeat(40)}`, "bootstrap-123", "bad/tag", "x".repeat(129)]) {
-    await assert.rejects(runPublication(invalid));
+  const reserved = /^Source and bootstrap tags are reserved\./;
+  const invalidTag = /^Invalid image tag\./;
+  for (const [invalid, guard] of [
+    [`sha-${"f".repeat(40)}`, reserved],
+    ["bootstrap-123", reserved],
+    ["bad/tag", invalidTag],
+    ["x".repeat(129), invalidTag],
+  ]) {
+    await assert.rejects(runPublication(invalid), refusedBy(guard));
     assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), customState);
   }
   // The aliases are separate registry writes: a failure must not produce a receipt.

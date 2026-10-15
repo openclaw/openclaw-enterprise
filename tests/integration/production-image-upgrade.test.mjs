@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -22,6 +25,11 @@ test("production image upgrades preserve controller/runtime ownership and wait f
 
   const bin = join(directory, "bin");
   await mkdir(bin);
+  // The fixture commands below answer at once, and the readiness polls end on their
+  // counters, not on time, so the helper's 2 s poll interval only adds wall time.
+  const sleep = join(bin, "sleep");
+  await writeFile(sleep, "#!/usr/bin/env bash\nexit 0\n");
+  await chmod(sleep, 0o755);
   const stat = join(bin, "stat");
   await writeFile(
     stat,
@@ -177,7 +185,8 @@ fi
     LIVE_VALUES_FILE: liveValues,
     OCC_SERVICE_KEY_FILE: protectedFiles["service-key"],
     OCC_URL: "https://occ.example.invalid",
-    PATH: `${bin}:/bin:/usr/bin`,
+    // The helper runs node for its startup preflight; CI installs node outside /usr/bin.
+    PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin`,
   };
 
   await assert.rejects(
@@ -231,11 +240,15 @@ fi
   const readinessCounter = join(directory, "readiness-counter");
   const runtimeCountCounter = join(directory, "runtime-count-counter");
   const commandLog = join(directory, "commands.log");
+  // The startup preflight reads each controller container's image and Installation
+  // mount from the rendered chart; this stand-in renders only those fields.
   await writeFile(
     helm,
     `#!/usr/bin/env bash
 if [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
+elif [[ "$1" == template ]]; then
+  printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
 fi
 `,
   );
@@ -301,6 +314,10 @@ case "$*" in
     ;;
   *'jsonpath='*) printf '%s\\n' "$OBSERVED_CONTROLLER_IMAGE" ;;
   *'get pods'*) printf '%s\\n' '{"items":[]}' ;;
+  *' create --filename -'*) cat >/dev/null ;;
+  *' create --filename'*) ;;
+  *' get pod/'*) printf '%s\\n' '{"status":{"phase":"Succeeded"}}' ;;
+  *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
 esac
 `,
   );
@@ -313,7 +330,7 @@ case "$*" in
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
   *'deployment-status'*) printf '%s\\n' '{"status":"succeeded"}' ;;
   *'agent get'*) printf '%s\\n' '{"activeRevisionId":"rev_candidate"}' ;;
-  *) printf '%s\\n' '{"id":"ins_upgrade_test"}' ;;
+  *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
   );
@@ -390,4 +407,182 @@ esac
     await readFile(commandLog, "utf8"),
     /exec gateway-test --container gateway -- node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
   );
+});
+
+test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // Image references are checked during argument validation, before any file,
+  // tool, or cluster access, so placeholder paths are enough here.
+  const required = [
+    "--kubeconfig",
+    join(directory, "kubeconfig"),
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    "d".repeat(40),
+    "--evidence-dir",
+    join(directory, "evidence"),
+  ];
+  // Kubernetes rejects uppercase digest hex as InvalidImageName, so each image
+  // flag must refuse it instead of failing later in a rollout. A digest is
+  // exactly 64 hex characters.
+  for (const [flag, repositoryName, digest] of [
+    ["--controller-image", "controller", "A".repeat(64)],
+    ["--broker-image", "repository-credentials", "A".repeat(64)],
+    ["--runtime-image", "runtime", "A".repeat(64)],
+    ["--controller-image", "controller", "a".repeat(63)],
+    ["--controller-image", "controller", "a".repeat(65)],
+  ]) {
+    await assert.rejects(
+      execute(
+        upgradeScript,
+        [...required, flag, `registry.example.invalid/${repositoryName}@sha256:${digest}`],
+        { cwd: repository },
+      ),
+      (error) => {
+        assert.match(
+          error.stderr,
+          new RegExp(`${flag} must be an approved immutable SHA-256 image reference`, "u"),
+        );
+        return true;
+      },
+    );
+  }
+  // Kubernetes also rejects an uppercase repository path; only the registry host and the tag
+  // may use uppercase, as in the chart and profile preflight.
+  for (const [flag, image] of [
+    ["--controller-image", "registry.example.invalid/Controller"],
+    ["--broker-image", "registry.example.invalid:5000/team/Repository-credentials:release_1"],
+    ["--runtime-image", "Runtime"],
+  ]) {
+    await assert.rejects(
+      execute(upgradeScript, [...required, flag, `${image}@sha256:${"a".repeat(64)}`], {
+        cwd: repository,
+      }),
+      (error) => {
+        assert.match(
+          error.stderr,
+          new RegExp(`${flag} repository path must be lowercase`, "u"),
+          image,
+        );
+        return true;
+      },
+    );
+  }
+});
+
+// Each image flag takes exactly the references Kubernetes can pull with a lowercase SHA-256
+// digest, as profile preflight, the chart and Compute do. Image flags are checked before any
+// file access, so an accepted reference gets as far as the missing kubeconfig.
+test("production image upgrades give image references Kubernetes' verdict", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-references-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const kubeconfig = join(directory, "kubeconfig");
+  const required = [
+    "--kubeconfig",
+    kubeconfig,
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    "d".repeat(40),
+    "--evidence-dir",
+    join(directory, "evidence"),
+  ];
+  const flags = ["--controller-image", "--broker-image", "--runtime-image"];
+  for (const [index, [label, reference, problem]] of imageReferenceCases.entries()) {
+    // Rotate the flag so every flag sees every kind of reference across the table.
+    const flag = flags[index % flags.length];
+    await assert.rejects(
+      execute(upgradeScript, [...required, flag, reference], { cwd: repository }),
+      (error) => {
+        if (immutableImageAccepted(reference, problem)) {
+          assert.doesNotMatch(error.stderr, new RegExp(flag, "u"), `${flag} ${label}`);
+          assert.match(error.stderr, new RegExp(kubeconfig, "u"), `${flag} ${label}`);
+        } else {
+          assert.match(
+            error.stderr,
+            new RegExp(
+              problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/u.test(reference)
+                ? `${flag} repository path must be lowercase`
+                : `${flag} must be an approved immutable SHA-256 image reference`,
+              "u",
+            ),
+            `${flag} ${label}`,
+          );
+        }
+        return true;
+      },
+    );
+  }
+});
+
+test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-locale-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const locale = await rangeWideningLocale();
+  if (!locale) {
+    t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
+    return;
+  }
+  const options = { cwd: repository, env: { ...process.env, LANG: locale, LC_ALL: locale } };
+  const argumentsFor = ({
+    revision = "d".repeat(40),
+    timeout = "60",
+    controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
+  }) => [
+    "--kubeconfig",
+    join(directory, "kubeconfig"),
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    revision,
+    "--evidence-dir",
+    join(directory, "evidence"),
+    "--timeout-seconds",
+    timeout,
+    "--controller-image",
+    controllerImage,
+  ];
+  for (const [overrides, message] of [
+    [{ revision: "é".repeat(40) }, /--source-revision must be a full lowercase Git commit SHA/u],
+    [{ timeout: "٣" }, /--timeout-seconds must be positive/u],
+    [
+      { controllerImage: `registry.example.invalid/contrôleur@sha256:${"a".repeat(64)}` },
+      /--controller-image must be an approved immutable SHA-256 image reference/u,
+    ],
+    [
+      { controllerImage: `registry.example.invalid/controller@sha256:${"é".repeat(64)}` },
+      /--controller-image must be an approved immutable SHA-256 image reference/u,
+    ],
+  ]) {
+    await assert.rejects(execute(upgradeScript, argumentsFor(overrides), options), (error) => {
+      assert.match(error.stderr, message);
+      return true;
+    });
+  }
 });

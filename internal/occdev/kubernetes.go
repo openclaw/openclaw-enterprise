@@ -232,9 +232,7 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
 	selected := image
-	staged := false
 	if strings.Contains(image, "@") {
-		staged = true
 		digest := sha256.Sum256([]byte(image))
 		selected = fmt.Sprintf("openclaw-development/import-%x:%s", digest[:6], s.Cluster)
 		if _, err := r.output(ctx, r.engine, "image", "inspect", selected); err == nil {
@@ -258,33 +256,31 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 		return "", err
 	}
 	selected = recorded
-	if staged {
-		platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
-		if err != nil {
-			return "", err
+	// Export the selected platform explicitly for every image. Tag-based k3d
+	// imports can report success without registering the built image in the node.
+	platformData, err := r.output(ctx, r.engine, "image", "inspect", "--format", "{{.Os}}/{{.Architecture}}", selected)
+	if err != nil {
+		return "", err
+	}
+	platform := string(platformData)
+	if !strings.HasPrefix(platform, "linux/") {
+		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
+	}
+	archive := filepath.Join(s.directory, "development-import.tar")
+	defer func() {
+		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
 		}
-		platform := string(platformData)
-		if !strings.HasPrefix(platform, "linux/") {
-			return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
-		}
-		archive := filepath.Join(s.directory, "development-import.tar")
-		defer func() {
-			if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
-				resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
-			}
-		}()
-		saveArgs := []string{"image", "save"}
-		if r.engine == "docker" {
-			saveArgs = append(saveArgs, "--platform", platform)
-		}
-		saveArgs = append(saveArgs, "--output", archive, selected)
-		if err := r.run(ctx, r.engine, saveArgs...); err != nil {
-			return "", err
-		}
-		if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", s.Cluster); err != nil {
-			return "", err
-		}
-	} else if err := r.run(ctx, "k3d", "image", "import", selected, "-c", s.Cluster); err != nil {
+	}()
+	saveArgs := []string{"image", "save"}
+	if r.engine == "docker" {
+		saveArgs = append(saveArgs, "--platform", platform)
+	}
+	saveArgs = append(saveArgs, "--output", archive, selected)
+	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
+		return "", err
+	}
+	if err := r.importArchiveDirect(ctx, archive, s.Cluster); err != nil {
 		return "", err
 	}
 	server := "k3d-" + s.Cluster + "-server-0"
@@ -331,7 +327,7 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 // The local profile trusts only Pod loopback; first-agent verifies model access
 // with the separate loopback password. Routed installations supply Envoy source CIDRs.
 // statusProxySource is the API server's Pod proxy source (developmentStatusProxySource).
-func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, codexSeccompProfile string, statusProxySource string) error {
+func writeInstallation(s *developmentState, reference string, openShell *openShellDevelopmentAssets, openShellGatewayAddress string, codexSeccompProfile string, statusProxySource string) error {
 	if statusProxySource == "" {
 		return fmt.Errorf("the development Installation requires the API server Pod proxy source")
 	}
@@ -342,6 +338,14 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		gatewayClientNamespace = s.PlatformNamespace
 	}
 	resources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "256Mi"}, "limits": map[string]string{"cpu": "2", "memory": "2Gi"}}
+	// Memory matches the installation profiles (scripts/render-installation-profile.mjs):
+	// requests cover measured use between turns and limits cover measured peaks.
+	// Gateways held 1.2-1.6 GiB and peaked at 2.2 GiB; a dedicated Codex Gateway
+	// with native admin chat was OOM-killed at 2Gi. A Codex Harness held about
+	// 0.5 GiB; running lint, tsc and tests together it was OOM-killed at 2Gi and
+	// reached a 4Gi limit.
+	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "1792Mi"}, "limits": map[string]string{"cpu": "2", "memory": "3Gi"}}
+	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
 	config := map[string]any{
 		"occ": map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
@@ -350,7 +354,7 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"secret":        map[string]any{"id": "secret-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"compute": map[string]any{"id": "compute-kubernetes", "configuration": map[string]any{
 				"authentication": auth, "images": map[string]any{"gateway": reference, "agent": reference, "requireImmutableDigest": true},
-				"resources":                   map[string]any{"gateway": resources, "agent": resources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
+				"resources":                   map[string]any{"gateway": gatewayResources, "agent": harnessResources, "namespace": map[string]any{"quota": map[string]string{"pods": "10"}, "containerDefaults": resources}},
 				"network":                     map[string]any{"dns": map[string]any{"namespace": "kube-system", "podLabels": map[string]string{"k8s-app": "kube-dns"}}, "gatewayPort": 8080, "gatewayTrustedProxyCidrs": []string{"127.0.0.1/32"}, "pluginStatusProxySourceCidrs": []string{statusProxySource}, "gatewayClients": []any{map[string]any{"namespace": gatewayClientNamespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 				"servicePrincipalCredentials": map[string]any{"mode": "projectedServiceAccountToken", "audience": "openclaw-enterprise", "expirationSeconds": 900},
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
@@ -371,10 +375,28 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		if openShell == nil {
 			return fmt.Errorf("OpenShell development assets are required")
 		}
+		if openShellGatewayAddress == "" {
+			return fmt.Errorf("OpenShell Gateway address is required")
+		}
+		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
+		compute["servicePrincipalCredentials"] = map[string]any{"mode": "disabled"}
+		gatewayNamespace := openShellGatewayNamespace
+		if s.DeploymentMode == "k3d" {
+			gatewayNamespace = s.PlatformNamespace
+		}
+		compute["network"].(map[string]any)["providerHarness"] = map[string]any{
+			"namespace": gatewayNamespace,
+			"podLabels": map[string]string{
+				"app.kubernetes.io/name":     "openshell",
+				"app.kubernetes.io/instance": openShellGatewayService,
+			},
+			"address": openShellGatewayAddress,
+			"port":    8080,
+		}
 		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
 			"id":            openShellCredentialGatewayID,
-			"configuration": map[string]any{"binaries": []string{openShellCodexBinary}},
+			"configuration": map[string]any{"binaries": openShellCodexBinaries()},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -388,9 +410,16 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 const (
 	openShellSandboxID           = "sandbox-openshell-development"
 	openShellCredentialGatewayID = "credential-gateway-openshell-development"
-	// The native Codex binary is the only process allowed to use injected model credentials.
-	openShellCodexBinary = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.158.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex"
 )
+
+// Match the kernel-resolved executable on both architectures of the pinned runtime.
+// The container engine may run remotely, so the launcher's architecture is not authoritative.
+func openShellCodexBinaries() []string {
+	return []string{
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+	}
+}
 
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
@@ -404,8 +433,12 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 		"type": "openshell",
 		// The development gateway is unauthenticated plain HTTP; the profile's NetworkPolicies
 		// admit only the OCE API, worker, and OpenShell supervisors.
-		"configuration": map[string]any{"endpoint": endpoint, "insecureTransport": "network-policy"},
-		"drivers":       map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
+		"configuration": map[string]any{
+			"endpoint":          endpoint,
+			"insecureTransport": "network-policy",
+			"requestTimeoutMs":  30000,
+		},
+		"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID},
 	}
 }
 
@@ -421,6 +454,9 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
+			// OpenShell v0.1.3-pre.2 exposes the route before the canonical
+			// process listens. Keep the first Gateway from consuming it early.
+			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{

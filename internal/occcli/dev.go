@@ -1,12 +1,15 @@
 package occcli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occdev"
 	"github.com/spf13/cobra"
@@ -14,8 +17,9 @@ import (
 
 func developmentCommand() *cobra.Command {
 	command := commandGroup("dev", "Start or stop a local development stack from a source checkout")
-	// Development commands do not use the remote resource client's flags.
-	command.PersistentPreRunE = func(_ *cobra.Command, _ []string) error { return nil }
+	// Development commands do not use the remote resource client's flags, but
+	// an explicit empty --key-output must not fall back to the dev-owned path.
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error { return refuseEmptyFlags(cmd) }
 	for _, action := range []struct{ name, description string }{
 		{"up", "Start the selected development Compute Driver"},
 		{"down", "Stop the selected development stack"},
@@ -44,6 +48,9 @@ func developmentCommand() *cobra.Command {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
 				case "", "docker":
+					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
+						return err
+					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}
@@ -55,7 +62,20 @@ func developmentCommand() *cobra.Command {
 					process := exec.CommandContext(cmd.Context(), "bash", arguments...)
 					process.Dir, process.Stdin = repository, cmd.InOrStdin()
 					process.Stdout, process.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
-					return process.Run()
+					// On interrupt, terminate rather than kill the script so its EXIT
+					// trap removes the temporary directory with the rendered Compose
+					// configuration; kill it only if it does not stop in time.
+					process.Cancel = func() error { return process.Process.Signal(syscall.SIGTERM) }
+					process.WaitDelay = 10 * time.Second
+					err := process.Run()
+					// The script prints its own diagnostic; pass its status on
+					// (usage errors exit 2) instead of collapsing it to 1. An
+					// interrupt keeps the generic error.
+					var exited *exec.ExitError
+					if errors.As(err, &exited) && exited.ExitCode() > 0 && cmd.Context().Err() == nil {
+						return &ExitStatusError{Code: exited.ExitCode()}
+					}
+					return err
 				default:
 					return fmt.Errorf("OCC_DEVELOPMENT_COMPUTE_DRIVER must be docker or kubernetes")
 				}
@@ -90,6 +110,12 @@ func developmentCommand() *cobra.Command {
 	command.AddCommand(analyze)
 	return command
 }
+
+// ExitStatusError asks the caller to exit with Code without printing anything
+// more: the child process that failed has already reported why.
+type ExitStatusError struct{ Code int }
+
+func (err *ExitStatusError) Error() string { return fmt.Sprintf("exit status %d", err.Code) }
 
 func developmentRepository() (string, error) {
 	directory, err := os.Getwd()

@@ -5,21 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parseProductionChart } from "./production-chart.mjs";
 
 const execute = promisify(execFile);
 export const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
 
-/** `test` options: skip unless Helm and yq can render the production chart. */
-export async function chartTooling() {
-  try {
-    await execute(helm, ["version", "--short"], { cwd: repository });
-    await execute("yq", ["--version"], { cwd: repository });
-    return { skip: false };
-  } catch {
-    return { skip: "Install Helm and yq, or set OCC_HELM_BIN, to render the production chart." };
-  }
-}
+export { chartTooling } from "./production-chart.mjs";
 
 function templateArguments(overrides) {
   const args = [
@@ -43,16 +35,7 @@ export async function renderChart(overrides = {}) {
     cwd: repository,
     maxBuffer: 2_000_000,
   });
-  const parsed = await new Promise((resolve, reject) => {
-    const child = execFile(
-      "yq",
-      ["eval-all", "-o=json", "-I=0", ".", "-"],
-      { cwd: repository, maxBuffer: 2_000_000 },
-      (error, output) => (error ? reject(error) : resolve(output)),
-    );
-    child.stdin.end(stdout);
-  });
-  return parsed.trim().split("\n").map(JSON.parse);
+  return parseProductionChart(stdout);
 }
 
 /**

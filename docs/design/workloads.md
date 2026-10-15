@@ -6,8 +6,8 @@ current behavior from remaining design work.
 
 ## Implementation status
 
-Kubernetes implements separate dedicated Gateway and Harness namespaces,
-identities, and storage; its two-cluster execution profile remains experimental.
+Kubernetes implements separate dedicated Gateway and Harness Pods, identities
+and storage in one tenant namespace; its two-cluster execution profile remains experimental.
 The deployment requirements below include planned OAG admission, full
 SandboxPolicy enforcement, and workload-bound transport identity. They do not
 establish uninterrupted replacement: embedded replacement can stop the
@@ -74,20 +74,18 @@ Each Agent explicitly selects one Harness execution topology:
 The [model-credential boundary](safeguards.md#secret-access) distinguishes these
 current delivery exceptions from target mediation outside Harness execution.
 
-The default runtime targets use one Kubernetes cluster, with distinct namespace
-placements for dedicated gateway and Harness. The experimental `executionCluster`
-profile selects a second cluster for Harness resources; complete runtime
-acceptance remains pending. See [Kubernetes Compute](../reference/drivers/kubernetes-compute.md).
-Other Compute-backed locations remain design scope. The same-cluster split uses a managed Gateway runtime namespace per logical Namespace,
-separate from its Harness namespace and from OCC's own API/worker namespace.
-This per-tenant namespace allocation is a Kubernetes isolation choice, not a
-required mapping for every Compute implementation. It preserves namespace-scoped
-RBAC, quotas and tenant cleanup boundaries. Control-plane Gateway placement and
-its acceptance scope cover dedicated execution only; embedded OpenClaw is excluded.
+The default runtime targets share one tenant namespace in one Kubernetes cluster,
+separate from OCC's API/worker namespace. Configuration and canonical credential
+sources share that tenant namespace. Workload managers there are trusted for
+both roles; quotas and namespace-wide operations cover both. Separate Pods,
+ServiceAccounts, private volumes and exact Agent/revision network peers preserve
+runtime delivery boundaries. The experimental `executionCluster` profile retains
+a managed Gateway namespace in the control cluster and places Harness resources
+in a second cluster; complete runtime acceptance remains pending. See
+[Kubernetes Compute](../reference/drivers/kubernetes-compute.md).
 An explicit Gateway node selector places dedicated Gateways on the operator's
 trusted node pool; Harnesses retain their data-plane selector. Operators must
-keep those pools disjoint. Namespace separation alone does not provide node
-isolation. [Current Harness execution](../reference/harness-execution.md)
+keep those pools disjoint. Sharing a namespace does not provide node isolation. [Current Harness execution](../reference/harness-execution.md)
 describes supported runtimes. One selected `ComputeDriver` owns preparation,
 activation, stop, retirement, and deletion in both targets under the
 [Driver ownership contract](drivers.md#computedriver).

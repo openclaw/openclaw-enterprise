@@ -21,9 +21,13 @@ const fs = require("node:fs");
 const args = process.argv.slice(2);
 const scenario = fs.readFileSync("/fixture/scenario", "utf8");
 fs.appendFileSync("/home/node/calls", JSON.stringify(args) + "\n");
+assert.equal(process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
+assert.equal(args.some((argument) => argument.includes("forced_chatgpt_workspace_id")), false);
 if (args.includes("login")) {
   assert.equal(Object.hasOwn(process.env, "APP_SERVER_TOKEN"), false);
-  process.stdin.resume();
+  const pat = scenario === "pat";
+  assert.deepEqual(args, ["-c", "cli_auth_credentials_store=file", "login", pat ? "--with-access-token" : "--with-api-key"]);
+  assert.equal(fs.readFileSync(0, "utf8"), pat ? "at-service-account-fixture" : "credential-canary");
 } else if (args.includes("exec")) {
   assert.equal(process.env.OPENAI_API_KEY, undefined);
   assert.equal(process.env.CODEX_ACCESS_TOKEN, undefined);
@@ -106,9 +110,13 @@ async function startLauncher(t, scenario, stopAfterTimeout = false) {
       "-e",
       "CODEX_HOME=/home/node/codex",
       "-e",
-      "CODEX_LOGIN_MODE=api_key",
+      "OPENCLAW_WORKSPACE_DIR=/home/node/workspace",
       "-e",
-      "OPENAI_API_KEY=credential-canary",
+      scenario === "pat" ? "CODEX_LOGIN_MODE=codex_pat" : "CODEX_LOGIN_MODE=api_key",
+      "-e",
+      scenario === "pat"
+        ? "CODEX_ACCESS_TOKEN=at-service-account-fixture"
+        : "OPENAI_API_KEY=credential-canary",
       "-e",
       "OPENCLAW_HARNESS_MODEL=codex/fixture-model",
       "-e",
@@ -189,6 +197,35 @@ async function waitFor(check, diagnostics) {
 }
 
 test(
+  "generated Codex launcher hands service-account tokens to native PAT login",
+  {
+    skip: image
+      ? false
+      : "Set OCC_TEST_CODEX_PROBE_IMAGE to an existing immutable Node 24+ image; requires Docker.",
+    timeout: 30000,
+  },
+  async (t) => {
+    assert.match(image, /^(?:sha256:[a-f0-9]{64}|.+@sha256:[a-f0-9]{64})$/);
+    await execute("docker", ["image", "inspect", image], { timeout: 10000 });
+    // Both imported and managed PATs reach this receiver; Compute tests verify
+    // their distinct source ownership before selecting the same native login.
+    const launcher = await startLauncher(t, "pat");
+    await waitFor(() => launcher.output().includes("APP_SERVER_STARTED"), launcher.errors);
+    const snapshot = await launcher.snapshot();
+    assert.equal(snapshot.ready, true);
+    assert.equal(snapshot.calls.filter((args) => args.includes("login")).length, 1);
+    assert.equal(snapshot.calls.filter((args) => args.includes("exec")).length, 1);
+    assert.equal(snapshot.calls.filter((args) => args.includes("app-server")).length, 1);
+    assert.equal(snapshot.status.runtimeFailure, undefined);
+    assert.deepEqual(snapshot.probeDirectories, []);
+    assert.doesNotMatch(
+      launcher.output() + launcher.errors(),
+      /at-service-account-fixture|transport-canary/,
+    );
+  },
+);
+
+test(
   "generated Codex launcher bounds model-probe recovery",
   {
     skip: image
@@ -209,8 +246,10 @@ test(
       { name: "malformed output", input: "malformed", attempts: 1, code: "MODEL_PROBE_FAILED" },
       { name: "tool event", input: "tool", attempts: 1, code: "MODEL_PROBE_FAILED" },
     ];
-    await Promise.all(
-      scenarios.map((scenario) =>
+    // Every scenario has its own container, so the backoff termination case
+    // runs beside them: its first 30 s probe timeout overlaps theirs.
+    await Promise.all([
+      ...scenarios.map((scenario) =>
         t.test(scenario.name, { concurrency: true }, async (t) => {
           const launcher = await startLauncher(t, scenario.input);
           await waitFor(
@@ -258,27 +297,30 @@ test(
           assert.deepEqual(again.calls, snapshot.calls);
         }),
       ),
-    );
-    await t.test("termination during backoff exits without another probe", async (t) => {
-      const launcher = await startLauncher(t, "timeout", true);
-      await waitFor(() => launcher.stop() !== undefined, launcher.errors);
-      await launcher.stop();
-      const result = await Promise.race([launcher.exited, delay(3000).then(() => "still running")]);
-      assert.notEqual(result, "still running");
-      assert.equal(launcher.output(), "");
-      const calls = await launcher.calls();
-      assert.equal(calls.filter((args) => args.includes("exec")).length, 1);
-      assert.equal(calls.filter((args) => args.includes("app-server")).length, 0);
-      assert.equal(
-        launcher
-          .errors()
-          .split("\n")
-          .filter((line) => line.startsWith("{"))
-          .map(JSON.parse)
-          .filter(({ event }) => event === "codex.model_probe").length,
-        1,
-      );
-      assert.doesNotMatch(launcher.errors(), /Harness model authentication probe failed/);
-    });
+      t.test("termination during backoff exits without another probe", async (t) => {
+        const launcher = await startLauncher(t, "timeout", true);
+        await waitFor(() => launcher.stop() !== undefined, launcher.errors);
+        await launcher.stop();
+        const result = await Promise.race([
+          launcher.exited,
+          delay(3000).then(() => "still running"),
+        ]);
+        assert.notEqual(result, "still running");
+        assert.equal(launcher.output(), "");
+        const calls = await launcher.calls();
+        assert.equal(calls.filter((args) => args.includes("exec")).length, 1);
+        assert.equal(calls.filter((args) => args.includes("app-server")).length, 0);
+        assert.equal(
+          launcher
+            .errors()
+            .split("\n")
+            .filter((line) => line.startsWith("{"))
+            .map(JSON.parse)
+            .filter(({ event }) => event === "codex.model_probe").length,
+          1,
+        );
+        assert.doesNotMatch(launcher.errors(), /Harness model authentication probe failed/);
+      }),
+    ]);
   },
 );

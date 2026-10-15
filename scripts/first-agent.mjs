@@ -10,23 +10,27 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 function usage() {
-  return `Usage: node scripts/first-agent.mjs <name> [--prompt <text>] [--replace-key]
+  return `Usage: node scripts/first-agent.mjs <name> [--harness openclaw|codex] [--control-ui] [--prompt <text>] [--replace-key]
 
-Create and deploy an embedded OpenClaw Agent in the local Kubernetes installation
-started by ./bin/occ dev up, then ask the actual model to return a random value.
+Create and deploy an Agent in the local Kubernetes installation started by
+./bin/occ dev up, then ask the actual model to return a random value.
 The Agent stays running after this command exits. Reuse the same name to send
 another prompt or verify it again.
 
+  --harness <id>  Use embedded OpenClaw (default) or dedicated Codex.
+  --control-ui    Enable durable native Control UI access through OCC.
   --prompt <text>  Ask the Agent an additional question and print its response.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
 OPENCLAW_FIRST_AGENT_MODEL defaults to ${defaultAgentModel} for a new Agent. Set OPENAI_API_KEY,
-use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. A normal repeat
+use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. For dedicated Codex with OpenShell,
+set CODEX_ACCESS_TOKEN or CODEX_ACCESS_TOKEN_FILE to use a personal access token. A normal repeat
 uses the previously stored key. Set OCC_DEVELOPMENT_STATE_DIRECTORY if Local Setup
 used a custom state directory.
 `;
@@ -36,11 +40,21 @@ function parseArguments(argv) {
   if (argv.includes("--help") || argv.includes("-h")) {
     return undefined;
   }
-  const result = { name: undefined, prompt: undefined, replaceKey: false };
+  const result = {
+    name: undefined,
+    harness: "openclaw",
+    controlUi: false,
+    prompt: undefined,
+    replaceKey: false,
+  };
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
     if (value === "--replace-key" && !result.replaceKey) {
       result.replaceKey = true;
+    } else if (value === "--control-ui" && !result.controlUi) {
+      result.controlUi = true;
+    } else if (value === "--harness" && argv[index + 1]) {
+      result.harness = argv[++index];
     } else if (value === "--prompt" && result.prompt === undefined && argv[index + 1]) {
       result.prompt = argv[++index];
     } else if (!value.startsWith("-") && result.name === undefined) {
@@ -61,6 +75,9 @@ function parseArguments(argv) {
   }
   if (result.prompt !== undefined && (!result.prompt.trim() || result.prompt.length > 4_000)) {
     throw new Error("The prompt must contain 1–4,000 characters.");
+  }
+  if (!["openclaw", "codex"].includes(result.harness)) {
+    throw new Error("--harness must be openclaw or codex.");
   }
   return result;
 }
@@ -96,7 +113,7 @@ function parseJson(value, description) {
   }
 }
 
-async function loadLocalInstallation() {
+async function loadLocalInstallation(harness, controlUi) {
   const selected = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const directory = selected
     ? isAbsolute(selected)
@@ -146,9 +163,43 @@ async function loadLocalInstallation() {
   ) {
     throw new Error("The recorded Kubernetes Local Setup state does not belong to this checkout.");
   }
-  if (state.sandboxDriver === "openshell") {
+  if (state.sandboxDriver === "openshell" && harness !== "codex") {
     throw new Error(
-      "The local first-Agent workflow does not support the OpenShell Sandbox Driver. Start Local Setup with OCC_DEVELOPMENT_SANDBOX_DRIVER=none.",
+      "The OpenShell first-Agent workflow requires --harness codex so its authenticated app server runs in dedicated mode.",
+    );
+  }
+  let nativeAdmin;
+  if (state.browserOrigin !== undefined || state.nativeAdminDomain !== undefined) {
+    let browserOrigin;
+    try {
+      browserOrigin = new URL(state.browserOrigin);
+    } catch {
+      throw new Error("The recorded Local Setup browser origin is invalid.");
+    }
+    const cookieDomain = `${state.cluster}.oce.localhost`;
+    const expectedBrowserHost = `console.${cookieDomain}`;
+    const expectedNativeAdminDomain = `agents.${cookieDomain}`;
+    if (
+      state.deploymentMode === "k3d" ||
+      state.sandboxDriver !== "openshell" ||
+      browserOrigin.protocol !== "https:" ||
+      browserOrigin.hostname !== expectedBrowserHost ||
+      !browserOrigin.port ||
+      browserOrigin.pathname !== "/" ||
+      browserOrigin.username ||
+      browserOrigin.password ||
+      browserOrigin.search ||
+      browserOrigin.hash ||
+      state.browserOrigin !== browserOrigin.origin ||
+      state.nativeAdminDomain !== expectedNativeAdminDomain
+    ) {
+      throw new Error("The recorded Local Setup native admin endpoint is invalid.");
+    }
+    nativeAdmin = { browserOrigin: browserOrigin.origin, domain: state.nativeAdminDomain };
+  }
+  if (controlUi && nativeAdmin === undefined) {
+    throw new Error(
+      "Local Setup did not enable its durable native admin endpoint. Use the Compose control plane with Kubernetes Compute and the OpenShell Sandbox Driver, then start a new Agent name.",
     );
   }
   if (state.deploymentMode !== "k3d") {
@@ -178,8 +229,14 @@ async function loadLocalInstallation() {
   }
 
   const environment = { ...process.env, DOCKER_HOST: state.dockerHost };
+  // The recorded endpoint is a local Unix socket, not a TLS daemon connection.
+  delete environment.DOCKER_TLS;
+  delete environment.DOCKER_TLS_VERIFY;
+  delete environment.DOCKER_CERT_PATH;
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   if (state.containerEngine === "podman") {
     environment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
   }
@@ -250,16 +307,35 @@ async function loadLocalInstallation() {
       "openclaw_enterprise",
     ];
     if (state.deploymentMode === "k3d") {
-      return kubectl("-n", state.platformNamespace, "exec", "-i", "pod/postgres", "--", ...psql, {
-        input: sql,
-      });
+      // Local Setup runs PostgreSQL as a StatefulSet; let kubectl resolve its Pod
+      // (postgres-0 today) instead of naming a Pod that may be renamed.
+      return kubectl(
+        "-n",
+        state.platformNamespace,
+        "exec",
+        "-i",
+        "statefulset/postgres",
+        "-c",
+        "postgres",
+        "--",
+        ...psql,
+        { input: sql },
+      );
     }
     return run(state.containerEngine, [...composeBase, "exec", "-T", "postgres", ...psql], {
       env: environment,
       input: sql,
     });
   };
-  return { directory, key, origin, kubectl, database };
+  return {
+    directory,
+    key,
+    origin,
+    kubectl,
+    database,
+    sandboxDriver: state.sandboxDriver,
+    nativeAdmin,
+  };
 }
 
 function loopbackOrigin(raw, protocol = "http:") {
@@ -285,9 +361,13 @@ function loopbackOrigin(raw, protocol = "http:") {
 
 function run(binary, args, { env, input, timeout = 45_000 } = {}) {
   return new Promise((resolveResult, reject) => {
+    const maxErrorBytes = 8 * 1024;
     const child = spawn(binary, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"], timeout });
     const output = [];
+    const errorOutput = [];
     let length = 0;
+    let errorLength = 0;
+    let errorTruncated = false;
     let settled = false;
     const fail = (message) => {
       if (!settled) {
@@ -307,15 +387,30 @@ function run(binary, args, { env, input, timeout = 45_000 } = {}) {
         output.push(chunk);
       }
     });
-    child.stderr.resume();
+    child.stderr.on("data", (chunk) => {
+      const remaining = maxErrorBytes - errorLength;
+      if (remaining > 0) {
+        const retained = chunk.subarray(0, remaining);
+        errorOutput.push(retained);
+        errorLength += retained.length;
+      }
+      errorTruncated ||= chunk.length > remaining;
+    });
     child.stdin.on("error", () => {});
     child.on("close", (code, signal) => {
       if (settled) {
         return;
       }
       if (code !== 0) {
+        const detail = Buffer.concat(errorOutput)
+          .toString("utf8")
+          .replace(/\p{Cc}+/gu, " ")
+          .trim();
+        const reason = detail
+          ? `${detail}${errorTruncated ? " [stderr truncated]" : ""}`
+          : "Check that the local stack and selected resources are available.";
         fail(
-          `${binary} did not complete successfully${signal ? ` (${signal})` : ` (exit ${code})`}. Check that the local stack and selected resources are available.`,
+          `${binary} did not complete successfully${signal ? ` (${signal})` : ` (exit ${code})`}. ${reason}`,
         );
         return;
       }
@@ -366,22 +461,24 @@ function createApi({ origin, key }) {
   };
 }
 
-async function modelKey() {
-  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY_FILE) {
-    throw new Error("Set only one of OPENAI_API_KEY and OPENAI_API_KEY_FILE.");
+async function modelKey(authMethod) {
+  const variable = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+  const fileVariable = `${variable}_FILE`;
+  if (process.env[variable] && process.env[fileVariable]) {
+    throw new Error(`Set only one of ${variable} and ${fileVariable}.`);
   }
-  let value = process.env.OPENAI_API_KEY;
-  if (process.env.OPENAI_API_KEY_FILE) {
-    const path = process.env.OPENAI_API_KEY_FILE;
+  let value = process.env[variable];
+  if (process.env[fileVariable]) {
+    const path = process.env[fileVariable];
     if (!isAbsolute(path)) {
-      throw new Error("OPENAI_API_KEY_FILE must name an absolute private file.");
+      throw new Error(`${fileVariable} must name an absolute private file.`);
     }
     await privateOwned(path);
     value = (await readFile(path, "utf8")).replace(/\r?\n$/, "");
   }
   if (!value) {
     if (!process.stdin.isTTY || !process.stderr.isTTY) {
-      throw new Error("Set OPENAI_API_KEY or OPENAI_API_KEY_FILE when no terminal is available.");
+      throw new Error(`Set ${variable} or ${fileVariable} when no terminal is available.`);
     }
     const sink = new Writable({
       write(_chunk, _encoding, done) {
@@ -389,7 +486,7 @@ async function modelKey() {
       },
     });
     const reader = createInterface({ input: process.stdin, output: sink, terminal: true });
-    process.stderr.write("OpenAI API key (hidden): ");
+    process.stderr.write("Model credential (hidden): ");
     try {
       value = await new Promise((resolveInput, reject) => {
         let answered = false;
@@ -398,7 +495,7 @@ async function modelKey() {
         });
         reader.once("close", () => {
           if (!answered) {
-            reject(new Error("OpenAI API key input was cancelled."));
+            reject(new Error("Model credential input was cancelled."));
           }
         });
         reader.question("", (answer) => {
@@ -419,21 +516,53 @@ async function modelKey() {
     value.includes("\n") ||
     value.includes("\0")
   ) {
-    throw new Error("The OpenAI API key must be a nonempty single line.");
+    throw new Error("The model credential must be a nonempty single line.");
   }
   return value;
 }
 
-function nativeConfiguration(model) {
-  const selected = `openai/${model}`;
+function nativeConfiguration(model, harness, nativeAdminOrigin) {
+  const selected = `${harness === "codex" ? "codex" : "openai"}/${model}`;
+  const provider =
+    harness === "codex"
+      ? {
+          codex: {
+            baseUrl: "http://127.0.0.1:9",
+            api: "openai-responses",
+            models: [{ id: model, name: model }],
+          },
+        }
+      : {
+          openai: {
+            baseUrl: "https://api.openai.com/v1",
+            api: "openai-responses",
+            apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+            models: [{ id: model, name: model }],
+          },
+        };
   return {
     kind: "agent",
     values: {
       gateway: {
         mode: "local",
         bind: "lan",
-        controlUi: { enabled: false },
+        ...(nativeAdminOrigin === undefined ? {} : { publicOrigin: nativeAdminOrigin }),
+        controlUi:
+          nativeAdminOrigin === undefined
+            ? { enabled: false }
+            : { enabled: true, allowedOrigins: [nativeAdminOrigin] },
         auth: {
+          ...(nativeAdminOrigin === undefined
+            ? {}
+            : {
+                mode: "trusted-proxy",
+                trustedProxy: {
+                  userHeader: "x-occ-identity",
+                  allowUsers: ["occ-workspace-files"],
+                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+                },
+                identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              }),
           password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" },
         },
         http: { endpoints: { chatCompletions: { enabled: true } } },
@@ -442,33 +571,62 @@ function nativeConfiguration(model) {
         defaults: {
           model: selected,
           skipBootstrap: true,
-          models: { [selected]: { agentRuntime: { id: "openclaw" } } },
+          models: { [selected]: { agentRuntime: { id: harness } } },
         },
       },
       tools: { deny: ["*"] },
-      secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
-      models: {
-        providers: {
-          openai: {
-            baseUrl: "https://api.openai.com/v1",
-            api: "openai-responses",
-            apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
-            models: [{ id: model, name: model }],
-          },
-        },
-      },
+      ...(harness === "openclaw"
+        ? { secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } } }
+        : {}),
+      models: { providers: provider },
+      ...(harness === "codex"
+        ? {
+            plugins: {
+              allow: ["codex"],
+              entries: {
+                codex: {
+                  enabled: true,
+                  config: {
+                    appServer: {
+                      mode: "guardian",
+                      approvalPolicy: "on-request",
+                      sandbox: "read-only",
+                      transport: "websocket",
+                      url: "${APP_SERVER_URL}",
+                      authToken: "${APP_SERVER_TOKEN}",
+                    },
+                  },
+                },
+              },
+            },
+          }
+        : {}),
     },
   };
+}
+
+function expectedHarnessAuth(record) {
+  return record.sandboxDriver === "openshell"
+    ? { method: "credential_source", sourceId: record.credentialSourceId }
+    : {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: record.namespaceId, id: record.secretId },
+      };
+}
+
+/** The Agent lists every bound source; harnessAuth names the listed credential source. */
+function expectedCredentialSources(record) {
+  return record.sandboxDriver === "openshell"
+    ? [{ sourceId: record.credentialSourceId }]
+    : undefined;
 }
 
 function assertManagedAgent(agent, record) {
   if (
     agent.configurationId !== record.configurationId ||
-    agent.harnessAuth?.method !== "api_key" ||
-    agent.harnessAuth.source?.kind !== "secret" ||
-    agent.harnessAuth.source?.namespaceId !== record.namespaceId ||
-    agent.harnessAuth.source?.id !== record.secretId ||
-    agent.executionMode !== "embedded" ||
+    !isDeepStrictEqual(agent.harnessAuth, expectedHarnessAuth(record)) ||
+    !isDeepStrictEqual(agent.credentialSources, expectedCredentialSources(record)) ||
+    agent.executionMode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
     agent.backendId !== null ||
     Object.keys(agent.plugins ?? {}).length
   ) {
@@ -484,7 +642,6 @@ function assertManagedConfiguration(configuration, record, expected) {
     configuration.namespaceId !== record.namespaceId ||
     configuration.kind !== expected.kind ||
     configuration.generation !== (record.configurationGeneration ?? 1) ||
-    configuration.generation !== 1 ||
     !isDeepStrictEqual(configuration.values, expected.values) ||
     Object.keys(configuration.secretBindings ?? {}).length
   ) {
@@ -495,24 +652,27 @@ function assertManagedConfiguration(configuration, record, expected) {
 }
 
 function assertManagedRevision(revision, record, expected) {
+  const frozen = structuredClone(expected);
+  if (record.sandboxDriver === "openshell" && record.harness === "codex") {
+    frozen.values.plugins.entries.codex.config.appServer.sandbox =
+      record.authMethod === "api_key" ? "danger-full-access" : "workspace-write";
+    frozen.values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
+  }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
   const level = logging?.level;
   if (
     revision.agentId !== record.agentId ||
     revision.namespaceId !== record.namespaceId ||
     revision.configurationId !== record.configurationId ||
-    revision.configurationKind !== expected.kind ||
+    revision.configurationKind !== frozen.kind ||
     revision.configurationGeneration !== record.configurationGeneration ||
-    !isDeepStrictEqual(values, expected.values) ||
+    !isDeepStrictEqual(values, frozen.values) ||
     !["debug", "info", "warn", "error"].includes(level) ||
     !isDeepStrictEqual(logging, { level, consoleLevel: level, consoleStyle: "json" }) ||
     !isDeepStrictEqual(diagnostics, { otel: { logs: false } }) ||
-    revision.harness?.id !== "openclaw" ||
-    revision.harness.mode !== "embedded" ||
-    revision.harnessAuth?.method !== "api_key" ||
-    revision.harnessAuth.source?.kind !== "secret" ||
-    revision.harnessAuth.source?.namespaceId !== record.namespaceId ||
-    revision.harnessAuth.source?.id !== record.secretId ||
+    revision.harness?.id !== record.harness ||
+    revision.harness.mode !== (record.harness === "codex" ? "dedicated" : "embedded") ||
+    !isDeepStrictEqual(revision.harnessAuth, expectedHarnessAuth(record)) ||
     revision.backendId !== null ||
     Object.keys(revision.secretBindings ?? {}).length ||
     revision.plugins !== undefined
@@ -520,6 +680,52 @@ function assertManagedRevision(revision, record, expected) {
     throw new Error(
       "This Agent revision was changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
     );
+  }
+}
+
+function assertManagedCredentialSource(source, record, secret) {
+  if (
+    source.name !== record.credentialSourceName ||
+    source.type !== (record.authMethod === "codex_pat" ? "codex-pat" : "openai") ||
+    !isDeepStrictEqual(source.secrets, {
+      [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref,
+    }) ||
+    source.state !== "ready"
+  ) {
+    throw new Error("The recorded CredentialSource does not belong to this local first-agent run.");
+  }
+}
+
+async function ensureCredentialSourceGrant(api, base, agent, source) {
+  const permissions = [{ action: "operate", resourceKind: "credential_source" }];
+  const suffix = createHash("sha256")
+    .update(agent.id)
+    .update("\0")
+    .update(source.id)
+    .digest("hex")
+    .slice(0, 16);
+  const roleName = `Local first Agent source ${suffix}`;
+  const roles = await api("GET", `${base}/iam/roles`);
+  let role = roles.find((candidate) => candidate.name === roleName);
+  if (role === undefined) {
+    role = await api("POST", `${base}/iam/roles`, { name: roleName, permissions });
+  }
+  if (!isDeepStrictEqual(role.permissions, permissions)) {
+    throw new Error("The first-Agent CredentialSource IAM Role changed outside this helper.");
+  }
+  const expected = {
+    subjectKind: "identity",
+    subjectId: agent.servicePrincipalId,
+    roleId: role.id,
+    resourceKind: "credential_source",
+    resourceId: source.id,
+  };
+  const bindings = await api("GET", `${base}/iam/access-bindings`);
+  const exact = bindings.find((binding) =>
+    Object.entries(expected).every(([key, value]) => binding[key] === value),
+  );
+  if (exact === undefined) {
+    await api("POST", `${base}/iam/access-bindings`, expected);
   }
 }
 
@@ -611,7 +817,7 @@ function progress(message) {
 async function main(options) {
   let local;
   try {
-    local = await loadLocalInstallation();
+    local = await loadLocalInstallation(options.harness, options.controlUi);
   } catch (error) {
     if (error.code === "ENOENT") {
       throw new Error(
@@ -629,7 +835,9 @@ async function main(options) {
   const namespaces = await api("GET", "/namespaces");
   const namespace = namespaces.find(({ name }) => name === "default");
   if (!namespace) {
-    throw new Error("Local Setup did not create its default Namespace.");
+    throw new Error(
+      "No Namespace named default exists. Local Setup creates it, and a deleted Namespace name cannot be reused; start a new Local Setup to use this command.",
+    );
   }
   const base = `/namespaces/${namespace.id}`;
   await waitFor("the default Namespace to be ready", async () => {
@@ -647,21 +855,49 @@ async function main(options) {
     const model = selectFirstAgentModel(configuredModel, existing);
     if (
       existing &&
-      (existing.version !== 1 ||
+      (existing.version !== 3 ||
         existing.name !== options.name ||
-        existing.namespaceId !== namespace.id)
+        existing.namespaceId !== namespace.id ||
+        existing.harness !== options.harness ||
+        existing.sandboxDriver !== local.sandboxDriver ||
+        existing.controlUi !== options.controlUi)
     ) {
       throw new Error(
-        "This Agent's recorded Namespace or model differs. Reuse its recorded model or choose a new Agent name.",
+        "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
       );
     }
     const record = existing ?? {
-      version: 1,
+      version: 3,
+      authMethod:
+        process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
+          ? "codex_pat"
+          : "api_key",
       name: options.name,
       namespaceId: namespace.id,
       model,
+      harness: options.harness,
+      sandboxDriver: local.sandboxDriver,
+      controlUi: options.controlUi,
       secretName: `first-agent-${randomUUID()}`,
+      ...(local.sandboxDriver === "openshell"
+        ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
+        : {}),
     };
+    if (
+      !["api_key", "codex_pat"].includes(record.authMethod) ||
+      (record.authMethod === "codex_pat" &&
+        (options.harness !== "codex" || local.sandboxDriver !== "openshell"))
+    ) {
+      throw new Error(
+        "Personal access tokens in this helper require OpenShell with dedicated Codex.",
+      );
+    }
+    if (
+      (process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE) &&
+      (process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE)
+    ) {
+      throw new Error("Select only one model authentication method.");
+    }
     if (!existing) {
       await save(record);
     }
@@ -682,19 +918,48 @@ async function main(options) {
       );
     }
 
-    const expectedConfiguration = nativeConfiguration(model);
-    if (record.configurationId) {
-      const storedConfiguration = await api(
-        "GET",
-        `${base}/configurations/${record.configurationId}`,
-      );
-      assertManagedConfiguration(storedConfiguration, record, expectedConfiguration);
-      record.configurationGeneration = storedConfiguration.generation;
+    const baseConfiguration = nativeConfiguration(model, record.harness);
+    async function ensureManagedConfiguration(selectedAgent) {
+      if (record.controlUi && record.controlUiOrigin === undefined) {
+        const target = new URL(local.nativeAdmin.browserOrigin);
+        target.hostname = deriveNativeAdminHost(
+          installation.id,
+          selectedAgent,
+          local.nativeAdmin.domain,
+        );
+        record.controlUiOrigin = target.origin;
+        await save(record);
+      }
+      const expected = nativeConfiguration(model, record.harness, record.controlUiOrigin);
+      let stored = await api("GET", `${base}/configurations/${record.configurationId}`);
+      if (record.controlUi) {
+        if (stored.generation === 1) {
+          record.configurationGeneration = 1;
+          assertManagedConfiguration(stored, record, baseConfiguration);
+          progress("Enabling durable native Control UI access...");
+          stored = await api("PATCH", `${base}/configurations/${record.configurationId}`, {
+            values: expected.values,
+          });
+        }
+        if (stored.generation !== 2) {
+          throw new Error(
+            "This Agent's Configuration generation changed outside this helper. Use a new Agent name or manage this Agent through OCC.",
+          );
+        }
+        record.configurationGeneration = 2;
+      } else {
+        record.configurationGeneration = 1;
+      }
+      assertManagedConfiguration(stored, record, expected);
       await save(record);
+      return expected;
     }
+
+    let expectedConfiguration;
     if (agent) {
       assertManagedAgent(agent, record);
       record.agentId = agent.id;
+      expectedConfiguration = await ensureManagedConfiguration(agent);
       for (const revisionId of new Set(
         [agent.activeRevisionId, record.revisionId].filter(Boolean),
       )) {
@@ -710,7 +975,7 @@ async function main(options) {
     if (!record.secretId) {
       record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
       if (!record.secretId) {
-        suppliedKey = await modelKey();
+        suppliedKey = await modelKey(record.authMethod);
         progress("Saving the model credential in the local platform Secret...");
         const secret = await api("POST", `${base}/secrets`, {
           name: record.secretName,
@@ -724,19 +989,55 @@ async function main(options) {
     if (secret.name !== record.secretName) {
       throw new Error("The recorded Secret does not belong to this local first-agent run.");
     }
+
+    let credentialSource;
+    if (record.sandboxDriver === "openshell") {
+      const sources = await api("GET", `${base}/credential-sources`);
+      credentialSource = record.credentialSourceId
+        ? sources.find(({ id }) => id === record.credentialSourceId)
+        : sources.find(({ name }) => name === record.credentialSourceName);
+      if (record.credentialSourceId && credentialSource === undefined) {
+        throw new Error(
+          "This Agent's CredentialSource was removed after the helper created it. Choose a new name.",
+        );
+      }
+      if (credentialSource === undefined) {
+        progress("Registering the model credential with the OpenShell gateway...");
+        credentialSource = await api("POST", `${base}/credential-sources`, {
+          name: record.credentialSourceName,
+          type: record.authMethod === "codex_pat" ? "codex-pat" : "openai",
+          secrets: { [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref },
+        });
+      }
+      assertManagedCredentialSource(credentialSource, record, secret);
+      if (!record.credentialSourceId) {
+        record.credentialSourceId = credentialSource.id;
+        await save(record);
+      }
+    }
+
     if (options.replaceKey && suppliedKey === undefined) {
-      suppliedKey = await modelKey();
+      suppliedKey = await modelKey(record.authMethod);
       progress("Replacing the saved model credential...");
       await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
+      if (credentialSource !== undefined) {
+        progress("Updating the OpenShell gateway's model credential...");
+        credentialSource = await api(
+          "PATCH",
+          `${base}/credential-sources/${credentialSource.id}`,
+          {},
+        );
+        assertManagedCredentialSource(credentialSource, record, secret);
+      }
       record.previousRevisionId = record.revisionId ?? agent?.activeRevisionId;
       delete record.revisionId;
       await save(record);
     }
 
     if (!record.configurationId) {
-      const configuration = await api("POST", `${base}/configurations`, expectedConfiguration);
+      const configuration = await api("POST", `${base}/configurations`, baseConfiguration);
       record.configurationId = configuration.id;
-      assertManagedConfiguration(configuration, record, expectedConfiguration);
+      assertManagedConfiguration(configuration, record, baseConfiguration);
       record.configurationGeneration = configuration.generation;
       await save(record);
     }
@@ -745,32 +1046,44 @@ async function main(options) {
       agent = await api("POST", `${base}/agents`, {
         name: options.name,
         configurationId: record.configurationId,
-        executionMode: "embedded",
-        harnessAuth: { method: "api_key", source: secret.ref },
+        executionMode: record.harness === "codex" ? "dedicated" : "embedded",
+        harnessAuth: expectedHarnessAuth(record),
+        ...(expectedCredentialSources(record) === undefined
+          ? {}
+          : { credentialSources: expectedCredentialSources(record) }),
       });
     }
     assertManagedAgent(agent, record);
     record.agentId = agent.id;
     await save(record);
+    if (expectedConfiguration === undefined) {
+      expectedConfiguration = await ensureManagedConfiguration(agent);
+    }
     const agentPath = `${base}/agents/${agent.id}`;
-    progress("Authorizing the Agent to use its exact model Secret...");
-    await grantFirstAgentSecret(local.database, {
-      installationId: installation.id,
-      namespaceId: namespace.id,
-      agentId: agent.id,
-      secretId: secret.id,
-      actorId: local.key.data.servicePrincipalId,
-    });
+    if (credentialSource === undefined) {
+      progress("Authorizing the Agent to use its exact model Secret...");
+      await grantFirstAgentSecret(local.database, {
+        installationId: installation.id,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        secretId: secret.id,
+        actorId: local.key.data.servicePrincipalId,
+      });
+    } else {
+      progress("Authorizing the Agent to use its exact model CredentialSource...");
+      await ensureCredentialSourceGrant(api, base, agent, credentialSource);
+    }
     const credentials = await api("GET", `${agentPath}/runtime-credentials`);
     if (!credentials.transportConfigured) {
       await api("POST", `${agentPath}/runtime-credentials`, {});
     }
 
     if (!record.revisionId) {
-      const revisions = (await api("GET", `${agentPath}/revisions`)).sort(
-        (left, right) => right.revision - left.revision,
-      );
-      const latest = revisions[0];
+      // Revisions list as summaries, newest first; the exact read carries the saved snapshot.
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      const latest = newest
+        ? await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`)
+        : undefined;
       if (latest) {
         assertManagedRevision(latest, record, expectedConfiguration);
       }
@@ -802,19 +1115,28 @@ async function main(options) {
       }
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
-    progress(`Waiting for a real response from openai/${model}...`);
+    progress(
+      `Locating the Kubernetes gateway and waiting for a real response from ${record.harness === "codex" ? "codex" : "openai"}/${model}...`,
+    );
     const proof = await verifyFirstAgentModel(local.kubectl, {
       namespaceId: namespace.id,
       agentId: agent.id,
       revisionId: record.revisionId,
       prompt: options.prompt,
       apiKey: suppliedKey,
+      expectProviderKey: record.sandboxDriver !== "openshell",
     });
-    const consoleUrl = new URL(`/console/agents/${agent.id}`, local.origin);
+    const consoleUrl = new URL(
+      `/console/agents/${agent.id}`,
+      local.nativeAdmin?.browserOrigin ?? local.origin,
+    );
     consoleUrl.searchParams.set("namespace", namespace.id);
     process.stdout.write(
-      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nModel: openai/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
+      `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nHarness: ${record.harness}\nModel: ${record.harness === "codex" ? "codex" : "openai"}/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
     );
+    if (record.controlUiOrigin !== undefined) {
+      process.stdout.write(`Control UI: ${record.controlUiOrigin}/\n`);
+    }
     if (proof.response !== undefined) {
       process.stdout.write(`\nAgent response:\n${proof.response}\n`);
     }

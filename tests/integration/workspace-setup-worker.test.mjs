@@ -14,8 +14,8 @@ import {
   databaseUrl,
   ensureInstallation,
   requiresPostgres,
-  waitFor,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 // Real OCC admission, PostgreSQL persistence/queue, IAM, and production worker.
 // Compute is the established deterministic fixture; native file application is

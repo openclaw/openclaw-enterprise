@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { validateModelCredentialReferences } from "../model-auth.ts";
@@ -39,8 +40,11 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     this.root = resolve(root);
   }
 
-  async validateValues(values: OpenClawConfigurationDocument): Promise<void> {
-    validateModelCredentialReferences(values);
+  async validateValues(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    validateModelCredentialReferences(values, options);
   }
 
   async validate(configuration: Configuration): Promise<void> {
@@ -68,7 +72,9 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     ) {
       throw new Error("Stored Configuration does not belong to the exact requested Namespace.");
     }
-    await this.validate(configuration as Configuration);
+    // Held to the slots refused before it could have been saved, so a document an older release
+    // saved under a later rule still reads and can be replaced; writes check every slot.
+    validateModelCredentialReferences((configuration as Configuration).values, { stored: true });
     return immutableCopy(configuration as Configuration) as Configuration;
   }
 
@@ -88,8 +94,17 @@ export class FilesystemConfigurationDriver implements ConfigurationDriver {
     const directory = join(this.root, configuration.namespaceId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const temporary = join(directory, `.${configuration.id}.${randomUUID()}.tmp`);
-    await writeFile(temporary, `${JSON.stringify(configuration)}\n`, { mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      try {
+        await file.writeFile(`${JSON.stringify(configuration)}\n`);
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, path);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 }
 

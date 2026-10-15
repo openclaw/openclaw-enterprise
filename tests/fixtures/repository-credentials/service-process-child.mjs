@@ -35,7 +35,7 @@ process.on("message", async ({ id, command, input }) => {
         const registry = await loadGitHubRepositoryRegistry(input.registryFile, "github-fixture");
         factory = createGitHubRegistryDriverFactory({
           registry,
-          key,
+          authority: key,
           privateKeyFile: input.privateKeyFile,
           gatewayOrigin: config.gateway.publicOrigin,
           limits: config.limits,

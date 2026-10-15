@@ -1,0 +1,492 @@
+{
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "fileConcurrency": 8,
+  "parallelFiles": [
+    "tests/integration/ci-prepare-k3d.test.mjs",
+    "tests/integration/ci-prepare.test.mjs",
+    "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/integration/repository-credentials-admission.test.mjs",
+    "tests/conformance/ssh-compute.test.mjs",
+    "tests/conformance/module-boundaries.test.mjs",
+    "tests/integration/repository-credentials-router.test.mjs",
+    "tests/conformance/module-policy.test.mjs",
+    "tests/integration/native-admin-access.test.mjs",
+    "tests/integration/repository-credentials-transport-bounds.test.mjs",
+    "tests/integration/cli-release.test.mjs",
+    "tests/integration/container-resume.test.mjs",
+    "tests/integration/metrics-monitoring-readiness.test.mjs",
+    "tests/integration/repository-credentials-descriptions.test.mjs",
+    "tests/integration/repository-credentials-control.test.mjs",
+    "tests/integration/codex-plugin-startup-reads.test.mjs",
+    "tests/integration/container-release.test.mjs",
+    "tests/integration/password-sign-in-audit.test.mjs",
+    "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/repository-credentials-service-loss.test.mjs",
+    "tests/integration/ci-runner.test.mjs",
+    "tests/integration/k3d-launcher.test.mjs",
+    "tests/integration/password-sign-in-admission.test.mjs",
+    "tests/integration/google-login-transport.test.mjs",
+    "tests/conformance/slack-channel-directory.test.mjs",
+    "tests/conformance/bounded-response-reads.test.mjs",
+    "tests/conformance/repository-credentials-github.test.mjs",
+    "tests/integration/repository-credentials-driver.test.mjs",
+    "tests/integration/known-device-cookie.test.mjs",
+    "tests/conformance/postgres-controller-auth-binding.test.mjs",
+    "tests/integration/repository-credentials-package.test.mjs",
+    "tests/integration/repository-credentials-restart.test.mjs",
+    "tests/conformance/plugin-driver.test.mjs",
+    "tests/integration/ci-image-reconciliation.test.mjs",
+    "tests/conformance/repository-runtime-material.test.mjs",
+    "tests/integration/repository-credentials-server-timeout.test.mjs",
+    "tests/integration/repository-credentials-http.test.mjs",
+    "tests/integration/public-github-read-http.test.mjs",
+    "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+    "tests/integration/repository-credentials-projected-inputs.test.mjs",
+    "tests/integration/ci-image-pull.test.mjs",
+    "tests/integration/ci-download-pinned.test.mjs",
+    "tests/conformance/slack-proxy-tunnel.test.mjs",
+    "tests/conformance/native-admin-websocket-relay.test.mjs",
+    "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/repository-runtime-materialization.test.mjs",
+    "tests/conformance/repository-credentials-contracts.test.mjs",
+    "tests/integration/plugin-driver-startup.test.mjs",
+    "tests/integration/repository-credentials-config.test.mjs",
+    "tests/integration/kubernetes-peer-status.test.mjs",
+    "tests/conformance/repository-credentials-lifecycle.test.mjs",
+    "tests/integration/ssh-compute-startup.test.mjs",
+    "tests/integration/oidc-login-transport.test.mjs",
+    "tests/conformance/repository-credentials-ownership-boundaries.test.mjs",
+    "tests/integration/ci-cleanup.test.mjs",
+    "tests/integration/runtime-image-failure-output.test.mjs",
+    "tests/conformance/runtime-model-probe-settlement.test.mjs",
+    "tests/conformance/hosted-plugin-discovery.test.mjs",
+    "tests/integration/plugin-driver-real-preflight.test.mjs",
+    "tests/conformance/postgres-transaction-commit.test.mjs",
+    "tests/conformance/plugin-runtime-policy.test.mjs",
+    "tests/integration/password-sign-in-policy.test.mjs",
+    "tests/integration/compute-singleton-worker.test.mjs",
+    "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+    "tests/integration/oidc-id-token.test.mjs",
+    "tests/integration/repository-credentials-shutdown.test.mjs",
+    "tests/integration/repository-credentials-descriptions-uncertain.test.mjs",
+    "tests/conformance/repository-transactions.test.mjs",
+    "tests/integration/google-id-token.test.mjs",
+    "tests/integration/first-agent-startup.test.mjs",
+    "tests/conformance/repository-sessions-memory.test.mjs",
+    "tests/conformance/repository-credentials-github-token.test.mjs",
+    "tests/conformance/repository-credentials-registry.test.mjs",
+    "tests/integration/ci-openshell.test.mjs",
+    "tests/conformance/repository-credentials-sessions.test.mjs",
+    "tests/integration/dev-codex-seccomp-failure.test.mjs",
+    "tests/conformance/runtime-probe-cpu-counter.test.mjs",
+    "tests/conformance/runtime-gateway-state-migration.test.mjs",
+    "tests/conformance/node-test-summary.test.mjs",
+    "tests/conformance/repository-material-store.test.mjs",
+    "tests/conformance/plugin-runtime-templates.test.mjs",
+    "tests/integration/ci-logging.test.mjs",
+    "tests/conformance/slack-proxy-reset.test.mjs",
+    "tests/conformance/native-admin-upgrade-reset.test.mjs",
+    "tests/conformance/repository-credentials-custody.test.mjs",
+    "tests/conformance/repository-credentials-receive-pack.test.mjs",
+    "tests/integration/runtime-assets.test.mjs",
+    "tests/conformance/repository-client-environment.test.mjs",
+    "tests/conformance/repository-credentials-tool-evidence.test.mjs",
+    "tests/integration/client-address.test.mjs",
+    "tests/integration/full-integration-preflight.test.mjs",
+    "tests/conformance/repository-material-expiry-probe.test.mjs",
+    "tests/integration/container-promote.test.mjs",
+    "tests/conformance/controller-stop-yields.test.mjs",
+    "tests/integration/dev-up-model-provider.test.mjs"
+  ],
+  "serialFiles": {
+    "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
+    "tests/conformance/schema-auth-boundary-v1.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read"
+  },
+  "files": [
+    {
+      "path": "tests/integration/tls-peer-certificate.test.mjs"
+    },
+    {
+      "path": "tests/integration/qa-fixture-inputs.test.mjs"
+    },
+    {
+      "path": "tests/integration/github-app-observer.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
+    },
+    {
+      "path": "tests/integration/first-agent-startup.test.mjs",
+      "expectedTests": [
+        "first-Agent starts without installed workspace dependencies",
+        "first-Agent accepts current Compose-backed Kubernetes development state",
+        "first-Agent requires dedicated Codex for OpenShell before external calls",
+        "first-Agent admits dedicated Codex with OpenShell development state",
+        "first-Agent control UI requires the launcher-owned native admin endpoint",
+        "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
+      ]
+    },
+    {
+      "path": "tests/integration/first-agent-smoke.test.mjs",
+      "expectedTests": [
+        "stop observation accepts a fast shutdown and checks Pods afterward",
+        "default stop observation covers the selected gateway grace",
+        "the second stop can wait behind the serial worker's first gateway drain",
+        "an explicit shorter deadline is authoritative and does not start a later Pod read",
+        "permanent nonconvergence retains the active-pointer assertion and bounded state",
+        "a desired-state reversal fails without accepting an empty active pointer",
+        "an empty active pointer does not accept remaining Pods",
+        "both observation stages share the explicit deadline",
+        "invalid bounds fail before any observation",
+        "an observation that returns after its explicit deadline cannot report success",
+        "failed diagnostic reads return a fixed marker without exposing or throwing the error",
+        "diagnostics project only fixed lifecycle fields"
+      ]
+    },
+    {
+      "path": "tests/integration/compute-singleton-worker.test.mjs",
+      "expectedTests": [
+        "before-commit Compute Drivers must expose an activation operation",
+        "Compute Driver maintenance intervals must be positive safe integers"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runner.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-impact-gate.test.mjs"
+    },
+    {
+      "path": "tests/integration/metrics-monitoring-readiness.test.mjs",
+      "expectedTests": [
+        "datasource readiness retries a transient HTTP 400",
+        "non-retryable Grafana health failures retain their stage and status",
+        "non-retryable Grafana datasource failures retain their stage and status",
+        "datasource readiness retries an interrupted response body",
+        "malformed or invalid Grafana datasource responses retain their stage and status",
+        "a timed-out Prometheus response body retries and accepts a later valid query",
+        "Prometheus readiness retries an interrupted response body",
+        "null or malformed Prometheus responses retain their stage and status"
+      ]
+    },
+    {
+      "path": "tests/integration/full-integration-preflight.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-cleanup.test.mjs"
+    },
+    {
+      "path": "tests/integration/runtime-image-failure-output.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-image-reconciliation.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-prepare-k3d.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-image-pull.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-keycloak.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-download-pinned.test.mjs"
+    },
+    {
+      "path": "tests/integration/k3d-launcher.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-openshell.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/container-release.test.mjs"
+    },
+    {
+      "path": "tests/integration/cli-release.test.mjs",
+      "expectedTests": [
+        "CLI release builds four installable platform binaries and rejects changed assets"
+      ]
+    },
+    {
+      "path": "tests/integration/container-resume.test.mjs"
+    },
+    {
+      "path": "tests/integration/container-promote.test.mjs"
+    },
+    {
+      "path": "tests/conformance/ssh-compute.test.mjs"
+    },
+    {
+      "path": "tests/integration/ssh-compute-startup.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-probe-cpu-counter.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-gateway-state-migration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/node-test-summary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-runtime-policy.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-driver.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/bounded-response-reads.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-reset.test.mjs"
+    },
+    {
+      "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
+    },
+    {
+      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
+    },
+    {
+      "path": "tests/conformance/native-admin-websocket-relay.test.mjs"
+    },
+    {
+      "path": "tests/conformance/hosted-plugin-discovery.test.mjs"
+    },
+    {
+      "path": "tests/conformance/plugin-runtime-templates.test.mjs"
+    },
+    {
+      "path": "tests/integration/plugin-driver-startup.test.mjs"
+    },
+    {
+      "path": "tests/integration/plugin-driver-real-preflight.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-transactions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-transaction-commit.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
+      "expectedTests": ["lost COMMIT response returns unknown without waiting for a hung rollback"]
+    },
+    {
+      "path": "tests/integration/native-admin-access.test.mjs",
+      "expectedTests": [
+        "native admin status requires exact Agent administer and reports lifecycle availability",
+        "native admin disabled status still requires exact Agent administer",
+        "native admin shared session configuration validates cookie scope and rejects keys",
+        "native admin proxy strips browser credentials and preserves the Agent gateway base path"
+      ]
+    },
+    {
+      "path": "tests/integration/workspace-setup-api.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-github.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-github-token.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-receive-pack.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-sessions.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-custody.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-lifecycle.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-ownership-boundaries.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-tool-evidence.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
+      "expectedTests": [
+        "runner timeout cancels and joins commands before teardown admits cleanup",
+        "accepted network creation with a lost response stays owned until verified absent",
+        "creation completes after 0ms",
+        "creation completes after 500ms",
+        "uncertain network creation remains unresolved when its cleanup budget expires empty",
+        "network cleanup reports failed readback and refuses foreign ownership"
+      ]
+    },
+    {
+      "path": "tests/integration/repository-credentials-config.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-http.test.mjs"
+    },
+    {
+      "path": "tests/integration/public-github-read-http.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-transport-bounds.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-server-timeout.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-control.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-descriptions.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-descriptions-uncertain.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-shutdown.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-router.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-package.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-service-loss.test.mjs",
+      "expectedTests": [
+        "TEST-001: SIGKILL after confirmed GitHub issuance loses session inventory",
+        "TEST-002: lost GitHub issuance response stays charged while service survives",
+        "TEST-002: SIGKILL before GitHub issuance response loses local reservation",
+        "a lost revocation response is not proof of disposal across broker loss",
+        "captured GitHub authority expires by elapsed time when revocation is unconfirmed",
+        "a broker restart cannot accept bound admissions without durable fencing"
+      ]
+    },
+    {
+      "path": "tests/conformance/repository-credentials-registry.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-client-environment.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-material-expiry-probe.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-material-store.test.mjs",
+      "expectedTests": [
+        "expiry during Secret read refuses to create material",
+        "earliest expiry during first creation prevents the next creation and leaves cleanup possible",
+        "unexpired material is created and the retained session is reused",
+        "expiry during retained Secret read is not reported as missing material",
+        "expiry during retained Secret validation is not reported as missing material"
+      ]
+    },
+    {
+      "path": "tests/conformance/repository-runtime-material.test.mjs"
+    },
+    {
+      "path": "tests/conformance/repository-sessions-memory.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-admission.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-driver.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-projected-inputs.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-restart.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-runtime-materialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/codex-plugin-startup-reads.test.mjs"
+    },
+    {
+      "path": "tests/integration/kubernetes-peer-status.test.mjs",
+      "expectedTests": [
+        "real peer-status HTTPS transport authenticates its revision and verifies server trust"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-assets.test.mjs"
+    },
+    {
+      "path": "tests/conformance/module-boundaries.test.mjs"
+    },
+    {
+      "path": "tests/conformance/module-policy.test.mjs",
+      "expectedTests": [
+        "repository source obeys its dependency policy with exact current exceptions",
+        "repository policy allows a public root and rejects a new HTTP Driver import"
+      ]
+    },
+    {
+      "path": "tests/integration/google-id-token.test.mjs"
+    },
+    {
+      "path": "tests/integration/google-login-transport.test.mjs"
+    },
+    {
+      "path": "tests/integration/oidc-id-token.test.mjs"
+    },
+    {
+      "path": "tests/integration/oidc-login-transport.test.mjs"
+    },
+    {
+      "path": "tests/integration/password-sign-in-policy.test.mjs"
+    },
+    {
+      "path": "tests/integration/client-address.test.mjs"
+    },
+    {
+      "path": "tests/integration/password-sign-in-admission.test.mjs"
+    },
+    {
+      "path": "tests/integration/password-sign-in-audit.test.mjs"
+    },
+    {
+      "path": "tests/integration/known-device-cookie.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-auth-binding.test.mjs"
+    },
+    {
+      "path": "tests/conformance/postgres-controller-auth-binding.test.mjs"
+    },
+    {
+      "path": "tests/conformance/schema-auth-boundary-v1.test.mjs"
+    },
+    {
+      "path": "tests/conformance/controller-stop-yields.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-up-model-provider.test.mjs"
+    }
+  ]
+}

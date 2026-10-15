@@ -19,7 +19,7 @@ account isolation on the selected disposable host.
 
 ## SSH raw hosts
 
-The `checks-baseline` CI lane runs SSH conformance and startup coverage. The
+The `checks-baseline-*` CI lanes run SSH conformance and startup coverage. The
 `ssh-host` lane selects the real-host test with required operator-provided SSH
 settings. It is not part of the `ci` or `full` groups because those jobs do not
 provision an SSH host.
@@ -32,6 +32,11 @@ checks gateway readiness, two-revision cutover, state persistence, retirement,
 and Namespace deletion over real SSH. It also checks distinct Agent UID/GID
 assignments and sibling state/configuration read denial using Linux `runuser`. It makes no model call and needs no
 model credential. The ordinary local test command reports an explicit skip:
+
+The same suite exercises repeated stop, reactivation, retirement and Agent deletion
+while a sibling remains ready, followed by Namespace deletion. To cover a directory
+outside systemd's unit load path, create an owned host directory and set
+`OCC_TEST_SSH_UNIT_DIRECTORY` to its absolute path; also run with the default directory.
 
 ```sh
 node --test tests/integration/ssh-compute-real.test.mjs

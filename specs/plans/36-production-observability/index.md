@@ -1,5 +1,5 @@
 ---
-rfc: ../../rfcs/36-production-observability.md
+rfc: ../../rfcs/0012-production-observability.md
 ---
 
 # Default production observability implementation plan
@@ -19,7 +19,7 @@ PostgreSQL, Prometheus, Collector, and Loki.
 **Tech stack:** Helm, Kubernetes/k3d, Node.js 24+, pinned pnpm, PostgreSQL,
 OpenTelemetry Collector, Prometheus, Grafana, and Loki.
 
-**Spec:** [Default production observability](../../rfcs/36-production-observability.md).
+**Spec:** [Default production observability](../../rfcs/0012-production-observability.md).
 Status: Earlier local acceptance passed on its recorded source. The expanded
 Helm-installed model and revision-cutover coverage is deferred; the existing
 protected model lane is retained. Model-turn qualification on the current cut

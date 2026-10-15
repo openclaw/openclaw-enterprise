@@ -12,6 +12,7 @@ import {
   AuthorizationDeniedError,
   DependencyUnavailableError,
   DriverSelectionError,
+  InMemoryPlatformState,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -20,6 +21,8 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { registerAndSelectDrivers } from "../helpers/development.mjs";
+import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 
 const installation = {
@@ -51,20 +54,12 @@ function createIAMDriver({ identities = [], roles = [], bindings = [], restricti
     roles: [
       {
         id: "role-admin",
-        permissions: [
-          { action: "create", resourceKind: "namespace" },
-          { action: "read", resourceKind: "namespace" },
-          { action: "delete", resourceKind: "namespace" },
-          { action: "create", resourceKind: "configuration" },
-          { action: "read", resourceKind: "configuration" },
-          { action: "create", resourceKind: "secret" },
-          { action: "operate", resourceKind: "secret" },
-          { action: "create", resourceKind: "agent" },
-          { action: "read", resourceKind: "agent" },
-          { action: "update", resourceKind: "agent" },
-          { action: "deploy", resourceKind: "agent" },
-          { action: "operate", resourceKind: "agent" },
-        ],
+        permissions: permissionsFor({
+          namespace: ["create", "read", "delete"],
+          configuration: ["create", "read"],
+          secret: ["create", "operate"],
+          agent: ["create", "read", "update", "deploy", "operate"],
+        }),
       },
       { id: "role-harness-secret", permissions: [{ action: "operate", resourceKind: "secret" }] },
       ...roles,
@@ -181,15 +176,12 @@ function createController(iam = createIAMDriver(), options = {}) {
             : `${kind}-${++nextIdentifier}`,
   });
   const drivers = createDrivers(iam);
-  for (const driver of [
+  registerAndSelectDrivers(controller, [
     drivers.iam,
     drivers.compute,
     drivers.configuration,
     createTestSecretDriver(),
-  ]) {
-    controller.registerDriver(driver);
-    controller.selectDriver(driver.capability, driver.id);
-  }
+  ]);
   return { controller, ...drivers };
 }
 
@@ -206,14 +198,11 @@ async function bindHarnessAuth(controller, agent) {
     namespaceId: agent.namespaceId,
     agentId: agent.id,
   });
-  iamState.bindings.push({
+  bindRole(iamState, agent.servicePrincipalId, {
     id: `harness-secret-${agent.id}`,
-    namespaceId: agent.namespaceId,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
     roleId: "role-harness-secret",
-    resourceKind: "secret",
-    resourceId: secret.id,
+    namespaceId: agent.namespaceId,
+    resource: { kind: "secret", id: secret.id },
   });
   await controller.updateAgent("principal-admin", {
     namespaceId: agent.namespaceId,
@@ -338,6 +327,21 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       }),
     DriverSelectionError,
   );
+  // Compute renders Harness-local paths under a declared Harness HOME.
+  controller.registerDriver({
+    ...createSandboxDriver({ id: "declared-home" }),
+    harnessHome: "/sandbox/home",
+  });
+  for (const harnessHome of ["sandbox/home", "/sandbox//home", "/sandbox/../home", "/", 1]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: `invalid-home-${String(harnessHome)}` }),
+          harnessHome,
+        }),
+      DriverSelectionError,
+    );
+  }
   for (const hook of ["ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
@@ -419,6 +423,139 @@ test("Installation ownership is server-selected, detached, and immutable", () =>
   assert.throws(() => {
     controller.installation.id = "mutated-installation";
   }, TypeError);
+});
+
+// Names the API's Name schema refuses. All but the last two pass a length-and-blankness check:
+// a C1 control, line and paragraph separators, edge Unicode whitespace, a lone surrogate, and
+// C0 and DEL controls. The empty string and 201 code points cover the length bounds.
+const namesOutsideTheNameRule = [
+  "name\u0085x",
+  "name\u2028x",
+  "name\u2029x",
+  "name\u00a0",
+  "\u3000name",
+  "name\ud800x",
+  "name\u0007x",
+  "name\u007fx",
+  "",
+  "😀".repeat(201),
+];
+
+test("a stored Installation or configured default Preset name follows the API Name rule", () => {
+  // 200 code points with an interior NBSP is a valid Name.
+  const longest = `name\u00a0${"😀".repeat(195)}`;
+  assert.equal(
+    new OpenClawController({ ...installation, name: longest }).installation.name,
+    longest,
+  );
+  // The refusal states the whole rule.
+  assert.throws(() => new OpenClawController({ ...installation, name: "name\u0007x" }), {
+    message:
+      "The stored Installation name breaks the Name rule: 1 to 200 characters, with no leading" +
+      " or trailing whitespace and no control characters or line or paragraph separators.",
+  });
+  for (const name of namesOutsideTheNameRule) {
+    assert.throws(
+      () => new OpenClawController({ ...installation, name }),
+      (error) =>
+        error instanceof ScopeViolationError &&
+        /^The stored Installation name breaks the Name rule: 1 to 200 characters/.test(
+          error.message,
+        ),
+      JSON.stringify(name),
+    );
+    assert.throws(
+      () =>
+        new OpenClawController(installation, {
+          defaultPresets: [{ name, template: { agent: {} } }],
+        }),
+      /Default Presets require distinct names that follow the Name rule: 1 to 200 characters/,
+      JSON.stringify(name),
+    );
+  }
+});
+
+test("direct controller creates and renames apply the API Name rule", async () => {
+  // Provisioning authorizes its Namespace-level grants, Installation administration included,
+  // before it reads the plan, so the administrator needs that grant to reach the Name rule.
+  const { controller } = createController(
+    createIAMDriver({
+      roles: [
+        {
+          id: "role-installation-admin",
+          permissions: [{ action: "administer", resourceKind: "installation" }],
+        },
+      ],
+      bindings: [
+        {
+          id: "binding-installation-admin",
+          subjectKind: "identity",
+          subjectId: "principal-admin",
+          roleId: "role-installation-admin",
+        },
+      ],
+    }),
+  );
+  const namespaceId = "ns_00000000-0000-4000-8000-000000000999";
+  for (const name of namesOutsideTheNameRule) {
+    const label = JSON.stringify(name);
+    await assert.rejects(
+      controller.createNamespace("principal-admin", { name }),
+      {
+        message: "The Namespace name is invalid.",
+      },
+      label,
+    );
+    await assert.rejects(
+      controller.createAgent("principal-admin", { namespaceId, name, configurationId: "cfg_a" }),
+      { message: "The Agent name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.provisionAgent("principal-admin", {
+        namespaceId,
+        requestId: "request-a",
+        name,
+        configuration: {},
+      }),
+      { message: "The Agent name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.createSecret("principal-admin", { namespaceId, name, value: "synthetic" }),
+      { message: "The Secret name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.createPreset("principal-admin", { namespaceId, name, template: { agent: {} } }),
+      { message: "The Preset name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.updatePreset("principal-admin", { namespaceId, presetId: "preset-a", name }),
+      { message: "The Preset name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.createCredentialSource("principal-admin", { namespaceId, name, config: {} }),
+      { message: "The credential source name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.createServiceAccount("principal-admin", { namespaceId, name }),
+      { message: "The ServiceAccount name is invalid." },
+      label,
+    );
+    await assert.rejects(
+      controller.createIAMRole("principal-admin", {
+        namespaceId,
+        name,
+        permissions: [{ action: "read", resourceKind: "agent" }],
+      }),
+      { message: "The IAM Role name is invalid." },
+      label,
+    );
+  }
 });
 
 test("authorized resources retain exact Namespace ownership without metadata-only work", async () => {
@@ -510,6 +647,100 @@ test("authorized resources retain exact Namespace ownership without metadata-onl
     stop: 0,
     retire: 0,
   });
+});
+
+/**
+ * In-memory state whose strict revision reads fail for chosen ids, the way PostgreSQL
+ * reports a stored snapshot the current contract no longer decodes (a DependencyUnavailableError).
+ * Metadata reads still list those revisions.
+ */
+class UnreadableRevisionState extends InMemoryPlatformState {
+  unreadable = new Set();
+
+  wrap(unit) {
+    const revisions = unit.revisions;
+    const refuse = () => {
+      throw new DependencyUnavailableError("Persisted saved configuration is invalid.");
+    };
+    return {
+      ...unit,
+      revisions: {
+        ...revisions,
+        findRevision: async (namespaceId, agentId, revisionId) => {
+          if (this.unreadable.has(revisionId)) {
+            refuse();
+          }
+          return revisions.findRevision(namespaceId, agentId, revisionId);
+        },
+        listRevisions: async (namespaceId, agentId) => {
+          const listed = await revisions.listRevisions(namespaceId, agentId);
+          if (listed.some(({ id }) => this.unreadable.has(id))) {
+            refuse();
+          }
+          return listed;
+        },
+      },
+    };
+  }
+
+  read(work) {
+    return super.read((view) => work(this.wrap(view)));
+  }
+
+  transact(work) {
+    return super.transact((unit) => work(this.wrap(unit)));
+  }
+}
+
+test("deployment refuses with 503 and creates nothing when an earlier revision is unreadable (finding 1338)", async () => {
+  const state = new UnreadableRevisionState();
+  const { controller } = createController(createIAMDriver(), { state });
+  const namespace = await controller.createNamespace("principal-admin", {
+    name: "Unreadable history",
+  });
+  await controller.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  const configuration = await createConfiguration(controller, namespace.id, { model: "gpt-test" });
+  const agent = await controller.createAgent("principal-admin", {
+    namespaceId: namespace.id,
+    name: "Agent with unreadable history",
+    configurationId: configuration.id,
+  });
+  await bindHarnessAuth(controller, agent);
+  const deploy = () =>
+    controller.deployAgent(
+      "principal-admin",
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    );
+  const first = await deploy();
+  const second = await deploy();
+  state.unreadable.add(first.id);
+  const metadata = () =>
+    controller.transact((unit) => unit.revisions.listRevisionMetadata(namespace.id, agent.id));
+  const before = { revisions: await metadata(), work: controller.pendingOperations().length };
+  assert.deepEqual(
+    before.revisions.map(({ id }) => id),
+    [first.id, second.id],
+  );
+
+  // The worker decodes every earlier revision to stop or retire it, so admission must too.
+  const refusal = await deploy().then(
+    () => assert.fail("deployment was admitted"),
+    (error) => error,
+  );
+  assert.ok(refusal instanceof DependencyUnavailableError);
+  assert.equal(refusal.message, "Persisted saved configuration is invalid.");
+  assert.equal(requestFailure(refusal).status, 503);
+  assert.deepEqual(
+    { revisions: await metadata(), work: controller.pendingOperations().length },
+    before,
+  );
+
+  // Once the revision reads again, the next deployment is numbered after it.
+  state.unreadable.clear();
+  assert.equal((await deploy()).revision, 3);
 });
 
 test("deployment fails closed when no Compute Driver is selected", async () => {
@@ -1073,13 +1304,16 @@ test("deploy names the Agent service principal and the permission it lacks", asy
 });
 
 test("selected Sandbox Drivers fail closed for embedded Agents regardless of declared facets", async () => {
+  // Agent save refuses the pair every deployment refuses (finding 1117), with deployment's
+  // message; an Agent stored before the Sandbox Driver was selected still reads and deployment
+  // still refuses it.
+  const message =
+    "The selected Sandbox Driver supports only dedicated Harness execution; this Agent uses embedded execution. Set executionMode to dedicated.";
   for (const sandbox of [
     createSandboxDriver(),
     createSandboxDriver({ id: "partial-sandbox", facets: ["networking"] }),
   ]) {
     const { controller } = createController();
-    controller.registerDriver(sandbox);
-    controller.selectDriver("sandbox", sandbox.id);
     const namespace = await controller.createNamespace("principal-admin", {
       name: `Sandbox rejection ${sandbox.id}`,
     });
@@ -1093,19 +1327,51 @@ test("selected Sandbox Drivers fail closed for embedded Agents regardless of dec
       configurationId: configuration.id,
       executionMode: "embedded",
     });
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
 
+    // An omitted executionMode is embedded.
+    for (const mode of [{ executionMode: "embedded" }, {}]) {
+      await assert.rejects(
+        controller.createAgent("principal-admin", {
+          namespaceId: namespace.id,
+          name: `Refused ${sandbox.id}`,
+          configurationId: configuration.id,
+          ...mode,
+        }),
+        { name: "ConfigurationHarnessError", message },
+      );
+    }
+    await assert.rejects(
+      controller.updateAgent("principal-admin", {
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        configurationId: configuration.id,
+      }),
+      { name: "ConfigurationHarnessError", message },
+    );
+    const stored = await controller.getAgent("principal-admin", namespace.id, agent.id);
+    assert.equal(stored.executionMode, "embedded");
     await assert.rejects(
       controller.deployAgent(
         "principal-admin",
         { namespaceId: namespace.id, agentId: agent.id },
         resolveApprovedDevelopmentHarness,
       ),
-      ScopeViolationError,
+      { name: "ConfigurationHarnessError", message },
     );
     assert.deepEqual(
       await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
       [],
     );
+    // The update that fixes the pair saves.
+    const fixed = await controller.updateAgent("principal-admin", {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(fixed.executionMode, "dedicated");
   }
 });
 
@@ -1360,10 +1626,12 @@ test("the controller fails closed until an authoritative IAM Driver is selected"
 
 test("an authorization callback cannot bypass the selected IAM Driver", async () => {
   const controller = new OpenClawController(installation, {
+    // Well-formed apart from naming another Driver, so only the Driver check refuses it.
     authorize: async () => ({
       allowed: true,
       reason: "An untrusted callback attempted to grant access.",
       driverId: "unregistered-iam",
+      evidence: { groupIds: [], bindingIds: [], roleIds: [], restrictionIds: [] },
     }),
   });
 
@@ -1377,11 +1645,85 @@ test("an authorization callback cannot bypass the selected IAM Driver", async ()
   controller.registerDriver(iam);
   controller.selectDriver("iam", iam.id);
 
-  await assert.rejects(
-    controller.createNamespace("principal-admin", { name: "Wrong authority" }),
-    AuthorizationDeniedError,
-  );
+  await assert.rejects(controller.createNamespace("principal-admin", { name: "Wrong authority" }), {
+    name: "DependencyUnavailableError",
+    message: /belongs to another Driver/,
+  });
   assert.deepEqual(controller.pendingOperations(), []);
+});
+
+test("IAM decision reasons must be strings before returning Installation data", async (t) => {
+  const native = createIAMDriver({
+    roles: [
+      {
+        id: "installation-reader",
+        permissions: [{ action: "read", resourceKind: "installation" }],
+      },
+    ],
+    bindings: [
+      {
+        id: "installation-reader-binding",
+        subjectKind: "identity",
+        subjectId: "principal-admin",
+        roleId: "installation-reader",
+      },
+    ],
+  });
+  let transform = (decision) => decision;
+  const iam = {
+    id: native.id,
+    capability: native.capability,
+    implementation: native.implementation,
+    lookupIdentity: (input) => native.lookupIdentity(input),
+    // Inject malformed output at the selected Driver boundary, retaining OCC's real receiver.
+    authorize: async (request) => transform(await native.authorize(request)),
+  };
+  const controller = new OpenClawController(installation);
+  controller.registerDriver(iam);
+  controller.selectDriver("iam", iam.id);
+
+  for (const [name, reason] of [
+    ["omitted", undefined],
+    ["null", null],
+    ["number", 42],
+    ["object", {}],
+  ]) {
+    await t.test(name, async () => {
+      transform = (decision) => {
+        const result = { ...decision, reason };
+        if (reason === undefined) {
+          delete result.reason;
+        }
+        return result;
+      };
+      await assert.rejects(
+        controller.getInstallation("principal-admin"),
+        DependencyUnavailableError,
+      );
+      assert.deepEqual(controller.pendingOperations(), []);
+    });
+  }
+  for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
+    await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
+      transform = (decision) => ({ ...decision, reason });
+      assert.deepEqual(await controller.getInstallation("principal-admin"), installation);
+    });
+  }
+  await t.test("wrong Driver remains unavailable", async () => {
+    transform = (decision) => ({ ...decision, driverId: "another-driver" });
+    await assert.rejects(controller.getInstallation("principal-admin"), DependencyUnavailableError);
+  });
+  await t.test("malformed evidence remains unavailable", async () => {
+    transform = (decision) => ({
+      ...decision,
+      evidence: { ...decision.evidence, roleIds: null },
+    });
+    await assert.rejects(controller.getInstallation("principal-admin"), DependencyUnavailableError);
+  });
+  await t.test("a genuine denial remains forbidden", async () => {
+    transform = (decision) => decision;
+    await assert.rejects(controller.getInstallation("principal-unbound"), AuthorizationDeniedError);
+  });
 });
 
 test("two Namespace tenants cannot create or deploy each other's Agents", async () => {

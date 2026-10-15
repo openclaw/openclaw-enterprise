@@ -44,48 +44,34 @@ stops provisioning permanently.
 
 ### Grant tenant RoleBindings
 
-Grant the worker runtime role in the data plane. The API lists Deployments for
-credential preflight and reads Pods through the proxy for on-demand diagnostics.
-Replace the `oce-` prefix if the Helm release name differs:
+Single-cluster Compute uses the same tenant namespace for both runtime roles and
+canonical storage. Grant the worker runtime role and API credential/configuration
+roles there. Replace the `oce-` prefix if the Helm release name differs:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
   --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-observer \
-  --clusterrole=oce-openclaw-gateway-observer --serviceaccount=openclaw-system:openclaw-enterprise-api
-```
-
-After the data-plane grant, the worker creates a second namespace. Discover it
-and grant worker runtime permissions plus API canonical Configuration/Secret
-storage and Deployment preflight access:
-
-```bash
-GATEWAY_RUNTIME_NAMESPACE="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get namespaces -l "openclaw.dev/gateway-namespace=$NAMESPACE_ID" -o json | \
-  python3 -c 'import json,sys; items=json.load(sys.stdin)["items"]; print(items[0]["metadata"]["name"]) if len(items)==1 else sys.exit("Expected one Gateway runtime namespace; retry after worker creation")')" && export GATEWAY_RUNTIME_NAMESPACE
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-worker \
-  --clusterrole=oce-openclaw-tenant-worker --serviceaccount=openclaw-system:openclaw-enterprise-worker
-kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
+  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-secrets \
   --clusterrole=oce-openclaw-tenant-api --serviceaccount=openclaw-system:openclaw-enterprise-api
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  -n "$GATEWAY_RUNTIME_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
+  -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-api-configuration \
   --clusterrole=oce-openclaw-tenant-configuration --serviceaccount=openclaw-system:openclaw-enterprise-api
 ```
 
-The Secret RoleBinding grants Secret access, Deployment list access for preflight,
-and Pod read/proxy access for Gateway diagnostics. The data-plane observer grants
-Deployment list and Pod read/proxy access for Agent diagnostics. With
-`agentRuntimeLogs.enabled` (default), both roles also grant `pods/log get` and
-`events get,list` for [Agent logs](../topics/agent-logs.md); roles you write by
-hand need the same rules, and missing ones return `503 RUNTIME_LOGS_CLUSTER_RBAC`. OCC IAM grants
-remain required. Worker permissions in both targets allow credential delivery.
-Workload ServiceAccounts receive no Secret API access. Embedded execution also
-needs the tenant-api role in the data plane for its combined transport bundle.
-Wait for Namespace `ready` only after granting both targets.
+The Secret role also grants Deployment list access for credential preflight and
+Pod read/proxy access for diagnostics. With `agentRuntimeLogs.enabled` (default),
+it grants `pods/log get` and `events get,list` for [Agent logs](../topics/agent-logs.md).
+Custom roles need the same rules; missing log grants return `503 RUNTIME_LOGS_CLUSTER_RBAC`.
+Missing credential grants return `503 RUNTIME_CREDENTIALS_CLUSTER_RBAC`; API logs
+`agent_runtime_credentials.cluster_denied` identify the denied call and namespace.
+OCC IAM grants remain required. Workload ServiceAccounts receive no Secret API
+access. Wait for Namespace `ready` after these grants. Namespace workload
+managers are trusted for both roles; use disjoint trusted Gateway and Harness
+node pools. For the experimental two-cluster profile, grant these storage roles
+in the separately discovered control target and worker/observer roles in the
+execution target; see [two-cluster testing](../../testing/two-cluster-local.md).
 
 ## Prepare each Agent
 
@@ -447,9 +433,6 @@ Next, verify a model response from the same revision.
 
 ## Verify production workloads
 
-Verify NetworkPolicies against the
-[platform access matrix](../../testing/production-network-access.md).
-
 Wait for `GET /namespaces/$NAMESPACE_ID/agents/$AGENT_ID` to report the
 expected `activeRevisionId`, then require a real model response from that
 Agent. Use its optional loopback password to [attach with the OpenClaw
@@ -460,6 +443,9 @@ operator's local Kubernetes connection.
 If model access fails, check the Pod's
 [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles):
 model egress requires an explicit grant. See [what each check establishes](../operate/model-verification.md#what-each-check-establishes).
+
+Then [check Agent network isolation](../operate/network-isolation.md) by probing
+from inside the workload Pods.
 
 ## Attach with the OpenClaw TUI
 

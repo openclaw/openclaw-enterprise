@@ -1,10 +1,8 @@
 # View Agent runtime status and logs
 
-The **Logs** tab on an Agent version shows its Pods, restarts, recent Kubernetes
-Events and a bounded, redacted page of container output or, for OpenShell
-sandboxed Agents, sandbox policy decisions. Use it to find out why a
-version crashes, restarts or stops serving. Nothing is stored on the server: each
-read fetches one page from the cluster through the Compute Driver.
+Use an Agent version’s **Logs** tab to inspect Pods, container exits, Events,
+redacted output or Sandbox policy decisions. Reads fetch through Compute;
+raw logs are not persisted.
 
 Runtime status and logs are available for **Kubernetes Compute** only. Docker and
 SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
@@ -17,28 +15,31 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
    When the latest deployment failed, **Deployment activity** links straight to
    that version's Logs tab.
 2. Select **Logs**. The runtime strip refreshes every 10 seconds. Each Pod card
-   lists its recent warning Events, prefixed with the container they concern.
-3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container) or
+   lists every main and init container's state and recent warning Events, prefixed
+   with their container. Last termination
+   shows the current exit for a terminated container, otherwise its prior exit.
+3. Choose a **Source**: **Gateway** (the OpenClaw Gateway container),
    **Agent (Harness)** (the dedicated Codex or OpenClaw Harness container, only
-   for dedicated execution), or **Sandbox (policy decisions)** (see
-   [Sandbox source](#sandbox-source)). Choose a **Pod** when a version has more
-   than one. While no Harness Pod is ready, the Gateway logs failed
-   connections to it (`ECONNREFUSED`); the console then points you to the
-   **Agent (Harness)** source, which holds the cause, such as a failed model
-   probe, or to Deployment activity when the Harness Pod does not exist yet.
+   for dedicated execution) or **Sandbox (policy decisions)** (see
+   [Sandbox source](#sandbox-source)), then a **Pod / container** stream.
+   A successful init container does not establish that the main process succeeded.
+   While no Harness Pod is ready, the Gateway logs failed connections to it
+   (`ECONNREFUSED`); the console then points you to the **Agent (Harness)**
+   source for the cause (such as a failed model probe), or to Deployment
+   activity when the Harness Pod does not exist yet.
 4. Select **Follow** to poll for new lines every 2 seconds. Following pauses while
    the browser tab is hidden or you scroll up, and stops after a permission denial.
-5. Select **Previous instance** after a restart to read the output of the
-   container that exited. Following is off for the previous instance.
+5. Select **Previous instance** after a restart to read the exited container's
+   output. Following is off for the previous instance.
 
 ### Filter the loaded output
 
 The server returns **info** and above (and lines of unknown level) unless you
 select **Include debug**, which starts a new view. The level chips and the
-**Filter** box narrow only the rows already loaded (up to 5000). The
-case-insensitive text filter matches the message, kind, subsystem and field
-values. To look further back, use **Download** or the CLI with `--since`. Gap
-and withheld rows stay visible, so loss is never filtered away.
+case-insensitive **Filter** box (message, kind, subsystem and field values)
+narrow only the rows already loaded (up to 5000). To look further back, use
+**Download** or the CLI with `--since`. Gap and withheld rows always stay
+visible.
 
 ### Download
 
@@ -47,9 +48,8 @@ as a text file named `<agent>-<revision>-<source>-<pod>.log`, using IDs. The
 file holds the same classified and redacted records as the page, one per line
 (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
 rows), after a `#` header naming the Agent, revision, Pod and container.
-Only **Include debug** applies to the download. Each download is a separate audited read;
-nothing is kept on the server. The saved file stays on your device, and
-redaction is best-effort, so handle it as sensitive and delete it when done.
+Only **Include debug** applies to the download. Redaction is best-effort:
+handle the file as sensitive and delete it when done.
 
 The HTTP API has the same two reads:
 
@@ -58,20 +58,27 @@ GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime/logs?source=gateway&tailLines=200
 ```
 
-`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `previous`,
+Container timestamps are returned in UTC, preserving their available nanosecond precision.
+
+`runtime/logs` accepts only `source` (`gateway`, `agent` or `sandbox`), `pod`, `container`, `previous`,
 `tailLines` (1 to 1000, default 200), `sinceSeconds` (1 to 86400), `cursor`,
 `download` and `minLevel` (`error`, `warn`, `info` or `debug`: drop lines below it;
-unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to read only newer lines of the same view.
+unknown-level lines, gaps and withheld counts stay). Pass the returned `cursor` to
+read only newer lines of the same view. Select an advertised main or init
+container; omission selects the first main container. Changing containers starts
+a new audited view. Container cursors count the lines delivered at their newest timestamp, so a
+later line at that timestamp is returned once, even with identical text. When a
+tail or Driver byte cut leaves unknown whether a read began at that timestamp's
+first line, or an older cursor lacks the count, such a line can stay hidden until
+a later timestamp: OCC cannot tell it from an older line the tail omitted.
 `download=true` answers `text/plain` with `Content-Disposition: attachment`,
 always reads 1000 lines, and cannot be combined with `cursor` (`400`). See the
 [API reference](../../reference/api.md).
 
 ## Command line
 
-`occ agent runtime AGENT_ID` prints the Pods, sources and Events (with the
-container each concerns); `occ agent logs
-AGENT_ID --source gateway` prints one page, and `--follow` keeps polling every
-2 seconds until Ctrl-C:
+`occ agent runtime AGENT_ID` prints the Pods, sources and Events; `occ agent logs
+AGENT_ID --source SOURCE` prints one page, or keeps polling with `--follow`:
 
 ```sh
 occ agent logs agt_... --source agent --since 10m --level info --follow
@@ -79,12 +86,10 @@ occ agent logs agt_... --source agent --previous -o json
 occ agent logs agt_... --source sandbox --follow
 ```
 
-Both use the active revision unless you pass `--revision`; without one, such as
-after a failed first deployment, they use the latest revision and say so on
-stderr. `--level` sets the `minLevel` floor. Gaps and withheld counts are
-stderr notices; `-o json` prints NDJSON records. The
-command waits out `429` responses and exits nonzero on `501` and `503`. See the
-[CLI reference](../../reference/cli.md#runtime-status-and-logs).
+Without `--revision`, both prefer a newer revision that has Pods (a deploy in
+progress or failed) and name the revision on stderr. The
+[CLI reference](../../reference/cli.md#runtime-status-and-logs) owns revision
+selection, flags, output formats, retries and exit codes.
 
 ## Who can see what
 
@@ -94,18 +99,17 @@ command waits out `429` responses and exits nonzero on `501` and `503`. See the
 | Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`   | Once per view as `openclaw.agents.runtime_logs.view`      |
 | Log download                                                               | Same as log text                                      | Every download as `openclaw.agents.runtime_logs.download` |
 
-Installation administrators hold Agent `administer`. The same principals can
-already open the [native admin UI](../../reference/agent-native-admin.md), whose
-Logs page shows Gateway log text. To let someone read logs without that
-access, bind a Namespace Role with Agent `read_logs` and `read` to the exact
-Agent. It covers every version of that Agent, including later deployments.
-Runtime status still needs `read` bound to each exact version. A `read_logs`
-Restriction blocks log text for everyone, administrators included. Without
-`operate`, the Logs tab shows no runtime strip and no Pod picker: it offers
-every source, reads the source's current Pod, and says so when this version
-lacks a source. Service principals may call both routes under the same grants.
-Every request, including each follow poll, is authorized again, so revoking a
-grant stops the next poll. See
+Installation administrators hold Agent `administer`, which already reaches Gateway
+log text in the [native admin UI](../../reference/agent-native-admin.md). To
+delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
+the exact Agent; it covers every version, including later deployments. Opening
+the Agent in the console also needs Namespace `read` bound to that Namespace
+(otherwise it shows "Namespace unavailable"). Runtime status needs `read`
+bound to each exact version. A `read_logs` Restriction blocks log text even for
+administrators. Without `operate`, the Logs tab has no runtime strip or Pod
+picker; it reads each source's current Pod and says when a source is missing.
+Service principals use the same grants. Every request and follow poll is
+authorized again, so revoking a grant stops the next poll. See
 [authorization](../../reference/authorization.md).
 
 ## What the output contains
@@ -113,95 +117,110 @@ grant stops the next poll. See
 OCC classifies every line against an allowlist of operational output before
 returning it:
 
-- **wrapper**: runtime startup and model-probe events, with fixed fields only.
-  The wrapper's fixed plain line
-  `Harness model authentication probe failed.` is also a wrapper `error`. A
-  line's `code` field shows on the collapsed row.
+- **wrapper**: runtime startup and model-probe events, with fixed fields only,
+  plus the fixed plain line `Harness model authentication probe failed.` as an
+  `error`. A line's `code` field shows on the collapsed row.
 - **openclaw**: Gateway JSON console records (level, subsystem, message and a
   short list of operational fields such as `status`, `method` and `durationMs`).
   Payload keys such as `prompt`, `content`, `messages`, `args` and `headers` are
-  dropped.
+  dropped. `info` and `debug` records without a subsystem carry reply text (for
+  example from the OpenAI-compatible chat endpoint) and are withheld; errors
+  and warnings without one, like `Gateway failed to start: ...`, are kept.
 - **codex**: Codex tracing records (level, target, message). Turns show as
   `turn started` and `turn completed` (info, with model, turn ID, tokens and
-  busy time); tool calls keep their name and duration. Other span records are
-  `debug`; below `logging.level: debug` the Harness drops them, readiness-probe
+  busy time); tool calls keep their name and duration. Only app-server, login,
+  CA-setup, plugin-manifest, model-connection, proxy-startup and retry messages
+  keep their text; others, such as `codex_core` (which logs chat text), read
+  `Codex message withheld`. Other span records are `debug`; below
+  `logging.level: debug` the Harness drops them, readiness-probe
   connections and repeated remote-control retries (one per 10 minutes is kept).
-- **text**: plain lines up to 4 KiB, including lines that start with a bracketed
+- **text**: plain lines up to 4 KiB, including those starting with a bracketed
   component tag such as `[node-host] advertised commands: ...`.
 
-Any other structured output, including Codex JSON-RPC protocol traffic, is
-**withheld**: the page shows a count, never the content. Oversized lines, and
-malformed lines that start like a JSON object or array, are withheld the same way,
-and so is a pretty-printed (multi-line) JSON value: its opening line, every member
-line and its closing line become one withheld row.
+Other structured output, including Codex JSON-RPC protocol traffic, oversized
+lines and malformed lines that start like a JSON object or array, is
+**withheld**: the page shows a count, never content. A pretty-printed
+(multi-line) JSON value becomes one withheld row. Each row names its reason
+code, as `occ agent logs` does: `unrecognised_structured` (structured output
+OCC does not keep), `malformed` (JSON split across lines, as Codex prints
+it, JSON that does not parse, or JSON nested too deeply) or `oversized`.
+The console and `occ agent logs` show an invisible or direction-changing
+character in retained text, such as a bidirectional override, as an escape like
+`\u202e`, so a line cannot reorder or hide what you read.
 
 Every retained string is then redacted. OCC replaces PEM blocks, `Authorization`
-and cookie header values, `Bearer` tokens, JWTs, known token prefixes (`sk-`, `ghp_`, `ghs_`,
-`github_pat_`, `xoxb-`, `AKIA` and others), URL user information, every URL
-query value and fragment, `password=`/`token:`/`"api_key":`-style values, and
-long base64 or hex runs with `[redacted:<pattern>]`. A PEM block printed over
-several lines is masked from an observed BEGIN through END, including across
-follow polls in the same container view. Ordered lines newer than the prior cursor
-frontier can close a carried block at END or the first line that is not base64,
-a PEM header or blank. BEGIN and END on one ordered page can therefore close at
-the same timestamp if it is newer than that prior frontier. Replayed overlap and
-timestamps at or before the prior frontier do not establish forward progress.
-Missing, invalid or out-of-order times cannot close a block known to be open.
-PEM-shaped lines may stay masked conservatively for the rest of that view, while
-ordinary operational text stays visible. A restart, Pod
-change, expired cursor or new view starts without the old masking context.
-An initial tail or older cursor may begin inside a block whose BEGIN was never
-seen; the reader cannot reconstruct that missing history. Redaction is best-effort
-pattern masking: an opaque token under 40 characters with no known prefix and no
-key name or `Bearer` next to it stays visible. Do not rely on redaction to make
-a runtime that prints secrets safe.
+and cookie header values, `Bearer` tokens, `Basic` user:password values, JWTs,
+known token prefixes (`sk-`, `sk_live_`, `rk_live_`, `ghp_`, `ghs_`,
+`github_pat_`, `hf_`, `xoxb-`, `AKIA` and others), URL user information, every
+URL query value and fragment, `password=`/`token:`/`"api_key":`-style values,
+upper-case `*_KEY=` assignments, netrc `login <user> password <secret>` values,
+the value after a command-line credential flag such as `curl -u user:password`
+(listed under [Sandbox source](#sandbox-source)), and long base64 or hex runs
+with `[redacted:<pattern>]`. A PEM block printed over several lines is masked
+from an observed BEGIN through END, across follow polls in the same container
+view. Only ordered lines newer than the prior cursor position can close it (at
+END or the first line that is not base64, a PEM header or blank). PEM-shaped
+lines may stay masked for the rest of that view.
+A restart, Pod change, expired cursor or new view starts without that context,
+and a page that begins inside a block whose BEGIN it never saw cannot mask it.
+Redaction is best-effort: an opaque token under 40 characters with no known
+prefix and no key name or `Bearer` next to it stays visible. Do not rely on
+redaction to make a runtime that prints secrets safe.
 Control characters are removed and messages are capped at 8 KiB.
 
-Kubernetes Event messages in the runtime status are redacted the same way, and
-node names, image references and Secret and ConfigMap names are masked in the
-standard scheduler and kubelet messages. Other Event text can still name cluster
+Runtime status Event messages are redacted the same way; node names, image
+references and Secret and ConfigMap names are masked in the standard scheduler
+and kubelet messages. Other Event text can still name cluster
 objects.
 
-Container lines carry `contentClass: "operational"`; sandbox lines carry
-`activity`. The `content` class (message text, prompts, tool output) is reserved
-and never returned.
+Container lines carry `contentClass: "operational"` and sandbox lines
+`"activity"`; the reserved `content` class (message text, prompts, tool output)
+is never returned.
 
 ## Gaps, limits and retention
 
-A page never silently skips output. It labels what it could see:
+A page never silently skips output; it labels each gap:
 
 | Row                 | Meaning                                                            |
 | ------------------- | ------------------------------------------------------------------ |
 | Container restarted | The Pod or container instance changed since the last page.         |
-| Lines skipped       | New output exceeded one page between polls.                        |
+| Lines skipped       | New output exceeded one page between polls, or a line over 1 MiB.  |
 | View resumed        | The cursor was older than one hour; reading restarted at the tail. |
 | Page limit reached  | The page hit its byte limit; later lines were not read.            |
 | Sandbox buffer lost | The sandbox buffer no longer holds the lines after the last page.  |
 
 Limits per request: 1000 lines, 1 MiB read from the cluster, 32 KiB per input
-line, 512 KiB per response, 100 Events per Pod, 10 seconds overall. Each API
+line, 512 KiB per response (including JSON escaping, cursor and metadata),
+the newest 100 Events per Pod, 10 seconds overall. A cut response retains progress through
+its observed rows, including untimed ones. Changed windows warn of possible skipped lines; timed reads continue from delivered
+progress, ambiguous ones restart. Identical replacement remains unobservable.
+Continue with the returned cursor for
+lines beyond a page limit. Each API
 replica allows each principal 2 requests per second per Agent with a burst of
-10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). The limit and the
-operator switch are checked before authorization, so a caller without grants can
-spend only its own budget and learns only whether the feature is on.
+10 (`429` with `Retry-After`) and 16 concurrent reads (`503`). Both limits apply
+after [authorization](../../reference/security.md#console-and-api-runtime-log-reads),
+so a caller without the grants always gets `403`.
 
-Kubernetes keeps only the current and the previous instance of each container.
-Output from deleted Pods and older restarts is gone. For history, use your
-[observability backend](../observability.md).
+Kubernetes keeps only each container's current and previous instance, nothing
+from deleted Pods; for
+older output, use your [observability backend](../observability.md). While a
+container crash-loops, the previous instance can briefly read as empty.
+Initial `PodInitializing` or `ContainerCreating` can also read as empty; following resumes when the container starts.
 
 ## Sandbox source
 
 When the Agent's version runs in an [OpenShell sandbox](../../reference/drivers/openshell-sandbox.md),
-the **Sandbox** source shows what the OpenShell gateway recorded for that
-sandbox: network and HTTP policy decisions (allowed or denied, destination,
+the **Sandbox** source shows what the OpenShell gateway recorded for it:
+network and HTTP policy decisions (allowed or denied, destination,
 method, binary, policy name and engine, denial reason), process launches, and
 supervisor tracing. The Harness's own output inside the sandbox is not
-available; OpenShell has no read-only API for it.
+available here; operators can read it and the supervisor log with
+[kubectl](agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
 
-- OCC derives the sandbox from the version. The source has no Pods and no
+- OCC derives the sandbox from the version. The source has no Pods or
   previous instance (`pod` or `previous=true` answers `400
 RUNTIME_LOGS_POD_INVALID`).
-- Lines are kind `sandbox` with `contentClass: "activity"`. Kept fields:
+- Lines are kind `sandbox`. Kept fields:
   `activity`, `action`, `disposition`, `dst_host`, `dst_port`, `method`, `path`,
   `binary`, `pid`, `rule_name`, `rule_type`, `policy_generation`, `reason`,
   `source`, `cmd_line` and `url`. Command lines and URLs often carry tokens:
@@ -210,30 +229,25 @@ RUNTIME_LOGS_POD_INVALID`).
   `--token`, `--with-token`, `--username`, `-u`, `--user`, `-U` or
   `--proxy-user` with `user:password`, `smbclient -U user%password`,
   `lftp -u user,password`, `redis-cli -a`, `sqlcmd -P`, and the token of
-  `vault login`). Masking is best effort: a secret passed
-  under another flag name can still show. A message that holds structured data
-  is withheld.
+  `vault login`). A secret passed under another flag name can still show. A
+  message that holds structured data is withheld.
 - OpenShell keeps the last 2000 lines per sandbox in memory and loses them when
-  its gateway restarts. A follow poll that finds its last line gone reports
+  its gateway restarts; a follow poll whose last line is gone reports
   **Sandbox buffer lost** or **Lines skipped**. Lines the sandbox drops under
   load are not reported.
-- The sandbox stamps its lines when it records them and sends them in batches,
-  so a line can arrive after a newer one was shown. A follow poll re-reads the
-  5 seconds before the newest line it showed and shows each line once, repeats
-  included. A line that arrives more than 5 seconds late, or behind more than
-  48 lines in those 5 seconds, can be missed. When more than 48 lines share one
-  millisecond, the poll shows **Lines skipped** at that time.
+- Follow polls re-read a 5-second overlap and count up to 48 delivered lines.
+  Later arrivals outside that history can be missed; over-capacity timestamp
+  groups show **Lines skipped**.
 - OCC reads through the read-only `GetSandboxLogs` call. Its OpenShell identity
-  needs the `sandbox:read` scope and Workspace role `user`; without the scope
-  the read answers `503 RUNTIME_LOGS_CLUSTER_RBAC`. OpenShell hides a sandbox
-  from an identity outside its Workspace, so a missing role looks like a
-  sandbox that is not provisioned yet or was removed: both answer
-  `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`.
+  needs the `sandbox:read` scope (otherwise `503 RUNTIME_LOGS_CLUSTER_RBAC`)
+  and Workspace role `user`. OpenShell hides sandboxes outside the identity's
+  Workspace, so a missing role answers `503 RUNTIME_LOGS_SANDBOX_NOT_FOUND`,
+  like a sandbox not yet provisioned or removed.
 
 ### Which rule decided
 
 Each network or HTTP decision row shows
-`rule <name> · engine <engine> · policy generation <generation>`, taken from the
+`rule <name> · engine <engine> · policy generation <generation>`, from the
 `rule_name`, `rule_type` and `policy_generation` fields:
 
 - **rule** is the policy rule that matched. `no matching rule` means OpenShell
@@ -242,27 +256,24 @@ Each network or HTTP decision row shows
   `ssrf`, `mechanistic` or `nftables`.
 - **policy generation** is the policy version that decided. The pinned OpenShell
   release does not send it with pushed decision lines, so it usually reads
-  `unknown`. Do not assume the current policy decided an older line.
+  `unknown`.
 
 ### Relating sandbox decisions to other sources
 
-OpenShell records no Agent turn, session or request ID with a decision. Each
-decision row therefore carries the label **Gateway lines: inferred (time
-window)**: Gateway or Harness lines near that time may be related, but nothing
-links them. The console never labels a join as exact, because no source shares
-an ID with the sandbox.
+OpenShell records no Agent turn, session or request ID with a decision, so no
+source shares an ID with the sandbox. Each decision row carries the label
+**Gateway lines: inferred (time window)**: Gateway or Harness lines near that
+time may be related, but nothing links them.
 
 The logs cannot tell you, and you should not infer:
 
 - which Agent turn, session, user or prompt caused a sandbox decision;
-- which policy generation decided a line whose generation reads `unknown`;
+- which policy generation decided a line whose generation reads `unknown`
+  (do not assume the current policy decided an older line);
 - which credential OpenShell injected into an allowed request;
-- the order of two lines from different sources less than a few seconds apart:
-  the sandbox stamps its own lines, the cluster stamps container lines, and
-  their clocks can differ;
-- who made a request from its source IP address;
-- what the Harness printed inside a sandbox, what a deleted Pod or an older
-  restart printed, or which lines a sandbox dropped under load.
+- the order of two lines from different sources less than a few seconds apart,
+  because the sandbox and the cluster stamp lines with separate clocks;
+- who made a request from its source IP address.
 
 ## Errors
 
@@ -287,11 +298,8 @@ grants `pods/log get` and `events get,list` to the tenant API and Gateway observ
 roles and sets `OCC_AGENT_RUNTIME_LOGS_ENABLED`. Set it to `false` to remove the
 grants; both routes then answer `501`. Tenant RoleBindings you create by hand
 need the same rules; see [production Agents](../deploy/production-agents.md).
-Two-cluster installs set the same value on the `openclaw-execution` chart, which
-also grants `pods get,list` to its tenant API role.
+Two-cluster installs set the same value on the `openclaw-execution` chart.
 
-These grants are read-only and namespace-scoped through your RoleBindings.
-Kubernetes RBAC cannot tell Agents apart, so OCC reads only Pods that carry the
-exact Agent and version labels. The
-[security reference](../../reference/security.md#console-and-api-runtime-log-reads)
-describes the boundary.
+These grants are read-only and namespace-scoped through your RoleBindings;
+the [security reference](../../reference/security.md#console-and-api-runtime-log-reads)
+explains how OCC confines them to one Agent's Pods.

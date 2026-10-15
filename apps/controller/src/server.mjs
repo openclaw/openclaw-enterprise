@@ -1,3 +1,9 @@
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+  refuseRewrittenIpv4Host,
+  refuseWrittenUserinfo,
+} from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -6,19 +12,25 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
+import { PresetFileError } from "./composition/installation-presets.ts";
 import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
-const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]"]);
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
+  if (error instanceof PresetFileError) {
+    return "PRESET_FILE_INVALID";
+  }
   const message = error instanceof Error ? error.message : "";
+  if (/stored Installation name breaks the Name rule/.test(message)) {
+    return "INSTALLATION_NAME_INVALID";
+  }
   if (/OCC_AUTH_SECRET/.test(message)) {
     return "AUTH_SECRET_INVALID";
   }
@@ -33,6 +45,15 @@ function startupFailureCode(error) {
   if (/OCC_GATEWAY_API_KEY_PATH|gateway API key file/i.test(message)) {
     return "GATEWAY_API_KEY_UNAVAILABLE";
   }
+  // Production composition refuses the combination before any database work; the auth
+  // composer's host-only cookie check is the backstop.
+  if (
+    /sign-in (does not support|supports host-only cookies without shared) native admin/.test(
+      message,
+    )
+  ) {
+    return "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED";
+  }
   if (/OCC_AGENT_NATIVE_ADMIN|Native admin UI access|Native admin Agent domain/.test(message)) {
     return "AGENT_NATIVE_ADMIN_INVALID";
   }
@@ -42,11 +63,28 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
+  if (
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
+      message,
+    )
+  ) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
+  if (
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
+      message,
+    )
+  ) {
+    return "RUNTIME_IMAGE_INVALID";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
   if (/OCC_DATABASE_URL|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
+  }
+  if (/SQLite-compatible gateway storage class/.test(message)) {
+    return "GATEWAY_STORAGE_CLASS_INVALID";
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -57,7 +95,8 @@ function startupFailureCode(error) {
 function startupFailure(logger, error) {
   emitOccLogEvent(logger, {
     event: "startup-error",
-    ...(startupDependencyFailure(error) ?? { code: startupFailureCode(error) }),
+    ...(startupDependencyFailure(error) ??
+      startupPolicyNameFailure(error) ?? { code: startupFailureCode(error) }),
   });
   process.exitCode = 1;
 }
@@ -201,14 +240,19 @@ function configuration() {
     mode === "production"
       ? requiredEnvironment("OCC_AUTH_BASE_URL")
       : (process.env.OCC_AUTH_BASE_URL ?? DEFAULT_BETTER_AUTH_BASE_URL);
-  let authBaseURL;
+  let parsedAuthBaseURL;
   try {
-    authBaseURL = new URL(configuredAuthBaseURL).toString().replace(/\/$/, "");
+    parsedAuthBaseURL = new URL(configuredAuthBaseURL);
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
-  if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
-    throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
+  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
+  refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
+  const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
+  // The same rule createFastifyApp applies to the development browser origin, checked here so
+  // startup refuses it as AUTH_BASE_URL_INVALID before loading anything else.
+  if (mode === "development" && !isDevelopmentBrowserOrigin(authBaseURL)) {
+    throw new Error(`Development OCC_AUTH_BASE_URL must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
 
   // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
@@ -257,6 +301,14 @@ function configuration() {
 }
 
 async function start() {
+  // Time since process start: Node bootstrap and loading the module graph before start().
+  const phasesMs = { modules: Math.round(performance.now()) };
+  let phaseStartedAt = performance.now();
+  const phaseCompleted = (phase) => {
+    const now = performance.now();
+    phasesMs[phase] = Math.round(now - phaseStartedAt);
+    phaseStartedAt = now;
+  };
   const settings = configuration();
   const metricsSettings = metricsConfiguration(process.env, settings.mode, settings.port);
   const metrics = metricsSettings === undefined ? undefined : createOccMetrics("api");
@@ -287,6 +339,7 @@ async function start() {
     }
     if (
       typeof drivers.computeDriver.storeServiceAccountCredential !== "function" ||
+      typeof drivers.computeDriver.findServiceAccountCredential !== "function" ||
       typeof drivers.computeDriver.deleteServiceAccountCredential !== "function"
     ) {
       throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");
@@ -331,6 +384,7 @@ async function start() {
   if (settings.mode === "development" && settings.databaseUrl === undefined) {
     throw new Error("OCC_DATABASE_URL must be explicitly configured in development.");
   }
+  phaseCompleted("configuration");
   let app;
   if (settings.mode === "production") {
     if (drivers === undefined) {
@@ -341,7 +395,11 @@ async function start() {
       drivers,
       logger,
       ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
+      onStartupPhase: (phase, durationMs) => {
+        phasesMs[phase] = durationMs;
+      },
     });
+    phaseStartedAt = performance.now();
   } else {
     const { composePostgresDevelopment } = await import("./composition/development-postgres.ts");
     app = await composePostgresDevelopment(
@@ -349,6 +407,7 @@ async function start() {
       drivers,
       serviceAccountDriverFactory,
     );
+    phaseCompleted("composition");
   }
 
   let closing = false;
@@ -356,16 +415,29 @@ async function start() {
   app.addHook("onClose", async () => {
     await metricsListener?.close();
   });
-  async function shutdown() {
+  async function shutdown(signal) {
     if (closing) {
       return;
     }
     closing = true;
+    // Otherwise nothing marks the start or end of the drain: only the Pod's exit code would
+    // tell a completed drain from one the termination grace cut off.
+    const startedAt = performance.now();
+    emitOccLogEvent(logger, { event: "shutdown.started", signal });
     try {
       await app.close();
       process.exitCode = 0;
+      emitOccLogEvent(logger, {
+        event: "shutdown.completed",
+        durationMs: performance.now() - startedAt,
+      });
     } catch {
       process.exitCode = 1;
+      emitOccLogEvent(logger, {
+        event: "shutdown.failed",
+        code: "SHUTDOWN_FAILED",
+        durationMs: performance.now() - startedAt,
+      });
     }
   }
 
@@ -373,15 +445,26 @@ async function start() {
   process.once("SIGINT", shutdown);
 
   try {
+    // Fastify compiles route validators and response serializers here.
+    await app.ready();
+    phaseCompleted("ready");
     if (metrics !== undefined) {
       metricsListener = await startMetricsListener(metrics, metricsSettings);
     }
     await app.listen({ host: settings.host, port: settings.port });
+    phaseCompleted("listen");
   } catch (error) {
     await app.close();
     throw error;
   }
-  logger.info({ event: "listening", host: settings.host, port: settings.port });
+  // One line tells an operator how long the boot took and which phase dominated.
+  logger.info({
+    event: "listening",
+    host: settings.host,
+    port: settings.port,
+    startupMs: Math.round(performance.now()),
+    phasesMs,
+  });
 }
 
 try {

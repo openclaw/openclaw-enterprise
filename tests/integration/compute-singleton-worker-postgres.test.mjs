@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { requiresPostgres, setup, waitFor } from "../helpers/compute-singleton-worker.mjs";
+import { requiresPostgres, setup } from "../helpers/compute-singleton-worker.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 

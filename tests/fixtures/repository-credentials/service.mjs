@@ -1,12 +1,14 @@
 import { join } from "node:path";
 import { appModule } from "./runtime.mjs";
 import { chmod } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { request } from "node:https";
 import { createControlledClock } from "./clock.mjs";
-import { createTlsMaterial, temporaryDirectory } from "./process.mjs";
+import { createTlsMaterial } from "./process.mjs";
 import { startGitHubFixture } from "./github.mjs";
 import { startGitSmartHttpFixture } from "./git.mjs";
 import { createResourceScope } from "./resources.mjs";
+import { socketDirectory } from "../../helpers/socket-directory.mjs";
 import { serviceConfigurationData } from "./builders.mjs";
 import {
   createGitHubServiceFactory,
@@ -26,7 +28,7 @@ export {
 
 export async function createServiceConfiguration(t, limits = {}) {
   const { validateServiceConfig } = await appModule("drivers/repo/credentials/configuration");
-  const directory = await temporaryDirectory(t, "rcs-");
+  const directory = await socketDirectory(t, "rcs-");
   await chmod(directory, 0o700);
   return validateServiceConfig(
     serviceConfigurationData({
@@ -39,6 +41,12 @@ export async function createServiceConfiguration(t, limits = {}) {
       limits,
     }),
   );
+}
+
+/** createServiceConfiguration with the gateway on an ephemeral loopback port. */
+export async function createLoopbackServiceConfiguration(owner, limits) {
+  const base = await createServiceConfiguration(owner, limits);
+  return { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
 }
 
 export async function startCredentialServiceFixture(t, options = {}) {
@@ -128,6 +136,46 @@ export function gatewayRequest(fixture, target, { method = "GET", body, headers 
     outgoing.setTimeout(10000, () => outgoing.destroy(new Error("fixture request timeout")));
     outgoing.once("error", reject);
     outgoing.end(encoded);
+  });
+}
+
+/**
+ * One JSON request to the service's Unix-socket control API. `value` is the JSON body (none
+ * when undefined); `headers` adds or replaces headers, such as x-admission-id. Resolves to
+ * `{ status, body }` with the parsed JSON answer.
+ */
+export function controlRequest(socketPath, method, path, value, headers = {}) {
+  const body = value === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(value));
+  return new Promise((resolve, reject) => {
+    const outgoing = httpRequest(
+      {
+        socketPath,
+        method,
+        path,
+        agent: false,
+        headers: {
+          host: "localhost",
+          "content-type": "application/json",
+          "content-length": body.length,
+          ...headers,
+        },
+      },
+      (incoming) => {
+        const chunks = [];
+        incoming.on("data", (chunk) => chunks.push(chunk));
+        incoming.once("error", reject);
+        incoming.once("end", () => {
+          try {
+            resolve({ status: incoming.statusCode, body: JSON.parse(Buffer.concat(chunks)) });
+          } catch (error) {
+            // A non-JSON answer rejects the request instead of throwing from the stream.
+            reject(error);
+          }
+        });
+      },
+    );
+    outgoing.once("error", reject);
+    outgoing.end(body);
   });
 }
 

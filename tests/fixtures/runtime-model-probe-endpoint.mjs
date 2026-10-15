@@ -1,22 +1,31 @@
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
 import { connect } from "node:net";
 
-// Runs in a sidecar container of the runtime image that owns the network
-// namespace a runtime wrapper joins, with api.openai.com mapped to loopback.
-// It stands in for the model provider and observes the wrapper from outside:
-// when the native process accepts connections, what the private runtime and
-// plugin status report, and what the real readiness program decides. Every
-// line it prints is one JSON event with an epoch timestamp.
+// Runs in a container of the runtime image and stands in for the model provider
+// as api.openai.com. In the runtime image tests it is a sidecar that owns the
+// network namespace a runtime wrapper joins, with api.openai.com mapped to
+// loopback, and it also observes the wrapper from outside: when the native
+// process accepts connections, what the private runtime and plugin status
+// report, and what the runtime's HTTP readiness endpoint decides. The first-Agent smoke
+// (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
+// the cluster resolves api.openai.com to. Every line it prints is one JSON event
+// with an epoch timestamp.
 const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
+const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
+// When set, a turn answers with the last match of this pattern in its request
+// (a caller's nonce) instead of READY, so a caller can prove its own turn arrived.
+const echoPattern =
+  process.env.PROBE_ENDPOINT_ECHO_PATTERN === undefined
+    ? undefined
+    : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
+const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
+const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
-const readinessEnvironment = JSON.parse(process.env.PROBE_OBSERVE_READINESS_ENV ?? "{}");
-const readinessProgram = readFileSync("/fixture/readiness.cjs", "utf8");
 // Codex opens the Responses API over a WebSocket first and falls back to HTTPS.
 // Use the WebSocket implementation the runtime image already ships.
 const { WebSocketServer } = createRequire("/app/node_modules/ws/package.json")("ws");
@@ -40,15 +49,21 @@ function sseResponse(response, events) {
   response.end();
 }
 
-// A minimal Responses API stream: one assistant message saying READY.
-function answerEvents(model) {
+function answerText(request) {
+  const matches = echoPattern === undefined ? [] : request.match(echoPattern);
+  return matches?.at(-1) ?? "READY";
+}
+
+// A minimal Responses API stream: one assistant message saying READY, or the
+// caller's echoed nonce.
+function answerEvents(model, text) {
   const id = "resp_runtime_probe";
   const message = {
     type: "message",
     id: "msg_runtime_probe",
     status: "completed",
     role: "assistant",
-    content: [{ type: "output_text", text: "READY", annotations: [] }],
+    content: [{ type: "output_text", text, annotations: [] }],
   };
   const usage = {
     input_tokens: 1,
@@ -77,14 +92,14 @@ function answerEvents(model) {
       item_id: message.id,
       output_index: 0,
       content_index: 0,
-      delta: "READY",
+      delta: text,
     },
     {
       type: "response.output_text.done",
       item_id: message.id,
       output_index: 0,
       content_index: 0,
-      text: "READY",
+      text,
     },
     {
       type: "response.content_part.done",
@@ -101,18 +116,82 @@ function answerEvents(model) {
   ];
 }
 
+// The smoke's model stand-in requests a real Codex tool call. The command reads
+// the endpoint from the managed skill; the provider-only title is never supplied
+// to the model or the command before the tool output returns.
+function publicReadEvents(model, request) {
+  if (!publicReadJourney) {
+    return undefined;
+  }
+  let input;
+  try {
+    input = JSON.parse(request).input;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const output = input.find(
+    (item) => item.type === "function_call_output" && item.call_id === "public-read-call",
+  );
+  if (output) {
+    const result = JSON.stringify(output.output);
+    const title = result.match(/public-pull-[0-9a-f-]{36}/u)?.[0];
+    const curlCode = result.match(/curl: \(([0-9]{1,3})\)/u)?.[1];
+    emit({
+      event: "public-read-tool-result",
+      result: title ? "title-returned" : curlCode ? `curl-${curlCode}` : "no-title",
+    });
+    return answerEvents(model, title ?? "PUBLIC_READ_TOOL_FAILED");
+  }
+  if (!request.includes("OCE_PUBLIC_READ_JOURNEY")) {
+    return undefined;
+  }
+  const command = [
+    "set -eu",
+    'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
+    'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
+    'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
+    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+  ].join("\n");
+  const item = {
+    type: "function_call",
+    call_id: "public-read-call",
+    name: "exec_command",
+    arguments: JSON.stringify({ cmd: command }),
+  };
+  const base = {
+    id: "resp_public_read",
+    object: "response",
+    model,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
+  ];
+}
+
 // Answer one model turn after the configured delay, unless the caller left.
-function turn(transport, model, respond, closed) {
+function turn(transport, model, request, respond, closed) {
   emit({ event: "request", transport, turn: true });
   if (mode === "hang") {
     return;
   }
+  const text = answerText(request);
   setTimeout(() => {
     if (closed()) {
       return;
     }
-    respond(answerEvents(model));
-    emit({ event: "turn-answered", transport, status: 200 });
+    respond(publicReadEvents(model, request) ?? answerEvents(model, text));
+    emit({
+      event: "turn-answered",
+      transport,
+      status: 200,
+      ...(echoPattern === undefined ? {} : { text }),
+    });
   }, delayMs);
 }
 
@@ -136,9 +215,24 @@ const server = createServer(
       }
       let model = "unknown";
       try {
-        model = JSON.parse(body).model ?? model;
+        model = JSON.parse(body).model;
       } catch {
         // A malformed body still gets an answer; the caller validates it.
+      }
+      // Like the provider, authenticate first, then refuse a request without a
+      // model: the wrapper's upfront credential check sends exactly that.
+      if (model === undefined && mode !== "reject") {
+        emit({ event: "request", method: request.method, path, turn: false });
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            error: {
+              message: "Missing required parameter: 'model'.",
+              type: "invalid_request_error",
+            },
+          }),
+        );
+        return;
       }
       if (mode === "reject") {
         emit({ event: "request", transport: "https", turn: true });
@@ -151,12 +245,19 @@ const server = createServer(
       turn(
         "https",
         model,
+        body,
         (events) => sseResponse(response, events),
         () => response.destroyed,
       );
     });
   },
 );
+
+// Whether a caller that sent no request ever reached the provider: each TCP
+// connection, completed TLS handshake and failed handshake.
+server.on("connection", () => emit({ event: "connection" }));
+server.on("secureConnection", () => emit({ event: "secure" }));
+server.on("tlsClientError", (error) => emit({ event: "tls-error", code: error.code ?? null }));
 
 const sockets = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
@@ -207,6 +308,7 @@ server.on("upgrade", (request, socket, head) => {
       turn(
         "websocket",
         message.model ?? "unknown",
+        String(data),
         (events) => {
           for (const event of events) {
             webSocket.send(JSON.stringify(event));
@@ -258,23 +360,25 @@ function readStatus(path) {
   });
 }
 
-// The real readiness entrypoint, with the wrapper container's environment.
-// Its output is what kubelet shows after "Readiness probe failed:".
 function ready() {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["-e", readinessProgram], {
-      env: { ...process.env, ...readinessEnvironment },
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    let output = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-    });
-    child.once("close", (code) =>
-      resolve({ ready: code === 0, reason: output.trim() === "" ? null : output.trim() }),
+    let settled = false;
+    const settle = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    };
+    const request = httpGet(
+      { host: "127.0.0.1", port: statusPort, path: "/readyz", timeout: 1_000 },
+      (response) => {
+        response.resume();
+        response.once("end", () => settle({ ready: response.statusCode === 200 }));
+      },
     );
-    child.once("error", () => resolve({ ready: false, reason: null }));
+    request.on("error", () => settle({ ready: false }));
+    request.on("timeout", () => request.destroy());
   });
 }
 
@@ -287,8 +391,11 @@ function observe(key, value) {
   emit({ event: "observe", key, value });
 }
 
-server.listen(443, "127.0.0.1", () => {
+server.listen(443, listenHost, () => {
   emit({ event: "listening" });
+  if (!observing) {
+    return;
+  }
   (async () => {
     for (;;) {
       const [listening, runtime, plugin, readiness] = await Promise.all([
@@ -302,7 +409,6 @@ server.listen(443, "127.0.0.1", () => {
       observe("runtimeFailure", runtime?.runtimeFailure?.code ?? null);
       observe("plugin", plugin?.phase ?? null);
       observe("ready", readiness.ready);
-      observe("readinessReason", readiness.reason);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   })();

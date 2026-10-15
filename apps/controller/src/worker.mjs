@@ -6,11 +6,12 @@ import {
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
 } from "./composition/installation-config.ts";
+import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
-import { createControllerWorker } from "./worker.ts";
+import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 function positiveEnvironment(name, fallback) {
@@ -49,13 +50,34 @@ function configuration() {
     leaseDurationMs: positiveEnvironment("OCC_WORKER_LEASE_DURATION_MS", 5_000),
     maxAttempts: positiveEnvironment("OCC_WORKER_MAX_ATTEMPTS", 5),
     convergenceTimeoutMs: positiveEnvironment("OCC_WORKER_CONVERGENCE_TIMEOUT_MS", 900_000),
+    databaseTimeoutMs: positiveEnvironment("OCC_WORKER_DATABASE_TIMEOUT_MS", 60_000),
   };
 }
 
 function workerStartupFailureCode(error) {
+  if (error instanceof PresetFileError) {
+    return "PRESET_FILE_INVALID";
+  }
   const message = error instanceof Error ? error.message : "";
+  if (/stored Installation name breaks the Name rule/.test(message)) {
+    return "INSTALLATION_NAME_INVALID";
+  }
   if (/PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
+  }
+  if (
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
+      message,
+    )
+  ) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
+  if (
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
+      message,
+    )
+  ) {
+    return "RUNTIME_IMAGE_INVALID";
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -66,6 +88,7 @@ function workerStartupFailureCode(error) {
 let worker;
 let pool;
 let readinessPath;
+let livenessPath;
 let logger;
 let logging;
 let startupConfiguration;
@@ -84,23 +107,35 @@ async function closeMetrics() {
   return metricsClosing;
 }
 try {
-  const { databaseUrl, mode, ...options } = configuration();
+  const { databaseUrl, mode, databaseTimeoutMs, ...options } = configuration();
   const metricsSettings = metricsConfiguration(process.env, mode);
   startupConfiguration = await loadStartupConfigurationSnapshot({ mode });
   logging = startupConfiguration.logging;
   logger = createOccLogger({ component: "occ-worker", level: logging.level });
   readinessPath = process.env.OCC_WORKER_READINESS_PATH;
-  if (readinessPath !== undefined) {
-    if (!readinessPath.startsWith("/")) {
-      throw new Error("OCC_WORKER_READINESS_PATH must identify an absolute writable path.");
+  livenessPath = process.env.OCC_WORKER_LIVENESS_PATH;
+  for (const [name, marker] of [
+    ["OCC_WORKER_READINESS_PATH", readinessPath],
+    ["OCC_WORKER_LIVENESS_PATH", livenessPath],
+  ]) {
+    if (marker === undefined) {
+      continue;
+    }
+    if (!marker.startsWith("/")) {
+      throw new Error(`${name} must identify an absolute writable path.`);
     }
     try {
-      await unlink(readinessPath);
+      await unlink(marker);
     } catch (error) {
       if (error?.code !== "ENOENT") {
         throw error;
       }
     }
+  }
+  // Startup (Installation and IAM load, Compute preflight) counts against the liveness
+  // bound, and an unwritable path fails here rather than as a restart loop later.
+  if (livenessPath !== undefined) {
+    await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
   let computeDriver;
@@ -112,7 +147,7 @@ try {
       await computeDriver.preflight();
     }
   }
-  pool = await createPostgresPool(databaseUrl);
+  pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
   if (drivers?.repositoryReceipt !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
       ...drivers.repositoryReceipt,
@@ -147,6 +182,12 @@ try {
       : {
           onHealthy: () =>
             writeFile(readinessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
+        }),
+    ...(livenessPath === undefined
+      ? {}
+      : {
+          onProgress: () =>
+            writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
   await worker.start();
@@ -205,7 +246,8 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ?? { code: workerStartupFailureCode(error) }),
+    ...(startupDependencyFailure(error) ??
+      startupPolicyNameFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });
   process.exitCode = 1;
 }

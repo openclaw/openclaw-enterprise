@@ -1,8 +1,14 @@
 # Connect a Compose control plane to Kubernetes Agents
 
-Start the [Compose + k3d profile](local-kubernetes-development.md#run-occ-in-compose-with-kubernetes-compute), then configure private routing **before creating Agent Namespaces**. This supplies the route and node enrollment required by Standard Codex while PostgreSQL, OCC and its worker remain in Compose. Standard OpenClaw uses embedded compute.
+Use this manual procedure for the Compose + k3d profile with
+`OCC_DEVELOPMENT_SANDBOX_DRIVER=none`. It supplies the private route and node
+enrollment required by Standard Codex while PostgreSQL, OCC and its worker
+remain in Compose. Standard OpenClaw uses embedded compute.
 
-This procedure is for one disposable Docker/k3d installation. Keep its generated files private and retain the same state directory, project and cluster for cleanup. Do not apply it to a shared cluster. The launcher does not perform these routing steps.
+The OpenShell Compose profile performs these routing steps during `dev-up`; do
+not repeat them manually. This procedure is for one disposable Docker/k3d
+installation. Keep its generated files private and retain the same state
+directory, project and cluster for cleanup. Do not apply it to a shared cluster.
 
 ## Select the owned installation
 
@@ -142,6 +148,6 @@ The development console remains at its loopback HTTP URL. This profile does not 
 
 Clone repositories under the Agent's persistent workspace, not `/tmp`: the runtime's temporary volume is bounded to 64 MiB and exceeding it evicts the Pod. A shallow clone avoids downloading unnecessary history.
 
-If a model/tool workload is `OOMKilled`, adjust the Installation's supported gateway resource limit and deploy a new revision; a 2 GiB default is not a guarantee for repository workloads. Preserve the failed revision and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
+If a model/tool workload is `OOMKilled`, raise the Installation's Gateway or Harness memory limit (`resources.gateway` or `resources.agent`) and deploy a new revision; the 3 GiB and 6 GiB defaults are not a guarantee for repository workloads. Preserve the failed revision and actual error. If a persisted owner lease prevents restart after eviction, verify the previous owner has stopped and allow its lease to expire before retrying. The pinned runtime uses a five-minute lease; kubelet restart backoff can add delay. Do not delete lease records to force a pass.
 
 Before cleanup, stop repository-bound Agents and confirm their broker sessions are disposed. Keep the broker and state if any credential cleanup is pending or uncertain. See [local repository cleanup](local-repository-credentials.md). Then use the original profile's `dev down`; remove only additional services and public CA trust entries created for this installation.

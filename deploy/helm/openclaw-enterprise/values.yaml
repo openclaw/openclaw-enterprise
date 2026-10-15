@@ -62,8 +62,16 @@ auth:
     secretName: occ-github-login
     clientIdKey: client-id
     clientSecretKey: client-secret
-    # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443
-    # to 0.0.0.0/0; list the web and api IPv4 ranges from api.github.com/meta to narrow it.
+    # Optional allowlist (RFC-0061): GitHub organization logins, and "org/team-slug" entries,
+    # whose active members may sign in; at most 10 entries together. Empty admits any
+    # attached GitHub identity. Set, the GitHub App needs the organization permission
+    # Members: read and an installation on each listed organization; sign-in fails closed
+    # when GitHub cannot answer the membership lookup.
+    allowedOrgs: []
+    allowedTeams: []
+    # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443 to any
+    # address except link-local 169.254.0.0/16; list the web and api IPv4 ranges from
+    # api.github.com/meta to narrow it.
     egressCidrs: []
   # Optional Google sign-in (OpenID Connect) for existing password accounts (API Pod
   # only). Same requirements as auth.github; its Secret must differ from auth.github's.
@@ -77,8 +85,9 @@ auth:
     # Google account; set, it also requires a verified email address.
     allowedDomains: []
     # API Pod HTTPS egress for oauth2.googleapis.com and www.googleapis.com; browsers,
-    # not the API, reach accounts.google.com. Empty allows TCP 443 to 0.0.0.0/0; Google
-    # publishes no small stable range, so narrow it with an egress proxy.
+    # not the API, reach accounts.google.com. Empty allows TCP 443 to any address except
+    # link-local 169.254.0.0/16; Google publishes no small stable range, so narrow it with
+    # an egress proxy.
     egressCidrs: []
   # Optional generic OpenID Connect sign-in (Keycloak, Okta, Entra ID, Auth0) for
   # existing password accounts (API Pod only). Same requirements as auth.github; its
@@ -95,6 +104,13 @@ auth:
     secretName: occ-oidc-login
     clientIdKey: client-id
     clientSecretKey: client-secret
+    # Optional CA certificate bundle for the IdP (no private keys). Both or neither.
+    # API-only process-wide Node trust, combined with Gateway roots. Replace API Pods on rotation.
+    # Requires a separate database.caSecretName and an application URL with a DNS host
+    # (not an IP), sslmode=verify-full and sslrootcert=database.caMountPath/database.caKey.
+    # May share a public CA bundle Secret with gatewayRouting.caSecretName.
+    caSecretName: ""
+    caSecretKey: ""
     # client_secret_post (default) or client_secret_basic.
     tokenAuth: client_secret_post
     # Console button label ("Continue with <displayName>"); empty means "single sign-on".
@@ -106,6 +122,8 @@ auth:
 agentNativeAdmin:
   enabled: false
   domain: ""
+  # Must not be a public suffix such as co.uk or github.io. Helm has no public suffix
+  # list: the installation profile renderer and API startup refuse one.
   sharedCookieDomain: ""
 
 # Console and API runtime status and container log reads (Agent administer for text).
@@ -154,9 +172,19 @@ repositoryCredentials:
   appKeySecretName: ""
   appKeyKey: private-key.pem
   tlsSecretName: ""
-  # Public trust only; must be separate from every private credential Secret.
+  # Public trust only. May share a Secret with database.caSecretName and
+  # gatewayRouting.caSecretName, never with a credential Secret.
   publicCaSecretName: ""
   publicCaKey: ca.crt
+  upstreamCidrs: []
+
+# Anonymous reads of known public GitHub repositories, for ordinary dedicated
+# Codex Agents whose authored proxy allows the exact Service IP. No GitHub App or token required.
+publicGithubRead:
+  enabled: false
+  # Reserve this Service IP until all revisions granting access to it retire.
+  clusterIP: ""
+  # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
   upstreamCidrs: []
 
 gatewayRouting:
@@ -179,7 +207,8 @@ gatewayRouting:
   envoyHttpsTargetPort: 10443
   sandbox:
     enabled: false
-    # A dedicated wildcard domain outside the OCE session cookie domain.
+    # A dedicated wildcard domain outside the OCE session cookie domain, at most
+    # 214 characters so agent-<32 hex>.<domain> fits the 253-character limit.
     domain: ""
     # Existing wildcard HTTPS certificate in the release namespace.
     tlsSecretName: ""
@@ -199,6 +228,7 @@ database:
   secretName: occ-database
   appUrlKey: application-url
   migrationUrlKey: migration-url
+  # Public CA trust; may share a Secret with the other CA settings, not secretName.
   caSecretName: ""
   caKey: ca.pem
   caMountPath: /etc/openclaw/database-ca
@@ -211,14 +241,19 @@ api:
   # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
   # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
   channelDirectoryProxyUrl: ""
-  # Optional model-list discovery: API Pod HTTPS egress to provider IPv4 /32 hosts.
-  # Operators maintain these addresses; Console model selection does not require it.
+  # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
+  # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
+  # profile resolves these unless CIDRs are supplied; refresh on DNS changes.
+  # Manual installs maintain this list or provide an external egress policy.
+  # Console model selection does not require discovery.
   modelDiscoveryCidrs: []
   # Trust client-address headers from a proxy in front of the API. Off by default:
   # the API then rejects forwarded headers and keys sign-in limits on the socket peer.
   # With a preset, requests whose socket peer is inside cidrs may carry forwarded
   # headers, and sign-in limits key on the client address from clientAddressHeader.
-  # cidrs never include /0 and must match only proxies that overwrite or append it.
+  # cidrs must match only proxies that overwrite or append the header. IPv4-mapped
+  # IPv6 addresses in any spelling count as IPv4 (prefix 1-32). Entries covering
+  # every IPv4 or every IPv6 address, including /0, are refused.
   #   ingress-nginx: cidrs = ingress controller Pod CIDR; header x-forwarded-for
   #     (x-real-ip also works). Keep use-forwarded-headers off in ingress-nginx.
   #   aws: ALB in front of the API; cidrs = ALB subnet CIDRs; header x-forwarded-for.

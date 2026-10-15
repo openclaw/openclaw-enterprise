@@ -1,10 +1,10 @@
 import type {
   CredentialSourceMetadata,
   CredentialSourceStatus,
-  CredentialWithdrawal,
+  CredentialWithdrawalStatus,
   SecretReference,
 } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientCredentialSource(
   source: Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>,
@@ -23,7 +23,7 @@ function clientCredentialSource(
 }
 
 function clientCredentialWithdrawal(
-  withdrawal: Readonly<CredentialWithdrawal>,
+  withdrawal: Readonly<CredentialWithdrawalStatus>,
 ): Record<string, unknown> {
   return {
     namespaceId: withdrawal.namespaceId,
@@ -36,6 +36,7 @@ function clientCredentialWithdrawal(
     ...(withdrawal.completedAt === undefined ? {} : { completedAt: withdrawal.completedAt }),
     ...(withdrawal.lastReason === undefined ? {} : { reason: withdrawal.lastReason }),
     ...(withdrawal.lastAttemptAt === undefined ? {} : { lastAttemptAt: withdrawal.lastAttemptAt }),
+    withdrawalInProgress: withdrawal.withdrawalInProgress,
   };
 }
 
@@ -89,18 +90,44 @@ export const credentialSourceHandlers = {
     mutationEvent,
   }) {
     const credentialSourceId = params.credentialSourceId as string;
+    const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+    // The gateway write cannot roll back, so a failed request after it still records a failure.
     const source = await controller.transact(async (unit) => {
-      const updated = await controller.updateCredentialSource(context.actorId, {
-        namespaceId,
-        credentialSourceId,
-        ...(body?.secrets === undefined
-          ? {}
-          : { secrets: body.secrets as Record<string, SecretReference> }),
-      });
-      await unit.audit.append(
-        mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+      const updated = await controller.updateCredentialSource(
+        context.actorId,
+        {
+          namespaceId,
+          credentialSourceId,
+          ...(body?.secrets === undefined
+            ? {}
+            : { secrets: body.secrets as Record<string, SecretReference> }),
+        },
+        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
       );
+      await unit.audit.append(mutationEvent(resource));
       return clientCredentialSource(updated);
+    });
+    reply.send({ data: source, meta: { requestId: request.id } });
+  },
+  async rotateCredentialSource({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const credentialSourceId = params.credentialSourceId as string;
+    const resource = { kind: "credential_source" as const, id: credentialSourceId, namespaceId };
+    const source = await controller.transact(async (unit) => {
+      const rotated = await controller.rotateCredentialSource(
+        context.actorId,
+        { namespaceId, credentialSourceId },
+        (reasonCode) => mutationEvent(resource, undefined, undefined, { reasonCode }),
+      );
+      await unit.audit.append(mutationEvent(resource));
+      return clientCredentialSource(rotated);
     });
     reply.send({ data: source, meta: { requestId: request.id } });
   },
@@ -136,8 +163,15 @@ export const credentialSourceHandlers = {
   async deleteCredentialSource({ controller, context, reply, params, namespaceId, mutationEvent }) {
     // Deletion commits in two steps around the gateway call; the audit commits with the removal.
     const credentialSourceId = params.credentialSourceId as string;
-    await controller.deleteCredentialSource(context.actorId, namespaceId, credentialSourceId, () =>
-      mutationEvent({ kind: "credential_source", id: credentialSourceId, namespaceId }),
+    await controller.deleteCredentialSource(
+      context.actorId,
+      namespaceId,
+      credentialSourceId,
+      (removed) =>
+        mutationEvent(
+          { kind: "credential_source", id: credentialSourceId, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
     );
     reply.status(204).send();
   },

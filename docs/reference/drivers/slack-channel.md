@@ -27,7 +27,8 @@ does not switch to everyone.
 
 An invalid token, missing scope, rate limit, invalid response, or unavailable
 Slack service produces a safe error without returning the token or upstream
-payload. Retry after fixing the token or scopes. Exact IDs can be entered when
+payload. Non-success HTTP responses release their unused response body before
+returning the error. Retry after fixing the token or scopes. Exact IDs can be entered when
 directory browsing is unavailable.
 
 ## Credential validation
@@ -63,9 +64,9 @@ The API accepts a DNS proxy URL only when Helm also sets the matching
 Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address
-and an explicit port, without credentials or a path. The chart passes it to the
-API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API Pod egress only to that
-IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
+other than `0.0.0.0` and an explicit port, without credentials or a path. The
+chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
+Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
 destinations at the proxy. The chart does not grant the worker or Agent Pods this
 egress.
 

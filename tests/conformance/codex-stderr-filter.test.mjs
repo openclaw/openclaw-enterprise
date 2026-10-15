@@ -17,6 +17,15 @@ const record = (level, target, fields, span) =>
     target,
     ...(span === undefined ? {} : { span, spans: [] }),
   });
+// Codex 0.158's project-trust startup message, naming each untrusted folder.
+const untrusted = (folders) =>
+  "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n" +
+  folders
+    .map(
+      (folder, index) =>
+        `    ${index + 1}. ${folder}\n       To load project-local config, hooks, and exec policies, add ${folder.replace(/\/\.codex$/, "")} as a trusted project in /home/node/.codex/config.toml.\n`,
+    )
+    .join("");
 const turn = { name: "turn", model: "gpt-5.6-luna", "turn.id": "turn-1" };
 const lines = {
   turnNew: record("INFO", "codex_core::tasks", { message: "new" }, turn),
@@ -77,6 +86,18 @@ const lines = {
   bwrapNamespaces: record("ERROR", "codex_app_server", {
     message: "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.",
   }),
+  // Codex prints this at each start once the workspace has a .codex folder; an
+  // empty one appears when any session runs, and the workspace is not trusted.
+  untrustedWorkspace: record("ERROR", "codex_app_server", {
+    message: untrusted(["/home/node/workspace/.codex"]),
+  }),
+  // Any other folder, or more than one, still passes.
+  untrustedOtherFolder: record("ERROR", "codex_app_server", {
+    message: untrusted(["/home/node/workspace/repo/.codex"]),
+  }),
+  untrustedTwoFolders: record("ERROR", "codex_app_server", {
+    message: untrusted(["/home/node/workspace/.codex", "/home/node/workspace/repo/.codex"]),
+  }),
   // Codex 0.158 prints this at each session's network-proxy start on Linux,
   // whatever the Unix-socket policy says.
   unixSocketsPlatform: record(
@@ -136,6 +157,9 @@ test("the Codex stderr filter drops span lifecycle records except the turn's sta
     remoteControlWait: true,
     missingBwrap: false,
     bwrapNamespaces: true,
+    untrustedWorkspace: false,
+    untrustedOtherFolder: true,
+    untrustedTwoFolders: true,
     // The first platform warning per app-server is kept.
     unixSocketsPlatform: true,
     unixSocketsOtherTarget: true,

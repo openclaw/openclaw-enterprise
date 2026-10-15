@@ -453,7 +453,10 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         return unknown("Path manipulation around require.resolve is outside bounded analysis.");
       }
       const name =
-        builtin(node.expression, "node:url", seen) ?? builtin(node.expression, "node:path", seen);
+        loader?.kind === "builtin" &&
+        (loader.module === "node:url" || loader.module === "node:path")
+          ? loader.name
+          : undefined;
       try {
         if (name === "fileURLToPath" && first.value.startsWith("file:")) {
           return known(fileURLToPath(first.value));

@@ -3,14 +3,12 @@ import pg from "pg";
 import { chromium } from "playwright";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  attachProvider,
+  authRowCounts,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
-  currentSession,
-  defaultInstallSettings,
-  installationRoles,
-  readAccount,
+  onboardPasswordAccounts,
   signedInHeaders,
 } from "./production-sign-in.mjs";
 
@@ -71,52 +69,38 @@ export async function proveTabBinding(t, databaseUrl, provider) {
   });
   await provider.start(t);
   const address = clientAddresses();
-  const adminPassword = await bootstrapProductionInstallation(t, {
+  const {
+    admin,
+    accounts: { alice, bob },
+  } = await onboardPasswordAccounts(t, {
     databaseUrl,
+    state,
+    pool,
     email: adminEmail,
     authSecret: secrets["occ-auth/secret"],
-  });
-  const admin = { email: adminEmail, password: adminPassword };
-  const roles = await installationRoles(state, pool);
-  app = await composeProductionSignIn(t, {
-    databaseUrl,
-    settings: defaultInstallSettings,
     secrets,
+    password,
+    remoteAddress: address(),
+    accounts: {
+      alice: { email: "tabs-alice@example.test", role: "admin" },
+      bob: { email: "tabs-bob@example.test", role: "admin" },
+    },
   });
-  let adminHeaders = await signedInHeaders(app, origin, admin, address());
-  admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-  const accounts = {};
-  for (const name of ["alice", "bob"]) {
-    const email = `tabs-${name}@example.test`;
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: adminHeaders,
-      payload: { email, password, roleId: roles.admin.id },
-    });
-    assert.equal(created.statusCode, 201, created.body);
-    accounts[name] = { id: created.json().data.id, email, password };
-  }
-  const { alice, bob } = accounts;
-  await app.close();
   app = await composeProductionSignIn(t, {
     databaseUrl,
     settings: provider.settings(admin.id),
     secrets,
   });
-  adminHeaders = await signedInHeaders(app, origin, admin, address());
-  const attached = await app.inject({
-    method: "POST",
-    url: `/api/auth/accounts/${alice.id}/providers/${provider.name}`,
-    headers: adminHeaders,
-    payload: {
-      subject: provider.subject,
-      expectedVersion: (await readAccount(app, adminHeaders, alice.id)).version,
-    },
-  });
+  const adminHeaders = await signedInHeaders(app, origin, admin, address());
+  const attached = await attachProvider(
+    app,
+    adminHeaders,
+    alice.id,
+    provider.name,
+    provider.subject,
+  );
   assert.equal(attached.statusCode, 200, attached.body);
-  const sessionCount = async () =>
-    (await pool.query("SELECT count(*)::int AS count FROM occ.session")).rows[0].count;
+  const sessionCount = async () => (await authRowCounts(pool)).sessions;
 
   browser = await chromium.launch({
     headless: true,

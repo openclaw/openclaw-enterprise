@@ -23,7 +23,7 @@ const kubectlTimeout = 15_000;
 
 const discoveryMessages = {
   cluster: "Kubernetes did not answer. Check the selected kubeconfig and cluster.",
-  namespace: "The tenant namespace has not appeared. Check controller reconciliation.",
+  namespace: "The Agent's tenant namespace has not appeared. Check controller reconciliation.",
   pod: "The Agent has no gateway Pod yet. Check the deployment in the console and the controller logs.",
   revision:
     "No gateway Pod mounts the requested revision. Check whether the Agent rolled back or a different revision is active.",
@@ -115,7 +115,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
 
     if (namespaces?.length > 1) {
       throw new Error(
-        "More than one Kubernetes namespace matches this platform namespace. Inspect their labels before retrying.",
+        "More than one Kubernetes namespace matches this Agent's gateway placement. Inspect their labels before retrying.",
       );
     }
     if (namespaces?.length === 0) {
@@ -159,7 +159,7 @@ async function findGateway(kubectl, namespaceId, agentId, revisionId) {
 }
 
 // This function is serialized to stdin and executed inside the gateway container.
-async function probeInGateway({ nonce, prompt }) {
+async function probeInGateway({ nonce, prompt, expectProviderKey }) {
   const emit = (value) => process.stdout.write(JSON.stringify(value));
   const failure = (code, status) => ({ error: code, ...(status === undefined ? {} : { status }) });
   try {
@@ -170,11 +170,11 @@ async function probeInGateway({ nonce, prompt }) {
       emit(failure("missing_password"));
       return;
     }
-    if (!providerKey) {
+    if (expectProviderKey && !providerKey) {
       emit(failure("missing_provider_key"));
       return;
     }
-    const credentials = [password, providerKey];
+    const credentials = [password, providerKey].filter(Boolean);
     if (prompt !== undefined && credentials.some((credential) => prompt.includes(credential))) {
       emit(failure("credential_prompt"));
       return;
@@ -286,7 +286,7 @@ async function probeInGateway({ nonce, prompt }) {
 
 export async function verifyFirstAgentModel(
   kubectl,
-  { namespaceId, agentId, revisionId, prompt, apiKey },
+  { namespaceId, agentId, revisionId, prompt, apiKey, expectProviderKey = true },
 ) {
   if (
     !isKubernetesLabel(namespaceId) ||
@@ -309,7 +309,7 @@ export async function verifyFirstAgentModel(
 
   const { namespace, pod } = await findGateway(kubectl, namespaceId, agentId, revisionId);
   const nonce = `FIRST_AGENT_${randomUUID()}`;
-  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt })});`;
+  const script = `await (${probeInGateway.toString()})(${JSON.stringify({ nonce, prompt, expectProviderKey })});`;
   let result;
   try {
     const output = await kubectl(

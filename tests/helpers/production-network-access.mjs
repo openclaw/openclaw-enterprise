@@ -12,6 +12,7 @@ import {
   productionCollectorValues,
   renderProductionChart,
 } from "./production-chart.mjs";
+import { createDriver, fixtureComputeConfiguration } from "./kubernetes-compute-real.mjs";
 
 const execute = promisify(execFile);
 const componentLabel = "app.kubernetes.io/component";
@@ -138,6 +139,8 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       cluster: 6443,
       exporter: 443,
       provider: 443,
+      authentication: 443,
+      catalog: 443,
       unexpected: 443,
     }).map(async ([name, port]) => {
       targets[name] = { host: await pod(name, destinations, {}, port), port };
@@ -158,7 +161,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     ),
     port: 10443,
   };
-  for (const name of ["database", "cluster", "exporter", "provider"]) {
+  for (const name of ["database", "cluster", "exporter", "provider", "authentication", "catalog"]) {
     targets[`${name}WrongPort`] = { ...targets[name], port: targets[name].port + 1 };
   }
 
@@ -176,9 +179,9 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     "gatewayRouting.gatewayClassName": "fixture",
     "gatewayRouting.apiKeySecretName": "fixture",
   };
-  const chart = async (overrides = {}) =>
+  const chart = async (overrides = {}, release) =>
     parseProductionChart(
-      (await renderProductionChart({ ...values, ...overrides }, { namespace })).stdout,
+      (await renderProductionChart({ ...values, ...overrides }, { namespace, release })).stdout,
     );
   const baseline = await chart();
   const sources = {};
@@ -241,16 +244,101 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   }
 
   return {
+    async installPublicReaderRevisions() {
+      const address = "10.43.0.19";
+      const peer = { namespace: destinations, podLabels: { app: "public-reader" }, address };
+      targets.publicReader = {
+        host: await pod("public-reader", destinations, peer.podLabels, 8080),
+        port: 8080,
+      };
+      targets.publicReaderWrongPort = { ...targets.publicReader, port: 8081 };
+      const base = fixtureComputeConfiguration();
+      const { driver } = await createDriver({
+        network: { ...base.network, publicGithubRead: peer },
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      });
+      const common = {
+        namespaceId: `ns_${randomUUID()}`,
+        agentId: `agt_${randomUUID()}`,
+        servicePrincipalId: `principal-${randomUUID()}`,
+        harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+        harnessAuth: { method: "runtime" },
+        configuration: {
+          plugins: {
+            entries: {
+              codex: {
+                config: {
+                  appServer: {
+                    networkProxy: {
+                      enabled: true,
+                      domains: { [address]: "allow" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        compute: { id: driver.id, implementation: driver.implementation },
+      };
+      const old = { ...structuredClone(common), id: `rev_${randomUUID()}` };
+      const selected = { ...structuredClone(common), id: `rev_${randomUUID()}` };
+      selected.compute.admission = driver.admitRevision(selected);
+      assert.ok(selected.compute.admission);
+      assert.equal(driver.pluginRuntimeSnapshot(old).runtime.publicGithubRead, undefined);
+      assert.ok(driver.pluginRuntimeSnapshot(selected).runtime.publicGithubRead);
+      await apply([
+        {
+          apiVersion: "networking.k8s.io/v1",
+          kind: "NetworkPolicy",
+          metadata: { name: "isolate-public-reader-probes", namespace },
+          spec: {
+            podSelector: { matchLabels: { "openclaw.dev/agent": common.agentId } },
+            policyTypes: ["Egress"],
+          },
+        },
+      ]);
+      await driver.reconcilePublicGithubReadNetworkPolicy(
+        selected,
+        { name: namespace, plane: "execution" },
+        driver.pluginRuntimeSnapshot(selected),
+      );
+      for (const [name, revision] of [
+        ["selectedreader", selected],
+        ["oldreader", old],
+      ]) {
+        sources[name] = { namespace, labels: driver.agentServiceSelector(revision) };
+        await pod(name, namespace, sources[name].labels, 8080);
+      }
+    },
     async install(phase) {
       const documents =
         phase === "optional"
-          ? await chart({ "backend.chatgpt.enabled": true, "gatewayRouting.enabled": true })
+          ? await chart({
+              "backend.chatgpt.enabled": true,
+              "gatewayRouting.enabled": true,
+              "api.modelDiscoveryCidrs[0]": `${targets.authentication.host}/32`,
+              "api.modelDiscoveryCidrs[1]": `${targets.catalog.host}/32`,
+            })
           : baseline;
       const policies = documents.filter(
         (object) =>
           object?.kind === "NetworkPolicy" &&
           (phase !== "bootstrap" || object.metadata.annotations?.["helm.sh/hook"]),
       );
+      if (phase === "optional") {
+        // The unrelated release was unrestricted in the baseline. Isolate its probe
+        // before checking that this release's discovery grant cannot authorize it.
+        const isolation = (await chart({}, "other")).find(
+          ({ kind, metadata }) =>
+            kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-default-deny",
+        );
+        assert.ok(isolation, "the unrelated release must render its own default-deny policy");
+        policies.push({
+          ...isolation,
+          metadata: { ...isolation.metadata, name: "other-release-default-deny" },
+        });
+      }
       await apply(
         policies.map((policy) => ({
           ...policy,

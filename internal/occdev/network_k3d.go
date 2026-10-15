@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -31,16 +33,40 @@ func developmentGatewayProbeLabels() map[string]string {
 	}
 }
 
+// developmentResolverK3dDefault, as OCC_DEVELOPMENT_K3D_DNS_RESOLVER, keeps
+// k3d's own node resolver (its gateway DNS rewriting) on every host.
+const developmentResolverK3dDefault = "k3d"
+
+// Seams for tests: the host resolver files and the host operating system.
+var (
+	readHostResolverFile = os.ReadFile
+	developmentHostOS    = runtime.GOOS
+)
+
 // prepareDevelopmentResolver only changes the resolver of the owned k3d node.
 // An explicit address is needed when k3d's host-gateway DNS forwarding is unavailable.
+// On Linux Docker, where that forwarding fails on iptables-nft hosts because the
+// node runs iptables in legacy mode, the node gets the host's upstream resolver
+// unless the setting selects another address or k3d's default.
 func (r *runner) prepareDevelopmentResolver(state *developmentState) ([]string, error) {
 	value := r.env["OCC_DEVELOPMENT_K3D_DNS_RESOLVER"]
-	if value == "" {
+	if value == developmentResolverK3dDefault {
 		return nil, nil
+	}
+	if value == "" {
+		if r.engine != "docker" || developmentHostOS != "linux" {
+			return nil, nil
+		}
+		value = hostUpstreamResolver(readHostResolverFile)
+		if value == "" {
+			return nil, nil
+		}
+		r.automaticNodeResolver = value
+		fmt.Fprintf(r.opts.Out, "Using this host's upstream DNS resolver %s for the k3d node (set OCC_DEVELOPMENT_K3D_DNS_RESOLVER to choose another, or to %s to keep k3d's default).\n", value, developmentResolverK3dDefault)
 	}
 	address, err := netip.ParseAddr(value)
 	if err != nil || !address.Is4() || !address.IsGlobalUnicast() {
-		return nil, fmt.Errorf("OCC_DEVELOPMENT_K3D_DNS_RESOLVER must be a non-loopback IPv4 address")
+		return nil, fmt.Errorf("OCC_DEVELOPMENT_K3D_DNS_RESOLVER must be a non-loopback IPv4 address or %s", developmentResolverK3dDefault)
 	}
 	path := filepath.Join(state.directory, "node-resolv.conf")
 	if err := exclusiveWrite(path, []byte("nameserver "+address.String()+"\n"), 0644); err != nil {

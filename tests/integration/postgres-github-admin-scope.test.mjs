@@ -1,24 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
-  bootstrapProductionInstallation,
+  assertConsoleSignIn,
   clientAddresses,
   composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
-  defaultInstallSettings,
   githubSignIn,
   githubUpgradeSettings,
-  installationRoles,
+  onboardPasswordAccounts,
+  postgresSignInState,
   readAccount,
   signedInHeaders,
   startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "scope-recovery@example.test";
 const password = "scope-limited-password";
 const authSecret = "scope-admin-auth-test-secret-at-least-32-bytes";
@@ -35,41 +32,26 @@ const takeoverSubject = "9200002";
 // grants, such as the unscoped bootstrap administrator, or it could sign in as that account.
 test(
   "an exact-scope Installation administrator cannot manage an account with broader grants",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const state = new PostgresPlatformState(pool);
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool, state } = postgresSignInState(t, () => [app]);
     await startFakeGitHub(t);
     const address = clientAddresses("198.19");
-    const adminPassword = await bootstrapProductionInstallation(t, {
+    const {
+      admin,
+      accounts: { limited },
+    } = await onboardPasswordAccounts(t, {
       databaseUrl,
+      state,
+      pool,
       email: adminEmail,
       authSecret,
-    });
-    const admin = { email: adminEmail, password: adminPassword };
-    const roles = await installationRoles(state, pool);
-
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: defaultInstallSettings,
       secrets,
+      password,
+      remoteAddress: address(),
+      accounts: { limited: { email: "scope-limited@example.test", role: "admin" } },
     });
-    let adminHeaders = await signedInHeaders(app, origin, admin, address());
-    admin.id = (await currentSession(app, adminHeaders.cookie)).user.id;
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/auth/accounts",
-      headers: adminHeaders,
-      payload: { email: "scope-limited@example.test", password, roleId: roles.admin.id },
-    });
-    assert.equal(created.statusCode, 201, created.body);
-    const limited = { id: created.json().data.id, email: "scope-limited@example.test", password };
-    await app.close();
 
     // Account creation binds the Role to the exact Installation only.
     const installation = await state.loadInstallation();
@@ -86,7 +68,7 @@ test(
       settings: githubUpgradeSettings(admin.id),
       secrets,
     });
-    adminHeaders = await signedInHeaders(app, origin, admin, address());
+    const adminHeaders = await signedInHeaders(app, origin, admin, address());
     const limitedHeaders = await signedInHeaders(app, origin, limited, address());
     const post = (headers, url, payload) => app.inject({ method: "POST", url, headers, payload });
 
@@ -112,6 +94,28 @@ test(
     assert.equal(revoked.statusCode, 403, revoked.body);
     assert.notEqual(await currentSession(app, adminHeaders.cookie), null, "admin stays signed in");
 
+    // Each refusal is audited against the account it targeted, with the coverage reason, so an
+    // investigator can tell a blocked takeover of this account from any other denial.
+    const coverageDenials = async (actions) =>
+      (await state.transact((unit) => unit.audit.list())).filter(
+        (event) => event.kind === "authorization_denial" && actions.includes(event.action),
+      );
+    const assertCoverageDenials = (events, count) => {
+      assert.equal(events.length, count);
+      for (const denied of events) {
+        assert.equal(denied.outcome, "denied");
+        assert.equal(denied.resource.kind, "installation");
+        assert.equal(denied.reasonCode, "ACCOUNT_PRINCIPAL_GRANTS_NOT_COVERED");
+        assert.match(denied.decisionReason, /every grant of the target account's Principal/);
+        assert.equal(denied.details.userId, admin.id);
+        assert.equal(denied.details.principalId, target.principalId);
+      }
+    };
+    assertCoverageDenials(
+      await coverageDenials(["openclaw.auth.accounts.github", "openclaw.auth.accounts.revoke"]),
+      2,
+    );
+
     const limitedAccount = await readAccount(app, limitedHeaders, limited.id);
     assert.deepEqual(await readAccount(app, adminHeaders, admin.id), target);
 
@@ -122,9 +126,7 @@ test(
     });
     assert.equal(covered.statusCode, 200, covered.body);
     const signedIn = await githubSignIn(app, origin, limitedSubject, address());
-    assert.equal(signedIn.callback.headers.location, "/console/", signedIn.callback.body);
-    const cookie = cookieHeaderFromSetCookie(signedIn.callback.headers["set-cookie"]);
-    assert.equal((await currentSession(app, cookie)).user.id, limited.id);
+    await assertConsoleSignIn(app, signedIn.callback, limited.id);
 
     // Taking the recovery designation acts against its holder: disabling a holder returns 409,
     // so a narrower administrator must not move it onto itself and lock the broader one out.
@@ -142,6 +144,8 @@ test(
     assert.equal(taken.statusCode, 403, taken.body);
     assert.equal(taken.json().error.code, "FORBIDDEN");
     assert.equal(await recoveryHolder(), admin.id);
+    // A refused move is audited against the current holder, whose grants were not covered.
+    assertCoverageDenials(await coverageDenials(["openclaw.auth.recovery.replace"]), 1);
     const disabled = await post(adminHeaders, `/api/auth/accounts/${limited.id}/disable`, {
       expectedVersion: (await readAccount(app, adminHeaders, limited.id)).version,
     });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -156,6 +156,16 @@ function imageFailureOutput(error) {
   return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
 }
 
+// A docker run killed at its execFile timeout has a null code; say so instead of `null !== 1`.
+function describeDockerFailure(error) {
+  const tail = String(error.stderr ?? "")
+    .trim()
+    .split("\n")
+    .slice(-20)
+    .join("\n");
+  return `docker exited with code=${error.code} killed=${error.killed} signal=${error.signal}\nstderr tail:\n${tail}`;
+}
+
 function assertNoPackagingFailure(output) {
   assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/);
   assert.doesNotMatch(output, /ENOENT: no such file or directory/);
@@ -182,6 +192,23 @@ function assertPersistenceBoundary(output, event) {
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
+function assertStartupFailureCode(output, event, code) {
+  const diagnostic = output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .find((line) => line?.event === event);
+  assert.ok(diagnostic, output);
+  assert.equal(diagnostic.code, code);
+}
+
 async function productionFixture(t) {
   const fixture = await mkdtemp(join(tmpdir(), "oce-production-image-"));
   await chmod(fixture, 0o755);
@@ -205,6 +232,63 @@ test(
   imageTestOptions,
   async (t) => {
     const fixture = await productionFixture(t);
+
+    let failure;
+    try {
+      // --init: on a timeout, docker forwards execFile's SIGTERM to the container. With the
+      // image's ENTRYPOINT ["node"], node is PID 1 and ignores it, leaving the container
+      // running. 60 s leaves room for a slow container start (finding 1379).
+      await runDocker(
+        [
+          "run",
+          "--rm",
+          "--init",
+          "--network",
+          "none",
+          "--mount",
+          `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+          "-e",
+          "NODE_ENV=production",
+          "-e",
+          "OCC_HOST=10.0.0.5",
+          "-e",
+          "OCC_PORT=3000",
+          "-e",
+          "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+          "-e",
+          "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
+          "-e",
+          "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+          "-e",
+          "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+          image,
+        ],
+        { timeout: 60_000 * imageSmokeTimeoutMultiplier },
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, "the smoke intentionally stops at the unavailable database boundary");
+    assert.equal(failure.code, 1, describeDockerFailure(failure));
+    const output = imageFailureOutput(failure);
+    assertPersistenceBoundary(output, "startup-error");
+    assertNoPackagingFailure(output);
+  },
+);
+
+test(
+  "production image startup rejects an invalid gateway StorageClass before persistence",
+  imageTestOptions,
+  async (t) => {
+    const fixture = await productionFixture(t);
+    const path = join(fixture, "installation.json");
+    const installation = JSON.parse(await readFile(path, "utf8"));
+    installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
 
     let failure;
     try {
@@ -235,10 +319,12 @@ test(
       failure = error;
     }
 
-    assert.ok(failure, "the smoke intentionally stops at the unavailable database boundary");
+    assert.ok(failure, "invalid gateway StorageClass must stop startup");
     assert.equal(failure.code, 1);
     const output = imageFailureOutput(failure);
-    assertPersistenceBoundary(output, "startup-error");
+    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
+    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
+    assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },
 );
@@ -293,8 +379,8 @@ test("production image includes the OpenShell gRPC proto asset", imageTestOption
       await client.health(AbortSignal.timeout(${1500 * imageSmokeTimeoutMultiplier}));
       assert.fail("OpenShell probe unexpectedly reached an unavailable test endpoint.");
     } catch (error) {
-      assert.equal(error?.code, 14);
-      assert.match(String(error?.message), /UNAVAILABLE|ECONNREFUSED|No connection established/);
+      assert.equal(error?.grpcStatus, 14);
+      assert.match(String(error?.message), /OpenShell Health failed with gRPC status 14/);
       process.stdout.write('{"event":"openshell-proto-loaded"}\n');
     } finally {
       client.close();

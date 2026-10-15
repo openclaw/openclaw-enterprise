@@ -151,6 +151,39 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 43) {
         return "preCredentialWithdrawals";
       }
+      if (receipts.length === 44) {
+        return "preBrokerReceiptFence";
+      }
+      if (receipts.length === 45) {
+        return "preModelProbeFailureCause";
+      }
+      if (receipts.length === 46) {
+        return "preProvisioningConfigurationRelease";
+      }
+      if (receipts.length === 47) {
+        return "preAdministratorCredentialSourceGrants";
+      }
+      if (receipts.length === 48) {
+        return "preCodexPatSources";
+      }
+      if (receipts.length === 49) {
+        return "preAgentCredentialSources";
+      }
+      if (receipts.length === 50) {
+        return "preCredentialWithdrawalRequester";
+      }
+      if (receipts.length === 51) {
+        return "preProvisioningDeploymentOutcome";
+      }
+      if (receipts.length === 52) {
+        return "preComputePreparationFailureEvidence";
+      }
+      if (receipts.length === 53) {
+        return "preCredentialSourcePat";
+      }
+      if (receipts.length === 54) {
+        return "preComputeRevisionAdmission";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -221,6 +254,39 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 43) {
     return "preCredentialWithdrawals";
+  }
+  if (receipts.length === 44) {
+    return "preBrokerReceiptFence";
+  }
+  if (receipts.length === 45) {
+    return "preModelProbeFailureCause";
+  }
+  if (receipts.length === 46) {
+    return "preProvisioningConfigurationRelease";
+  }
+  if (receipts.length === 47) {
+    return "preAdministratorCredentialSourceGrants";
+  }
+  if (receipts.length === 48) {
+    return "preCodexPatSources";
+  }
+  if (receipts.length === 49) {
+    return "preAgentCredentialSources";
+  }
+  if (receipts.length === 50) {
+    return "preCredentialWithdrawalRequester";
+  }
+  if (receipts.length === 51) {
+    return "preProvisioningDeploymentOutcome";
+  }
+  if (receipts.length === 52) {
+    return "preComputePreparationFailureEvidence";
+  }
+  if (receipts.length === 53) {
+    return "preCredentialSourcePat";
+  }
+  if (receipts.length === 54) {
+    return "preComputeRevisionAdmission";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

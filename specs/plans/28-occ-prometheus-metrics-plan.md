@@ -1,10 +1,10 @@
 ---
-rfc: ../rfcs/28-occ-prometheus-metrics.md
+rfc: ../rfcs/0004-occ-prometheus-metrics.md
 ---
 
 # OCC metrics implementation plan
 
-**Goal:** Implement [the accepted metrics proposal](../rfcs/28-occ-prometheus-metrics.md)
+**Goal:** Implement [the accepted metrics proposal](../rfcs/0004-occ-prometheus-metrics.md)
 and the requested Prometheus/Grafana development walkthrough.
 
 **Architecture:** Each OCC process owns its registry and private listener.

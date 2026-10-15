@@ -115,7 +115,7 @@ test("network cleanup reports failed readback and refuses foreign ownership", as
   const resource = ownedNetwork("owned-name", "owner", async () => {
     throw new Error("lost response");
   });
-  await assert.rejects(resource.create());
+  await assert.rejects(resource.create(), /lost response/);
   await assert.rejects(
     resource.remove(async () => {
       throw new Error("readback failed");

@@ -1,0 +1,55 @@
+{
+  "name": "default-codex",
+  "template": {
+    "agent": {
+      "executionMode": "dedicated",
+      "backendId": null,
+      "plugins": {}
+    },
+    "configuration": {
+      "values": {
+        "gateway": {
+          "mode": "local",
+          "bind": "lan",
+          "controlUi": {
+            "enabled": true,
+            "allowedOrigins": ["http://127.0.0.1:18789", "http://localhost:18789"]
+          },
+          "auth": {
+            "password": {
+              "source": "env",
+              "provider": "default",
+              "id": "OPENCLAW_GATEWAY_PASSWORD"
+            }
+          },
+          "http": {
+            "endpoints": {
+              "chatCompletions": {
+                "enabled": true
+              }
+            }
+          }
+        },
+        "plugins": {
+          "allow": ["codex"],
+          "entries": {
+            "codex": {
+              "enabled": true,
+              "config": {
+                "appServer": {
+                  "mode": "guardian",
+                  "approvalPolicy": "on-request",
+                  "sandbox": "read-only",
+                  "transport": "websocket",
+                  "url": "${APP_SERVER_URL}",
+                  "authToken": "${APP_SERVER_TOKEN}"
+                }
+              }
+            }
+          }
+        }
+      },
+      "secretBindings": {}
+    }
+  }
+}

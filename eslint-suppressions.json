@@ -1,9 +1,4 @@
 {
-  "apps/controller/src/composition/production.ts": {
-    "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    }
-  },
   "apps/controller/src/console/agents/detail.mjs": {
     "preserve-caught-error": {
       "count": 1
@@ -34,7 +29,7 @@
   },
   "apps/controller/src/drivers/secret/kubernetes/index.ts": {
     "@typescript-eslint/no-unused-vars": {
-      "count": 2
+      "count": 1
     }
   },
   "apps/controller/src/gateway/workspace-files-client.ts": {
@@ -52,22 +47,14 @@
       "count": 1
     }
   },
-  "packages/contracts/src/api/common.ts": {
-    "no-control-regex": {
-      "count": 2
-    }
-  },
-  "packages/occ/src/backends.ts": {
-    "@typescript-eslint/no-unused-vars": {
-      "count": 1
-    },
+  "packages/contracts/src/api/plain-text.ts": {
     "no-control-regex": {
       "count": 1
     }
   },
   "packages/occ/src/state/platform-state.ts": {
     "no-control-regex": {
-      "count": 4
+      "count": 3
     }
   },
   "packages/occ/src/state/postgres-state.ts": {
@@ -110,16 +97,6 @@
       "count": 1
     }
   },
-  "tests/conformance/plugin-compute.test.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
-  "tests/conformance/secret-occ.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
   "tests/conformance/test-files.test.mjs": {
     "no-empty": {
       "count": 1
@@ -128,11 +105,6 @@
   "tests/helpers/ci-logging.mjs": {
     "no-unused-vars": {
       "count": 5
-    }
-  },
-  "tests/helpers/dev-up.mjs": {
-    "no-unused-vars": {
-      "count": 1
     }
   },
   "tests/helpers/envoy-workspace-gateway.mjs": {

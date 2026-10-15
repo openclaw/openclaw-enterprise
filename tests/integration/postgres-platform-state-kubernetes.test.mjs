@@ -17,10 +17,23 @@ import {
   requiresPostgresAndKubernetesConfiguration,
   startKubernetesController,
   startKubernetesWorker,
-  stopController,
   updateConfiguration,
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
+
+// Revision lists return summaries, newest first (finding 1323).
+const revisionSummary = (revision) => ({
+  id: revision.id,
+  namespaceId: revision.namespaceId,
+  agentId: revision.agentId,
+  revision: revision.revision,
+  backendId: revision.backendId,
+  configurationId: revision.configurationId,
+  configurationGeneration: revision.configurationGeneration,
+  harness: revision.harness,
+  createdAt: revision.createdAt,
+});
 
 test(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
@@ -86,7 +99,7 @@ test(
 
     // The live worker can still produce unrelated lifecycle audit rows, such as
     // bootstrap Namespace convergence, so stop it before measuring this request.
-    await stopController(worker.child);
+    await stopProcess(worker.child);
 
     const auditBeforeUnauthenticatedRequest = await pool.query(
       "SELECT count(*)::integer AS count FROM occ.audit_events",
@@ -104,7 +117,7 @@ test(
       "unauthenticated requests have no attributable actor and cannot write audit rows",
     );
 
-    await stopController(first.child);
+    await stopProcess(first.child);
     const restarted = await startKubernetesController(context);
 
     const reloadedInstallation = await request(restarted, "GET", "/installation");
@@ -279,7 +292,7 @@ test(
     ]);
     assert.equal(firstHistory.status, 200);
     assert.equal(secondHistory.status, 200);
-    assert.deepEqual(firstHistory.data, [revision]);
+    assert.deepEqual(firstHistory.data, [revisionSummary(revision)]);
     assert.deepEqual(secondHistory.data, []);
 
     const actor = await pool.query(
@@ -610,7 +623,7 @@ test(
       ],
     );
 
-    await stopController(api.child);
+    await stopProcess(api.child);
     api = await startKubernetesController(context);
     const afterRestart = await request(
       api,
@@ -752,7 +765,10 @@ test(
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions`,
     );
     assert.equal(history.status, 200);
-    assert.deepEqual(history.data, [firstRevision, secondRevision]);
+    assert.deepEqual(history.data, [
+      revisionSummary(secondRevision),
+      revisionSummary(firstRevision),
+    ]);
     const firstRevisionRead = await request(
       api,
       "GET",

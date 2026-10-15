@@ -161,6 +161,7 @@ test("audit evidence retains Installation identity and rejects another Namespace
       action: "agents.create",
       resource: resource(),
     }),
+    /Audit event and resource scopes must match exactly/,
   );
   assert.equal(sink.events.length, 1);
 });
@@ -181,4 +182,12 @@ test("audit event kinds default to their own outcome", () => {
     ["success", "success", "success", "denied"],
   );
   assert.equal(factory.create({ ...base, kind: "access", outcome: "failure" }).outcome, "failure");
+});
+
+test("audit redaction matches real GitHub token spellings", () => {
+  const github = "ghp_aaaaaaaaaaaaaaaa";
+  const oauth = "gho_bbbbbbbbbbbbbbbb";
+  assert.equal(redactAuditDetails({ note: `used ${github} here` }).note, "used [REDACTED] here");
+  assert.equal(redactAuditDetails(oauth), "[REDACTED]");
+  assert.equal(redactAuditDetails("ghp-aaaaaaaaaaaaaaaa"), "ghp-aaaaaaaaaaaaaaaa");
 });

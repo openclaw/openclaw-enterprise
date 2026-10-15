@@ -31,7 +31,7 @@ export function renderWorkspaceFiles(context, agent, path) {
     element(
       "p",
       { className: "notice" },
-      "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or AgentRevisions. Concurrent writes use the last saved contents.",
+      "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or Agent versions. Concurrent writes use the last saved contents.",
     ),
   );
   if (!agent.activeRevisionId) {
@@ -39,7 +39,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       element(
         "p",
         { className: "muted", role: "status" },
-        "Workspace files require a deployed Agent with an active revision and a reachable gateway.",
+        "Workspace files require a deployed Agent with a current version and a reachable gateway.",
       ),
     );
     return section;
@@ -119,7 +119,8 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         editor.value = file.content;
-        baseline = file.content;
+        // Compare edits in the textarea's LF representation; reading never rewrites the file.
+        baseline = editor.value;
         editor.setCustomValidity("");
         loaded = true;
         outcomeUnknown = false;
@@ -141,18 +142,28 @@ export function renderWorkspaceFiles(context, agent, path) {
           context.onExpired();
           return;
         }
+        // Explicit Reload can settle an unknown write only when the API confirms file absence.
+        // A resource/scope 404 does not establish the native file's current state.
+        const missingReadback =
+          discard &&
+          cause.status === 404 &&
+          cause.code === "NOT_FOUND" &&
+          cause.serverMessage === "The requested workspace file was not found.";
         // A missing file can be created through PUT. Other read failures never enable a blank overwrite.
-        if (cause.status === 404 && !outcomeUnknown) {
+        if (cause.status === 404 && (!outcomeUnknown || missingReadback)) {
           editor.value = !discard && retained ? retained.text : "";
           baseline = !discard && retained ? retained.baseline : undefined;
           initialized = true;
           editor.setCustomValidity("");
           loaded = true;
+          if (missingReadback) {
+            outcomeUnknown = false;
+          }
         } else {
           loaded = false;
         }
-        status.textContent = "";
-        error.textContent = fileError(cause, false);
+        status.textContent = missingReadback ? `${name} is missing. Save to create it.` : "";
+        error.textContent = missingReadback ? "" : fileError(cause, false);
       } finally {
         if (context.isCurrent()) {
           pending = false;

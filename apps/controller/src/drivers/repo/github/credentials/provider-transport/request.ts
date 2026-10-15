@@ -101,13 +101,31 @@ export function sendProviderRequest({
       if (attempt.signal.aborted || remaining <= 0) {
         throw new Error("not-admitted");
       }
-      // No await separates this admission check, dispatch latch and socket creation.
-      onDispatch();
-      attempt.observeDispatch();
+      // No request byte can leave before TCP connects (the request itself is written
+      // only after the TLS handshake), so DNS and connect failures stay definite.
+      // Admission is checked again with the latch at that point.
+      const observeDispatch = () => {
+        if (failed) {
+          return;
+        }
+        try {
+          attempt.observeDispatch();
+          onDispatch();
+        } catch {
+          fail();
+        }
+      };
       request = httpsRequest(prepared.options);
       request.on("error", fail);
       request.on("close", settle);
       request.on("response", receiveResponse);
+      request.once("socket", (socket) => {
+        if (socket.connecting) {
+          socket.once("connect", observeDispatch);
+        } else {
+          observeDispatch();
+        }
+      });
       cancelDeadline = clock.schedule(Math.min(30000, remaining), fail);
       attempt.signal.addEventListener("abort", fail, { once: true });
       if (attempt.signal.aborted) {

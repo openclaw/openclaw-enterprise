@@ -26,7 +26,7 @@ export function createRegistryServiceOwner(
     registry = await loadGitHubRepositoryRegistry(registryFile, backendId);
     const factory = createGitHubRegistryDriverFactory({
       registry,
-      key,
+      authority: key,
       privateKeyFile,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,

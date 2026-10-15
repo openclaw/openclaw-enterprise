@@ -84,10 +84,17 @@ OCC_TEST_PRODUCTION_IMAGE="$OCC_IMAGE_CHECK_CONTROLLER" \
 OCC_TEST_RUNTIME_IMAGE="$OCC_IMAGE_CHECK_RUNTIME" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-native-worker.test.mjs \
+    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
-Before installation, all three suites must pass without skips for the exact
+Before installation, all these suites must pass without skips for the exact
 current pair selected in `CONTROLLER_IMAGE` and `RUNTIME_IMAGE`. Rebuilding or
 changing a digest requires new checks. The historical pair does not meet current
 installation requirements. If GHCR denies a pull, check package visibility and
@@ -103,6 +110,13 @@ docker build -f deploy/runtime/Dockerfile \
   --tag openclaw-enterprise-runtime:test .
 OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
   node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-native-worker.test.mjs \
+    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/repository-runtime-volume.test.mjs
 ```
 
@@ -111,6 +125,10 @@ fresh runtime home, then initializes the image's real Codex app-server through
 the installed plugin's version guard. The smoke runs offline without provider
 credentials. It does not make a model call or establish a Slack connection;
 run the [live Slack test](slack.md#slack) for channel delivery proof.
+The native listener TLS case proves that HTTPS can become ready while Compute's
+HTTP probe fails, then verifies the plaintext control and all three Drivers'
+admission guards. Its loopback provider records zero model calls; it does not
+prove SSH/systemd or an Envoy/Kubernetes deployment.
 
 Build the controller image using the [production prerequisites](../guides/deploy.md#production-prerequisites),
 then set `OCC_TEST_PRODUCTION_IMAGE` to the local tag you built:
@@ -169,6 +187,18 @@ Both startup suites accept `OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER`, an integer from
 
 ## Repository image-pair qualification
 
+Run the identity and node qualification fixtures without model credentials:
+
+```sh
+node --test tests/integration/production-image-qualification.test.mjs
+```
+
+The image identity case runs the production CLI against a synthetic OCI archive
+with 34 small compressed filesystem layers. It verifies that the layers do not
+consume the metadata allowance and that corrupt or excessive metadata is still
+rejected. Docker inspection and export are fixture I/O; this does not establish
+native Docker behavior or a live upgrade.
+
 The qualification test invokes the actual staged controller and broker images
 with synthetic App and TLS material and a disposable receipt listener. On a
 Linux host running as UID 1000, stage immutable images for its native Docker
@@ -222,24 +252,36 @@ reconciliation, runtime image execution, or a model turn.
 
 ## Runtime image startup test environment
 
-[`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs)
-verifies a locally available OpenClaw runtime image before Docker Compose or
-Kubernetes execution. It starts task-owned containers with the Docker Compute
+[`runtime-image-startup.test.mjs`](../../tests/integration/runtime-image-startup.test.mjs),
+[`runtime-image-startup-probe.test.mjs`](../../tests/integration/runtime-image-startup-probe.test.mjs),
+[`runtime-image-startup-termination.test.mjs`](../../tests/integration/runtime-image-startup-termination.test.mjs),
+[`runtime-image-gateway-peer.test.mjs`](../../tests/integration/runtime-image-gateway-peer.test.mjs),
+[`runtime-image-native-worker.test.mjs`](../../tests/integration/runtime-image-native-worker.test.mjs),
+[`runtime-image-state-migration.test.mjs`](../../tests/integration/runtime-image-state-migration.test.mjs),
+[`runtime-image-managed-files.test.mjs`](../../tests/integration/runtime-image-managed-files.test.mjs)
+and [`runtime-image-native-listener.test.mjs`](../../tests/integration/runtime-image-native-listener.test.mjs)
+verify a locally available OpenClaw runtime image before Docker Compose or
+Kubernetes execution. They start task-owned containers with the Docker Compute
 Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed `/home/node` and `/tmp`. Host Node.js 24+ is required to run the
-test.
+tests.
 
-| Variable                         | Requirement or default                                                                                                                 |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                              |
-| `OCC_TEST_CODEX_SECCOMP_PROFILE` | Optional reviewed Codex Localhost seccomp profile path; required on Docker engines whose default seccomp blocks Codex sandbox startup. |
-| `OCC_DOCKER_BIN`                 | Optional Docker executable path; defaults to `docker`.                                                                                 |
+| Variable                         | Requirement or default                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                                    |
+| `OCC_TEST_CODEX_SECCOMP_PROFILE` | Reviewed Codex Localhost seccomp profile path; required for Codex sandbox cases in CI and on Docker engines whose default seccomp blocks it. |
+| `OCC_DOCKER_BIN`                 | Optional Docker executable path; defaults to `docker`.                                                                                       |
 
 This check proves an embedded OpenClaw gateway reaches `/readyz` from a fresh
 runtime home, the bundled Codex plugin can be discovered without missing
 package dependencies, and, when the reviewed Codex seccomp profile is supplied,
 the native Codex command execution path enforces the repository broker private
-endpoint policy. It does not prove Docker Compose orchestration, Kubernetes
+endpoint policy. A case that runs the Codex sandbox takes its Docker options from
+`reviewedCodexSeccompSecurityOptions` in `tests/helpers/runtime-image-startup.mjs`.
+In CI, or when `OPENCLAW_ENTERPRISE_CI_STATE` is set, it fails without the
+profile instead of falling back to Docker's default seccomp, and
+`tests/integration/ci-prepare.test.mjs` fails when a lane runs such a file
+without preparing and requiring the profile. It does not prove Docker Compose orchestration, Kubernetes
 reconciliation, model credentials, or a model turn. When the suite runs from
 inside another container that talks to a host Docker daemon, mount the repository
 and the fixture temp directory at the same absolute host paths and set `TMPDIR`

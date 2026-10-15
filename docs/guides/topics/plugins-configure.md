@@ -8,14 +8,17 @@ Codex Agents use a different catalog and approval policy; see
 
 ## Use the console
 
-Open **Agents**, select the Agent, then open **New revision** → **Plugins**.
-Use **Configure plugins** to edit saved selections and tool policy. If the
-Driver has no catalog, edit **Plugin selections JSON** with a known plugin ID;
-the CLI example below shows the Diffs ID. For dedicated Codex browsing, the
-curated catalog needs no Secret. Hosted discovery requires a bound Service
-Accounts token Secret under **Credentials** and uses it server-side; other
-authentication methods cannot browse the hosted catalog. Select **Save plugin selections**, then
-**Deploy new revision**. The prior revision keeps its
+Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
+Use **Configure plugins** to edit saved selections and tool policy. Only
+dedicated Codex Agents that do not authenticate with an API key can browse a
+catalog. For other Agents, **Configure plugins** reports that browsing is
+unavailable; add a known plugin ID in **Plugin selections JSON** instead. The
+CLI example below shows the Diffs ID.
+For dedicated Codex browsing, the curated catalog needs no Secret. Hosted
+discovery requires a bound Service Accounts token Secret under **Credentials**
+and uses it server-side; other authentication methods cannot browse the hosted
+catalog. Select **Save plugin selections**, then
+**Deploy new version**. The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
 snapshot. See the [Agent detail guide](../console/agent-details.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
@@ -50,9 +53,22 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   SSH Compute rejects Agents with plugin selections or an Agent default plugin
   approver policy.
 - You need permission to read, update, and deploy the Agent, read its
-  Configuration, and read the new Agent revision. Existing
+  Configuration, and read the new Agent revision. Every Agent update, including
+  a plugin-only change, also needs `operate` on the Agent's Harness
+  authentication Secret or credential source and on each Secret its
+  Configuration binds; without them the update returns `403`. Revision `read` is
+  [bound per AgentRevision](../../reference/authorization.md#manage-namespace-policy), so a member with
+  only exact grants cannot read the status of a revision that did not exist
+  when the grants were made; an administrator can check it or grant `read` on
+  that revision. Existing
   [model credential requirements](../../reference/agents.md#harness-authentication)
   still apply when deploying.
+- Check the Agent Configuration's tool policy. Selecting Diffs adds it to the
+  [tool allowlist](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
+  If the Configuration denies every tool, for example with `tools.deny: ["*"]`,
+  no callable tool remains: the deployment still succeeds without a warning,
+  but every turn fails with `No callable tools remain`. Remove that denial
+  before selecting Diffs.
 
 Set the Namespace and Agent IDs from your Installation:
 
@@ -115,7 +131,10 @@ Repeat the status lookup while the result is `queued` or `running`. A
 disabling it. It does not prove the plugin is still healthy or that an Agent
 has used it. A `PLUGIN_INSTALL_FAILED` warning means that selection was disabled
 for this startup even if the Agent deployed. Dedicated Codex can also report
-`PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication.
+`PLUGIN_AUTH_REQUIRED` when a selected app still needs authentication, and
+for every selected plugin when the Agent authenticates with an API key: Codex
+plugins need a ChatGPT login, so the Console does not offer plugin browsing
+for API-key Agents.
 
 To verify that Diffs actually ran, use an Agent client that displays native
 tool results. An operator can [attach with the OpenClaw TUI](../deploy/production-tui.md)
@@ -131,6 +150,11 @@ In the client's tool activity, check the actual `diffs` call and a successful
 result for the requested file and view mode. Runtime versions may return a
 structured result rather than `Diff viewer ready.` A model reply alone does
 not prove it called the tool.
+In `view` mode, Diffs returns a viewer link. It opens in a browser only when the
+Agent uses [native admin access](../deploy/native-admin.md) with
+`gateway.publicOrigin` set to the Agent's native admin origin; otherwise the link
+points at the Gateway's private loopback address. Use `mode: "file"` when you
+need the rendered diff without a link.
 The [Chat Completions check](../operate/model-verification.md) reads only
 assistant text; it cannot verify that Diffs ran. The OCC console has no chat.
 Use the TUI's tool activity for this verification.

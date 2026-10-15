@@ -8,6 +8,16 @@ export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
 export const NamespaceMissing = { ...story("namespaceMissing"), name: "Namespace unavailable" };
+export const CreateRestricted = story("agentsCreateRestricted");
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
+export const AgentsInterruptedResponse = {
+  ...story("agentsInterruptedResponse"),
+  name: "Interrupted response",
+};
 export const AgentsLoading = { ...story("agentsLoading"), name: "Loading" };
+
+export const LatestDeploymentFailed = story("agentsDeploymentFailed");
+export const LatestDeploymentDenied = story("agentsDeploymentDenied");
+export const LatestDeploymentLoading = story("agentsDeploymentLoading");
+export const LatestDeploymentUnavailable = story("agentsDeploymentError");

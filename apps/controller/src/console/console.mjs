@@ -15,6 +15,8 @@ let namespaceId = null;
 let observabilityUrl = null;
 // Session owner whose Installation-admin observability read has settled.
 let observabilityOwner = null;
+// The Installation-access probe still being answered, for the session owner that sent it.
+let installationAccessProbe = null;
 // Whether that owner administers the Installation: true, false, or null when unknown.
 let installationAdmin = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
@@ -36,6 +38,62 @@ const externalAttemptStorageKeys = {
 // The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
 // reloads the Console before discovery answers, name the provider the person chose.
 const oidcLabelStorageKey = "occ.console.oidcLabel";
+// Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
+// GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+// A retained view revalidates each read it made. A paged read keeps its cursor, so it compares
+// data and meta, without the request ID that differs on every call.
+function readSignature(result, includeMeta = false) {
+  return JSON.stringify(
+    includeMeta ? { data: result.data, meta: { ...result.meta, requestId: undefined } } : result,
+  );
+}
+
+function providerIcon(provider) {
+  if (provider !== "github" && provider !== "google") {
+    return null;
+  }
+  const namespace = "http://www.w3.org/2000/svg";
+  const node = (tag, attributes) => {
+    const item = document.createElementNS(namespace, tag);
+    for (const [name, value] of Object.entries(attributes)) {
+      item.setAttribute(name, value);
+    }
+    return item;
+  };
+  const svg = node("svg", {
+    class: "auth-provider-icon",
+    "aria-hidden": "true",
+    focusable: "false",
+    viewBox: provider === "github" ? "0 0 24 24" : "0 0 23.5 24",
+  });
+  if (provider === "github") {
+    svg.append(
+      node("path", {
+        d: "M10.226 17.284c-2.965-.36-5.054-2.493-5.054-5.256 0-1.123.404-2.336 1.078-3.144-.292-.741-.247-2.314.09-2.965.898-.112 2.111.36 2.83 1.01.853-.269 1.752-.404 2.853-.404 1.1 0 1.999.135 2.807.382.696-.629 1.932-1.1 2.83-.988.315.606.36 2.179.067 2.942.72.854 1.101 2 1.101 3.167 0 2.763-2.089 4.852-5.098 5.234.763.494 1.28 1.572 1.28 2.807v2.336c0 .674.561 1.056 1.235.786 4.066-1.55 7.255-5.615 7.255-10.646C23.5 6.188 18.334 1 11.978 1 5.62 1 .5 6.188.5 12.545c0 4.986 3.167 9.12 7.435 10.669.606.225 1.19-.18 1.19-.786V20.63a2.9 2.9 0 0 1-1.078.224c-1.483 0-2.359-.808-2.987-2.313-.247-.607-.517-.966-1.034-1.033-.27-.023-.359-.135-.359-.27 0-.27.45-.471.898-.471.652 0 1.213.404 1.797 1.235.45.651.921.943 1.483.943.561 0 .92-.202 1.437-.719.382-.381.674-.718.944-.943",
+      }),
+    );
+    return svg;
+  }
+  const clip = node("clipPath", { id: "auth-google-logo-clip" });
+  clip.append(
+    node("path", {
+      d: "M12 10v4.5h6.47c-.5 2.7-3 4.74-6.47 4.74-3.9 0-7.1-3.3-7.1-7.25S8.1 4.75 12 4.75c1.8 0 3.35.6 4.6 1.8l3.4-3.4C18 1.2 15.24 0 12 0 5.4 0 0 5.4 0 12s5.4 12 12 12c7 0 11.5-4.9 11.5-11.7 0-.8-.1-1.54-.2-2.3z",
+    }),
+  );
+  const filter = node("filter", { id: "auth-google-logo-blur" });
+  filter.append(node("feGaussianBlur", { stdDeviation: "1" }));
+  const group = node("g", { "clip-path": "url(#auth-google-logo-clip)" });
+  const colors = node("foreignObject", {
+    filter: "url(#auth-google-logo-blur)",
+    width: "28",
+    height: "28",
+    transform: "translate(-2 -2)",
+  });
+  colors.append(element("div", { className: "auth-google-colors" }));
+  group.append(colors, node("path", { fill: "#3186FF", d: "M11 8h16v8H11z" }));
+  svg.append(clip, filter, group);
+  return svg;
+}
 const externalProviders = {
   github: {
     label: "GitHub",
@@ -100,6 +158,38 @@ function providerFailure(label) {
       : `Could not sign in with ${label}. Try again, or ask an administrator to attach your ${label} identity to your account.`;
 }
 
+// GitHub sign-in refused by the organization and team allowlist (RFC-0061). The controller
+// sends only these reasons; anything else keeps the generic provider message.
+const githubMembershipFailures = {
+  membership: (password) =>
+    `Your GitHub account is not a member of an organization or team allowed to sign in here. If you were invited, accept the invitation on GitHub and try again; otherwise ask an administrator for access${password ? " or use your password" : ""}.`,
+  "membership-unavailable": (password) =>
+    password
+      ? "Could not check your GitHub organization membership. Try again later or use your password."
+      : "Could not check your GitHub organization membership. Try again later; if this keeps happening, ask an administrator.",
+};
+
+// The provider could not answer, or refused this Installation's client: an outage or a
+// configuration fault, not a refusal of the person. Where password sign-in is recovery-only,
+// only the recovery administrator has a password to fall back on.
+function providerUnavailableFailure(label) {
+  return (password) =>
+    password
+      ? `${label} sign-in is unavailable right now. Try again later or use your password.`
+      : `${label} sign-in is unavailable right now. Try again later. If you are an administrator, use Recovery sign-in.`;
+}
+
+// The callback failed inside OCE (its database or audit store), so no sign-in can finish.
+function signInUnavailableFailure(label) {
+  return `Could not finish signing in with ${label}. Sign-in is unavailable right now; try again later.`;
+}
+
+// The provider authenticated an identity attached to a disabled account. Retrying, a
+// password or an attach cannot help, so only an administrator is named.
+function accountDisabledFailure(label) {
+  return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+}
+
 function pinSessionKey(value) {
   pinnedSessionKey = typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -142,6 +232,48 @@ function recalledInstallationAccess(owner) {
     // Unreadable tab storage falls back to a fresh probe.
   }
   return null;
+}
+
+// One probe per session owner, shared by every page load until it settles. A navigation
+// joins the probe in flight instead of aborting it and asking again: the API has usually
+// already answered, and audited a denial, by then. A settled answer is kept even when the
+// view that asked is gone, as long as the same session owner is signed in.
+function probeInstallationAccess(owner) {
+  if (owner && installationAccessProbe?.owner === owner) {
+    return installationAccessProbe.answer;
+  }
+  const probe = { owner };
+  probe.answer = request("/observability", { outlivesView: true })
+    .then(
+      (data) => ({
+        url: typeof data?.url === "string" ? data.url : null,
+        admin: true,
+        settled: true,
+      }),
+      (error) => {
+        if (error.status === 401) {
+          throw error;
+        }
+        const denied = error.status === 403;
+        return { url: null, admin: denied ? false : null, settled: denied };
+      },
+    )
+    .then((answer) => {
+      if (owner && answer.settled && sessionOwnerKey(session) === owner) {
+        observabilityUrl = answer.url;
+        installationAdmin = answer.admin;
+        observabilityOwner = owner;
+        rememberInstallationAccess(owner, answer.admin, answer.url);
+      }
+      return answer;
+    })
+    .finally(() => {
+      if (installationAccessProbe === probe) {
+        installationAccessProbe = null;
+      }
+    });
+  installationAccessProbe = owner ? probe : null;
+  return probe.answer;
 }
 
 function forgetInstallationAccess() {
@@ -430,6 +562,7 @@ function clearPrivate() {
   namespaceId = null;
   observabilityUrl = null;
   observabilityOwner = null;
+  installationAccessProbe = null;
   installationAdmin = null;
   clearRetainedViews();
 }
@@ -524,14 +657,18 @@ function showLogin(message = "", returnPath = null) {
         }
         feedback.textContent =
           error.status === 429
-            ? "Too many attempts. Please try again later."
+            ? "Too many attempts. Try again later."
             : recoveryOnly
-              ? `${label} sign-in is unavailable. Please try again later.`
+              ? `${label} sign-in is unavailable. Try again later.`
               : `${label} sign-in is unavailable. Try again or use your password.`;
         pending = false;
         setDisabled(false);
       }
     });
+    const icon = providerIcon(provider);
+    if (icon !== null) {
+      control.prepend(icon);
+    }
     return control;
   };
   const github = providerButton("github");
@@ -587,12 +724,12 @@ function showLogin(message = "", returnPath = null) {
       }
       feedback.textContent =
         error.status === 429
-          ? "Too many attempts. Please try again later."
+          ? "Too many attempts. Try again later."
           : error.status === 400 || error.status === 401 || error.status === 403
             ? recoveryOnly
               ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
               : "Could not sign in. Check your username and password."
-            : "Sign-in is unavailable. Please retry.";
+            : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
@@ -706,6 +843,19 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   const providerError = Object.hasOwn(externalProviders, authError ?? "")
     ? externalProviders[authError]
     : null;
+  const authReason = current.url.searchParams.get("authReason");
+  const reasonFailure =
+    providerError === null
+      ? null
+      : authReason === "account-disabled"
+        ? accountDisabledFailure(providerError.label)
+        : authReason === "provider-unavailable"
+          ? providerUnavailableFailure(providerError.label)
+          : authReason === "unavailable"
+            ? signInUnavailableFailure(providerError.label)
+            : authError === "github" && Object.hasOwn(githubMembershipFailures, authReason ?? "")
+              ? githubMembershipFailures[authReason]
+              : null;
   const externalAttempt = takeExternalAttempt();
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
@@ -751,7 +901,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             : pageUrl(current.target, current.namespace);
       showLogin(
         providerError !== null
-          ? providerFailure(providerError.label)
+          ? (reasonFailure ?? providerFailure(providerError.label))
           : current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
@@ -796,20 +946,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         ? null
         : recalled
           ? { ...recalled, settled: true }
-          : request("/observability").then(
-              (data) => ({
-                url: typeof data?.url === "string" ? data.url : null,
-                admin: true,
-                settled: true,
-              }),
-              (error) => {
-                if (error.status === 401) {
-                  throw error;
-                }
-                const denied = error.status === 403;
-                return { url: null, admin: denied ? false : null, settled: denied };
-              },
-            ),
+          : probeInstallationAccess(owner),
     ]);
     if (!lifetime.isCurrent(active)) {
       return;
@@ -824,9 +961,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityUrl = observability.url;
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
-      if (owner && observability.settled && !recalled) {
-        rememberInstallationAccess(owner, observability.admin, observability.url);
-      }
     }
     namespaceId =
       current.namespace ??
@@ -840,6 +974,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    if (retained && current.namespace !== null) {
+      // Namespace admission is done, so the header selector is usable while the retained
+      // view revalidates, as on first loads. A switch resets the lifetime, discarding these reads.
+      // Without a URL selection the shell has none; the full render below picks the default.
+      shellUI.updateNamespaces(namespaces);
+    }
     let retainedItems = null;
     let retainedAgent = null;
     if (
@@ -885,23 +1025,34 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       const validations = await Promise.allSettled(
         [...retainedState.reads.keys()].map(async (path) => {
           if (!fresh.has(path)) {
-            fresh.set(path, await request(path));
+            fresh.set(
+              path,
+              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+            );
           }
         }),
       );
       if (!lifetime.isCurrent(active)) {
         return;
       }
+      // A shell restored without a URL selection has none; once a Namespace is readable,
+      // the full render below picks the default instead.
       const unchanged =
+        namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
-          ([path, value]) => JSON.stringify(fresh.get(path)) === value,
+          ([path, value]) =>
+            readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
       if (unchanged) {
         mountedViewState = retainedState;
         retainedState.active = active;
         retainedState.resumeDrafts?.();
+        // Timers that fired while the view was detached stopped; let them re-arm.
+        for (const resume of retainedState.resumeHandlers) {
+          resume();
+        }
         navigateAgentTab = retainedState.tabNavigation;
         mountedAgent = retainedState.agent;
         for (const control of shell.blockedControls) {
@@ -923,6 +1074,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      metaReads: new Set(),
+      resumeHandlers: new Set(),
       user: session.user,
     };
     mountedViewState = viewState;
@@ -935,8 +1088,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
       try {
         const result = await request(path, options);
-        if ((options.method ?? "GET") === "GET") {
-          viewState.reads.set(path, JSON.stringify(result));
+        // Live reads (runtime status, log pages) differ on every call; replaying them to
+        // revalidate a cached view would only spend the reader's rate limit.
+        if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
+          viewState.reads.set(path, readSignature(result, options.includeMeta));
+          if (options.includeMeta) {
+            viewState.metaReads.add(path);
+          }
         }
         return result;
       } catch (error) {
@@ -1001,6 +1159,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       navigate,
       pageUrl,
       isCurrent: () => lifetime.isCurrent(viewState.active),
+      onResume: (handler) => viewState.resumeHandlers.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
@@ -1051,7 +1210,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         mountedAgent = agent;
         viewState.agent = agent;
         viewState.reusable &&= agent?.status !== "deleting";
-        markMountedRoute(current);
+        // A tab switch while the detail was loading already moved the URL (and the mounted
+        // route) in place; keying the view by the URL it was opened with would retain it
+        // under the wrong tab.
+        markMountedRoute(route());
       }
       return;
     }
@@ -1101,8 +1263,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       publicPanel(
         sessionResolved ? "Namespace access unavailable" : "Session unavailable",
         sessionResolved
-          ? "Could not check Namespace access. Please retry."
-          : "Could not check your session. Please retry.",
+          ? "Could not check Namespace access. Try again."
+          : "Could not check your session. Try again.",
         "Retry",
         () => void loadPage(),
       );
@@ -1167,12 +1329,15 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               : current.feature === "backends"
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
+    const agentDenied = current.agentId && error.status === 403;
     panel(
       shell.view,
       title,
-      error.status === 403
-        ? "You do not have permission to read this collection."
-        : "The read could not be completed. Retry to check current access and saved state.",
+      agentDenied
+        ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
+        : error.status === 403
+          ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+          : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),
       error.requestId,
@@ -1181,6 +1346,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
+      if (
+        fromNavigation &&
+        previousMountedRouteKey !== routeKey(current) &&
+        document.activeElement === document.body
+      ) {
+        app.querySelector(".content h1")?.focus({ preventScroll: true });
+      }
     }
   }
 }
@@ -1312,8 +1484,8 @@ async function revalidateMountedAgent(current) {
       publicPanel(
         checking === "session" ? "Session unavailable" : "Namespace access unavailable",
         checking === "session"
-          ? "Could not check your session. Please retry."
-          : "Could not check Namespace access. Please retry.",
+          ? "Could not check your session. Try again."
+          : "Could not check Namespace access. Try again.",
         "Retry",
         () => void loadPage(),
       );
@@ -1331,7 +1503,7 @@ async function revalidateMountedAgent(current) {
           ? "Resource unavailable"
           : "Request unavailable",
       error.status === 403
-        ? "You do not have permission to read this Agent or its revision."
+        ? "You do not have permission to read this Agent, its versions, or its Configuration."
         : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),

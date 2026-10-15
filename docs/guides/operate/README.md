@@ -27,6 +27,7 @@ which resources Helm leaves behind when you uninstall it.
 | Diagnose a failed installation, blocked Namespace, or unavailable control plane | [Troubleshoot the platform](troubleshooting.md)                                                  |
 | Configure or verify operational logs                                            | [Observability](../observability.md)                                                             |
 | Scrape application metrics                                                      | [OCC metrics](../../reference/metrics.md) and [production scraping](../observability/metrics.md) |
+| Check that NetworkPolicies isolate the control plane and each Agent             | [Check Agent network isolation](network-isolation.md)                                            |
 | Connect the control plane to private Agent workspace files                      | [Agent workspace routing](../deploy/workspace-routing.md)                                        |
 | Set up and verify the trusted-operator native admin pilot                       | [Agent native admin UI](../deploy/native-admin.md)                                               |
 | Renew or revoke a credential                                                    | [Credential rotation](../deploy/credential-lifecycle.md)                                         |

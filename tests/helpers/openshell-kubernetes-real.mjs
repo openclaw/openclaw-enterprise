@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { rootCertificates } from "node:tls";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -17,28 +18,26 @@ const harnessPort = 18790;
 const gatewayPort = 8080;
 const transportSecretPrefix = "openclaw-agent-transport";
 
+// The pinned Kubernetes driver, not policy.process, owns workload identity.
+// This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
+// NVIDIA/OpenShell 021400be8af471f8669369e679de3e18cf0bd672
+// crates/openshell-driver-kubernetes/src/config.rs:309,513-545.
+export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
+
+// Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
+// thread rollouts. Skills no longer arrive through the workspace PVC.
 const requiredWorkspaceMounts = Object.freeze([
   {
-    subPath: "bundled-skills",
-    mountPath: "/home/node/openclaw-runtime-assets/bundled-skills",
-    readOnly: true,
-  },
-  {
-    subPath: "generated-images",
-    mountPath: "/home/node/.codex/generated_images",
+    subPath: "codex-sessions",
+    mountPath: "/sandbox/.openclaw-runtime/home/.codex/sessions",
     readOnly: false,
   },
   {
-    subPath: "plugin-skills",
-    mountPath: "/home/node/openclaw-runtime-assets/plugin-skills",
-    readOnly: true,
+    subPath: "generated-images",
+    mountPath: "/sandbox/.openclaw-runtime/home/.codex/generated_images",
+    readOnly: false,
   },
-  {
-    subPath: "sessions",
-    mountPath: "/home/node/.openclaw/agents/main/sessions",
-    readOnly: true,
-  },
-  { subPath: "workspace", mountPath: "/home/node/workspace", readOnly: false },
+  { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
 ]);
 
 export function openshellHash(value, length = 12) {
@@ -77,9 +76,12 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
   };
 }
 
-// Model egress comes only from the credential source's OpenShell profile, bound to this binary.
-export const OPENSHELL_CODEX_BINARY =
-  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.158.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex";
+// Model egress comes only from the credential source's profile, bound to native Codex.
+// Match either architecture of the pinned image, independent of the test runner's host.
+const openshellCodexBinaries = Object.freeze([
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+]);
 
 export function createOpenShellInstallationConfiguration({
   authentication,
@@ -107,7 +109,14 @@ export function createOpenShellInstallationConfiguration({
     "limits.cpu": "16",
     "limits.memory": "8Gi",
   };
-  configuration.drivers.compute.configuration.servicePrincipalCredentials.expirationSeconds = 3600;
+  configuration.drivers.compute.configuration.servicePrincipalCredentials =
+    process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw"
+      ? {
+          mode: "projectedServiceAccountToken",
+          audience: "openclaw-enterprise",
+          expirationSeconds: 3600,
+        }
+      : { mode: "disabled" };
   // The integration replaces this placeholder transport with each namespace's port-forward.
   configuration.backend = [
     {
@@ -123,7 +132,7 @@ export function createOpenShellInstallationConfiguration({
   ];
   configuration.drivers.credential_gateway = {
     id: "credential-gateway-openshell-kubernetes",
-    configuration: { binaries: [OPENSHELL_CODEX_BINARY] },
+    configuration: { binaries: [...openshellCodexBinaries] },
   };
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
@@ -133,6 +142,7 @@ export function createOpenShellInstallationConfiguration({
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
+          timeoutMs: 120_000,
         },
         // Compute owns ordinary Harness DNS; OpenShell's own `openshell-sandbox-supervisors`
         // policy covers supervisor egress, and the installer scopes gateway DNS/API access below.
@@ -162,7 +172,7 @@ export function createOpenShellInstallationConfiguration({
         filesystem: {
           includeWorkdir: true,
           readOnly: ["/app"],
-          readWrite: ["/home/node/.codex", "/dev/null"],
+          readWrite: ["/sandbox/.openclaw-runtime", "/dev/null"],
         },
         process: { runAsUser: "1000", runAsGroup: "1000" },
         networkPolicies: [
@@ -176,6 +186,12 @@ export function createOpenShellInstallationConfiguration({
       sandboxNamePrefix: "os",
     },
   };
+  configuration.drivers.sandbox.configuration.kubernetes.agentResources.requests[
+    "ephemeral-storage"
+  ] = "256Mi";
+  configuration.drivers.sandbox.configuration.kubernetes.agentResources.limits[
+    "ephemeral-storage"
+  ] = "1Gi";
   return configuration;
 }
 
@@ -260,7 +276,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.3-pre.1 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.3-pre.2 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -322,6 +338,32 @@ export function openShellGatewayNetworkPolicies(namespace, apiPeers) {
         },
       },
       {
+        // A dedicated Agent Gateway reaches its Codex Harness only through the endpoint OpenShell
+        // exposes, so it may call this gateway's service port and nothing else here.
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: { name: "allow-openshell-gateway-agent-gateways", namespace },
+        spec: {
+          podSelector: { matchLabels: gatewayLabels },
+          policyTypes: ["Ingress"],
+          ingress: [
+            {
+              from: [
+                {
+                  podSelector: {
+                    matchLabels: {
+                      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+                      "openclaw.dev/workload-role": "gateway",
+                    },
+                  },
+                },
+              ],
+              ports: [{ protocol: "TCP", port: gatewayPort }],
+            },
+          ],
+        },
+      },
+      {
         apiVersion: "networking.k8s.io/v1",
         kind: "NetworkPolicy",
         metadata: { name: "allow-openshell-sandbox-callback", namespace },
@@ -353,7 +395,8 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.3-pre.1",
+  openShellChartVersion = "0.1.3-pre.2",
+  codexSandbox = "workspace-write",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -374,8 +417,11 @@ export function createOpenShellKubernetesFixture({
       "OCC_TEST_OPENSHELL_K3D_REAL=1 is required for the real OpenShell integration.",
     );
     assert.ok(
-      process.env.OPENAI_API_KEY,
-      "OPENAI_API_KEY is required for the API binding workflow; a model turn additionally requires genuine upstream Secret projection support.",
+      process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ||
+        process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim()
+        ? process.env.OPENAI_API_KEY
+        : process.env.CODEX_ACCESS_TOKEN,
+      "The selected Harness requires OPENAI_API_KEY (native or custom endpoint) or CODEX_ACCESS_TOKEN (default Codex).",
     );
     assert.ok(
       openShellHelmPath,
@@ -547,7 +593,16 @@ export function createOpenShellKubernetesFixture({
     }
   }
 
-  async function installOpenShellGateway(namespace, { sandboxServiceAccountName } = {}) {
+  /**
+   * Installs the Namespace's gateway. `extraTrustPem` adds a private CA through the chart's
+   * extra volume settings. The gateway image sets SSL_CERT_FILE to its CA bundle, so its TLS
+   * stack reads only that file: the mount replaces it with the public roots plus the CA, and a
+   * gateway-owned refresh can then reach an issuer whose certificate that CA signs.
+   */
+  async function installOpenShellGateway(
+    namespace,
+    { sandboxServiceAccountName, extraTrustPem } = {},
+  ) {
     await kubectl(
       "label",
       "namespace",
@@ -606,6 +661,35 @@ export function createOpenShellKubernetesFixture({
     if (sandboxServiceAccountName !== undefined) {
       values.push("--set=sandboxServiceAccount.create=false");
       values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
+    }
+    if (extraTrustPem !== undefined) {
+      const trust = "oce-gateway-extra-trust";
+      const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
+      const path = join(directory, "configmap.json");
+      try {
+        await writeFile(
+          path,
+          JSON.stringify({
+            apiVersion: "v1",
+            kind: "ConfigMap",
+            metadata: { name: trust, namespace },
+            data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
+          }),
+          { mode: 0o600 },
+        );
+        // The bundle exceeds what client-side apply can record in its annotation.
+        await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+      values.push(
+        `--set-string=server.extraVolumes[0].name=${trust}`,
+        `--set-string=server.extraVolumes[0].configMap.name=${trust}`,
+        `--set-string=server.extraVolumeMounts[0].name=${trust}`,
+        "--set-string=server.extraVolumeMounts[0].mountPath=/etc/ssl/certs/ca-certificates.crt",
+        "--set-string=server.extraVolumeMounts[0].subPath=ca.crt",
+        "--set=server.extraVolumeMounts[0].readOnly=true",
+      );
     }
 
     await execute(
@@ -749,20 +833,26 @@ export function createOpenShellKubernetesFixture({
   }
 
   function harnessContainer(pod) {
-    const container = pod.spec.containers.find((entry) =>
-      (entry.env ?? []).some(({ name }) => name === "OPENAI_API_KEY"),
-    );
+    const container = pod.spec.containers.find(({ name }) => name === "agent");
     assert.ok(container, "provider-owned Pod must contain the Codex Harness container.");
-    for (const name of ["APP_SERVER_TOKEN", "OPENAI_API_KEY"]) {
-      const projection = container.env.find((entry) => entry.name === name);
-      assert.ok(projection?.valueFrom?.secretKeyRef, `${name} requires genuine Secret projection.`);
-      assert.equal(Object.hasOwn(projection, "value"), false);
-    }
+    const environment = container.env ?? [];
+    assert.equal(
+      environment.some(({ name }) => name === "APP_SERVER_TOKEN"),
+      false,
+      "the raw app-server token must stay outside the OpenShell Harness Pod spec.",
+    );
+    assert.match(
+      environment.find(({ name }) => name === "APP_TOKEN_SHA")?.value ?? "",
+      /^[a-f0-9]{64}$/,
+      "the OpenShell Harness requires only its app-server token verifier.",
+    );
     return container;
   }
 
   function assertWorkspaceMounts(pod) {
     const container = harnessContainer(pod);
+    const revisionId = pod.metadata.labels?.["openclaw.dev/revision"];
+    assert.equal(typeof revisionId, "string");
     const workspaceVolumes = new Set(
       (pod.spec.volumes ?? [])
         .filter(({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName)
@@ -772,12 +862,26 @@ export function createOpenShellKubernetesFixture({
       .filter(({ name }) => workspaceVolumes.has(name))
       .map(({ mountPath, readOnly = false, subPath }) => ({ mountPath, readOnly, subPath }))
       .sort((left, right) => left.subPath.localeCompare(right.subPath));
-    const required = mounts.filter(({ mountPath, subPath }) =>
-      requiredWorkspaceMounts.some(
-        (mount) => mount.subPath === subPath && mount.mountPath === mountPath,
-      ),
-    );
-    assert.deepEqual(required, requiredWorkspaceMounts);
+    // OpenShell replaces the agent container command with its own supervisor entrypoint, so the
+    // bootstrap that links each relocated mount is not visible in the Pod. The caller verifies
+    // these links inside the running Sandbox.
+    const links = [];
+    for (const required of requiredWorkspaceMounts) {
+      const observed = mounts.find(({ subPath }) => subPath === required.subPath);
+      assert.ok(
+        observed,
+        `the Harness must preserve workspace subpath ${required.subPath}; observed ${mounts
+          .map(({ subPath }) => subPath)
+          .join(", ")}.`,
+      );
+      assert.equal(observed.readOnly, required.readOnly);
+      if (required.mountPath === "/sandbox/enterprise") {
+        assert.equal(observed.mountPath, required.mountPath);
+      } else {
+        assert.match(observed.mountPath, /^\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}$/u);
+        links.push({ path: required.mountPath, target: observed.mountPath });
+      }
+    }
     assert.equal(
       mounts.some(({ subPath, mountPath }) => subPath === "" || mountPath === "/"),
       false,
@@ -791,6 +895,26 @@ export function createOpenShellKubernetesFixture({
       true,
       "the integration fixture must add the approved /sandbox descendant alias required by OpenShell.",
     );
+    assert.equal(
+      mounts.some(
+        ({ mountPath, readOnly, subPath }) =>
+          mountPath === "/sandbox/.openclaw-runtime" &&
+          readOnly === false &&
+          subPath === `openshell-runtime-${openshellHash(revisionId, 16)}`,
+      ),
+      true,
+      "the Harness requires a revision-scoped writable runtime root.",
+    );
+    assert.equal(
+      mounts.some(
+        ({ mountPath }) =>
+          mountPath !== "/sandbox/.openclaw-runtime" &&
+          mountPath.startsWith("/sandbox/.openclaw-runtime/"),
+      ),
+      false,
+      "nested PVC mounts must not let kubelet create non-writable runtime-home parents.",
+    );
+    return links;
   }
 
   async function assertServicePrincipalTokenProjection(namespace, pod, expected) {
@@ -860,7 +984,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.3-pre.1 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.3-pre.2 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -868,7 +992,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.3-pre.1 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.3-pre.2 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")
@@ -877,6 +1001,16 @@ export function createOpenShellKubernetesFixture({
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
     assert.notEqual(container.securityContext?.runAsUser, 0);
+    assert.equal(
+      container.securityContext?.runAsUser ?? pod.spec.securityContext?.runAsUser,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.uid,
+      "OpenShell workload identity must match the fixture's private-storage owner.",
+    );
+    assert.equal(
+      container.securityContext?.runAsGroup ?? pod.spec.securityContext?.runAsGroup,
+      OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY.gid,
+      "OpenShell workload group must match the fixture's private-storage owner.",
+    );
   }
 
   async function assertGatewayBootstrapPolicies(namespace) {
@@ -925,10 +1059,46 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let failedCommands = 0;
+      let approvalRequests = 0;
+      const sandboxSignals = new Set();
+
+      function rememberFailureSignals(message) {
+        if (message.id !== undefined && message.method === "item/commandExecution/requestApproval") {
+          approvalRequests += 1;
+        }
+        const item = message.params?.item;
+        if (message.method === "item/completed" && item?.type === "commandExecution" && Number.isSafeInteger(item.exitCode) && item.exitCode !== 0) {
+          failedCommands += 1;
+        }
+        // Retain only fixed labels from command output, never prompts, commands or payloads.
+        let output;
+        if (item?.type === "commandExecution") {
+          output = item.aggregatedOutput;
+        } else if (message.method === "item/commandExecution/outputDelta") {
+          output = message.params?.delta;
+        }
+        if (typeof output !== "string") {
+          return;
+        }
+        for (const [pattern, label] of [
+          [/bubblewrap|bwrap/i, "bubblewrap"],
+          [/user namespace|new namespace|unshare|CLONE_NEWUSER/i, "namespace"],
+          [/operation not permitted|permission denied/i, "permission_denied"],
+          [/filesystem-restricted execution requires bubblewrap/i, "restricted_requires_bubblewrap"],
+        ]) {
+          if (pattern.test(output.slice(0, 16384))) {
+            sandboxSignals.add(label);
+          }
+        }
+      }
 
       function fail(error) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
+        process.stderr.write("\nNative execution summary: " + JSON.stringify({
+          failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+        }));
         process.exit(1);
       }
 
@@ -948,17 +1118,26 @@ export function createOpenShellKubernetesFixture({
             clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
+          // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
+          // cannot start exec tools in a working directory that does not exist there.
+          const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
           const started = await request("thread/start", {
-            cwd: "/home/node/workspace",
+            cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: "danger-full-access",
+            sandbox: ${JSON.stringify(codexSandbox)},
             config: { project_doc_max_bytes: 131072 },
           });
           await request("turn/start", {
             threadId: started.thread.id,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            sandboxPolicy: { type: "dangerFullAccess", networkAccess: true },
+            // Match the admitted source mode; PAT retains native managed restrictions.
+            sandboxPolicy: ${JSON.stringify(codexSandbox)} === "danger-full-access"
+              ? { type: "dangerFullAccess" }
+              : {
+                  type: "workspaceWrite", writableRoots: [workspace], networkAccess: true,
+                  excludeTmpdirEnvVar: false, excludeSlashTmp: false,
+                },
           });
         } catch (error) {
           fail(error);
@@ -967,6 +1146,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         const message = JSON.parse(String(data));
+        rememberFailureSignals(message);
         items.push(message);
         if (message.id !== undefined) {
           const entry = pending.get(message.id);
@@ -985,9 +1165,12 @@ export function createOpenShellKubernetesFixture({
           }
           finished = true;
           clearTimeout(timeout);
-          process.stdout.write(JSON.stringify({ assistant, items }));
-          socket.close();
-        } else if (message.method === "error") {
+          // Exit once the result is flushed. Through the OpenShell service route the WebSocket
+          // close handshake never completes, so waiting for it would hold kubectl exec open.
+          process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
+        } else if (message.method === "error" && message.params?.willRetry !== true) {
+          // Codex reports retried model reconnects as errors; only a final error ends the turn,
+          // and turn/completed still requires a completed status.
           fail(new Error(message.params?.error?.message || "Codex harness turn failed"));
         }
       });

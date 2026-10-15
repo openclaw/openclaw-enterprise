@@ -3,7 +3,7 @@
 ## Invocation and destination
 
 Use `plan <description>` for implementation planning, whether or not an RFC
-exists. Use `plan RFC-0042 <description>` or an explicit RFC path when the caller
+exists. Use `plan RFC-0001 <description>` or an explicit RFC path when the caller
 selects its architectural owner.
 
 Read `AGENTS.md`, `docs/contributing/specifications.md`, and `specs/README.md`.
@@ -87,8 +87,8 @@ results intact; use a new linked plan for materially different follow-up work.
 Completed and stopped plans stay in place. Put substantial evidence beside the
 plan's `index.md` only when needed, and keep PR media outside the repository.
 
-Add or update one workstream row in `specs/README.md` and link the RFC back to its
-plan when present. Record status only in its owner. Use the template's change
+Link the RFC back to its plan when present. Keep plans out of the RFC-only
+`specs/README.md` index. Record plan status only in its owner. Use the template's change
 record for material authoring updates, with actual date, source revision, and
 session identifier when available; never fabricate provenance.
 

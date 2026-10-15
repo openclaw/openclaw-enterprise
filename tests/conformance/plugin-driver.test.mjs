@@ -16,6 +16,7 @@ import {
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
+import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
 
 const OCC_DIFFS_DIGEST =
@@ -192,8 +193,7 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
       tools: { [toolId]: { approvers: [second] } },
     }),
     [],
-    undefined,
-    [first],
+    { pluginApprovers: [first] },
   );
   assert.deepEqual(codex.approvals.plugin.slack, {
     approvers: [first.id],
@@ -201,7 +201,7 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
       linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
     },
   });
-  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []).approvals, {
+  assert.deepEqual(codexOpenClawConfiguration({}, [], { pluginApprovers: [] }).approvals, {
     plugin: { slack: { approvers: [] } },
   });
   assert.deepEqual(
@@ -219,13 +219,24 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
     approvers: [first.id],
     plugins: { diffs: { approvers: [second.id], tools: { diffs: { approvers: [] } } } },
   });
-  assert.throws(() =>
-    validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+  assert.throws(
+    () => validatePolicies("openclaw", occSelection({ toolDefaults: { approvers: [] } })),
+    { message: "Plugin tool defaults contains unsupported policy fields." },
   );
-  assert.throws(() =>
-    validatePolicies("openclaw", {}, [{ channel: "slack", id: "team:X123:user:Y456" }]),
-  );
-  assert.throws(() => validatePolicies("openclaw", {}, [{ channel: "slack", id: "C123" }]));
+  // Each input breaks one approver rule; Slack approvers are user IDs, never channels.
+  const approver = (id) => ({ channel: "slack", id });
+  for (const [approvers, message] of [
+    [[approver("team:X123:user:Y456")], "Plugin approver must identify a Slack user."],
+    [[approver("C123")], "Plugin approver must identify a Slack user."],
+    [approver("U123"), "Plugin approvers must be a bounded list."],
+    [
+      Array.from({ length: 65 }, (_, index) => approver(`U${index}`)),
+      "Plugin approvers must be a bounded list.",
+    ],
+    [[approver("U123"), approver("U123")], "Plugin approvers must be unique."],
+  ]) {
+    assert.throws(() => validatePolicies("openclaw", {}, approvers), { message });
+  }
 });
 
 test("Codex Plugin Driver admits only Agent-wide approvers; OpenClaw keeps plugin and tool overrides", () => {
@@ -261,19 +272,138 @@ test("Codex Plugin Driver admits only Agent-wide approvers; OpenClaw keeps plugi
   );
 });
 
-test("OpenClaw plugin startup translation rejects unsupported policies", () => {
-  for (const selection of [
-    occSelection({ toolDefaults: { approval: "all_actions" } }),
-    occSelection({ toolDefaults: { approval: "write_actions" } }),
-    occSelection({ toolDefaults: { reviewer: "auto" } }),
-    occSelection({ tools: { unknown: { enabled: false } } }),
-    occSelection({ tools: { diffs: { approval: "all_actions" } } }),
-    occSelection({ tools: { diffs: { approval: "write_actions" } } }),
-    occSelection({ approvalMode: "never" }),
-    { "occ-plugin:unknown": { enabled: true } },
-  ]) {
-    assert.throws(() => openClawRuntimeArtifact(selection));
+test("Plugin Drivers refuse two selection keys for the same native plugin", () => {
+  const aliased = (error) =>
+    error.name === "PluginPolicyValidationError" &&
+    /same plugin.*Keep one selection per plugin/.test(error.message);
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  for (const enabled of [true, false]) {
+    assert.throws(
+      () => occ.validatePolicies({ diffs: { enabled: true }, "occ-plugin:diffs": { enabled } }),
+      aliased,
+    );
+    assert.throws(
+      () =>
+        codex.validatePolicies({
+          [linearPluginId]: { enabled: true },
+          "linear@openai-curated-remote": { enabled },
+        }),
+      aliased,
+    );
   }
+  occ.validatePolicies({ diffs: { enabled: true } });
+  codex.validatePolicies({
+    ...codexSelection(linearPluginId),
+    ...codexSelection(calendarPluginId),
+  });
+  // Admission-only: revisions admitted before the check still render.
+  validatePolicies("openclaw", { diffs: { enabled: true }, "occ-plugin:diffs": { enabled: true } });
+});
+
+test("Plugin Drivers name themselves when a selection names a plugin they do not offer", () => {
+  const occ = new OCCPluginDriver();
+  const codex = new CodexPluginDriver();
+  // The error names the Driver and the rejected selection key, which HTTP reports as a
+  // /plugins/<id> detail.
+  const unknownFor = (driverId, pluginId) => (error) =>
+    error.name === "PluginPolicyValidationError" &&
+    error.pluginId === pluginId &&
+    error.message.startsWith(
+      `A plugin selection names a plugin that the selected Plugin Driver (${driverId}) does not offer: ${pluginId}.`,
+    );
+  // The other Driver's plugin, as after an Installation switches its single Plugin Driver.
+  assert.throws(
+    () => codex.validatePolicies(occSelection()),
+    unknownFor("codex-plugin", "occ-plugin:diffs"),
+  );
+  assert.throws(
+    () => occ.validatePolicies(codexSelection(linearPluginId)),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  assert.throws(
+    () => occ.validatePolicies({ "occ-plugin:unknown": { enabled: true } }),
+    unknownFor("occ-plugin", "occ-plugin:unknown"),
+  );
+  assert.throws(
+    () => codex.validatePolicies({ "codex-plugin:linear": { enabled: true } }),
+    unknownFor("codex-plugin", "codex-plugin:linear"),
+  );
+  // With several selections, the error names the one the Driver does not offer.
+  assert.throws(
+    () => occ.validatePolicies({ ...occSelection(), ...codexSelection(linearPluginId) }),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  // The ID mismatch wins over a policy field the selected Driver does not support.
+  assert.throws(
+    () =>
+      occ.validatePolicies(codexSelection(linearPluginId, { toolDefaults: { reviewer: "human" } })),
+    unknownFor("occ-plugin", linearPluginId),
+  );
+  // Policy errors on an offered plugin keep their own message.
+  assert.throws(
+    () => occ.validatePolicies(occSelection({ toolDefaults: { approval: "all_actions" } })),
+    { name: "PluginPolicyValidationError", message: "The supplied plugin policies are invalid." },
+  );
+});
+
+test("OpenClaw plugin startup translation rejects unsupported policies", () => {
+  // Each selection breaks exactly one admission rule, named by its message.
+  for (const [selection, message] of [
+    [
+      occSelection({ toolDefaults: { approval: "all_actions" } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { approval: "write_actions" } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ toolDefaults: { reviewer: "auto" } }),
+      "This runtime does not support toolDefaults.reviewer; omit it to inherit.",
+    ],
+    [
+      occSelection({ tools: { unknown: { enabled: false } } }),
+      "Unknown OpenClaw plugin tool selection.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "all_actions" } } }),
+      "OpenClaw plugin all_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { approval: "write_actions" } } }),
+      "OpenClaw plugin write_actions approval is unsupported.",
+    ],
+    [
+      occSelection({ approvalMode: "never" }),
+      "Plugin selection contains unsupported policy fields.",
+    ],
+    [{ "occ-plugin:unknown": { enabled: true } }, "Unknown OpenClaw plugin selection."],
+    [null, "Plugin selections must be an object."],
+    [{ "occ-plugin:diffs": true }, "Plugin selection must be an object."],
+    [{ "occ-plugin:diffs": {} }, "Plugin enabled must be a boolean."],
+    [occSelection({ tools: [] }), "Plugin tool policies must be an object."],
+    [occSelection({ tools: { diffs: { enabled: "yes" } } }), "Tool enabled must be a boolean."],
+    [
+      occSelection({ tools: { diffs: { approval: "sometimes" } } }),
+      "Tool approval policy is unsupported.",
+    ],
+    [
+      occSelection({ tools: { diffs: { reviewer: "human" } } }),
+      "Per-tool reviewer selection is unsupported; omit tools[id].reviewer.",
+    ],
+    [
+      occSelection({ driverPolicy: { any: true } }),
+      "OpenClaw driver policy contains unsupported policy fields.",
+    ],
+  ]) {
+    assert.throws(() => openClawRuntimeArtifact(selection), { message });
+  }
+  // Admission refuses an unknown plugin on its own; translation repeats the check with the
+  // same message, so only a direct admission call shows the admission check exists.
+  assert.throws(() => validatePolicies("openclaw", { "occ-plugin:unknown": { enabled: true } }), {
+    message: "Unknown OpenClaw plugin selection.",
+  });
 });
 
 test("OpenClaw tool enablement overrides tool defaults without enabling a disabled plugin", () => {
@@ -347,8 +477,10 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
     }
   }
   assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
-  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }));
-  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }));
+  // The curated catalog is a single page with fixed IDs; anything else is an invalid response.
+  const invalidResponse = { name: "PluginDiscoveryError", reason: "invalid_response" };
+  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), invalidResponse);
+  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), invalidResponse);
   assert.deepEqual(requests, []);
 });
 
@@ -426,6 +558,144 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   await assert.rejects(reader.listCatalog(), /ChatGPT\/Codex-backed account/);
 });
 
+test("native Codex catalog reader rejects, without crashing, when Codex closes its input early", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, "codex-fixture.mjs");
+  // Answers initialize after closing stdin, so the reader's next write hits a closed pipe.
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { closeSync } from "node:fs";
+closeSync(0);
+process.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\\n");
+setTimeout(() => {}, 2_000);
+`,
+  );
+  await chmod(executable, 0o755);
+  const uncaught = [];
+  const record = (error) => uncaught.push(error);
+  // Record any uncaught error so the assertion below names it.
+  process.prependListener("uncaughtException", record);
+  context.after(() => process.off("uncaughtException", record));
+
+  const reader = new NativeCodexPluginCatalogReader({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 5_000,
+  });
+  await assert.rejects(reader.listCatalog(), NotImplementedError);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(
+    uncaught.map((error) => error.code ?? error.message),
+    [],
+  );
+});
+
+test("native Codex catalog reader does not echo the Codex app-server error message", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, "codex-fixture.mjs");
+  const leaked = join(directory, "home", "operator", ".codex", "auth.json");
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { createInterface } from "node:readline";
+
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialized") return;
+  if (message.method === "initialize") {
+    console.log(JSON.stringify({ id: message.id, result: {} }));
+    return;
+  }
+  console.log(JSON.stringify({
+    id: message.id,
+    error: { code: -32603, message: ${JSON.stringify(`failed to read ${leaked}: permission denied`)} },
+  }));
+});
+`,
+  );
+  await chmod(executable, 0o755);
+
+  const reader = new NativeCodexPluginCatalogReader({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 5_000,
+  });
+  const error = await reader.listCatalog().then(
+    () => assert.fail("the catalog read must fail"),
+    (rejection) => rejection,
+  );
+  assert.ok(error instanceof NotImplementedError, String(error));
+  // The 501 body carries this message; it names the request, never the app-server's text.
+  const body = requestFailure(error);
+  assert.equal(body.status, 501);
+  assert.equal(body.message, "Codex plugin catalog discovery failed during account/read.");
+  assert.ok(!body.message.includes(directory));
+});
+
+test("native Codex catalog reader kills a Codex process that ignores SIGTERM after an abort", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-codex-plugin-reader-"));
+  const pidFile = join(directory, "codex.pid");
+  let pid;
+  context.after(async () => {
+    if (pid !== undefined) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone: the reader stopped it.
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  const executable = join(directory, "codex-fixture.mjs");
+  // The PID file appears only once the SIGTERM handler is installed (rename is atomic).
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { renameSync, writeFileSync } from "node:fs";
+process.on("SIGTERM", () => {});
+writeFileSync(${JSON.stringify(`${pidFile}.tmp`)}, String(process.pid));
+renameSync(${JSON.stringify(`${pidFile}.tmp`)}, ${JSON.stringify(pidFile)});
+process.stdin.resume();
+setInterval(() => {}, 1_000);
+`,
+  );
+  await chmod(executable, 0o755);
+
+  const reader = new NativeCodexPluginCatalogReader({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 60_000,
+  });
+  const controller = new AbortController();
+  const listed = reader.listCatalog(controller.signal);
+  listed.catch(() => {});
+  const started = Date.now() + 30_000;
+  while (pid === undefined && Date.now() < started) {
+    try {
+      pid = Number(await readFile(pidFile, "utf8"));
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  assert.ok(pid > 0, "the Codex fixture did not start");
+  controller.abort();
+  await assert.rejects(listed, /aborted/);
+  const deadline = Date.now() + 5_000;
+  let alive = true;
+  while (alive && Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      alive = false;
+    }
+  }
+  assert.equal(alive, false, "the aborted Codex app-server must not outlive the request");
+});
+
 test("Codex startup default-denies plugins", () => {
   const empty = codexRuntimeArtifact({}, []);
   assert.equal(empty.kind, "codex");
@@ -435,7 +705,7 @@ test("Codex startup default-denies plugins", () => {
     remote_plugin: false,
   });
   assert.deepEqual(empty.configuration.apps, { _default: { enabled: false } });
-  assert.deepEqual(empty.configuration.plugins, {});
+  assert.deepEqual(empty.configuration.plugins, { _default: { enabled: false } });
   assert.deepEqual(empty.installs, []);
 });
 
@@ -452,8 +722,7 @@ test("Codex bridge keeps runtime binaries readable after the last plugin is remo
 
 test("Codex bridge configuration carries repository broker network policy without plugins", () => {
   const bridgeConfiguration = codexOpenClawConfiguration({}, [], {
-    host: "git.tenant.svc",
-    domains: { "github.com": "allow" },
+    repositoryBrokerNetworkPolicy: { host: "git.tenant.svc", domains: { "github.com": "allow" } },
   });
 
   assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config, {
@@ -507,6 +776,12 @@ test("Codex startup translation renders selected marketplace app plugins", () =>
   const bridgeConfiguration = codexOpenClawConfiguration(selections);
 
   assert.equal(artifact.kind, "codex");
+  assert.deepEqual(artifact.configuration.plugins, {
+    _default: { enabled: false },
+    "linear@openai-curated-remote": { enabled: true },
+    "google-calendar@openai-curated-remote": { enabled: true },
+    "third-plugin@openai-curated-remote": { enabled: true },
+  });
   assert.deepEqual(artifact.configuration.apps, {
     _default: { enabled: false },
     asdk_app_69a089a326dc8191b32a3f2553f5be2c: {
@@ -563,6 +838,45 @@ test("Codex startup translation renders selected marketplace app plugins", () =>
       registry: "openai-curated-remote",
     },
   ]);
+});
+
+test("Codex activates selected skills independently of app tools", () => {
+  const skillPluginId = "codex-plugin:writing@openai-curated-remote";
+  const skillDetail = codexDetail("writing", [], { skills: [{ name: "draft" }] });
+  const selections = {
+    ...codexSelection(linearPluginId, { toolDefaults: { enabled: false } }),
+    ...codexSelection(skillPluginId),
+  };
+  const artifact = codexRuntimeArtifact(selections, [
+    codexDetail("linear", ["app_notes"], { skills: [{ name: "notes" }] }),
+    skillDetail,
+  ]);
+  assert.deepEqual(artifact.configuration.plugins, {
+    _default: { enabled: false },
+    "linear@openai-curated-remote": { enabled: true },
+    "writing@openai-curated-remote": { enabled: true },
+  });
+  assert.deepEqual(artifact.configuration.apps, {
+    _default: { enabled: false },
+    app_notes: {
+      enabled: true,
+      default_tools_enabled: false,
+      default_tools_approval_mode: "auto",
+    },
+  });
+
+  // Aliases cannot represent separate install outcomes for one native plugin.
+  const aliases = {
+    ...codexSelection(skillPluginId),
+    "writing@openai-curated-remote": { enabled: true },
+  };
+  for (const enabled of [true, false]) {
+    aliases["writing@openai-curated-remote"].enabled = enabled;
+    assert.throws(
+      () => codexRuntimeArtifact(aliases, [skillDetail]),
+      /duplicate native plugin IDs/,
+    );
+  }
 });
 
 test("Codex startup translation preserves explicit approval defaults and routed reviewer selection", () => {
@@ -791,15 +1105,30 @@ test("Codex destructive defaults project to native config and the hosted-app bri
       /bypasses category/,
     );
   }
-  for (const driverPolicy of [
-    { unknown: true },
-    { destructiveEnabled: "false" },
-    { approvalsReviewer: "user" },
+  for (const [driverPolicy, message] of [
+    [{ unknown: true }, "Codex driver policy contains unsupported policy fields."],
+    [{ destructiveEnabled: "false" }, "Codex destructiveEnabled must be a boolean."],
+    [{ approvalsReviewer: "user" }, "Codex driver policy contains unsupported policy fields."],
   ]) {
-    assert.throws(() =>
-      validatePolicies("codex", codexSelection(linearPluginId, { driverPolicy })),
+    assert.throws(
+      () => validatePolicies("codex", codexSelection(linearPluginId, { driverPolicy })),
+      { message },
     );
   }
+  // Codex accepts toolDefaults.reviewer, so only the value check can refuse this one.
+  assert.throws(
+    () =>
+      validatePolicies(
+        "codex",
+        codexSelection(linearPluginId, { toolDefaults: { reviewer: "robot" } }),
+      ),
+    { message: "Tool reviewer must be human or auto." },
+  );
+  // Codex selections must name a plugin from the curated remote marketplace.
+  assert.throws(
+    () => validatePolicies("codex", codexSelection("codex-plugin:linear@openai-internal-testing")),
+    { message: "Codex plugin ID must identify the curated remote marketplace." },
+  );
 });
 
 test("Codex startup translation admits a selected plugin with native skills", () => {
@@ -828,12 +1157,7 @@ test("Codex startup translation fails selected-only policy gaps at startup", () 
     ],
     ...["hooks", "mcpServers", "scheduledTasks"].map((field) => [
       codexSelection(linearPluginId),
-      [
-        codexDetail("linear", ["app"], {
-          skills: [{ name: "linear-workflow" }],
-          [field]: [{ id: "native" }],
-        }),
-      ],
+      [codexDetail("linear", [], { skills: [{ name: "draft" }], [field]: [{ id: "native" }] })],
       new RegExp(field, "i"),
     ]),
     [

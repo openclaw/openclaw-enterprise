@@ -9,7 +9,7 @@ For a noninteractive check, use [HTTP model verification](../operate/model-verif
 Use Bash, Python 3, the OCC CLI, and kubectl in the same operator shell used for
 deployment. Retain `OCC_URL`, `OCC_SERVICE_KEY_FILE`, `OCC_NAMESPACE`,
 `NAMESPACE_ID`, `AGENT_ID`, `REVISION_ID`, `AGENT_EXECUTION_MODE`,
-`TENANT_NAMESPACE`, `GATEWAY_RUNTIME_NAMESPACE`, `KUBECONFIG_FILE`, and `CONTEXT`.
+`TENANT_NAMESPACE`, `KUBECONFIG_FILE`, and `CONTEXT`.
 You need OCC Agent read access and Kubernetes permission to list Pods and exec
 into the selected gateway. The Agent needs a valid model credential and the
 [optional gateway password](production-agents.md#configure-the-agent-runtime).
@@ -21,10 +21,11 @@ for OCC to select it and for exactly one Ready gateway Pod to mount its
 immutable ConfigMap. A previous revision cannot satisfy both checks:
 
 ```bash
-# Embedded stays in the tenant target; dedicated uses the prepared Gateway target.
+# Single-cluster shares the tenant; two-cluster dedicated uses the control target.
+# For two-cluster dedicated execution, set GATEWAY_RUNTIME_NAMESPACE to its control target.
 GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
 if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
+  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:-$TENANT_NAMESPACE}"
 fi
 export GATEWAY_NAMESPACE
 find_gateway_for_revision() {

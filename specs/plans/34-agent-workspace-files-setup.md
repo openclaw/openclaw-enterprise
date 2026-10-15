@@ -1,5 +1,5 @@
 ---
-rfc: ../rfcs/28-gateway-harness-storage-split.md
+rfc: ../rfcs/0003-gateway-harness-storage-split.md
 ---
 
 # Feature Spec: Initial Agent workspace files
@@ -23,7 +23,7 @@ saves a Configuration and creates an undeployed Agent; [OCC](/packages/occ/src/i
 starts it in desired state `stopped`. The [live editor](/docs/flows/workspace-files.md)
 uses exact-Agent `agents.files.get` / `agents.files.set`, requires an active
 revision, and treats uncertain writes as unknown. It cannot safely initialize the
-first run. The separate [storage-split proposal](../rfcs/28-gateway-harness-storage-split.md#3-files-before-agent-creation-89)
+first run. The separate [storage-split proposal](../rfcs/0003-gateway-harness-storage-split.md#3-files-before-agent-creation-89)
 already proposes first-start ordering and no replay; its future Harness-host
 storage is not required here. Gateway authority does not dictate physical storage.
 

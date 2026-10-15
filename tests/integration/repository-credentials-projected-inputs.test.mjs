@@ -21,6 +21,7 @@ import {
   createTlsMaterial,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 async function project(directory, generation, values) {
   const path = join(directory, generation);
@@ -43,12 +44,16 @@ async function project(directory, generation, values) {
 }
 
 async function fixture(t) {
-  // Canonicalize macOS's /var alias and leave room for the 104-character socket limit.
+  // Canonicalize macOS's /var alias.
   const directory = await realpath(await temporaryDirectory(t, "rp-"));
   const inputsDirectory = join(directory, "inputs");
   const registryDirectory = join(directory, "registry");
   const privateVolume = join(directory, "private-volume");
-  const controlVolume = join(directory, "control");
+  // The control socket needs a short path, so its volume lives apart from the inputs.
+  const controlVolume = join(
+    await socketDirectory(t, "rp-control-", { longest: "control/private/control.sock" }),
+    "control",
+  );
   for (const path of [inputsDirectory, registryDirectory, privateVolume, controlVolume]) {
     await mkdir(path, { mode: 0o755 });
   }
@@ -250,6 +255,21 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
     { ...f.config, gateway: { ...f.config.gateway, listen: "0.0.0.0:443" } },
     { ...f.config, gateway: { ...f.config.gateway, controlSocket: "/tmp/other.sock" } },
     { ...f.config, backend: { ...f.config.backend, backendId: "different-provider" } },
+    // The development token authority has no Kubernetes path; the projection
+    // composition never passes the process opt-in and requires the registry kind.
+    {
+      ...f.config,
+      backend: {
+        kind: "github-token",
+        providerInstanceId: "github-production",
+        configVersion: "1",
+        repositoryId: "789",
+        repository: "example/repo",
+        tokenFile: join(f.options.privateDirectory, "private-key.pem"),
+        developmentOnly: true,
+        pushRefAllowlist: ["refs/heads/agent/*"],
+      },
+    },
   ]) {
     await project(f.options.inputsDirectory, `..invalid-${generation++}`, {
       ...f.values,

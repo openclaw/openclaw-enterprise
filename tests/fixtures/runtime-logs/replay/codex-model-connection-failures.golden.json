@@ -1,0 +1,268 @@
+{
+  "input": 16,
+  "withheld": 0,
+  "records": [
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:00.100000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "SOCKS5 proxy listening on 127.0.0.1:41871",
+      "subsystem": "codex_network_proxy::socks5"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:00.110000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "SOCKS5 UDP and non-HTTPS SOCKS5 TCP are blocked in limited mode; HTTPS SOCKS5 TCP requires MITM inspection",
+      "subsystem": "codex_network_proxy::socks5"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:00.120000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "network.enabled is false; skipping proxy listeners",
+      "subsystem": "codex_network_proxy::proxy"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.000000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "connecting to websocket: wss://api.openai.com/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.020000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "error",
+      "message": "failed to connect to websocket: IO error: Connection refused (os error 111), url: wss://api.openai.com/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.030000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "error",
+      "message": "failed to connect to websocket: IO error: failed to lookup address information: Name or service not known, url: wss://api.openai.com/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.040000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "error",
+      "message": "failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://api.openai.com/v1/responses",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.050000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "falling back to HTTP",
+      "subsystem": "codex_core::client"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:01.300000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "stream disconnected - retrying sampling request (1/5 in 212ms)...",
+      "subsystem": "codex_core::responses_retry",
+      "fields": {
+        "turn_id": "turn-1"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:02.000000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "stream connection failed; waiting to retry",
+      "subsystem": "codex_core::responses_retry",
+      "fields": {
+        "turn_id": "turn-1"
+      }
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.000000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "debug",
+      "message": "Codex message withheld",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.100000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "Codex message withheld",
+      "subsystem": "codex_network_proxy::http_proxy"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.200000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "warn",
+      "message": "Codex message withheld",
+      "subsystem": "codex_network_proxy::mitm"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.300000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "Codex message withheld",
+      "subsystem": "codex_network_proxy::http_proxy"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.400000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "info",
+      "message": "Codex message withheld",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    },
+    {
+      "type": "line",
+      "time": "2026-10-03T05:00:03.500000000Z",
+      "stream": {
+        "source": "agent",
+        "pod": "fixture-pod",
+        "podUid": "00000000-0000-4000-8000-000000000001",
+        "container": "agent",
+        "restartCount": 0
+      },
+      "contentClass": "operational",
+      "kind": "codex",
+      "level": "error",
+      "message": "Codex message withheld",
+      "subsystem": "codex_api::endpoint::responses_websocket"
+    }
+  ]
+}

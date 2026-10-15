@@ -163,6 +163,28 @@ export function memoryRepositorySessions(
       receipts.set(input.admissionId, receipt);
       return immutableCopy(receipt);
     },
+    fenceBrokerReceipt: async (input) => {
+      const attempt = attempts.get(input.admissionId);
+      const current = receipts.get(input.admissionId);
+      if (!current || current.state !== "reserved" || current.generation !== input.generation) {
+        return undefined;
+      }
+      if (
+        !attempt ||
+        attempt.brokerProtocol !== 1 ||
+        ["invalidated", "disposed", "open"].includes(attempt.phase) ||
+        attempt.sessionId !== undefined
+      ) {
+        throw new ScopeViolationError("The broker receipt transition is invalid.");
+      }
+      const receipt = immutableCopy({
+        admissionId: input.admissionId,
+        state: "fenced" as const,
+        generation: input.generation,
+      });
+      receipts.set(input.admissionId, receipt);
+      return immutableCopy(receipt);
+    },
     findAttempt: async (admissionId) => {
       const attempt = attempts.get(admissionId);
       return attempt === undefined ? undefined : immutableCopy(attempt);

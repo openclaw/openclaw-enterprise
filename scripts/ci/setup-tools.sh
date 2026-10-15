@@ -18,23 +18,9 @@ need_command() {
   fi
 }
 
-verify_sha256() {
-  local expected="$1"
-  local path="$2"
-  if command -v sha256sum >/dev/null 2>&1; then
-    echo "${expected}  ${path}" | sha256sum -c -
-  else
-    echo "${expected}  ${path}" | shasum -a 256 -c -
-  fi
-}
-
+# Retries transient network failures, then verifies the pinned SHA-256.
 download_file() {
-  local url="$1"
-  local destination="$2"
-  local expected_sha256="$3"
-  need_command curl
-  curl -fsSL "${url}" -o "${destination}"
-  verify_sha256 "${expected_sha256}" "${destination}"
+  bash "${root_dir}/scripts/ci/download-pinned.sh" "$@"
 }
 
 k3d_version_matches() {
@@ -259,7 +245,9 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    pnpm exec playwright install --with-deps chromium
+    # Every test launches Chromium headless, which runs the headless shell, so
+    # skip the full Chrome for Testing download (about 190 MB, 7 s).
+    pnpm exec playwright install --with-deps --only-shell chromium
   else
     echo "Skipping local browser installation; browser setup is CI-only." >&2
   fi

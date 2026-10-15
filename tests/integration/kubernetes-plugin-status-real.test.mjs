@@ -8,12 +8,16 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { withStubbedProviderEndpoint } from "../helpers/harness-configuration.mjs";
 import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import {
   createKubernetesClient,
+  namespaceAlreadyTerminating,
+  retryKubectlRead,
+  retryKubectlWrite,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 
@@ -70,20 +74,45 @@ function isKubernetesObjectConflict(error) {
   );
 }
 
-async function prepareRevisionEventually(fixture, driver = fixture.driver) {
-  return waitFor(
-    "real Compute prepareRevision to avoid transient Kubernetes conflicts",
-    async () => {
-      try {
-        return await driver.prepareRevision(fixture.candidate, fixture.auth.context);
-      } catch (error) {
-        if (isKubernetesObjectConflict(error)) {
-          return undefined;
-        }
-        throw error;
-      }
-    },
+// The Driver does not retry a failed write. A runtime Secret write the API server answers
+// with 429 or 5xx surfaces as TransientDependencyError, and other failures of it as
+// DependencyUnavailableError. The worker retries both on a later pass, so this direct
+// caller retries them too. CI saw one while another file shared the k3d cluster. A failure
+// that persists still ends the wait, and the timeout names the last transient error.
+function isTransientPrepareFailure(error) {
+  return (
+    isKubernetesObjectConflict(error) ||
+    error?.name === "TransientDependencyError" ||
+    error?.name === "DependencyUnavailableError"
   );
+}
+
+async function prepareRevisionEventually(fixture, driver = fixture.driver) {
+  let lastTransient;
+  try {
+    return await waitFor(
+      "real Compute prepareRevision to avoid transient Kubernetes failures",
+      async () => {
+        try {
+          return await driver.prepareRevision(fixture.candidate, fixture.auth.context);
+        } catch (error) {
+          if (isTransientPrepareFailure(error)) {
+            lastTransient = error;
+            process.stderr.write(
+              `Transient prepareRevision failure (${error.message}); retrying\n`,
+            );
+            return undefined;
+          }
+          throw error;
+        }
+      },
+    );
+  } catch (error) {
+    if (lastTransient !== undefined && /^Timed out waiting for /.test(error.message)) {
+      error.message = `${error.message} Last transient failure: ${lastTransient.message}`;
+    }
+    throw error;
+  }
 }
 
 async function assertPrerequisites() {
@@ -180,11 +209,11 @@ function revision(driver, owner, agentId, number, harnessAuth) {
     configurationKind: "agent",
     configurationGeneration: number,
     configuration: admitLoggingConfiguration(
-      {
+      withStubbedProviderEndpoint({
         gateway: { controlUi: { enabled: false } },
         agents: { defaults: { model: "openai/gpt-5" } },
         logging: { level: "info" },
-      },
+      }),
       "info",
     ),
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
@@ -253,15 +282,54 @@ async function provisionAgentTransportSecret(namespaceName, agentId) {
         writeFile(join(directory, key), value, { mode: 0o600 }),
       ),
     );
-    await kubectl(
-      "create",
-      "secret",
-      "generic",
-      `${transportSecretPrefix}-${suffix}`,
-      "--namespace",
-      namespaceName,
-      ...Object.keys(secrets).map((key) => `--from-file=${key}=${join(directory, key)}`),
+    // k3d's API server can drop a request's connection (finding 682: 'Post ...: EOF'
+    // on this create); each call here is retried and converges when repeated.
+    const owner = JSON.parse(
+      await retryKubectlRead(() => kubectl("get", "namespace", namespaceName, "-o", "json")),
     );
+    const namespaceId = owner.metadata.labels["openclaw.dev/namespace"];
+    assert.ok(namespaceId, "transport source must belong to the tenant Namespace");
+    for (const [name, key] of [
+      [`${transportSecretPrefix}-${suffix}`, "app-server-token"],
+      [`gateway-password-${suffix}`, "gateway-password"],
+    ]) {
+      await retryKubectlWrite(() =>
+        kubectl(
+          "create",
+          "secret",
+          "generic",
+          name,
+          "--namespace",
+          namespaceName,
+          `--from-file=${key}=${join(directory, key)}`,
+        ),
+      );
+      await retryKubectlWrite(() =>
+        kubectl(
+          "label",
+          "secret",
+          name,
+          "--namespace",
+          namespaceName,
+          "--overwrite",
+          "app.kubernetes.io/managed-by=openclaw-enterprise",
+          `openclaw.dev/namespace=${namespaceId}`,
+          `openclaw.dev/agent=${agentId}`,
+        ),
+      );
+      await retryKubectlWrite(() =>
+        kubectl(
+          "annotate",
+          "secret",
+          name,
+          "--namespace",
+          namespaceName,
+          "--overwrite",
+          `openclaw.dev/namespace-id=${namespaceId}`,
+          `openclaw.dev/agent-id=${agentId}`,
+        ),
+      );
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -281,18 +349,11 @@ async function createStatusCandidate(label, context) {
     await createDriver()
       .retireRevision(candidate)
       .catch(() => {});
-    const { kubernetesGatewayNamespaceName } =
-      await import("../../apps/controller/src/drivers/compute/kubernetes/index.ts");
-    await kubectl(
-      "delete",
-      "namespace",
-      kubernetesGatewayNamespaceName(owner.id),
-      "--ignore-not-found=true",
-      "--wait=true",
-    );
-    await kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false");
-    await kubectl("wait", "--for=delete", `namespace/${namespaceName}`, "--timeout=30s").catch(
-      () => {},
+    // Finding 682: 'Unable to connect to the server: EOF' here failed a passing test.
+    await retryKubectlWrite(
+      () =>
+        kubectl("delete", "namespace", namespaceName, "--ignore-not-found=true", "--wait=false"),
+      { applied: namespaceAlreadyTerminating },
     );
   });
   return {

@@ -17,9 +17,10 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 
-import { ScopeViolationError } from "./errors.ts";
+import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
 import type { ControllerWork } from "./state/controller-work.ts";
+import { controllerWorkLeaseActive } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
 
@@ -62,12 +63,6 @@ export interface ProvisionAgentResult {
   readonly provisioning: Readonly<AgentProvisioningProgress>;
 }
 
-export interface AgentProvisioningPlan {
-  readonly configuration: AgentProvisioningConfigurationInput;
-  readonly harnessAuth: HarnessAuthBinding | null;
-  readonly executionMode: HarnessExecutionMode;
-}
-
 function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   const record = asRecord(value);
   if (record === undefined) {
@@ -76,22 +71,41 @@ function configurationDocument(value: unknown): OpenClawConfigurationDocument {
   return immutableCopy(record as OpenClawConfigurationDocument);
 }
 
-function normalizeBindingError(error: unknown): never {
-  throw new ScopeViolationError(
-    error instanceof Error ? error.message : "Agent provisioning Secret bindings are invalid.",
-  );
+/**
+ * Normalizes Secret bindings a caller submitted. A binding that breaks the grammar is the
+ * caller's invalid request, reported with the rule it broke. Bindings read back from state
+ * use the plain grammar instead: a stored binding that no longer validates is not the
+ * caller's fault.
+ */
+export function normalizeRequestSecretBindings(
+  input: unknown,
+  bindingsPath = "/secretBindings",
+): SecretBindings {
+  try {
+    return normalizeSecretBindings(input);
+  } catch (error) {
+    const destination =
+      error instanceof Error &&
+      "destination" in error &&
+      typeof error.destination === "string" &&
+      "destinationRule" in error
+        ? error.destinationRule === "invalid_format"
+          ? { bindingsPath, code: "INVALID_FORMAT" as const }
+          : { bindingsPath, key: error.destination, code: "INVALID_VALUE" as const }
+        : undefined;
+    throw new SecretBindingValidationError(
+      error instanceof Error ? error.message : "Secret bindings are invalid.",
+      destination,
+    );
+  }
 }
 
 function normalizeProvisioningSecretBindings(input: unknown): SecretBindings | undefined {
   if (input === undefined) {
     return undefined;
   }
-  try {
-    const normalized = normalizeSecretBindings(input);
-    return Object.keys(normalized).length === 0 ? undefined : normalized;
-  } catch (error) {
-    normalizeBindingError(error);
-  }
+  const normalized = normalizeRequestSecretBindings(input, "/configuration/secretBindings");
+  return Object.keys(normalized).length === 0 ? undefined : normalized;
 }
 
 export function requireProvisioningRequestId(value: unknown): string {
@@ -138,6 +152,7 @@ export function normalizeProvisioningWorkspace(
 export function provisioningProgress(
   record: Readonly<AgentProvisioningRecord>,
   work?: Readonly<ControllerWork>,
+  now: Date = new Date(),
 ): Readonly<AgentProvisioningProgress> {
   const progress = asRecord(record.progress);
   const error = asRecord(progress?.error);
@@ -159,7 +174,7 @@ export function provisioningProgress(
       ? "failed"
       : record.status === "succeeded"
         ? "succeeded"
-        : work?.state === "claimed"
+        : work !== undefined && controllerWorkLeaseActive(work, now)
           ? "running"
           : "queued",
     phase: record.completedPhase,
@@ -172,7 +187,12 @@ export function provisioningProgress(
       ? {
           error: {
             code: "PROVISIONING_CANCELLED",
-            message: "Provisioning was cancelled. Create a new Agent to provision again.",
+            // Stop and Delete store a fixed sentence naming which one cancelled the job: a
+            // stopped Agent keeps its name, so "create a new Agent" would be wrong (finding 1376).
+            message:
+              error?.code === "PROVISIONING_CANCELLED" && isNonEmptyString(error.message)
+                ? error.message
+                : "Provisioning was cancelled.",
           },
         }
       : failed

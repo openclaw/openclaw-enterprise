@@ -3,16 +3,11 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 import { createPostgresAuthBinding } from "../../packages/occ/src/auth-persistence/postgres-auth-binding.ts";
-
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
   "PostgreSQL auth binding pins transactions, rolls back failures, and preserves caller pool ownership",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to a migrated disposable PostgreSQL database.",
-  },
+  requiresPostgres,
   async (context) => {
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
     const id = `binding-${randomUUID()}`;

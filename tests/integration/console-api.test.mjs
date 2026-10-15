@@ -1,10 +1,24 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { cookieHeaderFromSetCookie, setCookieHeaders } from "../helpers/auth-session.mjs";
+import {
+  authenticatedHeaders,
+  cookieHeaderFromSetCookie,
+  setCookieHeaders,
+} from "../helpers/auth-session.mjs";
+
+const contract = JSON.parse(
+  await readFile(
+    new URL("../../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
+    "utf8",
+  ),
+);
+const UNTRUSTED_ORIGIN_MESSAGE =
+  "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header.";
 
 function noSecretProviderFields(backend) {
   assert.deepEqual(Object.keys(backend).sort(), ["id", "type"]);
@@ -163,17 +177,18 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   );
 });
 
-test("caller permission summaries report each primary action without auditing denials", async (t) => {
+test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Permission summaries");
+  const namespace = await fixture.createNamespace("Permission summaries", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Summarized agent");
   const other = await fixture.createAgent(namespace.id, "Unshared agent");
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissionsPath = `${agentPath}/permissions`;
   const namespacePath = `/namespaces/${namespace.id}/permissions`;
 
-  const admin = await fixture.request("GET", agentPath);
+  const admin = await fixture.request("GET", permissionsPath);
   assert.equal(admin.status, 200);
   assert.deepEqual(admin.data, { update: true, deploy: true, operate: true, delete: true });
   const adminNamespace = await fixture.request("GET", namespacePath);
@@ -217,7 +232,7 @@ test("caller permission summaries report each primary action without auditing de
     );
   });
   const session = await fixture.signIn(limited.credentials);
-  const summary = await fixture.request("GET", agentPath, { session });
+  const summary = await fixture.request("GET", permissionsPath, { session });
   assert.equal(summary.status, 200);
   assert.deepEqual(summary.data, { update: false, deploy: true, operate: false, delete: false });
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
@@ -244,6 +259,20 @@ test("caller permission summaries report each primary action without auditing de
     `/namespaces/${namespace.id}/agents/agt_00000000-0000-4000-8000-000000000000/permissions`,
   );
   assert.equal(missing.status, 404);
+
+  // The summary reported deploy: true. This caller lacks the Configuration read needed to deploy.
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  assert.equal((await fixture.request("GET", configurationPath, { session })).status, 403);
+  const revisionsPath = `${agentPath}/revisions`;
+  const before = await fixture.request("GET", revisionsPath);
+  assert.equal(before.status, 200);
+  const deploy = await fixture.request("POST", `${agentPath}/deploy`, { session });
+  assert.equal(deploy.status, 403);
+  assert.equal(deploy.body.error.code, "FORBIDDEN");
+  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  const after = await fixture.request("GET", revisionsPath);
+  assert.equal(after.status, 200);
+  assert.deepEqual(after.data, before.data, "denied deployment created no revision");
 });
 
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {
@@ -270,6 +299,7 @@ test("console static routes expose only public assets and preserve API JSON fail
     ["/console/favicon.ico", /image\/vnd\.microsoft\.icon/i],
     ["/console/workspace-defaults.mjs", /javascript/i],
     ["/console/preset-variables.mjs", /javascript/i],
+    ["/console/default-codex-preset.mjs", /javascript/i],
     ["/console/console.css", /text\/css/i],
     ["/console/fonts/instrument-sans-latin.woff2", /font\/woff2/i],
     ["/console/console.mjs", /javascript/i],
@@ -317,6 +347,16 @@ test("console auth routes reject untrusted browser origins and issue production 
   });
   assert.equal(rejected.response.status, 403);
   assert.equal(rejected.response.headers.get("set-cookie"), null);
+  // A correct password with a foreign Origin is refused for the Origin, not the credentials.
+  assert.equal(JSON.parse(rejected.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  // A browser that omits Origin still names a cross-site request in Sec-Fetch-Site.
+  const crossSiteSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
+    headers: { "sec-fetch-site": "cross-site" },
+    body: signInBody,
+  });
+  assert.equal(crossSiteSignIn.response.status, 403);
+  assert.equal(crossSiteSignIn.response.headers.get("set-cookie"), null);
+  assert.equal(JSON.parse(crossSiteSignIn.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const cliAccepted = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
     body: signInBody,
@@ -344,6 +384,7 @@ test("console auth routes reject untrusted browser origins and issue production 
     },
   });
   assert.equal(rejectedSignOut.response.status, 403);
+  assert.equal(JSON.parse(rejectedSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const retainedSession = await fixture.rawRequest("GET", "/api/auth/session", {
     headers: { cookie: requestCookie },
@@ -358,6 +399,7 @@ test("console auth routes reject untrusted browser origins and issue production 
     },
   });
   assert.equal(crossSiteNoOrigin.response.status, 403);
+  assert.equal(JSON.parse(crossSiteNoOrigin.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   // Without the GitHub profile the session key still only narrows the cookie session.
   const providers = await fixture.rawRequest("GET", "/api/auth/providers");
@@ -390,11 +432,84 @@ test("console auth routes reject untrusted browser origins and issue production 
     headers: { cookie: requestCookie, "x-occ-session-key": foreignKey },
   });
   assert.equal(originlessSignOut.response.status, 403);
+  assert.equal(JSON.parse(originlessSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const cliSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
     headers: { cookie: requestCookie, origin: fixture.origin, "x-occ-session-key": sessionKey },
   });
   assert.equal(cliSignOut.response.status, 200, cliSignOut.text);
+
+  // A body that fails the sign-in schema is a 400 before any credential check.
+  const malformedSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
+    headers: { origin: fixture.origin },
+    body: { email: fixture.credentials.email },
+  });
+  assert.equal(malformedSignIn.response.status, 400, malformedSignIn.text);
+  assert.equal(JSON.parse(malformedSignIn.text).error.code, "INVALID_REQUEST");
+  assert.deepEqual(JSON.parse(malformedSignIn.text).error.details, [
+    { path: "/password", code: "REQUIRED" },
+  ]);
+
+  // Every status answered above is in the checked-in OpenAPI contract, so clients generated
+  // from it handle the Origin and schema refusals. The contract once listed neither.
+  for (const [path, result] of [
+    ["/api/auth/sign-in/email", rejected],
+    ["/api/auth/sign-in/email", crossSiteSignIn],
+    ["/api/auth/sign-in/email", accepted],
+    ["/api/auth/sign-in/email", malformedSignIn],
+    ["/api/auth/sign-out", rejectedSignOut],
+    ["/api/auth/sign-out", crossSiteNoOrigin],
+    ["/api/auth/sign-out", foreignSignOut],
+    ["/api/auth/sign-out", originlessSignOut],
+    ["/api/auth/sign-out", cliSignOut],
+  ]) {
+    const status = String(result.response.status);
+    assert.ok(
+      Object.hasOwn(contract.paths[path].post.responses, status),
+      `POST ${path} answered ${status}, which its OpenAPI operation does not list`,
+    );
+  }
+});
+
+test("every /api/auth operation that takes a body answers the 400, 413 and 415 it lists", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    authMode: "production",
+    development: { enabled: false },
+  });
+  const session = await fixture.signIn();
+  const operations = Object.entries(contract.paths)
+    .filter(([path]) => path.startsWith("/api/auth/"))
+    .flatMap(([path, item]) =>
+      Object.entries(item)
+        .filter(([, operation]) => operation.requestBody !== undefined)
+        .map(([method, operation]) => ({ method: method.toUpperCase(), path, operation })),
+    );
+  // Fourteen such operations exist today; an empty scan would prove nothing.
+  assert.ok(operations.length >= 14, `found ${operations.length} operations`);
+  // An Installation administrator with a trusted Origin passes admission, so each refusal
+  // comes from the body itself: the declared size before parsing, then the media type, then
+  // the operation's schema.
+  for (const { method, path, operation } of operations) {
+    for (const [status, code, contentType, payload] of [
+      ["413", "PAYLOAD_TOO_LARGE", "application/json", `{"pad":"${"x".repeat(70 * 1024)}"}`],
+      ["415", "UNSUPPORTED_MEDIA_TYPE", "text/plain", "expectedVersion=1"],
+      ["400", "INVALID_REQUEST", "application/json", JSON.stringify({ unexpected: true })],
+    ]) {
+      const response = await fixture.app.inject({
+        method,
+        url: path.replace("{userId}", "usr_unknown").replace("{methodId}", "method_unknown"),
+        headers: authenticatedHeaders(session, {
+          origin: fixture.origin,
+          "content-type": contentType,
+        }),
+        payload,
+      });
+      const label = `${operation.operationId} ${status}`;
+      assert.equal(String(response.statusCode), status, `${label}: ${response.body}`);
+      assert.equal(JSON.parse(response.body).error.code, code, label);
+      assert.ok(Object.hasOwn(operation.responses, status), `${label} is not in the contract`);
+    }
+  }
 });
 
 test("untrusted cookie mutations do not clean up an expired session", async (t) => {

@@ -1,5 +1,6 @@
 import { isAbsolute, resolve } from "node:path";
 import type { ServiceConfig, ServiceLimits } from "./service-contracts.ts";
+import { hasControlCharacter } from "./client-contracts.ts";
 
 const defaults: ServiceLimits = Object.freeze({
   sessions: 16,
@@ -15,6 +16,10 @@ const defaults: ServiceLimits = Object.freeze({
   gitFetchInputBytes: 1048576,
   gitPushInputBytes: 268435456,
   gitResponseBytes: 268435456,
+  gitFetchResponseBytes: 268435456,
+  gitFetchStallMs: 5000,
+  gitFetchFirstHeaderMs: 30000,
+  gitFetchExchangeMs: 300000,
   apiInputBytes: 1048576,
   apiResponseBytes: 8388608,
   controlBodyBytes: 16384,
@@ -24,6 +29,7 @@ const defaults: ServiceLimits = Object.freeze({
   inputMs: 30000,
   firstHeaderMs: 30000,
   exchangeMs: 300000,
+  maxExchangeMs: 300000,
   providerActionMs: 30000,
   shutdownGraceMs: 60000,
   credentialMarginMs: 60000,
@@ -42,10 +48,7 @@ export function string(value: unknown, maximum = 4096): string {
     typeof value !== "string" ||
     value.length < 1 ||
     value.length > maximum ||
-    [...value].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    })
+    hasControlCharacter(value)
   ) {
     throw new Error("invalid-configuration");
   }
@@ -74,8 +77,13 @@ function validateGateway(gateway: Record<string, unknown>): ServiceConfig["gatew
   if (!match || Number(match[2]) < 1 || Number(match[2]) > 65535) {
     throw new Error("invalid-configuration");
   }
-  const controlSocket = string(gateway.controlSocket, 104);
-  if (!isAbsolute(controlSocket) || resolve(controlSocket) !== controlSocket) {
+  const controlSocket = string(gateway.controlSocket);
+  // Bytes, not characters: the control client and the Driver schema refuse paths over 103 bytes.
+  if (
+    Buffer.byteLength(controlSocket) > 103 ||
+    !isAbsolute(controlSocket) ||
+    resolve(controlSocket) !== controlSocket
+  ) {
     throw new Error("invalid-configuration");
   }
   return Object.freeze({ publicOrigin, listen, controlSocket });
@@ -116,6 +124,23 @@ function validateLimits(value: unknown): ServiceLimits {
   const limits = { ...defaults };
   for (const key of Object.keys(defaults) as (keyof ServiceLimits)[]) {
     limits[key] = override[key] === undefined ? defaults[key] : positive(override[key]);
+  }
+  // Preserve explicit operator limits for existing routes unless an upload-pack
+  // limit or exchange ceiling is configured separately.
+  if (override.exchangeMs !== undefined && override.maxExchangeMs === undefined) {
+    limits.maxExchangeMs = limits.exchangeMs;
+  }
+  if (override.exchangeMs !== undefined && override.gitFetchExchangeMs === undefined) {
+    limits.gitFetchExchangeMs = limits.exchangeMs;
+  }
+  if (override.gitResponseBytes !== undefined && override.gitFetchResponseBytes === undefined) {
+    limits.gitFetchResponseBytes = limits.gitResponseBytes;
+  }
+  if (override.stallMs !== undefined && override.gitFetchStallMs === undefined) {
+    limits.gitFetchStallMs = limits.stallMs;
+  }
+  if (override.firstHeaderMs !== undefined && override.gitFetchFirstHeaderMs === undefined) {
+    limits.gitFetchFirstHeaderMs = limits.firstHeaderMs;
   }
   if (
     limits.providerActions !== 1 ||

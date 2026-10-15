@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -8,11 +7,14 @@ import {
   consoleOrigin as origin,
   currentSession,
   defaultInstallSettings,
+  installationRoles,
   passwordSignIn,
+  postgresSignInState,
+  signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "password-default-admin@example.test";
 const memberEmail = "password-default-member@example.test";
 const memberPassword = "password-default-member-password";
@@ -23,14 +25,10 @@ const authSecret = "password-default-auth-test-secret-at-least-32-bytes";
 // settings, with no OCC_AUTH_GITHUB_* or trusted-proxy names. No provider is reachable.
 test(
   "a password-only install without GitHub onboards, signs in and out, and refuses GitHub routes",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
     let app;
-    t.after(async () => {
-      await app?.close();
-      await pool.end();
-    });
+    const { pool } = postgresSignInState(t, () => [app]);
     const adminPassword = await bootstrapProductionInstallation(t, {
       databaseUrl,
       email: adminEmail,
@@ -56,6 +54,8 @@ test(
     const signIn = (email, password, remoteAddress) =>
       passwordSignIn(app, origin, { email, password }, remoteAddress);
     const sessionOf = (cookie) => currentSession(app, cookie);
+    const adminHeaders = () =>
+      signedInHeaders(app, origin, { email: adminEmail, password: adminPassword });
 
     await t.test("the bootstrap administrator signs in with the generated password", async () => {
       const response = await signIn(adminEmail, adminPassword);
@@ -67,17 +67,8 @@ test(
 
     let member;
     await t.test("the administrator creates a password account with the exact Origin", async () => {
-      const admin = await signIn(adminEmail, adminPassword);
-      const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
-      const installation = await new PostgresPlatformState(pool).loadInstallation();
-      const policy = await new PostgresPlatformState(pool).loadNativeIAMState(installation.id);
-      const role = policy.roles.find((candidate) =>
-        candidate.permissions.some(
-          (permission) =>
-            permission.action === "read" && permission.resourceKind === "installation",
-        ),
-      );
-      assert.ok(role);
+      const headers = await adminHeaders();
+      const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
       const payload = { email: memberEmail, password: memberPassword, roleId: role.id };
       for (const refused of [
         { cookie: headers.cookie },
@@ -195,8 +186,7 @@ test(
     await t.test(
       "account controls refuse with a specific conflict, not a dependency failure",
       async () => {
-        const admin = await signIn(adminEmail, adminPassword);
-        const headers = { cookie: cookieHeaderFromSetCookie(admin.headers["set-cookie"]), origin };
+        const headers = await adminHeaders();
         const memberSession = cookieHeaderFromSetCookie(
           (await signIn(memberEmail, memberPassword)).headers["set-cookie"],
         );
@@ -234,8 +224,7 @@ test(
         providerCalls += 1;
         return originalFetch(input, init);
       });
-      const admin = await signIn(adminEmail, adminPassword);
-      const cookie = cookieHeaderFromSetCookie(admin.headers["set-cookie"]);
+      const { cookie } = await adminHeaders();
       for (const provider of ["github", "google"]) {
         const start = await app.inject({
           method: "POST",
@@ -290,5 +279,74 @@ test(
       assert.equal(other.statusCode, 200, other.body);
       assert.equal((await signIn(memberEmail, memberPassword, "203.0.113.21")).statusCode, 200);
     });
+    await t.test(
+      "password-only refuses unsupported stored email while preserving unusual passwords and denial audits",
+      async () => {
+        const legacyEmail = "legacy-default-\ud800@example.test";
+        const storedEmail = "legacy-default-\ufffd@example.test";
+        const legacyPassword = "legacy-password-\u0000-\ud800-\ufffd";
+        // Reproduce a previously accepted account's encoding with the real PostgreSQL
+        // parameter path; the API now rejects malformed input before it reaches State.
+        const headers = await adminHeaders();
+        const created = await app.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email: "supported-legacy-default@example.test", password: legacyPassword },
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const userId = created.json().data.id;
+        await pool.query('UPDATE occ."user" SET email = $1 WHERE id = $2', [legacyEmail, userId]);
+
+        const stored = await pool.query('SELECT email FROM occ."user" WHERE id = $1', [userId]);
+        assert.equal(stored.rows[0].email, storedEmail);
+        // Better Auth's existing password-only validator rejects this stored spelling.
+        // The SQL assertion above proves encoding, not successful account access.
+        const unsupported = await signIn(storedEmail, legacyPassword);
+        assert.equal(unsupported.statusCode, 400, unsupported.body);
+        assert.equal(unsupported.json().error.code, "FORBIDDEN");
+        assert.equal(unsupported.headers["set-cookie"], undefined);
+        const sessions = await pool.query(
+          "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
+          [userId],
+        );
+        assert.equal(sessions.rows[0].count, 0);
+
+        // The identical unusual password remains usable with a supported email address.
+        const ordinaryEmail = "ordinary-unusual-default@example.test";
+        const ordinary = await app.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email: ordinaryEmail, password: legacyPassword },
+        });
+        assert.equal(ordinary.statusCode, 201, ordinary.body);
+        const ordinaryId = ordinary.json().data.id;
+
+        const accepted = await signIn(ordinaryEmail, legacyPassword);
+        assert.equal(accepted.statusCode, 200, accepted.body);
+        const cookie = cookieHeaderFromSetCookie(accepted.headers["set-cookie"]);
+        assert.equal((await sessionOf(cookie)).user.id, ordinaryId);
+        const state = new PostgresPlatformState(pool);
+        const denials = async () =>
+          (await state.transact((unit) => unit.audit.list())).filter(
+            ({ action, reasonCode }) =>
+              action === "authentication.login" && reasonCode === "INVALID_CREDENTIALS",
+          );
+        const before = (await denials()).length;
+        for (const email of [legacyEmail, "legacy-nul\u0000@example.test"]) {
+          const refused = await app.inject({
+            method: "POST",
+            url: "/api/auth/sign-in/email",
+            headers: { origin, cookie },
+            payload: { email, password: legacyPassword },
+          });
+          assert.equal(refused.statusCode, 400, refused.body);
+          assert.equal(refused.json().error.code, "INVALID_REQUEST");
+          assert.equal(refused.headers["set-cookie"], undefined);
+        }
+        assert.equal((await denials()).length, before + 2);
+      },
+    );
   },
 );

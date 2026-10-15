@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { PluginDiscoveryError } from "../../packages/occ/src/index.ts";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 const accessToken = "at-discovery-fixture";
 const pluginId = "plugins~discovery-fixture";
@@ -287,7 +288,12 @@ test("hosted plugin logos prefer valid public HTTPS metadata and omit invalid co
       "not-a-url",
       "http://images.example/logo.png",
       "data:image/png;base64,aGVsbG8=",
-      "https://user:password@images.example/logo.png",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "password",
+        host: "images.example",
+        pathname: "/logo.png",
+      }),
       "https://user@images.example/logo.png",
       "https://images.example/logo\n.png",
       "https://images.example/logo\u0000.png",
@@ -314,7 +320,12 @@ test("hosted plugin website and legal links preserve safe URLs and omit unsafe m
     undefined,
     "javascript:alert(1)",
     "http://publisher.example/",
-    "https://user:password@publisher.example/",
+    syntheticCredentialUrl({
+      username: "user",
+      password: "password",
+      host: "publisher.example",
+      pathname: "/",
+    }),
     "https://publisher.example/\npolicy",
     `https://publisher.example/${"x".repeat(8192)}`,
   ]) {
@@ -399,16 +410,20 @@ test("hosted plugin detail follows native authored app IDs and removes their MCP
   assert.doesNotMatch(JSON.stringify(detail), /private-artifact|local-alternative/);
 });
 
-test("hosted plugin detail rejects an unmatched MCP despite a cloud executor override", async (t) => {
-  const driver = useService(
-    t,
-    plugin({ mcp_servers: [{ key: "local-only", metadata: { command: "local-tool" } }] }),
-    [app("connector_fixture")],
-  );
-  const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
-  assert.equal(detail.available, false);
-  assert.match(detail.unavailableReason, /components not supported/i);
-  assert.deepEqual(detail.unavailableHelp, runtimeHelp);
+test("hosted plugin skills do not admit unmatched MCP servers or scheduled tasks", async (t) => {
+  const release = plugin({ requires_local_executor: true, skills: [{ name: "draft" }] });
+  const driver = useService(t, release, [app("connector_fixture")]);
+  for (const [field, component] of [
+    ["mcp_servers", { key: "local-only", metadata: { command: "local-tool" } }],
+    ["scheduled_tasks", { name: "daily" }],
+  ]) {
+    release.release[field] = [component];
+    const detail = await driver.getCatalogPlugin({ accessToken, pluginId });
+    assert.equal(detail.available, false);
+    assert.match(detail.unavailableReason, /components not supported/i);
+    assert.deepEqual(detail.unavailableHelp, runtimeHelp);
+    release.release[field] = [];
+  }
 });
 
 test("hosted plugin detail admits skills and an MCP route replaced by its hosted app", async (t) => {
@@ -451,7 +466,7 @@ test("hosted plugin detail cannot enable a release with no effective native apps
   assert.equal(detail.tools, null);
   assert.equal(
     detail.unavailableReason,
-    "This plugin has no concrete hosted app supported by OCE.",
+    "This plugin has no concrete hosted app or skills supported by OCE.",
   );
   assert.deepEqual(detail.unavailableHelp, runtimeHelp);
 });

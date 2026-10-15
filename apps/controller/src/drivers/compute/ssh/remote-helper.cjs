@@ -107,6 +107,19 @@ async function systemctl(...args) {
   return command("systemctl", args);
 }
 
+async function stopOwnedUnit(input, agent) {
+  if (verifyUnit(input, agent) === undefined) {
+    return false;
+  }
+  const unit = unitName(agent.agentId);
+  // disable removes load-path links. Make this owned file discoverable again
+  // for repeated cleanup when its configured directory is outside that path.
+  await systemctl("link", join(input.runtime.systemdUnitDirectory, unit));
+  await systemctl("stop", unit);
+  await systemctl("disable", unit);
+  return true;
+}
+
 async function userOwner(user) {
   const uid = Number((await command("id", ["-u", user])).stdout);
   const gid = Number((await command("id", ["-g", user])).stdout);
@@ -834,7 +847,7 @@ async function activate(input, agentDir, agent, current) {
     atomicWrite(unitPath, content, 0o644);
   }
   await systemctl("daemon-reload");
-  await systemctl("enable", unit);
+  await systemctl("enable", unitPath);
   if (
     !changed &&
     current?.revisionId === revision.id &&
@@ -857,6 +870,21 @@ async function activate(input, agentDir, agent, current) {
   return {};
 }
 
+// Validate the current pointer and every revision snapshot before deleting an Agent tree.
+function verifySnapshots(input, agentDir) {
+  currentSnapshot(input, agentDir);
+  for (const revision of fs.readdirSync(join(agentDir, "revisions"))) {
+    const marker = readJson(join(agentDir, "revisions", revision, "revision.json"));
+    if (
+      typeof marker.revisionId !== "string" ||
+      revision !== hash(marker.revisionId).slice(0, 12)
+    ) {
+      throw new OwnershipFailure("Invalid revision ownership marker.");
+    }
+    snapshot(input, agentDir, marker.revisionId);
+  }
+}
+
 async function removeNamespace(input, nsDir) {
   const agentsDir = join(nsDir, "agents");
   directory(agentsDir);
@@ -876,30 +904,50 @@ async function removeNamespace(input, nsDir) {
     const scoped = { ...input, revision: agent };
     verifyAgent(scoped, agentDir);
     await verifyRuntimeIdentity(scoped, agent);
-    currentSnapshot(scoped, agentDir);
-    for (const revision of fs.readdirSync(join(agentDir, "revisions"))) {
-      const marker = readJson(join(agentDir, "revisions", revision, "revision.json"));
-      if (
-        typeof marker.revisionId !== "string" ||
-        revision !== hash(marker.revisionId).slice(0, 12)
-      ) {
-        throw new OwnershipFailure("Invalid revision ownership marker.");
-      }
-      snapshot(scoped, agentDir, marker.revisionId);
-    }
+    verifySnapshots(scoped, agentDir);
     agents.push(agent);
   }
   for (const agent of agents) {
-    if (verifyUnit(input, agent) !== undefined) {
+    if (await stopOwnedUnit(input, agent)) {
       const unit = unitName(agent.agentId);
-      await systemctl("stop", unit);
-      await systemctl("disable", unit);
       fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
     }
   }
   await systemctl("daemon-reload");
   fs.rmSync(nsDir, { recursive: true });
   await removeNamespaceRuntimeIdentities(input, agents);
+  return {};
+}
+
+// Agent deletion owns the durable host state that revision retirement keeps: the
+// Agent directory with its port marker, the unit file, and the runtime account.
+async function removeAgent(input, nsDir) {
+  const agentDir = join(nsDir, "agents", hash(input.revision.agentId).slice(0, 12));
+  if (inspect(nsDir) !== undefined) {
+    directory(join(nsDir, "agents"));
+  }
+  if (inspect(agentDir) === undefined) {
+    // A retry after the tree was removed only needs the remaining account.
+    const markerPath = accountMarker(input);
+    if (inspect(markerPath) !== undefined) {
+      const marker = readJson(markerPath);
+      if (marker.runtimeUser !== accountName(input)) {
+        throw new OwnershipFailure("Runtime account marker is invalid.");
+      }
+      await removeRuntimeIdentity(input, marker);
+    }
+    return {};
+  }
+  const agent = verifyAgent(input, agentDir);
+  await verifyRuntimeIdentity(input, agent);
+  verifySnapshots(input, agentDir);
+  if (await stopOwnedUnit(input, agent)) {
+    const unit = unitName(agent.agentId);
+    fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
+  }
+  await systemctl("daemon-reload");
+  fs.rmSync(agentDir, { recursive: true });
+  await removeRuntimeIdentity(input, agent);
   return {};
 }
 
@@ -914,6 +962,12 @@ async function run(input) {
     if (input.operation === "delete-namespace" && inspect(nsDir) === undefined) {
       await removeNamespaceRuntimeIdentities(input, []);
       return {};
+    }
+    if (input.operation === "delete-agent") {
+      if (inspect(nsDir) !== undefined) {
+        verifyNamespace(input);
+      }
+      return await removeAgent(input, nsDir);
     }
     if (input.operation === "ensure-namespace") {
       directory(join(input.runtime.root, "namespaces"), true);
@@ -960,11 +1014,7 @@ async function run(input) {
     }
     if (input.operation === "stop-revision" || input.operation === "retire-revision") {
       if (current?.revisionId === revision.id) {
-        const unit = unitName(revision.agentId);
-        if (verifyUnit(input, agent) !== undefined) {
-          await systemctl("stop", unit);
-          await systemctl("disable", unit);
-        }
+        await stopOwnedUnit(input, agent);
         fs.unlinkSync(join(agentDir, "current"));
         fs.rmSync(join(agentDir, "served.json"), { force: true });
       }

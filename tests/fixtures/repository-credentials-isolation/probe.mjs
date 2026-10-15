@@ -24,6 +24,17 @@ async function walk(path) {
 for (const path of ["/session", "/workspace", "/tmp", "/app"]) {
   await walk(path);
 }
+// Writable runtime mounts outside the read-only root, where present. Entries the
+// Agent user cannot read are not Agent surfaces.
+for (const path of ["/dev/shm", "/run"]) {
+  try {
+    await walk(path);
+  } catch (error) {
+    if (error.code !== "ENOENT" && error.code !== "EACCES") {
+      throw error;
+    }
+  }
+}
 for (const name of await readdir("/proc")) {
   if (!/^\d+$/.test(name)) {
     continue;

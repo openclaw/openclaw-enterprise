@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer, isIPv4 } from "node:net";
+import { isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { signInWithEmailPassword, authenticatedHeaders } from "./auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
-import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import {
+  createHarnessConfiguration,
+  withStubbedProviderEndpoint,
+} from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
@@ -14,6 +17,7 @@ import {
   kubernetesHash,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
+import { followContainerLog } from "./container-log-capture.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -50,19 +54,6 @@ const materialScript = String.raw`
   });
   console.log(JSON.stringify({generation:manifest.generation, bindings}));
 `;
-
-async function availablePort() {
-  const server = createServer();
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "0.0.0.0", resolve);
-  });
-  const { port } = server.address();
-  await new Promise((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
-  return port;
-}
 
 async function gatewayTls(directory, host, execute) {
   const keyFile = join(directory, "gateway.key");
@@ -279,6 +270,26 @@ async function captureRelayNodeDiagnostic(execute, selection) {
   }
 }
 
+const credentialServiceFailures = new Map([
+  ["credential gateway listener unavailable", "gateway-listener"],
+  ["credential child unavailable", "child-exited"],
+  ["credential child deadline exceeded", "child-deadline"],
+]);
+
+// Names which credential service startup step failed, from the fixture's own fixed messages.
+// A startup failure whose cleanup also failed is an AggregateError: errors[0] is the
+// startup failure and cause is the cleanup failure, so errors[0] is checked first.
+function credentialServiceFailure(error) {
+  for (let current = error, depth = 0; current && depth < 4; depth += 1) {
+    const reason = credentialServiceFailures.get(current.message);
+    if (reason) {
+      return reason;
+    }
+    current = current.errors?.[0] ?? current.cause;
+  }
+  return "other";
+}
+
 export async function createRepositoryPlatformFixture(context) {
   const diagnostic = { kind: "repository-platform-setup", stage: "selection" };
   try {
@@ -466,7 +477,7 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     { default: pg },
     { loadInstallationConfiguration },
     { composeProduction },
-    { kubernetesNamespaceName, kubernetesGatewayNamespaceName },
+    { kubernetesNamespaceName },
   ] = await Promise.all([
     import("pg"),
     import("../../apps/controller/src/composition/installation-config.ts"),
@@ -488,8 +499,8 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     installationName: "Repository platform integration",
     environment: { PATH: process.env.PATH },
   });
-  const bootstrapNamespaces = (await pool.query("SELECT id FROM occ.namespaces")).rows.flatMap(
-    ({ id }) => [kubernetesNamespaceName(id), kubernetesGatewayNamespaceName(id)],
+  const bootstrapNamespaces = (await pool.query("SELECT id FROM occ.namespaces")).rows.map(
+    ({ id }) => kubernetesNamespaceName(id),
   );
   ownedNamespaces.push(...bootstrapNamespaces);
   let app;
@@ -561,10 +572,9 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     201,
   );
   const placement = kubernetesNamespaceName(namespace.id);
-  const controlPlacement = kubernetesGatewayNamespaceName(namespace.id);
-  ownedNamespaces.push(placement, controlPlacement);
+  ownedNamespaces.push(placement);
   diagnostic.stage = "namespace-provisioning";
-  for (const tenant of [...bootstrapNamespaces, placement, controlPlacement]) {
+  for (const tenant of [...bootstrapNamespaces, placement]) {
     await kube.waitFor("worker-created tenant Namespace", async () => {
       const namespaces = JSON.parse(await kubectl("get", "namespaces", "-o", "json")).items;
       return namespaces.find(({ metadata }) => metadata.name === tenant);
@@ -588,13 +598,19 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
   diagnostic.stage = "credential-service-startup";
   const gatewayHost = `repository-credentials.${system}.svc.cluster.local`;
   const tls = await gatewayTls(directory, gatewayHost, execute);
-  const gatewayPort = await availablePort();
-  const credentialsFixture = await startRepositoryPlatformService(scope, {
-    namespaceId: namespace.id,
-    signal: context.signal,
-    tls,
-    gateway: { publicOrigin: `https://${gatewayHost}`, listen: `0.0.0.0:${gatewayPort}` },
-  });
+  let credentialsFixture;
+  try {
+    credentialsFixture = await startRepositoryPlatformService(scope, {
+      namespaceId: namespace.id,
+      signal: context.signal,
+      tls,
+      gateway: { publicOrigin: `https://${gatewayHost}`, host: "0.0.0.0" },
+    });
+  } catch (error) {
+    diagnostic.credentialService = credentialServiceFailure(error);
+    throw error;
+  }
+  const { gatewayPort } = credentialsFixture;
   diagnostic.stage = "control-relay-startup";
   const control = await startControlResponseRelay(scope, {
     directory: dirname(credentialsFixture.config.gateway.controlSocket),
@@ -737,7 +753,12 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     const configured = await request(
       "POST",
       `/namespaces/${namespace.id}/configurations`,
-      { kind: "agent", values: createHarnessConfiguration("openclaw", "repository-fixture") },
+      {
+        kind: "agent",
+        values: withStubbedProviderEndpoint(
+          createHarnessConfiguration("openclaw", "repository-fixture"),
+        ),
+      },
       201,
     );
     const agent = await request(
@@ -757,7 +778,26 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     await request("POST", `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`, {});
     return agent;
   }
-  async function readyPod(agent, revision, previousUid) {
+  // Periodic maintenance and repository cleanup retries run every 30 s (the
+  // repository Driver's fixed interval). A test waiting on such a pass pulls the
+  // revision's queued maintenance or cleanup Work forward instead of waiting the
+  // interval out. Only Work scheduled more than 5 s ahead moves, so readiness
+  // rechecks keep their cadence. Each early maintenance pass queues its successor
+  // one bucket later, so nudge only until the awaited change appears.
+  async function expediteWork(revision) {
+    await pool.query(
+      `UPDATE occ.controller_work SET available_at = clock_timestamp()
+       WHERE revision_id = $1 AND state = 'queued'
+         AND available_at > clock_timestamp() + interval '5 seconds'
+         AND (idempotency_key LIKE $2 OR idempotency_key LIKE $3)`,
+      [
+        revision.id,
+        `agent_revision:${revision.id}:maintenance:%`,
+        `agent_revision:${revision.id}:repository_cleanup:%`,
+      ],
+    );
+  }
+  async function readyPod(agent, revision, previousUid, { expedite = false } = {}) {
     await kube.waitFor(
       "exact active AgentRevision",
       async () =>
@@ -785,8 +825,45 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
           ),
       );
       assert.ok(matches.length <= 1, "exact revision has multiple Ready gateway Pods");
+      // Nudge only until a replacement Pod exists; its rollout needs no more passes.
+      if (expedite && pods.every((pod) => pod.metadata.uid === previousUid)) {
+        await expediteWork(revision);
+      }
       return matches[0];
     });
+  }
+  // Follows the gateway container's log so a failed wait can attach it after the
+  // Pod is gone (finding 795: a stopped gateway once took 29 s to exit).
+  function followGatewayLog(pod) {
+    const agent = pod.metadata.labels["openclaw.dev/agent"];
+    const read = async (...args) =>
+      JSON.parse(
+        (
+          await execute("kubectl", kubectlArguments(selection, [...args, "-o", "json"]), {
+            timeout: 15_000,
+          })
+        ).stdout,
+      ).items;
+    const follow = followContainerLog({
+      args: kubectlArguments(selection, [
+        "logs",
+        "--follow",
+        "--timestamps",
+        "-n",
+        placement,
+        pod.metadata.name,
+        "-c",
+        "gateway",
+      ]),
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8" },
+      target: { namespace: placement, pod: pod.metadata.name, container: "gateway" },
+      snapshot: async () => ({
+        pods: await read("get", "pods", "-n", placement, "-l", `openclaw.dev/agent=${agent}`),
+        events: await read("get", "events", "-n", placement),
+      }),
+    });
+    scope.after(() => follow.stop());
+    return follow;
   }
   async function podNode(pod, script, input) {
     return execute(
@@ -959,6 +1036,8 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
     request,
     createAgent,
     readyPod,
+    followGatewayLog,
+    expediteWork,
     tool,
     podNode,
     material,

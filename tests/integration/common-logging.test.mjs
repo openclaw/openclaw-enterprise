@@ -300,6 +300,60 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(JSON.stringify(output.lines).includes("arbitrary"), false);
 });
 
+test("Compute preparation diagnostics keep reviewed context and reject secret-bearing text", () => {
+  const output = memoryDestination();
+  const logger = createOccLogger({
+    component: "occ-worker",
+    level: "info",
+    destination: output.destination,
+  });
+
+  emitOccLogEvent(logger, {
+    event: "worker.compute-prepare-failed",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    computeDriverId: "compute-kubernetes",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    message: "The Kubernetes API rejected revision preparation.",
+  });
+  emitOccLogEvent(logger, {
+    event: "worker.compute-prepare-failed",
+    code: "KUBERNETES_PREPARATION_FAILED",
+    step: "sandbox_provision",
+    message: "Bearer token-that-must-not-log",
+  });
+
+  assert.equal(output.lines.length, 2);
+  const { time, ...diagnostic } = output.lines[0];
+  assert.ok(time);
+  assert.deepEqual(diagnostic, {
+    severity: "ERROR",
+    service: "occ-worker",
+    event: "worker.compute-prepare-failed",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    namespaceId: "ns_test",
+    agentId: "agt_test",
+    revisionId: "rev_test",
+    computeDriverId: "compute-kubernetes",
+    code: "KUBERNETES_API_REJECTED",
+    step: "gateway_deployment",
+    errorClass: "KubernetesApiError",
+    status: 422,
+    message: "The Kubernetes API rejected revision preparation.",
+  });
+  assert.equal(Object.hasOwn(output.lines[1], "message"), false);
+  assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
+});
+
 test("activation warning caps skipped account IDs and reports the total and truncation", () => {
   const output = memoryDestination();
   const logger = createOccLogger({
@@ -390,6 +444,112 @@ test("Fastify app writes one safe HTTP completion record and bounded unexpected-
   assert.equal(JSON.stringify(output.lines).includes("sensitive query"), false);
 });
 
+test("a refused forwarded API call names the trusted-proxy cause once a minute", async () => {
+  const cases = [
+    { trustedProxies: undefined, code: "TRUSTED_PROXY_NOT_CONFIGURED" },
+    {
+      trustedProxies: { trusts: (address) => address === "10.0.0.9" },
+      code: "TRUSTED_PROXY_PEER_UNTRUSTED",
+    },
+  ];
+  for (const { trustedProxies, code } of cases) {
+    const output = memoryDestination();
+    const logger = createOccLogger({
+      component: "occ-api",
+      level: "info",
+      destination: output.destination,
+    });
+    const app = createFastifyApp({
+      iamDriver: iamDriver(),
+      computeDriver: createDevelopmentComputeDriver(),
+      configurationDriver: createTestConfigurationDriver({ id: "configuration-logging-test" }),
+      resolveHarness: () => undefined,
+      auditSink: new InMemoryAuditSink(),
+      development: { enabled: false, installationId: `ins_${randomUUID()}` },
+      auth: authStub(),
+      logger,
+      ...(trustedProxies === undefined ? {} : { trustedProxies }),
+    });
+    for (let index = 0; index < 3; index += 1) {
+      const refused = await app.inject({
+        method: "GET",
+        url: "/namespaces/ns_00000000-0000-4000-8000-000000000001",
+        remoteAddress: "192.0.2.7",
+        headers: { "x-forwarded-for": `198.51.100.${index}` },
+      });
+      assert.equal(refused.statusCode, 403, refused.body);
+      assert.match(refused.json().error.message, /configured trusted proxy/);
+    }
+    await app.close();
+    const warnings = output.lines.filter(
+      (line) => line.event === "authentication.forwarded-refused-warning",
+    );
+    assert.deepEqual(
+      warnings.map(({ severity, code: logged }) => ({ severity, code: logged })),
+      [{ severity: "WARN", code }],
+    );
+    assert.doesNotMatch(JSON.stringify(warnings), /192\.0\.2\.7|198\.51\.100/);
+  }
+});
+
+test("Fastify contract errors drop the request values that verbose validation attached", async () => {
+  const output = memoryDestination();
+  const logger = createOccLogger({
+    component: "occ-api",
+    level: "debug",
+    destination: output.destination,
+  });
+  const app = createFastifyApp({
+    iamDriver: iamDriver(),
+    computeDriver: createDevelopmentComputeDriver(),
+    configurationDriver: createTestConfigurationDriver({ id: "configuration-logging-test" }),
+    resolveHarness: () => undefined,
+    auditSink: new InMemoryAuditSink(),
+    development: { enabled: true, installationId: `ins_${randomUUID()}` },
+    auth: authStub(),
+    logger,
+  });
+  // The app's own Ajv options (verbose, so each failure carries its value) and error handler
+  // judge this body. onError keeps a reference to the error; after the response it holds what
+  // any later log of the error would see.
+  const seen = [];
+  app.addHook("onError", async (_request, _reply, error) => {
+    seen.push(error);
+  });
+  app.post(
+    "/validated",
+    {
+      schema: {
+        body: {
+          type: "object",
+          properties: { token: { type: "string", maxLength: 4 } },
+          required: ["token"],
+          additionalProperties: false,
+        },
+      },
+    },
+    async () => ({}),
+  );
+
+  const token = "sensitive-validation-token";
+  const invalid = await app.inject({ method: "POST", url: "/validated", payload: { token } });
+  await app.close();
+
+  assert.equal(invalid.statusCode, 400);
+  assert.deepEqual(invalid.json().error.details, [{ path: "/token", code: "TOO_LONG" }]);
+  assert.equal(seen.length, 1);
+  assert.equal(Array.isArray(seen[0].validation), true);
+  for (const entry of seen[0].validation) {
+    assert.deepEqual(
+      ["data", "schema", "parentSchema"].filter((key) => Object.hasOwn(entry, key)),
+      [],
+    );
+  }
+  assert.equal(JSON.stringify(seen[0]).includes(token), false);
+  assert.equal(invalid.body.includes(token), false);
+  assert.equal(JSON.stringify(output.lines).includes(token), false);
+});
+
 test("worker emitter reports health at debug and failures at error", () => {
   const output = memoryDestination();
   const logger = createOccLogger({
@@ -421,6 +581,14 @@ test("worker emitter reports health at debug and failures at error", () => {
     elapsedMs: 2900,
   });
   emit({ event: "worker.error", code: "CLAIM_LOST" });
+  // A graceful shutdown that aborts a pass is no failure (finding 1040).
+  emit({
+    event: "worker.pass-interrupted",
+    workId: "agent_revision:rev_test:reconcile",
+    attempt: 1,
+    operation: "agent_revision.reconcile",
+    cause: "WorkerStopping",
+  });
 
   assert.deepEqual(
     output.lines.map(({ event, severity }) => ({ event, severity })),
@@ -429,8 +597,10 @@ test("worker emitter reports health at debug and failures at error", () => {
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.completed", severity: "INFO" },
       { event: "worker.error", severity: "ERROR" },
+      { event: "worker.pass-interrupted", severity: "INFO" },
     ],
   );
+  assert.equal(output.lines.at(-1).cause, "WorkerStopping");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);

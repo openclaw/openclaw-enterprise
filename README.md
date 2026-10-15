@@ -69,6 +69,19 @@ Use `npm run docs:build` for the full static build. See the
 - [Operate](docs/guides/operate/README.md) and [Reference](docs/reference/README.md): platform operations, the CLI, and the HTTP API.
 - [Contribute](docs/contributing/README.md): development, design, and documentation.
 
+## Contributors
+
+Thanks to everyone contributing code, documentation, reviews, and ideas.
+See the [full contributor graph](https://github.com/openclaw/openclaw-enterprise/graphs/contributors)
+and [how to update recognition](CONTRIBUTING.md#recognize-contributors).
+
+<!-- contributors:start -->
+
+<a href="https://github.com/derekwaynecarr"><img src="https://avatars.githubusercontent.com/u/6233452?s=48&amp;v=4" width="48" height="48" alt="derekwaynecarr"></a> <a href="https://github.com/drew"><img src="https://avatars.githubusercontent.com/u/385?s=48&amp;v=4" width="48" height="48" alt="drew"></a> <a href="https://github.com/ericcaiwx-star"><img src="https://avatars.githubusercontent.com/u/287630876?s=48&amp;v=4" width="48" height="48" alt="ericcaiwx-star"></a> <a href="https://github.com/freeqaz"><img src="https://avatars.githubusercontent.com/u/4573221?s=48&amp;v=4" width="48" height="48" alt="freeqaz"></a> <a href="https://github.com/freeqaz-openai"><img src="https://avatars.githubusercontent.com/u/323300293?s=48&amp;v=4" width="48" height="48" alt="freeqaz-openai"></a> <a href="https://github.com/jacobtomlinson"><img src="https://avatars.githubusercontent.com/u/1610850?s=48&amp;v=4" width="48" height="48" alt="jacobtomlinson"></a> <a href="https://github.com/kevinlin-openai"><img src="https://avatars.githubusercontent.com/u/177054202?s=48&amp;v=4" width="48" height="48" alt="kevinlin-openai"></a> <a href="https://github.com/kevinslin"><img src="https://avatars.githubusercontent.com/u/409321?s=48&amp;v=4" width="48" height="48" alt="kevinslin"></a> <a href="https://github.com/Kimiyu-186"><img src="https://avatars.githubusercontent.com/u/202845257?s=48&amp;v=4" width="48" height="48" alt="Kimiyu-186"></a> <a href="https://github.com/mrunalp"><img src="https://avatars.githubusercontent.com/u/53798?s=48&amp;v=4" width="48" height="48" alt="mrunalp"></a>
+<a href="https://github.com/natedemoss"><img src="https://avatars.githubusercontent.com/u/198101284?s=48&amp;v=4" width="48" height="48" alt="natedemoss"></a> <a href="https://github.com/rclarke0"><img src="https://avatars.githubusercontent.com/u/146747548?s=48&amp;v=4" width="48" height="48" alt="rclarke0"></a> <a href="https://github.com/RomneyDa"><img src="https://avatars.githubusercontent.com/u/6581799?s=48&amp;v=4" width="48" height="48" alt="RomneyDa"></a> <a href="https://github.com/russellb"><img src="https://avatars.githubusercontent.com/u/309258?s=48&amp;v=4" width="48" height="48" alt="russellb"></a> <a href="https://github.com/sallyom"><img src="https://avatars.githubusercontent.com/u/11166065?s=48&amp;v=4" width="48" height="48" alt="sallyom"></a> <a href="https://github.com/sjenning"><img src="https://avatars.githubusercontent.com/u/493891?s=48&amp;v=4" width="48" height="48" alt="sjenning"></a> <a href="https://github.com/steipete"><img src="https://avatars.githubusercontent.com/u/58493?s=48&amp;v=4" width="48" height="48" alt="steipete"></a> <a href="https://github.com/stevenlee-oai"><img src="https://avatars.githubusercontent.com/u/213687449?s=48&amp;v=4" width="48" height="48" alt="stevenlee-oai"></a> <a href="https://github.com/vincentkoc"><img src="https://avatars.githubusercontent.com/u/25068?s=48&amp;v=4" width="48" height="48" alt="vincentkoc"></a>
+
+<!-- contributors:end -->
+
 ## License
 
 [MIT](LICENSE). Third-party components retain their own licenses.

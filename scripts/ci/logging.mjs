@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { ensureImage } from "./image-pull.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const defaultCollectorContainerPort = 4318;
@@ -577,6 +578,10 @@ async function prepareLogging({
   let endpointHost = address.endpointHost;
   let endpointPort = port;
   try {
+    // Pull with retries unless the engine holds the pinned digest (the
+    // logging-collector lane pulls it in prepare); `docker run` would pull once,
+    // without them.
+    await ensureImage(image, { execFile, docker });
     await execFile(
       docker,
       dockerRunArgs({

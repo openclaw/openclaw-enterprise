@@ -13,7 +13,34 @@ normalized Secret bindings, and server-generated `cfg_` identity are persisted b
 [PostgreSQL platform state](../../../packages/occ/src/state/postgres-state.ts);
 the live configuration document is not duplicated into Configuration metadata.
 OCC owns API-level native Configuration validation before it calls the selected
-bundled or installed Configuration Driver. The Driver owns backing document
+bundled or installed Configuration Driver: model provider settings,
+`requireDeployableRoster` in
+[the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
+an `agents` roster or a model fallback on another provider than its primary's
+that every deployment refuses with deployment's own text, and
+[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
+refuse a Codex approval policy the Gateway refuses and a literal
+`gateway.auth.password`, and the selected Compute Driver's optional
+[`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
+Kubernetes refuses unsupported channels, model credentials outside the Harness
+authentication binding, and model selections or provider `apiKey`s off the
+primary model's provider. Configuration create and update, Agent provisioning and
+Preset save run this one set (`validateConfigurationContent` in
+[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+variable is checked as far as its written text goes, and in full once filled.
+Create, update and provisioning first ask the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
+to refuse a document too large to store, so no content rule walks it. Its
+`ConfigurationSizeError` returns `400 INVALID_REQUEST` naming the limit, not the
+generic invalid-configuration text.
+A stored row that predates a rule still reads and an edit can replace it: a
+bundled Driver checks a stored document only against
+the credential-reference rules in force before 2026-10-12, and every write and
+deployment against all of them. Those include a `${NAME}` reference or SecretRef
+in every slot OpenClaw marks sensitive, channel and plugin secrets included
+([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+[the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
+which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
@@ -34,7 +61,19 @@ Create calls
 calls `deleteNamespacedConfigMap` with the observed object identity when
 available. Creation starts at generation `1`; each successful PATCH replaces
 the entire native document and advances the generation exactly once. Metadata
-and ConfigMap updates share OCC's existing transactional/compensating boundary.
+and ConfigMap updates share OCC's existing transactional/compensating boundary;
+create, update and delete register their compensation before the write, so a write
+that applied but answered an error is undone as well. A failed create deletes only
+the exact Configuration `inspectExact` finds, a failed delete recreates the previous
+one only when it is gone, and a failed update restores the stored generation. When
+that check cannot read the backend, the request fails as a rollback failure (503).
+A Driver without `inspectExact`, such as the filesystem development Driver, compensates
+only a write it saw succeed. Compensations run after the failed transaction released
+its row locks, so delete and update compensations first re-read the metadata row and
+act only while it is unchanged: a Configuration another request deleted or updated
+in the meantime is left as that request committed it. If that re-read fails, the
+compensation proceeds as before. A write still in flight, or
+another change that lands between that re-read and the compensation, is not covered.
 A referenced Configuration cannot be deleted. Tenant child-data access remains
 limited to namespaced ConfigMap `create`, `get`, `update`, and `delete`;
 Kubernetes cannot restrict `create` by `resourceNames`, so that verb must use
@@ -60,7 +99,13 @@ prerequisites.
 `createAgent` and `updateAgent` in
 [OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
-is `"agent"`. `deployAgent` then locks the Agent, authorizes a read of the
+is `"agent"`. They also run deployment's checks of the Agent against that
+Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
+the Sandbox execution mode, the Harness and its mode, and the Compute checks.
+With a Compute Driver and a Harness resolver selected, every Agent save reads
+its Configuration once from the Configuration Driver, inside the save's
+transaction; a Driver outage then fails the save with `503` instead of letting
+an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
@@ -71,7 +116,27 @@ Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
 When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
-stored reusable Configuration and its generation remain unchanged. OCC freezes
+stored reusable Configuration and its generation remain unchanged. Compute then
+checks the Harness authentication binding (Kubernetes Compute also runs the shared
+`requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
+[the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
+preparation and the Gateway entrypoint apply after a dedicated deployment stops its
+predecessors: enabled channels need a dedicated workload and `runtime.channels`, and a
+Gateway hosting a workspace node needs the file-transfer plugin) and, through optional
+`validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
+a setting every preparation would refuse with `409`, naming the setting and never
+its value, before a revision exists. Kubernetes and Docker Compute also refuse
+listeners that routed traffic cannot reach, which the local readiness check would
+pass: a `gateway.bind` other than `auto`, `lan` or `custom`, `custom` unless
+`customBindHost` is `0.0.0.0`, and any `gateway.tailscale.mode` but `off`.
+Kubernetes renders `lan` for an omitted or `auto` bind; a revision prepared before
+that keeps its immutable gateway document, and maintenance accepts exactly that
+earlier rendering, until the Agent is deployed again. Every Compute Driver refuses native TLS and
+a Codex approval policy outside `never`, `on-request` and `on-failure` this way;
+Kubernetes also refuses a `gateway.auth.password` other than the
+`OPENCLAW_GATEWAY_PASSWORD` reference. The selected PluginDriver's
+optional `validateAgentConfiguration` then checks plugin selections against the
+admitted values. OCC freezes
 the admitted values, including any remaining inline unresolved SecretRefs, into
 `AgentRevision.configuration`; separate `configurationId`, `configurationKind`,
 and `configurationGeneration` fields pin the selected Configuration metadata.
@@ -89,7 +154,10 @@ gateway during HTTP admission. A development worker can subsequently create or
 reuse exactly one gateway for the owning Agent during revision preparation.
 When Kubernetes Compute owns that gateway, it creates a distinct immutable,
 Agent-owned ConfigMap from the admitted configuration and mounts it
-read-only at `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`. It never mounts
+read-only at `OPENCLAW_CONFIG_PATH=/etc/openclaw/openclaw.json`. The gateway
+wrapper (`GATEWAY_RUNTIME_ENTRYPOINT` in `kubernetes/runtime-entrypoints.ts`)
+starts OpenClaw with `OPENCLAW_CONFIG_READONLY=1` whenever that file's directory
+is not writable, so OpenClaw skips its last-known-good backup. It never mounts
 the mutable Configuration Driver ConfigMap; each changed admitted generation
 selects a new immutable snapshot and rolls the stable Agent gateway. Previous
 snapshots remain until Namespace deletion because earlier Pods may still mount

@@ -1,5 +1,5 @@
 import type { OpenClawConfigurationDocument, SecretBindings } from "@openclaw-enterprise/contracts";
-import type { ResourceHandlers } from "./types.ts";
+import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 export const configurationHandlers = {
   async createConfiguration({
@@ -63,13 +63,16 @@ export const configurationHandlers = {
   },
   async deleteConfiguration({ controller, context, reply, params, namespaceId, mutationEvent }) {
     await controller.transact(async (unit) => {
-      await controller.deleteConfiguration(
+      const removed = await controller.deleteConfiguration(
         context.actorId,
         namespaceId,
         params.configurationId as string,
       );
       await unit.audit.append(
-        mutationEvent({ kind: "configuration", id: params.configurationId as string, namespaceId }),
+        mutationEvent(
+          { kind: "configuration", id: params.configurationId as string, namespaceId },
+          removedAccessBindingDetails(removed),
+        ),
       );
     });
     reply.status(204).send();

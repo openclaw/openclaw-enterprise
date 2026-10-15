@@ -72,7 +72,15 @@ tenant-local RoleBindings must already be in place; see
 Docker and external Compute Drivers reject this option with
 `409`; ordinary creation without the option remains supported. Creating a
 Configuration in an explicitly selected external Namespace returns
-`409 NAMESPACE_NOT_READY` until worker provisioning completes.
+`409 NAMESPACE_NOT_READY` until worker provisioning completes. Deleting the
+OCC Namespace leaves its tenant markers on the Kubernetes namespace, so
+selecting that namespace again ends `failed` until an operator clears them; see
+[Namespace admission](security.md#namespace-admission-and-resource-isolation).
+A `failed` Namespace does not say why in the API. The worker's
+`worker.completed` line for `namespace.ensure` carries the Kubernetes Compute
+Driver's `reason`, such as `Existing Kubernetes namespace customer-support
+belongs to another tenant: its openclaw.dev/namespace label names a different
+Namespace.` It names the blocking marker's key, never another tenant's value.
 
 ## Lifecycle
 
@@ -106,7 +114,10 @@ A successful request returns `202` and the Namespace with `status: "deleting"`.
 Repeating the request while teardown is in progress changes nothing.
 After teardown completes, the controller retains a durable internal tombstone;
 the Namespace disappears from list results and direct reads return `404`.
-`deleted` is not a public Namespace status.
+`deleted` is not a public Namespace status. The tombstone keeps the Namespace's
+name reserved: creating a Namespace with that name returns
+`409 RESOURCE_CONFLICT` saying the name belongs to a deleted Namespace and
+cannot be reused; choose a new name.
 
 Deleting a tenant preserves its discovered, operator-owned Kubernetes namespace
 and external resources, removing only OCC-owned infrastructure. Driver-owned
@@ -114,7 +125,10 @@ Kubernetes namespaces are deleted normally.
 
 A Namespace containing any Agent, Configuration, Preset, service account, Secret,
 or [credential source](credential-sources.md) cannot be deleted and returns
-`409 NAMESPACE_NOT_EMPTY`; the error message lists the kinds that remain. Delete
+`409 NAMESPACE_NOT_EMPTY`. The error message lists the kinds that remain and
+the IDs of their resources, as far as the 256-character message
+allows; a kind with more says how many are left. Configurations have no list
+route, so this message is where their IDs appear. Delete
 unreferenced Agents, Configurations, [Presets](presets.md), service accounts,
 Secrets, and credential sources before deleting their Namespace. A credential
 source in `deleting` still counts; retry its deletion until it disappears.
@@ -147,12 +161,14 @@ workload is ready.
 
 ## Failure semantics and limitations
 
-- `401`: The session cookie is missing, invalid, expired, or revoked.
+- `401`: The session cookie or service API key is missing, invalid, expired,
+  or revoked.
 - `403`: Your identity does not have permission for the exact Namespace
   operation.
 - `404`: The Namespace does not exist, belongs outside the requested scope, or
   has already been tombstoned.
-- `409 NAMESPACE_NOT_EMPTY`: The message names what remains. Remove the
+- `409 NAMESPACE_NOT_EMPTY`: The message names what remains, with resource
+  IDs. Delete the named resources and retry to see any others. Remove the
   Namespace's unreferenced Agents, Configurations, edited or custom Presets,
   service accounts, Secrets, and credential sources before deletion. An Agent
   whose teardown is still in progress, or a credential source in `deleting`,
@@ -189,6 +205,9 @@ workload is ready.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
+- 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)
 
 - 2026-09-01 14:51: Document initial default Namespace creation and unchanged repeat-bootstrap behavior. (codex/01a05ef1-ee29-7941-80f2-448bb0789969 - 872fa544c98bb7ad11b2d92d777e49229ececbf5)
 

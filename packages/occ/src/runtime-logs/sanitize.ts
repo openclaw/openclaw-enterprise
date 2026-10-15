@@ -14,6 +14,7 @@ import {
   redactRuntimeLogText,
   stripRuntimeLogControls,
 } from "./redact.ts";
+import { runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 declare const sanitizedRuntimeLogRecord: unique symbol;
 
@@ -33,11 +34,46 @@ const MAX_JSON_DEPTH = 8;
 const TRUNCATION_MARK = "…[truncated]";
 
 const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs"],
-  "openclaw.model_probe": ["elapsedMs", "capMs", "cpuWaitMs", "code"],
-  "codex.model_probe": ["attempt", "elapsedMs", "exitCode", "signal", "code"],
+  "runtime.startup_phase": ["container", "phase", "outcome", "ms", "sinceStartMs", "code"],
+  "openclaw.model_probe": [
+    "elapsedMs",
+    "capMs",
+    "cpuWaitMs",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
+  "codex.model_probe": [
+    "attempt",
+    "elapsedMs",
+    "exitCode",
+    "signal",
+    "code",
+    "providerStatus",
+    "providerCode",
+  ],
   "runtime.workspace_node": ["container", "outcome", "code"],
+  "runtime.gateway_settings_overridden": ["container"],
 });
+
+// `runtime.gateway_settings_overridden` names (never values) the owner settings a
+// Gateway replaced. A name can carry an owner-typed key, so the list is kept only
+// when every item is a short key path; otherwise the event keeps no list.
+const OVERRIDDEN_SETTING =
+  /^[A-Za-z][A-Za-z0-9_-]{0,63}(?:(?:\[\])?\.[A-Za-z][A-Za-z0-9_-]{0,63}){0,7}$/;
+const MAX_OVERRIDDEN_SETTINGS = 32;
+
+function overriddenSettings(value: unknown): string | undefined {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > MAX_OVERRIDDEN_SETTINGS ||
+    !value.every((item) => typeof item === "string" && OVERRIDDEN_SETTING.test(item))
+  ) {
+    return undefined;
+  }
+  return scalar(value.join(", ")) as string;
+}
 
 // Fixed plain-text failure lines the runtime wrapper prints next to its structured
 // events (`runtime-entrypoints.ts`). They are wrapper errors, not `unknown` text.
@@ -100,6 +136,16 @@ const GAP_REMEDIES: Readonly<Record<RuntimeLogGapReason, string>> = Object.freez
     "The source no longer holds the lines after the previous page: its in-memory buffer rolled over or restarted. Showing what it still holds.",
 });
 
+// A resumed view whose next line does not fit in the rest of the 1 MiB read limit
+// (typically one oversized line): requesting fewer lines cannot reach the lines behind
+// it, so these remedies say what is lost instead.
+const STALLED_READ_REMEDIES = Object.freeze({
+  window_exceeded:
+    "A line longer than the rest of the 1 MiB read limit could not be read. It and the lines logged after it, up to this page, were skipped.",
+  truncated:
+    "A line longer than the rest of the 1 MiB read limit fills this page and cannot be read. A following page skips it and the lines logged right after it.",
+} satisfies Partial<Record<RuntimeLogGapReason, string>>);
+
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type LineRecord = Extract<RuntimeLogRecord, { type: "line" }>;
 
@@ -133,9 +179,16 @@ function truncateBytes(value: string, limit: number): { text: string; truncated:
   return { text: `${text}${TRUNCATION_MARK}`, truncated: true };
 }
 
-/** Redacts, then bounds, one retained string. */
+/**
+ * Redacts, then bounds, one retained string. argv credentials (`curl -u user:pass`,
+ * `-p pass`) have no key the text rules can see, so they are masked first, for every
+ * source and field.
+ */
 export function sanitizeRuntimeLogText(value: string, limit = RUNTIME_LOG_MAX_OUTPUT_BYTES) {
-  return truncateBytes(redactRuntimeLogText(stripRuntimeLogControls(value)), limit);
+  return truncateBytes(
+    redactRuntimeLogText(redactArgvCredentials(stripRuntimeLogControls(value))),
+    limit,
+  );
 }
 
 function scalar(value: unknown): string | number | boolean | undefined {
@@ -197,14 +250,33 @@ type Classified =
 function classifyStructured(value: Readonly<Record<string, unknown>>): Classified {
   const event = value.event;
   if (typeof event === "string" && Object.hasOwn(WRAPPER_FIELDS, event)) {
-    const fields = pickFields(value, WRAPPER_FIELDS[event]!);
+    let fields = pickFields(value, WRAPPER_FIELDS[event]!);
+    const overridden = event === "runtime.gateway_settings_overridden";
+    const settings = overridden ? overriddenSettings(value.settings) : undefined;
+    if (settings !== undefined) {
+      fields = Object.freeze({ ...fields, settings });
+    }
+    // A failed model probe names its cause from the closed vocabulary the deployment
+    // error uses; anything outside it is dropped, as Compute drops it there.
+    const cause =
+      event.endsWith("model_probe") && value.code === "MODEL_PROBE_FAILED"
+        ? runtimeFailureCause(value.cause)
+        : undefined;
+    if (cause !== undefined) {
+      fields = Object.freeze({
+        ...fields,
+        causeKind: cause.kind,
+        ...(cause.detail === undefined ? {} : { causeDetail: cause.detail }),
+      });
+    }
     const failed =
       value.outcome === "failed" ||
       (typeof value.code === "string" && value.code !== "READY" && event.endsWith("model_probe"));
     return {
       type: "line",
       kind: "wrapper",
-      level: failed ? "error" : "info",
+      // The Gateway ignored owner settings: the owner should see it at the default level.
+      level: failed ? "error" : overridden ? "warn" : "info",
       message: event,
       ...(fields === undefined ? {} : { fields }),
     };
@@ -214,13 +286,25 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
       return codexRecord(value, value.message);
     }
     // OpenClaw JSON console style: `{ ...meta, time, level, subsystem?, message }`.
+    const recordLevel = level(value.level);
+    const subsystem =
+      typeof value.subsystem === "string" && value.subsystem.length > 0
+        ? value.subsystem
+        : undefined;
+    if (subsystem === undefined && recordLevel !== "error" && recordLevel !== "warn") {
+      // Without a subsystem this is a `runtime.log` stdout write, not a logger record:
+      // the agent command prints reply payloads that way (the OpenAI-compatible chat
+      // endpoint). Errors and warnings stay, since `Gateway failed to start: ...` has no
+      // subsystem either.
+      return { type: "withheld", reason: "unrecognised_structured" };
+    }
     const fields = pickFields(value, STRUCTURED_FIELDS);
     return {
       type: "line",
       kind: "openclaw",
-      level: level(value.level),
+      level: recordLevel,
       message: value.message,
-      ...(typeof value.subsystem === "string" ? { subsystem: value.subsystem } : {}),
+      ...(subsystem === undefined ? {} : { subsystem }),
       ...(fields === undefined ? {} : { fields }),
     };
   }
@@ -305,14 +389,77 @@ function codexSpanLifecycle(
   };
 }
 
+// Codex messages shown as written. `codex_core` formats can interpolate chat text and
+// model-proposed values (`event_mapping` logs `Output text in user message: <text>`),
+// so only reviewed operational targets (app-server and its listener and remote-control
+// loops, login, CA setup, plugin manifests) and reviewed fixed-format messages keep
+// their text. Every other target, `codex_otel` included, shows a fixed message.
+// The Collector keeps message text only from `codex_app_server`.
+const CODEX_MESSAGE_TARGET =
+  /^(?:codex_app_server|codex_app_server_transport::transport::(?:websocket|remote_control)|codex_login|codex_http_client::custom_ca|codex_core_plugins)(?:::|$)/;
+// A configured model endpoint (provider base URL plus path) or a loopback listener.
+const CODEX_ENDPOINT_URL = String.raw`wss?://\S{1,2048}`;
+const CODEX_SOCKET_ADDRESS = String.raw`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[\da-fA-F:.]{2,45}\]):\d{1,5}`;
+// A WebSocket connect error as tungstenite's Display prints it: its error kind, then an
+// OS error, an HTTP status code and reason (never the body), or a proxy, URL or TLS
+// diagnostic. Anchored to the kinds so a changed error type falls back to withholding.
+const CODEX_CONNECT_ERROR = String.raw`(?:Connection closed normally|Trying to work with closed connection|Write buffer is full|Attack attempt detected|(?:IO|TLS|URL|HTTP|HTTP format|UTF-8 encoding) error: [^\n]{1,1000}|WebSocket protocol error: [^\n]{1,1000}|Space limit exceeded: [^\n]{1,1000})`;
+// Reviewed fixed-format diagnostics (codex-cli 0.160.0) from targets that also log
+// payloads, so the target as a whole is never kept: `responses_websocket` logs
+// `failed to parse websocket event: <err>, data: <event>`, and the network proxy logs
+// the hosts and paths of sandboxed requests. The variable parts allowed here are a
+// configured endpoint URL, a socket address, counts, durations and a WebSocket
+// connect error.
+const CODEX_FIXED_MESSAGES: Readonly<Record<string, readonly (string | RegExp)[]>> = Object.freeze({
+  "codex_api::endpoint::responses_websocket": Object.freeze([
+    new RegExp(`^connecting to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(`^successfully connected to websocket: ${CODEX_ENDPOINT_URL}$`),
+    new RegExp(
+      `^failed to connect to websocket: ${CODEX_CONNECT_ERROR}, url: ${CODEX_ENDPOINT_URL}$`,
+    ),
+  ]),
+  "codex_core::client": Object.freeze(["falling back to HTTP"]),
+  "codex_core::responses_retry": Object.freeze([
+    "stream connection failed; waiting to retry",
+    "remote compaction v2 stream failed; retrying request after delay",
+    /^stream disconnected - retrying sampling request \(\d{1,10}\/\d{1,10} in [\d.]{1,24}(?:ns|µs|ms|s)\)\.\.\.$/,
+  ]),
+  "codex_core::tools::parallel": Object.freeze(["tool call completed"]),
+  "codex_network_proxy::certs": Object.freeze(["generated process-local MITM CA"]),
+  "codex_network_proxy::http_proxy": Object.freeze([
+    new RegExp(`^HTTP proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+  ]),
+  "codex_network_proxy::proxy": Object.freeze([
+    "allowUnixSockets and dangerouslyAllowAllUnixSockets are macOS-only; requests will be rejected on this platform",
+    "network.enabled is false; skipping proxy listeners",
+  ]),
+  "codex_network_proxy::socks5": Object.freeze([
+    new RegExp(`^SOCKS5 proxy listening on ${CODEX_SOCKET_ADDRESS}$`),
+    "SOCKS5 UDP and non-HTTPS SOCKS5 TCP are blocked in limited mode; HTTPS SOCKS5 TCP requires MITM inspection",
+  ]),
+});
+const CODEX_WITHHELD_MESSAGE = "Codex message withheld";
+
+function codexMessage(target: string, message: string): string {
+  if (CODEX_MESSAGE_TARGET.test(target)) {
+    return message;
+  }
+  const formats = Object.hasOwn(CODEX_FIXED_MESSAGES, target) ? CODEX_FIXED_MESSAGES[target]! : [];
+  const fixed = formats.some((format) =>
+    typeof format === "string" ? format === message : format.test(message),
+  );
+  return fixed ? message : CODEX_WITHHELD_MESSAGE;
+}
+
 function codexRecord(value: Readonly<Record<string, unknown>>, message: string): Classified {
   const fields = pickFields(value, [...STRUCTURED_FIELDS, ...CODEX_FIELDS]);
+  const target = value.target as string;
   return {
     type: "line",
     kind: "codex",
     level: level(value.level),
-    message,
-    subsystem: value.target as string,
+    message: codexMessage(target, message),
+    subsystem: target,
     ...(fields === undefined ? {} : { fields }),
   };
 }
@@ -431,6 +578,96 @@ export interface SanitizedRuntimeLogChunk {
   readonly withheld: number;
 }
 
+declare const runtimeLogSanitizeMemo: unique symbol;
+
+/**
+ * Per-line results kept across the prefix builds of one page. A slot is reused only
+ * while its inputs are identical (same raw line and JSON depth, same text), so a
+ * remembered result is always the one a fresh call returns.
+ */
+export type RuntimeLogSanitizeMemo = { readonly [runtimeLogSanitizeMemo]: true };
+
+type SanitizedText = ReturnType<typeof sanitizeRuntimeLogText>;
+
+interface MemoSlots {
+  readonly classified: (
+    { raw: string; depth: number; after: number; result: Classified } | undefined
+  )[];
+  readonly texts: ({ value: string; limit: number; result: SanitizedText } | undefined)[][];
+  readonly sandbox: (
+    { stream: RuntimeLogStream; line: Readonly<SandboxLogLine>; result: SandboxOutcome } | undefined
+  )[];
+}
+
+export function createRuntimeLogSanitizeMemo(): RuntimeLogSanitizeMemo {
+  const slots: MemoSlots = { classified: [], texts: [[], []], sandbox: [] };
+  return slots as unknown as RuntimeLogSanitizeMemo;
+}
+
+function memoSlots(memo: RuntimeLogSanitizeMemo): MemoSlots {
+  return memo as unknown as MemoSlots;
+}
+
+function memoClassify(
+  memo: RuntimeLogSanitizeMemo | undefined,
+  index: number,
+  raw: string,
+  block: JsonBlock,
+): Classified {
+  if (memo === undefined) {
+    return classify(raw, block);
+  }
+  const slots = memoSlots(memo).classified;
+  const slot = slots[index];
+  if (slot !== undefined && slot.raw === raw && slot.depth === block.depth) {
+    block.depth = slot.after;
+    return slot.result;
+  }
+  const depth = block.depth;
+  const result = classify(raw, block);
+  slots[index] = { raw, depth, after: block.depth, result };
+  return result;
+}
+
+function memoText(
+  memo: RuntimeLogSanitizeMemo | undefined,
+  kind: 0 | 1,
+  index: number,
+  value: string,
+  limit: number = RUNTIME_LOG_MAX_OUTPUT_BYTES,
+): SanitizedText {
+  if (memo === undefined) {
+    return sanitizeRuntimeLogText(value, limit);
+  }
+  const slots = memoSlots(memo).texts[kind]!;
+  const slot = slots[index];
+  if (slot !== undefined && slot.value === value && slot.limit === limit) {
+    return slot.result;
+  }
+  const result = sanitizeRuntimeLogText(value, limit);
+  slots[index] = { value, limit, result };
+  return result;
+}
+
+/** Fetched safety decisions; they never advance delivered masking context. */
+export function runtimeLogEvidence(lines: AgentRuntimeLogChunk["lines"]): {
+  readonly masks: ReadonlyMap<number, string>;
+  readonly withheld: ReadonlyMap<number, RuntimeLogWithheldReason>;
+} {
+  const block: JsonBlock = { depth: 0 };
+  const withheld = new Map<number, RuntimeLogWithheldReason>();
+  const texts = lines.map((line, index) => {
+    const classified = classify(line.raw, block);
+    if (classified.type === "withheld") {
+      withheld.set(index, classified.reason);
+    }
+    return classified.type === "line" && classified.kind === "text"
+      ? classified.message
+      : undefined;
+  });
+  return { masks: maskPemBlockLines(texts), withheld };
+}
+
 /**
  * The only producer of `SanitizedRuntimeLogRecord` lines. Classifies each raw line
  * against the operational allowlist, redacts every retained string, bounds sizes and
@@ -441,7 +678,10 @@ export function sanitizeRuntimeLogChunk(
   pemContext?: {
     readonly open: boolean | undefined;
     readonly canClose?: readonly boolean[] | undefined;
+    readonly evidence?: readonly (string | undefined)[];
+    readonly withheld?: readonly (RuntimeLogWithheldReason | undefined)[];
   },
+  memo?: RuntimeLogSanitizeMemo,
 ): SanitizedRuntimeLogChunk & { readonly pemOpen?: boolean } {
   const stream = cleanStream(chunk.stream);
   let lines = chunk.lines;
@@ -454,7 +694,11 @@ export function sanitizeRuntimeLogChunk(
   let run: Mutable<Extract<RuntimeLogRecord, { type: "withheld" }>> | undefined;
   const block: JsonBlock = { depth: 0 };
   // Classify in order: an open pretty-printed JSON block carries across lines.
-  const classifiedLines = lines.map((line) => classify(line.raw, block));
+  const classifiedLines = lines.map((line, index): Classified => {
+    const local = memoClassify(memo, index, line.raw, block);
+    const reason = pemContext?.withheld?.[index];
+    return reason === undefined ? local : { type: "withheld", reason };
+  });
   // A key printed over several lines is split across records; mask the whole block.
   const pemState = { open: pemContext?.open, canClose: pemContext?.canClose };
   const pem = maskPemBlockLines(
@@ -482,11 +726,16 @@ export function sanitizeRuntimeLogChunk(
       records.push(brand(run));
       run = undefined;
     }
-    const message = sanitizeRuntimeLogText(pem.get(index) ?? classified.message);
+    const message = memoText(
+      memo,
+      0,
+      index,
+      pem.get(index) ?? pemContext?.evidence?.[index] ?? classified.message,
+    );
     const subsystem =
       classified.subsystem === undefined
         ? undefined
-        : sanitizeRuntimeLogText(classified.subsystem, MAX_FIELD_CHARS).text;
+        : memoText(memo, 1, index, classified.subsystem, MAX_FIELD_CHARS).text;
     const record: LineRecord = {
       type: "line",
       time,
@@ -626,11 +875,7 @@ function sandboxFields(
     if (typeof value !== "string" || value.length === 0) {
       continue;
     }
-    if (key === "cmd_line") {
-      // argv credentials (`-u user:pass`, `-p pass`) have no key the text rules can see.
-      const command = redactArgvCredentials(stripRuntimeLogControls(value));
-      fields[key] = sanitizeRuntimeLogText(command, SANDBOX_REDACTED_FIELD_BYTES).text;
-    } else if (SANDBOX_REDACTED_FIELDS.has(key)) {
+    if (SANDBOX_REDACTED_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, SANDBOX_REDACTED_FIELD_BYTES).text;
     } else if (SANDBOX_FIELDS.has(key)) {
       fields[key] = sanitizeRuntimeLogText(value, MAX_FIELD_CHARS).text;
@@ -650,6 +895,54 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
   return size;
 }
 
+type SandboxOutcome =
+  { readonly reason: RuntimeLogWithheldReason } | { readonly record: SanitizedRuntimeLogRecord };
+
+/** One Sandbox line on its own: withheld with a reason, or its redacted record. */
+function sandboxLineOutcome(
+  stream: RuntimeLogStream,
+  line: Readonly<SandboxLogLine>,
+): SandboxOutcome {
+  if (sandboxLineSize(line) > RUNTIME_LOG_MAX_INPUT_BYTES) {
+    return { reason: "oversized" };
+  }
+  const text = stripRuntimeLogControls(line.message);
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    // A structured payload in a tracing message is never shown.
+    return { reason: "unrecognised_structured" };
+  }
+  const ocsf = line.level.toUpperCase() === "OCSF";
+  const parsed = ocsf ? ocsfFields(text) : undefined;
+  let shown = parsed?.message ?? text;
+  if (parsed?.fields.url !== undefined) {
+    // The URL in the message is cut like the field so a long query cannot fill a page.
+    // A replacer function: a URL may contain `$&`-style replacement patterns.
+    const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
+    shown = shown.replace(parsed.fields.url, () => url);
+  }
+  const message = sanitizeRuntimeLogText(shown);
+  const subsystem =
+    line.target.length === 0
+      ? undefined
+      : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
+  const fields = sandboxFields(line, parsed?.fields ?? {});
+  const record: LineRecord = {
+    type: "line",
+    time: validTime(line.time),
+    stream,
+    // Policy decisions name hosts, methods and binaries: activity, never content.
+    contentClass: "activity",
+    kind: "sandbox",
+    level: parsed?.level ?? level(line.level),
+    message: message.text,
+    ...(subsystem === undefined ? {} : { subsystem }),
+    ...(fields === undefined ? {} : { fields }),
+    ...(message.truncated ? { truncated: true as const } : {}),
+  };
+  return { record: brand(record) };
+}
+
 /**
  * The sandbox counterpart of `sanitizeRuntimeLogChunk`: OpenShell policy decisions and
  * supervisor tracing become `activity` records. Messages, command lines and URLs are
@@ -658,26 +951,24 @@ function sandboxLineSize(line: Readonly<SandboxLogLine>): number {
 export function sanitizeSandboxLogLines(
   streamValue: RuntimeLogStream,
   lines: readonly Readonly<SandboxLogLine>[],
+  memo?: RuntimeLogSanitizeMemo,
 ): SanitizedRuntimeLogChunk {
   const stream = cleanStream(streamValue);
   const records: SanitizedRuntimeLogRecord[] = [];
   let withheld = 0;
   let run: Mutable<Extract<RuntimeLogRecord, { type: "withheld" }>> | undefined;
-  for (const line of lines) {
-    const time = validTime(line.time);
-    let reason: RuntimeLogWithheldReason | undefined;
-    let text = "";
-    if (sandboxLineSize(line) > RUNTIME_LOG_MAX_INPUT_BYTES) {
-      reason = "oversized";
-    } else {
-      text = stripRuntimeLogControls(line.message);
-      const trimmed = text.trim();
-      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-        // A structured payload in a tracing message is never shown.
-        reason = "unrecognised_structured";
-      }
+  const slots = memo === undefined ? undefined : memoSlots(memo).sandbox;
+  for (const [index, line] of lines.entries()) {
+    const slot = slots?.[index];
+    const outcome =
+      slot !== undefined && slot.line === line && slot.stream === streamValue
+        ? slot.result
+        : sandboxLineOutcome(stream, line);
+    if (slots !== undefined) {
+      slots[index] = { stream: streamValue, line, result: outcome };
     }
-    if (reason !== undefined) {
+    if ("reason" in outcome) {
+      const { reason } = outcome;
       withheld += 1;
       if (run !== undefined && run.reason === reason) {
         run.count += 1;
@@ -686,44 +977,14 @@ export function sanitizeSandboxLogLines(
       if (run !== undefined) {
         records.push(brand(run));
       }
-      run = { type: "withheld", time, stream, count: 1, reason };
+      run = { type: "withheld", time: validTime(line.time), stream, count: 1, reason };
       continue;
     }
     if (run !== undefined) {
       records.push(brand(run));
       run = undefined;
     }
-    const ocsf = line.level.toUpperCase() === "OCSF";
-    const parsed = ocsf ? ocsfFields(text) : undefined;
-    let shown = parsed?.message ?? text;
-    if (parsed?.fields.url !== undefined) {
-      // The URL in the message is cut like the field so a long query cannot fill a page.
-      // A replacer function: a URL may contain `$&`-style replacement patterns.
-      const url = sanitizeRuntimeLogText(parsed.fields.url, SANDBOX_REDACTED_FIELD_BYTES).text;
-      shown = shown.replace(parsed.fields.url, () => url);
-    }
-    // A PROC line whose `[cmd:` was not recovered, or a tracing message quoting a
-    // command, still carries argv; mask credential flags in the message too.
-    const message = sanitizeRuntimeLogText(redactArgvCredentials(shown));
-    const subsystem =
-      line.target.length === 0
-        ? undefined
-        : sanitizeRuntimeLogText(line.target, MAX_FIELD_CHARS).text;
-    const fields = sandboxFields(line, parsed?.fields ?? {});
-    const record: LineRecord = {
-      type: "line",
-      time,
-      stream,
-      // Policy decisions name hosts, methods and binaries: activity, never content.
-      contentClass: "activity",
-      kind: "sandbox",
-      level: parsed?.level ?? level(line.level),
-      message: message.text,
-      ...(subsystem === undefined ? {} : { subsystem }),
-      ...(fields === undefined ? {} : { fields }),
-      ...(message.truncated ? { truncated: true as const } : {}),
-    };
-    records.push(brand(record));
+    records.push(outcome.record);
   }
   if (run !== undefined) {
     records.push(brand(run));
@@ -731,11 +992,15 @@ export function sanitizeSandboxLogLines(
   return Object.freeze({ records: Object.freeze(records), withheld });
 }
 
-/** A labelled gap for loss the API observed. Remedy text is fixed. */
+/**
+ * A labelled gap for loss the API observed. Remedy text is fixed; `stalled` selects
+ * the text for a resumed read stuck behind a line that does not fit the read limit.
+ */
 export function runtimeLogGap(
   reason: RuntimeLogGapReason,
   stream: RuntimeLogStream,
   time: string | null = null,
+  stalled = false,
 ): SanitizedRuntimeLogRecord {
   return brand({
     type: "gap",
@@ -743,9 +1008,11 @@ export function runtimeLogGap(
     stream: cleanStream(stream),
     reason,
     remedy:
-      reason === "stream_replaced" && stream.source === "sandbox"
-        ? "The Sandbox was recreated; showing the new one."
-        : GAP_REMEDIES[reason],
+      stalled && (reason === "window_exceeded" || reason === "truncated")
+        ? STALLED_READ_REMEDIES[reason]
+        : reason === "stream_replaced" && stream.source === "sandbox"
+          ? "The Sandbox was recreated; showing the new one."
+          : GAP_REMEDIES[reason],
   });
 }
 

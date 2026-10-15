@@ -92,7 +92,9 @@ Already-active recovery repeats route activation and predecessor retirement
 before that audit and finalization. Kubernetes dedicated replacement stops all
 earlier runtimes before preparing the candidate and reuses the Harness-only RWO
 claim. This interrupts serving, including the gateway; a failed candidate needs
-retry or a new revision, not automatic rollback. See the
+retry or a new revision, not automatic rollback. A candidate the worker refuses,
+for example after revoked authority, is stopped before its failure is recorded,
+so it never serves in place of the stopped active revision. See the
 [exclusive replacement contract](../drivers/compute.md#production-revision-stages).
 Pod termination does not fence independent processes during node partitions or
 manual replacement.
@@ -101,7 +103,10 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer active revision: the worker
-marks it superseded without calling Compute. Sibling Agents have independent
+marks it superseded without calling Compute. A stop or deletion owns the
+revisions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running revision.
+Sibling Agents have independent
 queue lanes, while revisions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual
@@ -187,18 +192,55 @@ failure budget.
 
 Actual dependency failures instead use `retry()`, which also returns work to
 `queued` but retains the consumed attempt. Once `OCC_WORKER_MAX_ATTEMPTS` is
-exhausted, the operation becomes `failed_permanent`. Pending convergence has
-its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`, measured from the original
-operation creation time. Exceeding it fails the operation with
+exhausted, the operation becomes `failed_permanent`. A Compute or Sandbox dependency
+failure that clears without a change to the revision is deferred like
+convergence instead: the Agent Gateway route refusing or dropping the worker's
+connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
+request that timed out, never reached the API server, or got 429 or 5xx
+(`KUBERNETES_API_UNAVAILABLE`), or an OpenShell gateway refusing new requests at
+its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`). Each such
+pass records that code, and `worker.completed` names the `dependency` and its
+`cause`. If the dependency is still failing at the convergence deadline, the
+deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
+Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
+measured from the original operation creation time on PostgreSQL's clock, so
+controller clock skew cannot move it. Exceeding it fails the operation with
 `CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
 credential rejection fails the deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
-CPU at its limit with `RUNTIME_CPU_STARVED`. A Sandbox Driver that cannot run
+CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
+until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, and
+`RUNTIME_STARTUP_FAILED`. A dedicated gateway that refuses its own in-Pod CLI as
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
-`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`. See the
+`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share
+a placeholder variable fail it the same way with
+`CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`. Dispatch also fails it at once when
+the Harness credential source was withdrawn from the revision
+(`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
+listed credential source, is missing or changed since admission
+(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), or when the
+Installation no longer selects the revision's Credential Gateway
+(`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
+revision pinned to a Compute Driver the controller no longer selects, or to a
+Harness version it no longer approves, fails with `COMPUTE_DRIVER_MISMATCH` or
+`HARNESS_DESCRIPTOR_MISMATCH`. A revision whose ServiceAccount Backend binding
+no longer matches the Agent's Backend, or whose credential is no longer issued,
+fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
+
+Terminal credential preparation also fails at once through
+[`ComputePreparationFailedError`](../drivers/compute.md#core-lifecycle-operations).
+The worker saves failure and exact revision cleanup in one transaction. Cleanup
+continues after worker restart and does not reopen the failed deployment. The
+selected Compute Driver owns the external failure condition and resource cleanup.
+It may supply bounded preparation evidence through the public contracts type;
+OCC validates and persists it before deleting resources. Deployment status exposes
+cleanup separately and retains failure evidence after cleanup and restart;
+see [Kubernetes OAuth bootstrap](../drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its
 revision-specific workload before the worker switches the Agent Service, but the

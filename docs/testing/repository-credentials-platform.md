@@ -40,7 +40,7 @@ revision ownership, immutable attempt inputs, phases and safe recovery identity.
 The `postgres-repository-broker-receipts.test.mjs` case joins the real broker,
 private receipt listener and limited application role to verify confirmed disposal
 and fencing across service restart. The `postgres-restart-recovery.test.mjs` and
-`postgres-worker-agent-revision.test.mjs` cases cover terminal-retirement transfer,
+`postgres-worker-agent-revision*.test.mjs` cases cover terminal-retirement transfer,
 retries and session-only repair.
 These checks do not prove a running Kubernetes Pod or a model turn.
 
@@ -144,15 +144,26 @@ without its selector and fails on missing selected prerequisites.
 
 ## Qualify an installed Agent against GitHub
 
+The installed GitHub journey is temporarily unavailable: its previous automatic
+remote cleanup could race with changes to the branch or pull request. Preparation
+and selected direct execution fail before creating resources or dispatching a task.
+The procedure below describes the intended journey, which must not be used for
+qualification until safe cleanup and its independent ownership are supported.
+
 The [standalone live smoke](repository-credentials.md#run-an-authorized-live-smoke)
 does not exercise OCC admission or a model.
-Use `repository-credentials-k3d-real.test.mjs` for the joined installed path:
-fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
-session, private Kubernetes runtime material and the model's own
-clone/edit/commit/push/native-PR task in both embedded OpenClaw and Dedicated
-Codex. Each case creates a ready-for-review PR. One explicitly authorized disposable
-repository is sufficient; two-repository deterministic coverage remains in the
-controlled platform case.
+Use the [QA matrix](qa-matrix.md) for the full native clone/edit/commit/push/PR
+journey in both presets on both shipped installation paths, with independent
+remote readback and verified session disposal.
+
+`repository-credentials-k3d-real.test.mjs` retains focused installed security proof:
+a fresh Helm controller/PostgreSQL, API-created Namespace and Agent, worker-opened
+sessions, private Kubernetes runtime material, network and credential isolation,
+and ordinary disposal. Its dedicated read-only case additionally executes a real
+native fetch, sandbox boundary probe, and rejected push. The two full-profile
+security cases do not create PRs; that journey belongs to the matrix. One explicitly
+authorized disposable repository is sufficient; two-repository deterministic
+coverage remains in the controlled platform case.
 
 Prepare the [real Kubernetes runtime prerequisites](kubernetes.md#kubernetes-model-turns-and-secrets).
 Select the `repository-credentials-installed` lane with the same prepare/run/cleanup
@@ -184,22 +195,22 @@ installs the pinned Envoy Gateway and cert-manager controllers. Dedicated
 setup enables the production Helm private route and CA, admits only the observed
 Envoy proxy address, and uses stock local-path RWO Harness storage. OCC enrolls the native workspace node through that authenticated route.
 The Helm fixture creates its own PostgreSQL; no external test database is needed.
-It grants the existing operator roles in both tenant and control-plane namespaces
+It grants the existing operator roles in the shared tenant namespace
 and gives the Gateway 2 GiB for first-request plugin loading. Tool evidence uses
 the latest result for the exact call, or a successful poll of its exact process
 session. An earlier error alone neither proves success nor hides a later completion.
 The installed case additionally uses these variables with prefix
 `OCC_TEST_REPOSITORY_CREDENTIALS_`:
 
-| Suffix            | Required value                                                                                        |
-| ----------------- | ----------------------------------------------------------------------------------------------------- |
-| `AUTHORIZED`      | `1`, explicitly permitting temporary branch/PR writes and cleanup                                     |
-| `REPOSITORY`      | Exact authorized `owner/repository`                                                                   |
-| `APP_CONFIG_FILE` | Protected mode-0600 JSON with only string `appId`, `githubInstallationId`, `repositoryId`             |
-| `APP_KEY_FILE`    | Protected mode-0600 App PEM key                                                                       |
-| `IMAGE`           | Immutable credential-service image reference                                                          |
-| `UPSTREAM_CIDRS`  | Comma-separated approved public IPv4 `/32` destinations; no broad fallback                            |
-| `GH_BINARY`       | Optional absolute managed host `gh` path for independently authenticated readback and guarded cleanup |
+| Suffix            | Required value                                                                            |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `AUTHORIZED`      | `1`, explicitly permitting temporary branch/PR writes                                     |
+| `REPOSITORY`      | Exact authorized `owner/repository`                                                       |
+| `APP_CONFIG_FILE` | Protected mode-0600 JSON with only string `appId`, `githubInstallationId`, `repositoryId` |
+| `APP_KEY_FILE`    | Protected mode-0600 App PEM key                                                           |
+| `IMAGE`           | Immutable credential-service image reference                                              |
+| `UPSTREAM_CIDRS`  | Comma-separated approved public IPv4 `/32` destinations; no broad fallback                |
+| `GH_BINARY`       | Optional absolute managed host `gh` path for independently authenticated readback         |
 
 The runner sets `OCC_TEST_REPOSITORY_CREDENTIALS_REAL=1` and runs
 `tests/integration/repository-credentials-k3d-real.test.mjs` from prepared state;
@@ -241,8 +252,8 @@ must show no new branch. Both bind native command completions to the Gateway's
 mirrored turn. The full-access case also matches the remote commit and PR.
 The fixture checks separate Gateway/Codex Pod identities, repository material and
 model-key delivery to Codex only, and credential-service connectivity from Codex
-with denial from Gateway. The test runner observes and cleans up but does not
-execute the repository task. Dedicated task submission uses the private
+with denial from Gateway. The test runner observes and stops the local Agent but does not
+execute the repository task or reconcile remote resources. Dedicated task submission uses the private
 authenticated route from the installed worker. Console file transfer and Slack
 remain outside this shell-task proof; see [Kubernetes testing](kubernetes.md).
 
@@ -250,7 +261,7 @@ The fixture installs OCC before constructing the registry, because its exact
 Namespace ID comes from the API. It then enables the optional sidecar and
 verifies the installed containers' credential boundaries. Only the model executes
 the working clone/edit/commit/push/PR sequence; host `gh` observes the authorized
-repository and reconciles owned temporary resources during cleanup. Missing
+repository. Remote reconciliation requires an independent operator. Missing
 live selection skips; selected missing authorization, protected inputs, images,
 networking or model credentials fails.
 

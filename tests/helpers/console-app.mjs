@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createServer } from "node:net";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
@@ -10,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 
+import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { backendSummariesFromDefinitions } from "../../apps/controller/src/composition/installation-config.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -21,6 +21,7 @@ import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mj
 import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
+import { reservePort } from "./available-port.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -37,14 +38,21 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  channelRuntime = false,
   discoverHarnessModels = async () => [],
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
+    channelRuntime,
   });
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
+    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
+    // does not provision unless repository credentials ask for them.
+    ...(channelRuntime && !repositoryCredentials
+      ? { requiresAgentRuntimeCredentials: undefined }
+      : {}),
     // In-memory State has no durable provisioning queue; this fixture supports draft creation.
     agentProvisioning: undefined,
     // Catalog data is the external Compute boundary; Console/OCC/IAM routes remain real.
@@ -67,24 +75,109 @@ function computeDriver({
   });
 }
 
-async function availableLoopbackPort() {
-  const server = createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  assert.equal(typeof address, "object");
-  assert.notEqual(address, null);
-  await new Promise((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
+function spkiHash(cert) {
+  return createHash("sha256")
+    .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
+    .digest("base64");
+}
+
+/** The Chromium flag that accepts exactly these leaf certificates (PEM), by public key. */
+export function chromiumTrustArg(certs) {
+  return `--ignore-certificate-errors-spki-list=${certs.map(spkiHash).join(",")}`;
+}
+
+/**
+ * A TLS ingress on 127.0.0.1:`port` that forwards every request to the HTTP listener on
+ * 127.0.0.1:`upstreamPort`, as a production ingress would. `tls` ({ key, cert }, PEM) is the
+ * leaf to serve; without it a one-day self-signed leaf for `originHost` is made with openssl.
+ * Returns the leaf, the Chromium flag that trusts it, and close().
+ */
+export async function startHttpsIngress({
+  port,
+  upstreamPort,
+  originHost = "127.0.0.1",
+  tls,
+  reusePort = false,
+}) {
+  let key = tls?.key;
+  let cert = tls?.cert;
+  if (tls === undefined) {
+    const directory = await mkdtemp(join(tmpdir(), "openclaw-console-tls-"));
+    try {
+      const keyPath = join(directory, "tls.key");
+      const certPath = join(directory, "tls.crt");
+      const generated = spawnSync(
+        "openssl",
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-days",
+          "1",
+          "-keyout",
+          keyPath,
+          "-out",
+          certPath,
+          "-subj",
+          `/CN=${originHost}`,
+          "-addext",
+          `subjectAltName=DNS:${originHost}`,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+      key = await readFile(keyPath);
+      cert = await readFile(certPath);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+  const ingress = createHttpsServer({ key, cert }, (incoming, outgoing) => {
+    const upstream = httpRequest(
+      {
+        hostname: "127.0.0.1",
+        port: upstreamPort,
+        method: incoming.method,
+        path: incoming.url,
+        headers: incoming.headers,
+      },
+      (response) => {
+        outgoing.writeHead(response.statusCode, response.headers);
+        response.pipe(outgoing);
+      },
+    );
+    upstream.on("error", () => outgoing.writeHead(502).end());
+    incoming.pipe(upstream);
   });
-  return address.port;
+  ingress.listen({ port, host: "127.0.0.1", reusePort });
+  await once(ingress, "listening");
+  return {
+    cert,
+    browserArg: chromiumTrustArg([cert]),
+    async close() {
+      ingress.closeAllConnections();
+      await new Promise((resolve, reject) =>
+        ingress.close((error) => (error ? reject(error) : resolve())),
+      );
+    },
+  };
 }
 
 export async function createConsoleAppFixture(t, options = {}) {
   const installationId = `ins_${randomUUID()}`;
-  const port = await availableLoopbackPort();
+  // The ports are part of the origins the app is configured with, so hold them until the
+  // listeners bind them; a released probe port can be taken by another listener meanwhile.
+  const appPort = await reservePort();
+  t.after(appPort.release);
+  const port = appPort.port;
   const originHost = options.originHost ?? "127.0.0.1";
-  const browserPort = options.https === true ? await availableLoopbackPort() : port;
+  const browserReservation = options.https === true ? await reservePort() : null;
+  if (browserReservation !== null) {
+    t.after(browserReservation.release);
+  }
+  const browserPort = browserReservation?.port ?? port;
   const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
@@ -189,6 +282,17 @@ export async function createConsoleAppFixture(t, options = {}) {
   const secretDriver = Object.hasOwn(options, "secretDriver")
     ? options.secretDriver
     : createTestSecretDriver({ id: "console-secret" });
+  let configurationDriver = options.configurationDriver;
+  if (
+    configurationDriver === undefined &&
+    (options.filesystemConfiguration === true || options.defaultPresets?.length)
+  ) {
+    // Native value validation (Preset seeding, inline credential checks) needs the
+    // real storage Driver; the in-memory test Driver accepts any values.
+    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    configurationDriver = new FilesystemConfigurationDriver(root);
+  }
   let controller;
   const appOptions = {
     metrics: options.metrics,
@@ -202,10 +306,11 @@ export async function createConsoleAppFixture(t, options = {}) {
       options.computeDriver ??
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
+        channelRuntime: options.channelRuntime === true,
         discoverHarnessModels: options.discoverHarnessModels,
       }),
     configurationDriver:
-      options.configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
+      configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
     ...(options.sandboxDriver === undefined ? {} : { sandboxDriver: options.sandboxDriver }),
     ...(secretDriver === undefined || secretDriver === null ? {} : { secretDriver }),
     ...(publicOrigin === undefined ? {} : { publicOrigin }),
@@ -227,6 +332,8 @@ export async function createConsoleAppFixture(t, options = {}) {
         recordOperations: options.recordOperations ?? false,
         backends,
         defaultPresets: options.defaultPresets ?? [],
+        bundledPresetVersions: options.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: options.refreshBundledDefaultPresets === true,
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
@@ -258,7 +365,8 @@ export async function createConsoleAppFixture(t, options = {}) {
   if (options.onSend) {
     app.addHook("onSend", options.onSend);
   }
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({ host: "127.0.0.1", port, reusePort: appPort.reusePort });
+  await appPort.release();
   const cleanupBeforeAppClose = [];
   let appClosed = false;
 
@@ -296,65 +404,15 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   if (options.https === true) {
     // Exercise browser Secure/Domain cookies through a real TLS ingress to the HTTP API.
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-console-tls-"));
-    cleanupBeforeAppClose.push(() => rm(directory, { recursive: true, force: true }));
-    const keyPath = join(directory, "tls.key");
-    const certPath = join(directory, "tls.crt");
-    const generated = spawnSync(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-days",
-        "1",
-        "-keyout",
-        keyPath,
-        "-out",
-        certPath,
-        "-subj",
-        `/CN=${originHost}`,
-        "-addext",
-        `subjectAltName=DNS:${originHost}`,
-      ],
-      { encoding: "utf8" },
-    );
-    assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-    const cert = await readFile(certPath);
-    const ingress = createHttpsServer(
-      { key: await readFile(keyPath), cert },
-      (incoming, outgoing) => {
-        const upstream = httpRequest(
-          {
-            hostname: "127.0.0.1",
-            port,
-            method: incoming.method,
-            path: incoming.url,
-            headers: incoming.headers,
-          },
-          (response) => {
-            outgoing.writeHead(response.statusCode, response.headers);
-            response.pipe(outgoing);
-          },
-        );
-        upstream.on("error", () => outgoing.writeHead(502).end());
-        incoming.pipe(upstream);
-      },
-    );
-    cleanupBeforeAppClose.push(async () => {
-      ingress.closeAllConnections();
-      await new Promise((resolve, reject) =>
-        ingress.close((error) => (error ? reject(error) : resolve())),
-      );
+    const ingress = await startHttpsIngress({
+      port: browserPort,
+      upstreamPort: port,
+      originHost,
+      reusePort: browserReservation.reusePort,
     });
-    ingress.listen(browserPort, "127.0.0.1");
-    await once(ingress, "listening");
-    const spki = createHash("sha256")
-      .update(new X509Certificate(cert).publicKey.export({ type: "spki", format: "der" }))
-      .digest("base64");
-    browserArgs.push(`--ignore-certificate-errors-spki-list=${spki}`);
+    await browserReservation.release();
+    cleanupBeforeAppClose.push(ingress.close);
+    browserArgs.push(ingress.browserArg);
   }
 
   async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
@@ -591,6 +649,8 @@ export async function createConsoleAppFixture(t, options = {}) {
     memoryDatabase,
     provisionedAccounts,
     policy,
+    // The real Native IAM Driver, for tests that simulate an IAM outage at its boundary.
+    iamDriver,
     rawRequest,
     request,
     signIn,

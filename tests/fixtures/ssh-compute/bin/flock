@@ -2,7 +2,8 @@
 # Conformance fixture: macOS has no util-linux flock(1). This is a thin wrapper over
 # the same flock(2) syscall the helper relies on in production (verified against real
 # util-linux flock by the opt-in real-host integration). It supports the exact form
-# the helper uses: flock -w <seconds> <file> <command...>.
+# the helper uses: flock -w <seconds> <file> <command...>. The SSH conformance tests
+# use it on every platform: they wait on the attempts it records below.
 import fcntl
 import os
 import subprocess
@@ -19,11 +20,20 @@ if not args:
 path, command = args[0], args[1:]
 fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
 deadline = None if timeout is None else time.monotonic() + timeout
+# Helpers run with the fixture state directory; record each attempt that found the
+# lock held so tests can wait for those instead of sleeping.
+state = os.environ.get("OCC_SSH_FIXTURE_STATE")
 while True:
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         break
     except BlockingIOError:
+        if state is not None:
+            try:
+                with open(os.path.join(state, "flock-waiting"), "a") as attempts:
+                    attempts.write("held\n")
+            except OSError:
+                pass
         if deadline is not None and time.monotonic() >= deadline:
             sys.exit(1)
         time.sleep(0.05)

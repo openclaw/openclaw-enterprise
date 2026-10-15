@@ -5,7 +5,8 @@ These steps continue [the observability demonstration stack](demo.md). Run them 
 ## Recover an incomplete setup
 
 Do not rerun failed or interrupted commands: an absent marker does not prove
-no changes. Confirm cluster UID, OCC status, complete history, saved revision
+no changes. The one exception is a demo install that timed out waiting; rerun
+that block as the [setup guide](demo.md#install-private-backends) describes. Confirm cluster UID, OCC status, complete history, saved revision
 and live resources. If upgrade was never invoked and OCC matches the saved
 revision, no rollback is needed. Otherwise retain dependencies and inspect for
 rollback below or escalate. If backup or cluster identity is unavailable, stop
@@ -33,6 +34,53 @@ retain anything unproved. Restart only with an owned, clean namespace and
 unreserved release name. If either cannot be reconciled, use fresh names and
 retain the backup. Otherwise, after verified cleanup, confirm `$OBS_FILES` names
 the setup directory, delete it, and unset it.
+
+## Refresh a renamed Loki address
+
+A custom release with a leading digit may already run on a cluster with relaxed
+Service-name validation. Upgrading its chart can rename Loki even though the old
+Service was valid there. The old endpoint saved by a managed or external
+Collector then stops accepting logs. Grafana updates its own datasource only.
+
+After the owned demo upgrade completes, read the actual Loki Service name from
+its manifest. Check the release, namespace, cluster UID and exporter ownership
+before writing. For the dedicated managed Collector from the setup guide, set
+`OBS_DEMO_RELEASE` and `OBS_DEMO_NAMESPACE` to that demo's actual identity:
+
+```bash
+(
+  set -euo pipefail
+  test "$(kubectl --context "$HELM_KUBECONTEXT" get namespace kube-system -o jsonpath='{.metadata.uid}')" = "$(cat "$OBS_FILES/cluster-uid")"
+  loki_service=$(helm get manifest "$OBS_DEMO_RELEASE" -n "$OBS_DEMO_NAMESPACE" |
+    yq -r 'select(.kind == "Service" and .spec.selector."app.kubernetes.io/component" == "loki") | .metadata.name')
+  test -n "$loki_service"
+  endpoint="http://${loki_service}.${OBS_DEMO_NAMESPACE}.svc:3100/otlp/v1/logs"
+  revision=$(kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" get secret occ-demo-collector-exporter -o jsonpath='{.metadata.resourceVersion}')
+  patch=$(jq -cn --arg endpoint "$endpoint" --arg revision "$revision" \
+    '{metadata: {resourceVersion: $revision}, data: {OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: ($endpoint | @base64)}}')
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" patch secret occ-demo-collector-exporter --type=merge -p "$patch"
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" rollout restart daemonset/openclaw-enterprise-collector
+  kubectl --context "$HELM_KUBECONTEXT" -n "$OBS_OCC_NAMESPACE" rollout status daemonset/openclaw-enterprise-collector --timeout=2m
+)
+```
+
+The patch preserves other exporter keys, including credentials, and rejects a
+concurrent Secret change. Stop on a conflict and reinspect. Secret environment
+variables are read when a Pod starts, so updating the Secret without refreshing
+the Collector leaves the old address active. If the installation uses another
+verified exporter Secret, use its configured name instead of the guide's name.
+
+For an external Collector, update its owned Loki `logs_endpoint` or
+`OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`, retain its filtering, credentials and verified
+TLS settings, and reload or restart that Collector through its owning workflow.
+Use an endpoint reachable from its network; update any address-based egress rule
+that pinned the old destination. The demo's Pod selectors stay unchanged.
+
+Send a fresh authorized operational record and find it in Loki or Grafana after
+the refresh. A Collector receive acknowledgement or a ready Pod alone does not
+prove delivery. Inspect Collector export failures and retry/queue metrics if it
+is absent. Demo rollouts can lose buffered records and disposable stored data;
+this procedure restores new ingestion rather than guaranteeing old-record replay.
 
 ## Remove only the demo
 

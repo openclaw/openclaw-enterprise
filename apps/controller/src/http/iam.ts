@@ -3,6 +3,7 @@ import type {
   ResourceKind,
   ResourceRef,
   Role,
+  ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import type { ResourceHandlers } from "./types.ts";
 
@@ -46,6 +47,12 @@ function clientIAMAccessBinding(binding: Readonly<AccessBinding>): Record<string
     ...(binding.resourceKind === undefined ? {} : { resourceKind: binding.resourceKind }),
     ...(binding.resourceId === undefined ? {} : { resourceId: binding.resourceId }),
   };
+}
+
+function clientIAMServicePrincipal(
+  servicePrincipal: Readonly<ServicePrincipal>,
+): Record<string, unknown> {
+  return { id: servicePrincipal.id, namespaceId: servicePrincipal.namespaceId };
 }
 
 export const iamHandlers = {
@@ -145,5 +152,46 @@ export const iamHandlers = {
       );
     });
     reply.status(204).send();
+  },
+  async listIAMServicePrincipals({ controller, context, request, reply, namespaceId }) {
+    const principals = await controller.listIAMServicePrincipals(context.actorId, namespaceId);
+    reply.send({
+      data: principals.map(clientIAMServicePrincipal),
+      meta: { requestId: request.id },
+    });
+  },
+  async createIAMServicePrincipal({
+    controller,
+    context,
+    request,
+    reply,
+    namespaceId,
+    mutationEvent,
+  }) {
+    const created = await controller.transact(async (unit) => {
+      const servicePrincipal = await controller.createIAMServicePrincipal(
+        context.actorId,
+        namespaceId,
+      );
+      await unit.audit.append(
+        mutationEvent(
+          { kind: "namespace", id: namespaceId, namespaceId },
+          { servicePrincipalId: servicePrincipal.id },
+        ),
+      );
+      return clientIAMServicePrincipal(servicePrincipal);
+    });
+    reply.status(201).send({ data: created, meta: { requestId: request.id } });
+  },
+  async getIAMServicePrincipal({ controller, context, request, reply, params, namespaceId }) {
+    const servicePrincipal = await controller.getIAMServicePrincipal(
+      context.actorId,
+      namespaceId,
+      params.servicePrincipalId as string,
+    );
+    reply.send({
+      data: clientIAMServicePrincipal(servicePrincipal),
+      meta: { requestId: request.id },
+    });
   },
 } satisfies ResourceHandlers;

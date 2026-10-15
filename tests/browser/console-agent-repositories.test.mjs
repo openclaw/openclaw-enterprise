@@ -1,9 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -19,7 +15,6 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
-  unusedPort,
   waitForCondition,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -331,11 +326,7 @@ test("Preset repository access and plugin policies remain independent during Age
   const pluginDriver = new OCCPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const root = await mkdtemp(join(tmpdir(), "occ-repository-plugin-preset-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const configurationDriver = new FilesystemConfigurationDriver(root);
-  fixture.controller.registerDriver(configurationDriver);
-  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  // The launch fixture seeds default-codex through a filesystem Configuration Driver.
   const secret = await fixture.createSecret(namespace.id, "Model key", "preset-plugin-model-key");
   const pluginId = "occ-plugin:diffs";
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
@@ -402,11 +393,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   const pluginDriver = new CodexPluginDriver();
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
-  const root = await mkdtemp(join(tmpdir(), "occ-repository-plugin-recovery-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const configurationDriver = new FilesystemConfigurationDriver(root);
-  fixture.controller.registerDriver(configurationDriver);
-  fixture.controller.selectDriver("configuration", configurationDriver.id);
+  // The launch fixture seeds default-codex through a filesystem Configuration Driver.
   const secret = await fixture.createSecret(namespace.id, "Model key", "preset-plugin-model-key");
   const pluginId = "codex-plugin:knowledge@openai-curated-remote";
   const initialPlugins = {
@@ -721,6 +708,49 @@ for (const count of [1, 5, 25, 140]) {
   });
 }
 
+test("Agent repository search is stable in a Turkish browser locale", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+    [
+      "acme/platform",
+      "example/one",
+      "example/two",
+      "example/three",
+      "example/four",
+      "acme/istanbul",
+    ].map((repository, index) => ({
+      repositoryRef: index === 0 ? "IBM-platform" : `repository-${index + 1}`,
+      repositoryId: String(1800 + index),
+      repository,
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    })),
+  );
+  const { page } = await newPage(t, fixture, { context: { locale: "tr-TR" } });
+  await page.addInitScript(() => {
+    const lower = String.prototype.toLocaleLowerCase;
+    String.prototype.toLocaleLowerCase = function (locales, ...options) {
+      return lower.call(this, locales ?? "tr-TR", ...options);
+    };
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const search = page.getByLabel("Find a repository");
+  // Finding 1252: a query with the Turkish capital İ or the dotless ı finds an ASCII i.
+  const names = page.locator("#repository-results .repository-identity strong");
+  for (const [query, name] of [
+    ["ibm", "acme/platform"],
+    ["İstanbul", "acme/istanbul"],
+    ["İSTANBUL", "acme/istanbul"],
+    // The same İ typed as I and a combining dot above.
+    ["I\u0307stanbul", "acme/istanbul"],
+    ["ıstanbul", "acme/istanbul"],
+    ["Ibm", "acme/platform"],
+  ]) {
+    await search.fill(query);
+    await repositoryCheckbox(page, name).waitFor();
+    assert.deepEqual(await names.allTextContents(), [name], query);
+  }
+});
+
 test("Repository descriptions arrive without interrupting a selection", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     backends: [...backendFixtures, repositoryBackendFixture],
@@ -738,7 +768,7 @@ test("Repository descriptions arrive without interrupting a selection", async (t
     namespaceId: namespace.id,
     backendId: repositoryBackendFixture.id,
     autoOpen: false,
-    gateway: { listen: `127.0.0.1:${await unusedPort()}` },
+    gateway: { listen: "127.0.0.1:0" },
     repositories: [
       {
         repositoryRef: "application",

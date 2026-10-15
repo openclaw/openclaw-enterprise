@@ -21,6 +21,7 @@ export function bindPlatformUnitOfWork(
       "lockNamespace",
       "hasAgents",
       "hasConfigurations",
+      "listConfigurationIds",
       "hasPresets",
       "hasServiceAccounts",
       "hasSecrets",
@@ -38,6 +39,7 @@ export function bindPlatformUnitOfWork(
     presets: bindRepository(repositories.presets, lifetime, [
       "findPreset",
       "listPresets",
+      "listPresetSummaries",
       "createPreset",
       "lockPreset",
       "updatePreset",
@@ -46,6 +48,7 @@ export function bindPlatformUnitOfWork(
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
+      "listReferences",
       "lockSecret",
       "createSecret",
       "deleteSecret",
@@ -61,9 +64,11 @@ export function bindPlatformUnitOfWork(
       "replaceCredentialSourceSecrets",
       "deleteCredentialSource",
       "hasReferences",
+      "findBlockingReference",
       "findCredentialWithdrawal",
       "listCredentialWithdrawals",
       "requestCredentialWithdrawal",
+      "reassignCredentialWithdrawal",
       "recordCredentialWithdrawalAttempt",
       "markCredentialWithdrawalRevoked",
     ]),
@@ -76,6 +81,7 @@ export function bindPlatformUnitOfWork(
       "updateCredential",
       "deleteServiceAccount",
       "hasReferences",
+      "findIssuedCredentialBinding",
     ]),
     workspaceSetups: bindRepository(repositories.workspaceSetups, lifetime, [
       "find",
@@ -88,6 +94,7 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "listAgentReferences",
       "createAgent",
       "lockAgent",
       "updateConfiguration",
@@ -101,6 +108,8 @@ export function bindPlatformUnitOfWork(
       "listRevisionsForBrowsing",
       "findRevision",
       "listRevisions",
+      "listRevisionMetadata",
+      "pageRevisionSummaries",
       "createRevision",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
@@ -110,8 +119,12 @@ export function bindPlatformUnitOfWork(
       "deleteRole",
       "listAccessBindings",
       "getAccessBinding",
+      "listRestrictionsTargeting",
       "createAccessBinding",
       "deleteAccessBinding",
+      "listServicePrincipals",
+      "getServicePrincipal",
+      "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",
@@ -124,9 +137,11 @@ export function bindPlatformUnitOfWork(
       "lockAttempt",
       "createBrokerReceipt",
       "advanceBrokerReceipt",
+      "fenceBrokerReceipt",
     ]),
     provisioning: bindRepository(repositories.provisioning, lifetime, [
       "findByWorkId",
+      "findWithWork",
       "hasPendingNamespaceProvisioning",
       "findByAgent",
       "findByConfiguration",
@@ -138,7 +153,9 @@ export function bindPlatformUnitOfWork(
       "settleEffect",
       "cancel",
       "cancelByAgent",
+      "settleAbandonedEffect",
       "retryByWorkId",
+      "releaseConfiguration",
     ]),
     audit: bindRepository(repositories.audit, lifetime, ["append", "list"]),
     operations: bindRepository(repositories.operations, lifetime, [
@@ -149,6 +166,7 @@ export function bindPlatformUnitOfWork(
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",
       "retryFailedNamespaceDeletion",
+      "expediteCredentialWithdrawalWork",
     ]),
   });
 }

@@ -26,7 +26,8 @@ separately. The console reports persisted deployment state, not live gateway hea
 You need a working model credential, the Agent's local gateway password, Bash,
 Python 3, and `kubectl` permission to get and list Pods and create
 `pods/portforward` requests in the Gateway's physical namespace. If you retrieve the generated
-password from Kubernetes, you also need read access to that exact Secret. Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`, `GATEWAY_RUNTIME_NAMESPACE`,
+password from Kubernetes, you also need read access to the Agent's `gateway-password-<suffix>` Secret (and to its
+transport Secret for an Agent deployed before that separate Secret existed). Keep `AGENT_ID`, `NAMESPACE_ID`, `TENANT_NAMESPACE`,
 `KUBECONFIG_FILE`, and `CONTEXT` from the [production Agent guide](../deploy/production-agents.md).
 Set `REVISION_ID` to the immutable revision you want to verify.
 
@@ -49,9 +50,11 @@ gateway:
 ```
 
 The [Gateway-password Secret](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
-must have a `gateway-password` key. Dedicated mode keeps it in the Gateway
-namespace; embedded mode uses the combined transport bundle in the tenant
-namespace. The initial credential API generates the password;
+must have a `gateway-password` key. Both execution modes keep it in the
+`gateway-password-<suffix>` Secret next to the Gateway (for two-cluster dedicated
+execution, in the control-plane Gateway namespace); an Agent deployed before that
+separate Secret existed keeps it in its transport Secret until its next
+deployment. The initial credential API generates the password;
 external operators can provision one during [Agent deployment](../deploy/production-agents.md#configure-the-agent-runtime).
 If these Configuration fields changed, [deploy a new revision](../deploy/production-agents.md#configure-the-agent-runtime)
 and capture its new `REVISION_ID`. Wait for that deployment to succeed and for OCC
@@ -68,9 +71,10 @@ attempts. No match, multiple Ready matches, or a Kubernetes error stops the
 check without opening a connection to another revision.
 
 ```bash
+# For two-cluster dedicated execution, set GATEWAY_RUNTIME_NAMESPACE to its control target.
 GATEWAY_NAMESPACE="$TENANT_NAMESPACE"
 if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:?}"
+  GATEWAY_NAMESPACE="${GATEWAY_RUNTIME_NAMESPACE:-$TENANT_NAMESPACE}"
 fi
 export GATEWAY_NAMESPACE
 forward_requested_gateway() {
@@ -158,14 +162,20 @@ fetch_gateway_password() {
     rmdir -- "$working_directory"
     return 1
   fi
-  transport_secret="openclaw-agent-transport-$agent_suffix"
-  if [ "${AGENT_EXECUTION_MODE:?}" = dedicated ]; then
-    transport_secret="gateway-password-$agent_suffix"
-  fi
+  # Both execution modes keep the password in the Agent's separate password Secret.
+  # An Agent deployed before that Secret existed still carries it in its transport Secret.
   if ! secret_json="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
-    get secret "$transport_secret" -o json)"; then
+    get secret "gateway-password-$agent_suffix" --ignore-not-found -o json)"; then
     rmdir -- "$working_directory"
     return 1
+  fi
+  if [ -z "$secret_json" ]; then
+    transport_secret="openclaw-agent-transport-$agent_suffix"
+    if ! secret_json="$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n "$GATEWAY_NAMESPACE" \
+      get secret "$transport_secret" -o json)"; then
+      rmdir -- "$working_directory"
+      return 1
+    fi
   fi
   if ! python3 -c '
 import base64, json, sys
@@ -186,10 +196,12 @@ Path(sys.argv[1]).write_bytes(password)
 fetch_gateway_password
 ```
 
-Replace `openclaw-agent-transport-` if your Installation sets a different
-`runtime.transportSecretPrefix` and the Agent is embedded. Dedicated Agents use
-the separate `gateway-password-<suffix>` Secret in the Gateway namespace. Export `GATEWAY_PASSWORD_FILE` if you use your
-own protected file.
+Embedded and dedicated Agents both keep the password in the
+`gateway-password-<suffix>` Secret next to the Gateway. The fallback to the
+`openclaw-agent-transport-<suffix>` Secret is for Agents deployed before that
+separate Secret existed; replace `openclaw-agent-transport-` if your Installation
+sets a different `runtime.transportSecretPrefix`. Export `GATEWAY_PASSWORD_FILE`
+if you use your own protected file.
 
 ## Verify rejection and a real response
 

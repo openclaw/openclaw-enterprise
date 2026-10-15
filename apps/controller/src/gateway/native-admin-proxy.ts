@@ -2,6 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import type { Socket } from "node:net";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { hasControlCharacter } from "@openclaw-enterprise/utils";
 
 export interface NativeAdminProxyContext {
   readonly gatewayBase: string;
@@ -33,8 +34,15 @@ const HTTP_PROXY_TIMEOUT_MS = 30_000;
 const WS_UPGRADE_TIMEOUT_MS = 30_000;
 const WS_LEASE_INTERVAL_MS = 25_000;
 const WS_LEASE_TIMEOUT_MS = 5_000;
+// How long a browser may take to read what is still queued for it, and close its side, after
+// the gateway closed.
+const WS_CLIENT_DRAIN_TIMEOUT_MS = 10_000;
 const NATIVE_ADMIN_RESERVED_PREFIX = "/__occ/native-admin/";
 const SERVICE_WORKER_CSP = "worker-src 'none'";
+// The native UI renders `/api/users/<id>/avatar` as a plain <img>. Without an
+// uploaded photo OpenClaw falls back to Gravatar and answers 502 when it cannot
+// reach it, which a dedicated Gateway never can (it has no internet egress).
+const USER_AVATAR_PATH = /^\/api\/users\/[^/]+\/avatar$/;
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -61,16 +69,6 @@ const STRIPPED_REQUEST_HEADERS = new Set([
 ]);
 
 const STRIPPED_RESPONSE_HEADERS = new Set(["set-cookie"]);
-
-function hasControlCharacter(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code <= 0x1f || code === 0x7f) {
-      return true;
-    }
-  }
-  return false;
-}
 
 function percentDecode(value: string): string | undefined {
   try {
@@ -347,6 +345,7 @@ export async function proxyNativeAdminHttp(options: {
     return;
   }
 
+  const avatarRequest = USER_AVATAR_PATH.test(options.request.url.split("?", 1)[0] ?? "");
   options.reply.hijack();
   const upstreamRequest = https.request(
     upstream,
@@ -356,6 +355,13 @@ export async function proxyNativeAdminHttp(options: {
       if (headers === undefined) {
         endHttp(options.reply, 502);
         upstreamResponse.destroy();
+        return;
+      }
+      if (avatarRequest && upstreamResponse.statusCode === 502) {
+        // A missing photo, not an unavailable Gateway: the UI shows initials either way.
+        upstreamResponse.resume();
+        options.reply.raw.writeHead(404, { "cache-control": "no-store" });
+        options.reply.raw.end();
         return;
       }
       options.reply.raw.writeHead(upstreamResponse.statusCode ?? 502, headers);
@@ -408,6 +414,44 @@ async function boundedLease(
   }
 }
 
+// Closes the browser socket now. If bytes are still queued for it, reset the connection
+// instead of sending a FIN where the socket allows it (a TLS socket does not), so a cut stream
+// does not look like a clean close. With nothing queued, every byte is already with the kernel
+// (a shutdown may still be in flight, when a reset would fail and leak the handle), so a plain
+// close is right.
+function cutClient(socket: Socket): void {
+  if (socket.writableLength > 0) {
+    try {
+      socket.resetAndDestroy();
+      return;
+    } catch {
+      // Not a TCP handle; fall through to a plain close.
+    }
+  }
+  socket.destroy();
+}
+
+// Called once the gateway's upgraded socket has closed. When pipe() already ended the browser's
+// socket on the gateway's clean EOF, bytes can still be queued for a slow browser (the last
+// frames, often the close frame), and destroy() would drop them. Even after they are flushed,
+// a close with unread browser bytes makes the kernel reset the connection and drop the tail.
+// So linger: discard what the browser sends, keep the socket until it has read everything and
+// closed its side, and cut it at `drainTimeoutMs`. Otherwise close it now. Same logic as
+// closeClientWhenDrained in slack-proxy.mjs, which runs standalone and cannot share it.
+function closeClientWhenDrained(socket: Socket, drainTimeoutMs: number): void {
+  if (socket.destroyed) {
+    return;
+  }
+  if (!socket.writableEnded) {
+    cutClient(socket);
+    return;
+  }
+  socket.resume();
+  const timer = setTimeout(() => cutClient(socket), drainTimeoutMs);
+  timer.unref();
+  socket.once("close", () => clearTimeout(timer));
+}
+
 export function proxyNativeAdminWebSocket(options: {
   readonly request: http.IncomingMessage;
   readonly socket: Socket;
@@ -415,6 +459,10 @@ export function proxyNativeAdminWebSocket(options: {
   readonly context: NativeAdminProxyContext;
   readonly connectionId: string;
   readonly lease: () => Promise<NativeAdminWebSocketCloseReason | undefined>;
+  /** Defaults to 25 s; only tests shorten it. */
+  readonly leaseIntervalMs?: number;
+  /** Defaults to 10 s; only tests shorten it. */
+  readonly clientDrainTimeoutMs?: number;
   readonly onConnect: () => Promise<void>;
   readonly onClose: (cause: NativeAdminWebSocketCloseCause) => void;
 }): void {
@@ -453,7 +501,7 @@ export function proxyNativeAdminWebSocket(options: {
   let connected = false;
   let closeReason: NativeAdminWebSocketCloseReason | undefined;
   const upstreamRequest = https.request(upstream, { method: "GET", headers });
-  const close = (reason: NativeAdminWebSocketCloseReason) => {
+  const close = (reason: NativeAdminWebSocketCloseReason, upstreamClosed = false) => {
     if (closeReason === undefined) {
       closeReason = reason;
     }
@@ -465,7 +513,14 @@ export function proxyNativeAdminWebSocket(options: {
     clearInterval(leaseTimer);
     upstreamRequest.destroy();
     upstreamSocket?.destroy();
-    options.socket.destroy();
+    if (upstreamClosed) {
+      closeClientWhenDrained(
+        options.socket,
+        options.clientDrainTimeoutMs ?? WS_CLIENT_DRAIN_TIMEOUT_MS,
+      );
+    } else {
+      options.socket.destroy();
+    }
     if (connected) {
       options.onClose({ connectionId: options.connectionId, reason: closeReason });
     }
@@ -479,13 +534,15 @@ export function proxyNativeAdminWebSocket(options: {
         close(reason);
       }
     });
-  }, WS_LEASE_INTERVAL_MS);
+  }, options.leaseIntervalMs ?? WS_LEASE_INTERVAL_MS);
   leaseTimer.unref();
 
   upstreamRequest.once("upgrade", (response, upgradedSocket, upstreamHead) => {
     upstreamSocket = upgradedSocket;
-    upgradedSocket.once("error", () => close("upstream_disconnect"));
-    upgradedSocket.once("close", () => close("upstream_disconnect"));
+    // An error after the gateway's clean EOF (EPIPE from a late browser byte piped into the ended
+    // socket, say) still follows a complete stream, so let the browser drain.
+    upgradedSocket.once("error", () => close("upstream_disconnect", upgradedSocket.readableEnded));
+    upgradedSocket.once("close", () => close("upstream_disconnect", true));
     const headers = responseHeaders(response.headers, options.context, {
       enforceServiceWorkerCsp: false,
     });

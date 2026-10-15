@@ -5,9 +5,15 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+)
+
+const (
+	developmentGatewayAPIKeyMount = "/run/openclaw-development/gateway-api-key"
+	developmentGatewayCAMount     = "/run/openclaw-development/gateway-ca.crt"
 )
 
 // k3d needs an explicit gateway when joining a Compose-owned Docker network.
@@ -32,6 +38,88 @@ func setKubernetesBridgeGateway(rendered any) error {
 			return fmt.Errorf("Compose development subnet must have space for a bridge gateway and containers")
 		}
 		entry["gateway"] = prefix.Masked().Addr().Next().String()
+	}
+	return nil
+}
+
+// addComposeGatewayRouting projects only the private routing key and public CA
+// into the two trusted control-plane services. The Kubernetes workloads never
+// receive the Installation-wide service key.
+func addComposeGatewayRouting(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	for _, name := range []string{"controller", "worker-kubernetes"} {
+		service, _ := services[name].(map[string]any)
+		if service == nil {
+			return fmt.Errorf("Compose configuration does not define the %s service", name)
+		}
+		environment, _ := service["environment"].(map[string]any)
+		if environment == nil {
+			return fmt.Errorf("Compose %s service has no environment configuration", name)
+		}
+		for key, value := range map[string]string{
+			"OCC_GATEWAY_API_KEY_PATH": developmentGatewayAPIKeyMount,
+			"NODE_EXTRA_CA_CERTS":      developmentGatewayCAMount,
+		} {
+			if existing, found := environment[key]; found && composeValue(existing) != value {
+				return fmt.Errorf("Compose %s must not override %s", name, key)
+			}
+			environment[key] = value
+		}
+		volumes, _ := service["volumes"].([]any)
+		for _, volume := range []struct{ source, target string }{
+			{filepath.Join(state.directory, "gateway-api-key"), developmentGatewayAPIKeyMount},
+			{filepath.Join(state.directory, "gateway-ca.crt"), developmentGatewayCAMount},
+		} {
+			for _, raw := range volumes {
+				existing, _ := raw.(map[string]any)
+				if composeValue(existing["target"]) == volume.target {
+					return fmt.Errorf("Compose %s already mounts %s", name, volume.target)
+				}
+			}
+			volumes = append(volumes, map[string]any{
+				"type": "bind", "source": volume.source, "target": volume.target,
+				"read_only": true, "bind": map[string]any{"selinux": "z"},
+			})
+		}
+		service["volumes"] = volumes
+	}
+	return nil
+}
+
+func validateComposeNativeAdmin(rendered any, state *developmentState) error {
+	config, _ := rendered.(map[string]any)
+	services, _ := config["services"].(map[string]any)
+	controller, _ := services["controller"].(map[string]any)
+	proxy, _ := services["browser-proxy"].(map[string]any)
+	if controller == nil || proxy == nil {
+		return fmt.Errorf("Compose native admin requires controller and browser-proxy services")
+	}
+	environment, _ := controller["environment"].(map[string]any)
+	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+	expected := map[string]string{
+		"OCC_AUTH_BASE_URL":              state.BrowserOrigin,
+		"OCC_AGENT_NATIVE_ADMIN_ENABLED": "true",
+		"OCC_AGENT_NATIVE_ADMIN_DOMAIN":  agentDomain,
+		"OCC_AUTH_COOKIE_DOMAIN":         cookieDomain,
+		"OCC_GATEWAY_API_KEY_PATH":       developmentGatewayAPIKeyMount,
+		"NODE_EXTRA_CA_CERTS":            developmentGatewayCAMount,
+	}
+	for key, value := range expected {
+		if composeValue(environment[key]) != value {
+			return fmt.Errorf("Compose controller must set %s to the development native admin value", key)
+		}
+	}
+	ports, _ := proxy["ports"].([]any)
+	if len(ports) != 1 {
+		return fmt.Errorf("Compose browser proxy must publish exactly one port")
+	}
+	host, published, target, protocol, err := parsePublication(ports[0])
+	if err != nil {
+		return err
+	}
+	if host != "127.0.0.1" || published != strconv.Itoa(state.BrowserPort) || target != "8443" || protocol != "tcp" {
+		return fmt.Errorf("Compose browser proxy must publish the selected HTTPS port only on 127.0.0.1")
 	}
 	return nil
 }

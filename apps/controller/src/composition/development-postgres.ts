@@ -118,7 +118,6 @@ export async function composePostgresDevelopment(
   const pool = await createPostgresPool(config.databaseUrl, {
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
-  let poolClosed = false;
 
   try {
     const state = new PostgresPlatformState(pool);
@@ -129,8 +128,21 @@ export async function composePostgresDevelopment(
     const installationId = persistedInstallation.id;
 
     const computeDriver = options.computeDriver ?? createDevelopmentDockerComputeDriver();
+    if (drivers !== undefined && computeDriver.preflight !== undefined) {
+      const result = await computeDriver.preflight();
+      if (result !== undefined && config.logger !== undefined) {
+        for (const warning of result.warnings) {
+          emitOccLogEvent(config.logger, {
+            event: "compute.preflight-warning",
+            computeDriverId: computeDriver.id,
+            ...warning,
+          });
+        }
+      }
+    }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
+    const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
       ("installation" in options
@@ -160,6 +172,12 @@ export async function composePostgresDevelopment(
         : {
             onWarning: (warning) => emitOccLogEvent(config.logger!, warning),
             onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event),
+          }),
+      ...(config.metrics === undefined
+        ? {}
+        : {
+            onUnmatchedCallback: (provider) =>
+              config.metrics!.observeUnmatchedSignInCallback(provider),
           }),
       secureCookies: config.nativeAdmin?.enabled === true,
       ...(config.nativeAdmin?.enabled === true
@@ -218,6 +236,8 @@ export async function composePostgresDevelopment(
       state,
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
+      bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
+      refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,
       ...(loggingLevel === undefined ? {} : { loggingLevel }),
       ...(drivers === undefined ? {} : { backends: drivers.installation.backend }),
       ...(drivers?.installation.runtime === undefined
@@ -239,6 +259,10 @@ export async function composePostgresDevelopment(
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
     }
+    if (credentialRefreshDriver !== undefined) {
+      controller.registerDriver(credentialRefreshDriver);
+      controller.selectDriver("credential_refresh", credentialRefreshDriver.id);
+    }
     if (configurationDriver !== undefined) {
       controller.registerDriver(configurationDriver);
       controller.selectDriver("configuration", configurationDriver.id);
@@ -258,11 +282,19 @@ export async function composePostgresDevelopment(
     }
     serviceAccountDriverFactory?.(controller, state);
     await controller.validateBackendConfiguration();
+    if (config.logger !== undefined) {
+      for (const shadowed of drivers?.shadowedDefaultPresets ?? []) {
+        emitOccLogEvent(config.logger, { event: "presets.bundled-default-shadowed", ...shadowed });
+      }
+    }
     await initializeInstallationPresets(
       controller,
       iamDriver,
       iamState.identities,
       drivers?.defaultPresets ?? [],
+      config.logger === undefined
+        ? undefined
+        : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;
@@ -305,6 +337,7 @@ export async function composePostgresDevelopment(
       development: {
         enabled: true,
         installationId,
+        browserOrigin: config.authBaseURL,
         ...(config.trustedDevelopmentBridgeCidr === undefined
           ? {}
           : {
@@ -316,7 +349,6 @@ export async function composePostgresDevelopment(
               ],
             }),
       },
-      maxBodyBytes: 64 * 1024,
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     app.get("/healthz", async () => ({ status: "ok" }));
@@ -325,14 +357,11 @@ export async function composePostgresDevelopment(
       return { status: "ready" };
     });
     app.addHook("onClose", async () => {
-      poolClosed = true;
       await state.close();
     });
     return app;
   } catch (error) {
-    if (!poolClosed) {
-      await pool.end();
-    }
+    await pool.end();
     throw error;
   }
 }

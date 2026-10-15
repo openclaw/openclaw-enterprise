@@ -103,7 +103,8 @@ worker uses `transactWithQueue` for some transitions. It also calls pool-backed
 stale-work recovery, which issues two separate SQL statements. Each statement is
 atomic, but a later failure does not undo an earlier committed statement. A queue
 using a caller-supplied client follows that client's transaction boundary. The
-queue's `reasonCode` and `attemptCount` are ordinary details, not reserved metadata.
+queue's `reasonCode`, `attemptCount` and `final` (set only when the transition leaves the
+work `failed_permanent`) are ordinary details, not reserved metadata.
 
 ### 3. The transaction owner finishes or fails
 

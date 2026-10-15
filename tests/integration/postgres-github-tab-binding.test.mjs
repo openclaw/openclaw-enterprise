@@ -1,15 +1,15 @@
 import test from "node:test";
 import { githubUpgradeSettings, startFakeGitHub } from "../helpers/production-sign-in.mjs";
 import { proveTabBinding } from "../helpers/tab-binding.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const aliceSubject = "9400001";
 
 // See proveTabBinding: a GitHub tab pins the session its receipt names, so another tab's
 // password sign-in signs it out instead of being adopted.
 test(
   "a GitHub tab keeps its own session: another tab's password sign-in signs it out",
-  { skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL for real PostgreSQL proof." },
+  requiresPostgres,
   (t) =>
     proveTabBinding(t, databaseUrl, {
       name: "github",

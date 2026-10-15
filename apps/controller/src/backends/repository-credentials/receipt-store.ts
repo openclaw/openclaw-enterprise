@@ -164,6 +164,28 @@ export class RepositoryReceiptStore {
     });
   }
 
+  /** The reserving broker never handed out a session; retries and recovery answer missing. */
+  async fence(
+    admissionId: string,
+    input: RepositoryCredentialBoundSessionInput,
+    generation: string,
+  ) {
+    await this.state.transact(async (unit) => {
+      const attempt = await unit.repositorySessions.lockAttempt(admissionId);
+      if (!attempt || !this.matches(attempt, input) || !this.eligible(attempt)) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      const current = await unit.repositorySessions.findBrokerReceipt(admissionId);
+      if (current?.state === "fenced" && current.generation === generation) {
+        return;
+      }
+      const fenced = await unit.repositorySessions.fenceBrokerReceipt({ admissionId, generation });
+      if (!fenced) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+    });
+  }
+
   async dispose(
     admissionId: string,
     input: RepositoryCredentialBoundSessionInput,

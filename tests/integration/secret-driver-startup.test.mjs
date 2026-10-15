@@ -1,27 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import pg from "pg";
 
-async function fixture(t, configuration = installation()) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-secret-driver-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
-  const path = join(directory, "installation.yaml");
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  return path;
-}
-
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {
-  const drivers = await loadInstallationConfiguration({
-    mode: "production",
-    environment: { OCC_CONFIG_PATH: await fixture(t) },
-  });
+  const drivers = await loadInstallationFile(t, installation());
 
   assert.deepEqual(drivers.installation.drivers.secret, {
     id: "secret-kubernetes",
@@ -48,21 +34,12 @@ test("secret-driver-startup constructs the bundled KubernetesSecretDriver from I
 test("secret-driver-startup requires one bundled SecretDriver selection and validates its configuration", async (t) => {
   const missing = installation();
   delete missing.drivers.secret;
-  await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, missing) },
-    }),
-    /drivers\.secret/,
-  );
+  await assert.rejects(loadInstallationFile(t, missing), /drivers\.secret/);
 
   const packageSelection = installation();
   packageSelection.drivers.secret.package = "@example/secret-driver";
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, packageSelection) },
-    }),
+    loadInstallationFile(t, packageSelection),
     /drivers\.secret contains unsupported option package/,
   );
 
@@ -73,10 +50,7 @@ test("secret-driver-startup requires one bundled SecretDriver selection and vali
     context: "default",
   };
   await assert.rejects(
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: await fixture(t, invalid) },
-    }),
+    loadInstallationFile(t, invalid),
     /Dedicated kubeconfig path must be absolute/,
   );
 });

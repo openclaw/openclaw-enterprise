@@ -18,6 +18,23 @@ async function loopbackServer(t, respond) {
   return `http://127.0.0.1:${server.address().port}`;
 }
 
+// The diagnostic a non-retryable readiness query error carries.
+const queryError = (stage, lastHttpStatus) => ({
+  openclawCiDiagnostic: {
+    kind: "metrics-monitoring",
+    stage,
+    reason: "query-error",
+    lastHttpStatus,
+  },
+});
+
+// Successful headers, then a truncated JSON body and a dropped connection.
+function interruptBody(response) {
+  response.flushHeaders();
+  response.write('{"status":');
+  setTimeout(() => response.destroy(), 50);
+}
+
 test("datasource readiness retries a transient HTTP 400", async (t) => {
   let attempts = 0;
   // A provisioned datasource may answer before its backend is healthy.
@@ -44,14 +61,7 @@ test("non-retryable Grafana health failures retain their stage and status", asyn
       },
       [],
     ),
-    {
-      openclawCiDiagnostic: {
-        kind: "metrics-monitoring",
-        stage: "grafana-health",
-        reason: "query-error",
-        lastHttpStatus: 401,
-      },
-    },
+    queryError("grafana-health", 401),
   );
   assert.equal(attempts, 1);
 });
@@ -66,35 +76,9 @@ test("non-retryable Grafana datasource failures retain their stage and status", 
 
   await assert.rejects(
     waitForMonitoring("grafana-datasource", () => checkGrafanaDatasource(origin), []),
-    {
-      openclawCiDiagnostic: {
-        kind: "metrics-monitoring",
-        stage: "grafana-datasource",
-        reason: "query-error",
-        lastHttpStatus: 403,
-      },
-    },
+    queryError("grafana-datasource", 403),
   );
   assert.equal(attempts, 1);
-});
-
-test("malformed Grafana datasource responses retain their stage and status", async (t) => {
-  const origin = await loopbackServer(t, (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end("invalid json");
-  });
-
-  await assert.rejects(
-    waitForMonitoring("grafana-datasource", () => checkGrafanaDatasource(origin), []),
-    {
-      openclawCiDiagnostic: {
-        kind: "metrics-monitoring",
-        stage: "grafana-datasource",
-        reason: "query-error",
-        lastHttpStatus: 200,
-      },
-    },
-  );
 });
 
 test("datasource readiness retries an interrupted response body", async (t) => {
@@ -104,9 +88,7 @@ test("datasource readiness retries an interrupted response body", async (t) => {
     attempts += 1;
     response.writeHead(200, { "content-type": "application/json" });
     if (attempts === 1) {
-      response.flushHeaders();
-      response.write('{"status":');
-      setTimeout(() => response.destroy(), 50);
+      interruptBody(response);
       return;
     }
     response.end(JSON.stringify({ status: "OK" }));
@@ -116,25 +98,19 @@ test("datasource readiness retries an interrupted response body", async (t) => {
   assert.equal(attempts, 2);
 });
 
-test("invalid Grafana datasource response shapes retain their stage and status", async (t) => {
-  for (const body of [null, [], "OK", 42, {}, { status: null }]) {
+test("malformed or invalid Grafana datasource responses retain their stage and status", async (t) => {
+  // Unparseable JSON and parsed bodies without a string status fail on separate paths.
+  for (const body of ["invalid json", "null", "[]", '"OK"', "42", "{}", '{"status":null}']) {
     let attempts = 0;
     const origin = await loopbackServer(t, (_request, response) => {
       attempts += 1;
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(body));
+      response.end(body);
     });
 
     await assert.rejects(
       waitForMonitoring("grafana-datasource", () => checkGrafanaDatasource(origin), []),
-      {
-        openclawCiDiagnostic: {
-          kind: "metrics-monitoring",
-          stage: "grafana-datasource",
-          reason: "query-error",
-          lastHttpStatus: 200,
-        },
-      },
+      queryError("grafana-datasource", 200),
     );
     assert.equal(attempts, 1);
   }
@@ -167,10 +143,8 @@ test("Prometheus readiness retries an interrupted response body", async (t) => {
     attempts += 1;
     response.writeHead(200, { "content-type": "application/json" });
     if (attempts === 1) {
-      // Drop the connection after headers so the failure occurs while reading JSON.
-      response.flushHeaders();
-      response.write('{"status":');
-      setTimeout(() => response.destroy(), 50);
+      // The failure occurs while reading the Prometheus JSON body.
+      interruptBody(response);
       return;
     }
     response.end(JSON.stringify({ status: "success", data: { result: [{ value: [0, "1"] }] } }));
@@ -184,40 +158,20 @@ test("Prometheus readiness retries an interrupted response body", async (t) => {
   assert.equal(attempts, 2);
 });
 
-test("a null Prometheus response retains its stage and status", async (t) => {
-  const origin = await loopbackServer(t, (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end("null");
-  });
-  const expected = {
-    openclawCiDiagnostic: {
-      kind: "metrics-monitoring",
-      stage: "prometheus-up",
-      reason: "query-error",
-      lastHttpStatus: 200,
-    },
-  };
+test("null or malformed Prometheus responses retain their stage and status", async (t) => {
+  const expected = queryError("prometheus-up", 200);
+  // A null body parses but has no result; invalid JSON fails while parsing.
+  for (const body of ["null", "invalid json"]) {
+    const origin = await loopbackServer(t, (_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(body);
+    });
 
-  // Dashboard checks call the query directly; readiness checks use the waiter.
-  await assert.rejects(queryPrometheus(origin, "prometheus-up", "up"), expected);
-  await assert.rejects(
-    waitForMonitoring("prometheus-up", () => queryPrometheus(origin, "prometheus-up", "up"), []),
-    expected,
-  );
-});
-
-test("malformed Prometheus responses remain query errors", async (t) => {
-  const origin = await loopbackServer(t, (_request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end("invalid json");
-  });
-
-  await assert.rejects(queryPrometheus(origin, "prometheus-up", "up"), {
-    openclawCiDiagnostic: {
-      kind: "metrics-monitoring",
-      stage: "prometheus-up",
-      reason: "query-error",
-      lastHttpStatus: 200,
-    },
-  });
+    // Dashboard checks call the query directly; readiness checks use the waiter.
+    await assert.rejects(queryPrometheus(origin, "prometheus-up", "up"), expected);
+    await assert.rejects(
+      waitForMonitoring("prometheus-up", () => queryPrometheus(origin, "prometheus-up", "up"), []),
+      expected,
+    );
+  }
 });

@@ -73,6 +73,18 @@ export class RepositoryReceiptClient {
     }
   }
 
+  async fence(id: string, input: RepositoryCredentialBoundSessionInput): Promise<void> {
+    const result = await this.call({
+      kind: "fence",
+      admissionId: id,
+      generation: this.generation,
+      input,
+    });
+    if (result.kind !== "acknowledged") {
+      throw new Error("RECEIPT_UNAVAILABLE");
+    }
+  }
+
   async status(sessionId: string): Promise<SessionStatus | undefined> {
     const result = await this.call({ kind: "status", sessionId });
     if (result.kind === "missing") {
@@ -141,6 +153,8 @@ export class RepositoryReceiptClient {
           incoming.on("data", (chunk: Buffer) => {
             size += chunk.length;
             if (size > 16384) {
+              // destroy() without an error emits neither "end" nor "error": settle first.
+              reject(new Error("RECEIPT_UNAVAILABLE"));
               incoming.destroy();
             } else {
               chunks.push(chunk);

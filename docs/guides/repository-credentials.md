@@ -125,10 +125,12 @@ exact model Secret.
 REVISION_RESPONSE="$(occ agent deploy "$AGENT_ID" --output json)"
 REVISION_ID="$(printf '%s' "$REVISION_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 export REVISION_ID
-occ agent get "$AGENT_ID" --output json
+occ agent deployment-status "$AGENT_ID" "$REVISION_ID"
 ```
 
-Wait until `activeRevisionId` equals `REVISION_ID`. The admitted revision exposes
+Repeat the status command until it reports `succeeded`; a matching
+`activeRevisionId` alone can name a revision that is still starting or has
+failed. The admitted revision exposes
 repository references, profiles and its fixed deadline. Deployment readiness
 alone does not prove a model task or GitHub operation. Failed policy checks,
 unsupported topology, missing material or expired authority must be corrected

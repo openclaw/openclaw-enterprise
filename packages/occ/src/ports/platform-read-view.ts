@@ -23,8 +23,16 @@ export function createPlatformReadView(
       "listNamespaces",
     ]),
     configurations: bindRepository(repositories.configurations, lifetime, ["findConfiguration"]),
-    presets: bindRepository(repositories.presets, lifetime, ["findPreset", "listPresets"]),
-    secrets: bindRepository(repositories.secrets, lifetime, ["findSecret", "listSecrets"]),
+    presets: bindRepository(repositories.presets, lifetime, [
+      "findPreset",
+      "listPresets",
+      "listPresetSummaries",
+    ]),
+    secrets: bindRepository(repositories.secrets, lifetime, [
+      "findSecret",
+      "listSecrets",
+      "listReferences",
+    ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       "findCredentialSource",
       "listCredentialSources",
@@ -42,18 +50,24 @@ export function createPlatformReadView(
       "listAgents",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
+      "listAgentReferences",
     ]),
     revisions: bindRepository(repositories.revisions, lifetime, [
       "findRevision",
       "listRevisions",
       "findRevisionForBrowsing",
       "listRevisionsForBrowsing",
+      "listRevisionMetadata",
+      "pageRevisionSummaries",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
       "listRoles",
       "getRole",
       "listAccessBindings",
       "getAccessBinding",
+      "listRestrictionsTargeting",
+      "listServicePrincipals",
+      "getServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",
@@ -64,6 +78,7 @@ export function createPlatformReadView(
     ]),
     provisioning: bindRepository(repositories.provisioning, lifetime, [
       "findByWorkId",
+      "findWithWork",
       "hasPendingNamespaceProvisioning",
       "findByAgent",
       "findByConfiguration",

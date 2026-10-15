@@ -8,6 +8,8 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       expectedStatus,
       includeMeta = false,
       responseType = "json",
+      // A session-scoped read that a later view joins instead of aborting it.
+      outlivesView = false,
     } = {},
   ) {
     const active = lifetime.capture();
@@ -18,15 +20,16 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       ...(body === undefined ? {} : { "content-type": "application/json" }),
       ...(pinned ? { "x-occ-session-key": pinned } : {}),
     };
+    const requestSignal = AbortSignal.any([
+      ...(outlivesView ? [] : [lifetime.signal]),
+      ...(signal ? [signal] : []),
+      AbortSignal.timeout(15_000),
+    ]);
     const response = await fetch(path, {
       method,
       credentials: "same-origin",
       cache: "no-store",
-      signal: AbortSignal.any([
-        lifetime.signal,
-        ...(signal ? [signal] : []),
-        AbortSignal.timeout(15_000),
-      ]),
+      signal: requestSignal,
       headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -37,18 +40,24 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
     if (response.status === 204 && response.ok && expectedStatus === 204) {
       return undefined;
     }
-    // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
-    if (
-      responseType === "text" &&
-      response.status === 200 &&
-      response.headers.get("content-type")?.startsWith("text/plain")
-    ) {
-      return await response.text();
-    }
     let payload;
     try {
+      // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
+      if (
+        responseType === "text" &&
+        response.status === 200 &&
+        response.headers.get("content-type")?.startsWith("text/plain")
+      ) {
+        return await response.text();
+      }
       payload = await response.json();
-    } catch {
+    } catch (error) {
+      // Body reads can fail after fetch returned headers. Keep cancellation,
+      // deadline and socket failures distinct from a complete, malformed JSON body.
+      requestSignal.throwIfAborted();
+      if (!(error instanceof SyntaxError)) {
+        throw error;
+      }
       payload = null;
     }
     if (
@@ -62,6 +71,24 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       const code = payload?.error?.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
+      }
+      // The API's own sentence, for views that show it instead of a generic status text.
+      const serverMessage = payload?.error?.message;
+      if (
+        typeof serverMessage === "string" &&
+        serverMessage.length > 0 &&
+        serverMessage.length <= 256 &&
+        !/\p{Cc}/u.test(serverMessage)
+      ) {
+        error.serverMessage = serverMessage;
+      }
+      const detailPaths = Array.isArray(payload?.error?.details)
+        ? payload.error.details
+            .map((detail) => detail?.path)
+            .filter((path) => typeof path === "string" && /^\/[A-Za-z0-9_/~-]{0,128}$/.test(path))
+        : [];
+      if (detailPaths.length > 0) {
+        error.detailPaths = detailPaths;
       }
       const retryAfter = response.headers.get("retry-after");
       if (retryAfter !== null && /^[1-9][0-9]{0,4}$/.test(retryAfter)) {

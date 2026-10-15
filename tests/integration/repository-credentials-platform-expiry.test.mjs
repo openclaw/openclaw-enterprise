@@ -44,16 +44,17 @@ test(
       );
       assert.equal(claimed.rowCount, 1, "the observed pass must retain its original Work claim");
       const workId = claimed.rows[0].idempotency_key;
-      const incompleteCount = async () =>
-        Number(
-          (
-            await fixture.pool.query(
-              "SELECT count(*)::integer AS count FROM occ.audit_events WHERE resource_id=$1 AND details->>'workId'=$2 AND details->>'reasonCode'='REVISION_INCOMPLETE'",
-              [revision.id, workId],
-            )
-          ).rows[0].count,
-        );
-      const priorIncomplete = await incompleteCount();
+      // Repeated deferrals with the same code add no audit row, so count the worker's
+      // pending completions of this exact Work item instead.
+      const incompleteCount = () =>
+        fixture.events.filter(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.workId === workId &&
+            event.outcome === "pending" &&
+            event.code === "REVISION_INCOMPLETE",
+        ).length;
+      const priorIncomplete = incompleteCount();
       await gate.release(true);
       released = true;
       await gate.resumed();
@@ -62,7 +63,7 @@ test(
         return (
           current.desiredRuntimeState === "running" &&
           current.activeRevisionId !== revision.id &&
-          (await incompleteCount()) > priorIncomplete
+          incompleteCount() > priorIncomplete
         );
       });
       const beforeStop = await gate.inspect();

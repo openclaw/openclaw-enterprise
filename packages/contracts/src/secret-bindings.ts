@@ -22,13 +22,42 @@ const controlNames = new Set([
   "NO_PROXY",
 ]);
 
+const providerPrefix = /^(?:OPENAI_|ANTHROPIC_)/i;
+
+/** The destination rule a Secret binding name breaks, or undefined when it is allowed. */
+type SecretBindingDestinationRule = "invalid_format" | "reserved_prefix" | "reserved_name";
+
+function destinationRule(name: string): SecretBindingDestinationRule | undefined {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,252}$/.test(name)) {
+    return "invalid_format";
+  }
+  if (controlNames.has(name.toUpperCase()) || /^KUBECONFIG$/i.test(name)) {
+    return "reserved_name";
+  }
+  if (reserved.test(name) || providerPrefix.test(name)) {
+    return "reserved_prefix";
+  }
+  return undefined;
+}
+
 export function isAllowedSecretBindingDestination(name: string): boolean {
-  return (
-    /^[A-Za-z_][A-Za-z0-9_]{0,252}$/.test(name) &&
-    !reserved.test(name) &&
-    !controlNames.has(name.toUpperCase()) &&
-    !/^(?:OPENAI_|ANTHROPIC_)/i.test(name)
-  );
+  return destinationRule(name) === undefined;
+}
+
+// Names the rule a destination broke and, when well-formed, the destination: the caller's own
+// environment variable name, never a Secret value or ID. A malformed name is not echoed.
+function destinationMessage(name: string, rule: SecretBindingDestinationRule): string {
+  switch (rule) {
+    case "invalid_format":
+      return "A secret binding destination is not a valid environment variable name: it must match ^[A-Za-z_][A-Za-z0-9_]*$ and have at most 253 characters.";
+    // The rule comes before the name, so a capped message still says which rule broke.
+    case "reserved_name":
+      return `A secret binding destination is a reserved process or platform variable name: ${name}.`;
+    case "reserved_prefix":
+      return `A secret binding destination uses the reserved prefix ${(
+        (reserved.exec(name) ?? providerPrefix.exec(name))?.[0] ?? ""
+      ).toUpperCase()}*: ${name}.`;
+  }
 }
 
 /** One canonical, closed binding grammar, used at admission and rendering. */
@@ -46,8 +75,12 @@ export function normalizeSecretBindings(input: unknown): SecretBindings {
   return Object.freeze(
     Object.fromEntries(
       entries.map(([name, binding]) => {
-        if (!isAllowedSecretBindingDestination(name)) {
-          throw new Error("A secret binding uses a reserved or invalid environment destination.");
+        const rule = destinationRule(name);
+        if (rule !== undefined) {
+          throw Object.assign(new Error(destinationMessage(name, rule)), {
+            destination: name,
+            destinationRule: rule,
+          });
         }
         if (
           binding === null ||

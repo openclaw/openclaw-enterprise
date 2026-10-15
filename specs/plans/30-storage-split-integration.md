@@ -1,11 +1,11 @@
 ---
-rfc: ../rfcs/28-gateway-harness-storage-split.md
+rfc: ../rfcs/0003-gateway-harness-storage-split.md
 ---
 
 # Storage split: shared interface and integration
 
 **Status: Draft; integration incomplete.** This updates the Memory and Skills placement and
-implementation plan in [the original proposal](../rfcs/28-gateway-harness-storage-split.md).
+implementation plan in [the original proposal](../rfcs/0003-gateway-harness-storage-split.md).
 The separate-storage boundary, native Harness file tools, four-document owner
 editing scope, and first-start file behavior remain the same.
 

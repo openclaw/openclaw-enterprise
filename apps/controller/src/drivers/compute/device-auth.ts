@@ -2,6 +2,7 @@ import type {
   HarnessDeviceAuthorization,
   HarnessDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
+import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
 
 const ISSUER = "https://auth.openai.com";
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -72,6 +73,26 @@ function post(
   });
 }
 
+// A rejected fetch with a connection error code (DNS, refused, reset, TLS) or the request
+// timeout means the API could not get a reply from the sign-in service, which is what a
+// blocked egress looks like (a dropping policy ends in the timeout). A rejection without a
+// code, such as a refused redirect, reached the service. Keep only the code for the server
+// log; messages can name addresses or carry provider text.
+function unreachable(error: unknown): DeviceAuthorizationStartError {
+  // Only a caller's signal aborts; OCC passes none today.
+  if (error instanceof Error && error.name === "AbortError") {
+    return new DeviceAuthorizationStartError("unavailable", "AbortError");
+  }
+  if (error instanceof Error && error.name === "TimeoutError") {
+    return new DeviceAuthorizationStartError("unreachable", "TimeoutError");
+  }
+  const cause =
+    error instanceof Error ? (error.cause as { code?: unknown } | undefined) : undefined;
+  return typeof cause?.code === "string"
+    ? new DeviceAuthorizationStartError("unreachable", cause.code)
+    : new DeviceAuthorizationStartError("unavailable", "fetch_failed");
+}
+
 /** Begin the supported Codex device flow without exposing provider authorization state. */
 export async function startHarnessDeviceAuthorization(
   harnessId: string,
@@ -80,11 +101,19 @@ export async function startHarnessDeviceAuthorization(
   if (harnessId !== "codex") {
     throw new Error("Device authorization is not supported for this Harness.");
   }
+  const startedAt = Date.now();
+  let reply: Response;
   try {
-    const startedAt = Date.now();
-    const response = await readResponse(
-      await post("/api/accounts/deviceauth/usercode", { client_id: CLIENT_ID }, signal),
-    );
+    reply = await post("/api/accounts/deviceauth/usercode", { client_id: CLIENT_ID }, signal);
+  } catch (error) {
+    throw unreachable(error);
+  }
+  if (!reply.ok) {
+    await reply.body?.cancel().catch(() => {});
+    throw new DeviceAuthorizationStartError("unavailable", `HTTP_${reply.status}`);
+  }
+  try {
+    const response = await readResponse(reply);
     const deviceAuthId = text(response.device_auth_id);
     const userCode = text(response.user_code ?? response.usercode);
     const interval = text(response.interval);
@@ -119,7 +148,7 @@ export async function startHarnessDeviceAuthorization(
       }),
     };
   } catch {
-    throw new Error("Could not start device authorization. Start sign-in again.");
+    throw new DeviceAuthorizationStartError("unavailable", "invalid_response");
   }
 }
 

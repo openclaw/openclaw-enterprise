@@ -1,17 +1,33 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { Linter } from "eslint";
+import globals from "globals";
+import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import * as runtimeEntrypoints from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { WORKSPACE_SETUP_RUNTIME } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   createKubernetesComputeDriver,
   kubernetesNamespaceName,
   kubernetesGatewayNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  ResourceConflictError,
+  RuntimeCredentialsForbiddenByClusterError,
+} from "../../packages/occ/src/index.ts";
+import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
-const kubeconfigPath = "/tmp/openclaw-enterprise-conformance/kubeconfig";
-const contextName = "openclaw-enterprise-local";
+const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
 const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
   name: "Runtime credential tenant",
@@ -30,39 +46,15 @@ const agent = Object.freeze({
 });
 
 function options(overrides = {}) {
-  const resources = {
-    requests: { cpu: "100m", memory: "64Mi" },
-    limits: { cpu: "250m", memory: "128Mi" },
-  };
   return {
-    authentication: { mode: "kubeconfig", kubeconfigPath, context: contextName },
-    images: {
-      gateway: "openclaw-enterprise/gateway-fixture:local",
-      agent: "openclaw-enterprise/agent-fixture:local",
-      requireImmutableDigest: false,
-    },
-    resources: {
-      gateway: resources,
-      agent: resources,
-      namespace: {
-        quota: { pods: "10", "requests.cpu": "2", "requests.memory": "1Gi" },
-        containerDefaults: resources,
-      },
-    },
-    network: {
-      dns: { namespace: "kube-system", podLabels: { "k8s-app": "kube-dns" } },
-      gatewayPort: 8080,
+    ...conformanceKubernetesOptions({
       gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
-      gatewayClients: [
-        { namespace: "openclaw-controller", podLabels: { "app.kubernetes.io/name": "controller" } },
-      ],
-    },
-    servicePrincipalCredentials: { mode: "disabled" },
-    runtime: {
-      transportSecretPrefix: "transport",
-      gatewayStorageClassName: "local-path",
-      channels: { proxyUrl: "http://10.42.0.15:3128" },
-    },
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        channels: { proxyUrl: "http://10.42.0.15:3128" },
+      },
+    }),
     ...overrides,
   };
 }
@@ -90,13 +82,43 @@ function credentialFixture({
   configMaps = {},
   runtime = true,
   namespaceReadStatus = 200,
+  twoCluster = false,
+  secretReadStatus = undefined,
+  secretCreateStatus = undefined,
+  deploymentListStatus = undefined,
 } = {}) {
-  const driver = createKubernetesComputeDriver(options(runtime ? {} : { runtime: undefined }));
+  const configured = options(runtime ? {} : { runtime: undefined });
+  if (twoCluster) {
+    delete configured.network.gatewayClients;
+    configured.gatewayRouting = {
+      hostname: "gateway.example.test",
+      gatewayName: "gateway",
+      gatewayNamespace: "system",
+      envoyNamespace: "envoy",
+    };
+    configured.executionCluster = {
+      authentication: { ...configured.authentication, context: "execution" },
+      harnessRouting: { ...configured.gatewayRouting, hostname: "harness.example.test" },
+      network: {
+        dns: configured.network.dns,
+        harnessEndpointCidrs: ["192.0.2.2/32"],
+        gatewayEndpointCidrs: ["192.0.2.1/32"],
+        pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      },
+    };
+  }
+  const driver = createKubernetesComputeDriver(configured);
   const namespaceName = kubernetesNamespaceName(namespace.id);
   const namespaceObject = {
     ...driver.manifest("v1", "Namespace", namespaceName, { namespaceId: namespace.id }),
     status: { phase: "Active" },
   };
+  const controlNamespace = twoCluster
+    ? {
+        ...driver.gatewayNamespaceManifest({ namespaceId: namespace.id }),
+        status: { phase: "Active" },
+      }
+    : undefined;
   const calls = [];
   const created = [];
   const deleted = [];
@@ -108,16 +130,17 @@ function credentialFixture({
   const core = {
     async listNamespace(request) {
       calls.push({ kind: "listNamespace", request: structuredClone(request) });
-      assert.equal(request.labelSelector, `openclaw.dev/namespace=${namespace.id}`);
-      return { items: namespaceReadStatus === 404 ? [] : [structuredClone(namespaceObject)] };
+      const [label, owner] = request.labelSelector.split("=");
+      return {
+        items: [namespaceReadStatus === 404 ? undefined : namespaceObject, controlNamespace]
+          .filter((value) => value?.metadata.labels?.[label] === owner)
+          .map((value) => structuredClone(value)),
+      };
     },
     async readNamespace(request) {
       calls.push({ kind: "readNamespace", request: structuredClone(request) });
-      if (request.name === kubernetesGatewayNamespaceName(namespace.id)) {
-        return {
-          ...driver.gatewayNamespaceManifest({ namespaceId: namespace.id }),
-          status: { phase: "Active" },
-        };
+      if (request.name === controlNamespace?.metadata.name) {
+        return structuredClone(controlNamespace);
       }
       assert.equal(request.name, namespaceName);
       if (namespaceReadStatus !== 200) {
@@ -158,6 +181,9 @@ function credentialFixture({
     },
     async readNamespacedSecret(request) {
       calls.push({ kind: "readSecret", name: request.name });
+      if (secretReadStatus !== undefined) {
+        throw httpError(secretReadStatus);
+      }
       const secret = locate(secrets, request)?.[1];
       if (secret === undefined) {
         throw httpError(404);
@@ -166,14 +192,22 @@ function credentialFixture({
     },
     async createNamespacedSecret(request) {
       calls.push({ kind: "createSecret", name: request.body.metadata.name });
-      assert.equal(request.namespace, kubernetesGatewayNamespaceName(namespace.id));
+      if (secretCreateStatus !== undefined) {
+        throw httpError(secretCreateStatus);
+      }
+      assert.equal(request.namespace, controlNamespace?.metadata.name ?? namespaceName);
       created.push(structuredClone(request.body));
       const observed = {
         ...request.body,
         metadata: { ...request.body.metadata, uid: `${request.body.metadata.name}-uid` },
-        data: Object.fromEntries(
-          Object.entries(request.body.stringData).map(([key, value]) => [key, encode(value)]),
-        ),
+        data:
+          request.body.data ??
+          Object.fromEntries(
+            Object.entries(request.body.stringData ?? {}).map(([key, value]) => [
+              key,
+              encode(value),
+            ]),
+          ),
       };
       secrets[observed.metadata.name] = observed;
       return structuredClone(observed);
@@ -195,9 +229,10 @@ function credentialFixture({
   const apps = {
     async listNamespacedDeployment(request) {
       calls.push({ kind: "listDeployments", request: structuredClone(request) });
-      assert.ok(
-        [namespaceName, kubernetesGatewayNamespaceName(namespace.id)].includes(request.namespace),
-      );
+      if (deploymentListStatus !== undefined && request.namespace === namespaceName) {
+        throw httpError(deploymentListStatus);
+      }
+      assert.ok([namespaceName, controlNamespace?.metadata.name].includes(request.namespace));
       assert.equal(
         request.labelSelector,
         `openclaw.dev/namespace=${namespace.id},openclaw.dev/agent=${agent.id}`,
@@ -210,6 +245,7 @@ function credentialFixture({
     },
   };
   driver.apiClients = Promise.resolve({ core, apps });
+  driver.executionApiClients = driver.apiClients;
   return { driver, namespaceName, calls, created, deleted };
 }
 
@@ -223,7 +259,7 @@ function runtimeSecret(driver, namespaceName, prefix, data, overrides = {}) {
         namespaceId: namespace.id,
         agentId: agent.id,
       },
-      { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+      { name: kubernetesNamespaceName(namespace.id), plane: "control" },
     ),
     type: "Opaque",
     data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
@@ -249,6 +285,128 @@ test("mocked Kubernetes client reports only complete owned Agent runtime credent
   assert.deepEqual(await fixture.driver.getAgentRuntimeCredentialStatus(binding()), {
     transportConfigured: true,
   });
+});
+
+for (const executionMode of ["dedicated", "embedded"]) {
+  test(`runtime credentials remain valid across ${executionMode} mode changes`, async () => {
+    const fixture = credentialFixture();
+    const initial = { namespace, agent: { ...agent, executionMode } };
+    await fixture.driver.provisionAgentRuntimeCredentials(initial, {});
+    assert.deepEqual(
+      await fixture.driver.getAgentRuntimeCredentialStatus({
+        namespace,
+        agent: {
+          ...agent,
+          executionMode: executionMode === "dedicated" ? "embedded" : "dedicated",
+        },
+      }),
+      { transportConfigured: true },
+      "changing execution mode must preserve the Agent's provisioned credentials",
+    );
+  });
+}
+
+test("legacy combined credentials remain usable without removing the serving Gateway source", async () => {
+  const first = credentialFixture();
+  const name = `transport-${digest(agent.id)}`;
+  const legacy = runtimeSecret(
+    first.driver,
+    first.namespaceName,
+    "transport",
+    {
+      "app-server-token": "legacy-transport",
+      "gateway-password": "legacy-password",
+    },
+    {
+      metadata: {
+        ...runtimeSecret(first.driver, first.namespaceName, "transport", {}).metadata,
+        uid: "legacy-uid",
+      },
+    },
+  );
+  const secrets = { [name]: legacy };
+  const fixture = credentialFixture({ secrets });
+  for (const executionMode of ["embedded", "dedicated"]) {
+    assert.deepEqual(
+      await fixture.driver.getAgentRuntimeCredentialStatus({
+        namespace,
+        agent: { ...agent, executionMode },
+      }),
+      { transportConfigured: true },
+    );
+  }
+  const before = structuredClone(legacy);
+  await fixture.driver.ensureLegacyGatewayPassword(
+    { namespaceId: namespace.id, agentId: agent.id },
+    {
+      name: fixture.namespaceName,
+      plane: "control",
+    },
+  );
+  const password = secrets[`gateway-password-${digest(agent.id)}`];
+  assert.deepEqual(password.data, { "gateway-password": legacy.data["gateway-password"] });
+  assert.deepEqual(secrets[name], before, "an older Gateway may still reference its legacy Secret");
+  await fixture.driver.ensureLegacyGatewayPassword(
+    { namespaceId: namespace.id, agentId: agent.id },
+    {
+      name: fixture.namespaceName,
+      plane: "control",
+    },
+  );
+  assert.equal(fixture.created.length, 1, "compatibility delivery must be idempotent");
+  password.data["gateway-password"] = encode("conflicting-password");
+  await assert.rejects(
+    fixture.driver.getAgentRuntimeCredentialStatus(binding()),
+    ResourceConflictError,
+  );
+});
+
+test("concurrent legacy password delivery accepts only an identical owned source", async () => {
+  for (const outcome of ["identical", "different", "foreign", "disappeared", "unavailable"]) {
+    const initial = credentialFixture();
+    const name = `transport-${digest(agent.id)}`;
+    const secrets = {
+      [name]: runtimeSecret(initial.driver, initial.namespaceName, "transport", {
+        "app-server-token": "legacy-transport",
+        "gateway-password": "legacy-password",
+      }),
+    };
+    const fixture = credentialFixture({ secrets });
+    const { core } = await fixture.driver.apiClients;
+    const create = core.createNamespacedSecret.bind(core);
+    core.createNamespacedSecret = async (request) => {
+      if (outcome === "unavailable") {
+        throw httpError(503);
+      }
+      if (outcome !== "disappeared") {
+        const competitor = structuredClone(request);
+        if (outcome === "different") {
+          competitor.body.data["gateway-password"] = encode("another-password");
+        }
+        if (outcome === "foreign") {
+          competitor.body.metadata.labels["openclaw.dev/agent"] = "another-agent";
+          competitor.body.metadata.annotations["openclaw.dev/agent-id"] = "another-agent";
+        }
+        await create(competitor);
+      }
+      throw httpError(409);
+    };
+    const original = structuredClone(secrets[name]);
+    const delivery = () =>
+      fixture.driver.ensureLegacyGatewayPassword(
+        { namespaceId: namespace.id, agentId: agent.id },
+        { name: fixture.namespaceName, plane: "control" },
+      );
+    if (outcome === "identical") {
+      await delivery();
+      assert.deepEqual(secrets[`gateway-password-${digest(agent.id)}`].data, {
+        "gateway-password": original.data["gateway-password"],
+      });
+    } else {
+      await assert.rejects(delivery());
+    }
+    assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
+  }
 });
 
 test("mocked Kubernetes client deletes every owned Agent runtime credential Secret idempotently", async () => {
@@ -286,7 +444,7 @@ test("Agent deletion removes the Gateway workspace node binding", async () => {
       "ConfigMap",
       name,
       { namespaceId: namespace.id, agentId: agent.id },
-      { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+      { name: kubernetesNamespaceName(namespace.id), plane: "control" },
     ),
     data: { "workspace-node.json": JSON.stringify({ revisionId: "revision-1", deviceId: "node" }) },
   };
@@ -315,7 +473,7 @@ for (const runtime of [true, false]) {
       ...(runtime
         ? [
             first.driver.gatewayPrivateStateClaim(agent.id, ownership, {
-              name: kubernetesGatewayNamespaceName(namespace.id),
+              name: kubernetesNamespaceName(namespace.id),
               plane: "control",
             }),
           ]
@@ -380,6 +538,70 @@ test("draft Agent cleanup tolerates absent compute Namespace without bypassing s
     credential.driver.getAgentRuntimeCredentialStatus(binding()),
     /namespace is unavailable/,
   );
+});
+
+test("a cluster denial of runtime credential Secrets names the Kubernetes operation and namespace", async () => {
+  // The data-plane tenant-api RoleBinding is missing: the API may not read the embedded
+  // Agent's transport Secret, so operators need the operation, not a generic outage.
+  for (const [executionMode, kubernetesNamespace, plane] of [
+    ["embedded", kubernetesNamespaceName(namespace.id), "execution"],
+    ["dedicated", kubernetesNamespaceName(namespace.id), "execution"],
+  ]) {
+    const { driver } = credentialFixture({ secretReadStatus: 403 });
+    const denied = await driver
+      .getAgentRuntimeCredentialStatus({ namespace, agent: { ...agent, executionMode } })
+      .then(
+        () => assert.fail("a denied Secret read must fail"),
+        (error) => error,
+      );
+    assert.ok(denied instanceof RuntimeCredentialsForbiddenByClusterError, executionMode);
+    // Callers that fail closed on dependency outages keep doing so.
+    assert.ok(denied instanceof DependencyUnavailableError);
+    assert.deepEqual(
+      {
+        verb: denied.verb,
+        resource: denied.resource,
+        kubernetesNamespace: denied.kubernetesNamespace,
+        plane: denied.plane,
+        status: denied.status,
+      },
+      { verb: "get", resource: "secrets", kubernetesNamespace, plane, status: 403 },
+    );
+  }
+
+  const { driver, created } = credentialFixture({ secretCreateStatus: 403 });
+  const denied = await driver.provisionAgentRuntimeCredentials(binding(), {}).then(
+    () => assert.fail("a denied Secret create must fail"),
+    (error) => error,
+  );
+  assert.ok(denied instanceof RuntimeCredentialsForbiddenByClusterError);
+  assert.equal(denied.verb, "create");
+  assert.equal(denied.resource, "secrets");
+  assert.equal(denied.kubernetesNamespace, kubernetesNamespaceName(namespace.id));
+  assert.equal(created.length, 0);
+
+  // A dedicated Agent's preflight also lists Deployments in the data-plane namespace.
+  const preflight = credentialFixture({ deploymentListStatus: 403 });
+  const listDenied = await preflight.driver.provisionAgentRuntimeCredentials(binding(), {}).then(
+    () => assert.fail("a denied Deployment list must fail"),
+    (error) => error,
+  );
+  assert.ok(listDenied instanceof RuntimeCredentialsForbiddenByClusterError);
+  assert.deepEqual(
+    [listDenied.verb, listDenied.resource, listDenied.kubernetesNamespace, listDenied.plane],
+    ["list", "deployments", kubernetesNamespaceName(namespace.id), "execution"],
+  );
+  assert.equal(preflight.created.length, 0);
+
+  // Other failures, including a rejected API credential (401), keep the generic outage.
+  for (const status of [400, 401]) {
+    const unavailable = credentialFixture({ secretReadStatus: status });
+    await assert.rejects(unavailable.driver.getAgentRuntimeCredentialStatus(binding()), (error) => {
+      assert.ok(error instanceof DependencyUnavailableError, String(status));
+      assert.equal(error instanceof RuntimeCredentialsForbiddenByClusterError, false);
+      return true;
+    });
+  }
 });
 
 test("mocked Kubernetes client preflights the transport Secret before initial create", async () => {
@@ -482,7 +704,7 @@ test("mocked Kubernetes client rejects transport Secrets with unexpected keys", 
   assert.equal(created.length, 0);
 });
 
-test("embedded Gateway retains its existing transport Secret password reference", () => {
+test("embedded Gateway uses the separate canonical password source", () => {
   const { driver, namespaceName } = credentialFixture();
   const agentId = "agent-password-projection";
   const suffix = digest(agentId);
@@ -551,7 +773,7 @@ test("embedded Gateway retains its existing transport Secret password reference"
         auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
       },
     }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
-    { name: `transport-${suffix}`, key: "gateway-password" },
+    { name: `gateway-password-${suffix}`, key: "gateway-password" },
   );
   assert.throws(
     () =>
@@ -650,13 +872,10 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
   const cases = [
     {},
     { CODEX_LOGIN_MODE: "unknown" },
+    // Retired with the managed ChatGPT login (finding 1295).
+    { CODEX_LOGIN_MODE: "chatgpt_service_account", CODEX_ACCESS_TOKEN: "fixture-token" },
     { CODEX_LOGIN_MODE: "codex_pat" },
-    { CODEX_LOGIN_MODE: "codex_pat", CODEX_ACCESS_TOKEN: "not-a-pat" },
-    {
-      CODEX_LOGIN_MODE: "codex_pat",
-      CODEX_ACCESS_TOKEN: "at-fixture",
-      CODEX_CHATGPT_WORKSPACE_ID: "caller-account",
-    },
+    { CODEX_LOGIN_MODE: "codex_pat", CODEX_ACCESS_TOKEN: " " },
     {
       CODEX_LOGIN_MODE: "codex_pat",
       CODEX_ACCESS_TOKEN: "at-fixture",
@@ -669,53 +888,171 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
       OPENAI_API_KEY: "fixture-key",
       CODEX_ACCESS_TOKEN: "fixture-token",
     },
-    {
-      CODEX_LOGIN_MODE: "api_key",
-      OPENAI_API_KEY: "fixture-key",
-      CODEX_CHATGPT_WORKSPACE_ID: "workspace",
-    },
-    { CODEX_LOGIN_MODE: "chatgpt_service_account", CODEX_ACCESS_TOKEN: "fixture-token" },
-    {
-      CODEX_LOGIN_MODE: "chatgpt_service_account",
-      CODEX_ACCESS_TOKEN: " ",
-      CODEX_CHATGPT_WORKSPACE_ID: "workspace",
-    },
-    {
-      CODEX_LOGIN_MODE: "chatgpt_service_account",
-      CODEX_ACCESS_TOKEN: "fixture-token",
-      CODEX_CHATGPT_WORKSPACE_ID: " ",
-    },
-    {
-      CODEX_LOGIN_MODE: "chatgpt_service_account",
-      CODEX_ACCESS_TOKEN: "fixture-token",
-      CODEX_CHATGPT_WORKSPACE_ID: "workspace",
-      OPENAI_API_KEY: "fixture-key",
-    },
   ];
   for (const env of cases) {
-    const child = spawnSync(process.execPath, ["-e", AGENT_RUNTIME_ENTRYPOINT], {
-      env,
-      encoding: "utf8",
-      timeout: 5000,
-    });
+    const child = spawnSync(
+      process.execPath,
+      ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+      {
+        env,
+        encoding: "utf8",
+        timeout: 5000,
+      },
+    );
     assert.equal(child.status, 1);
     assert.match(
       child.stderr,
-      /Codex (?:API-key authentication configuration|service account token authentication configuration|service-account authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
+      /Codex (?:API-key authentication configuration|service account token authentication configuration|authentication mode) is (?:invalid|missing or unsupported)/,
     );
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);
   }
 });
 
-test("credential provisioning cannot replace transport while only the control-plane Gateway survives", async () => {
+// The generated modules run with `node -e`, so an undeclared name fails only when its branch
+// runs: the probe's dead chatgpt_service_account branch named an undefined workspaceId (finding 1295).
+test("generated runtime modules reference only declared names", () => {
+  const linter = new Linter();
+  const programs = {
+    ...Object.fromEntries(
+      Object.entries(runtimeEntrypoints).filter(([name]) => name.endsWith("_ENTRYPOINT")),
+    ),
+    REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+    REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+    WORKSPACE_SETUP_RUNTIME,
+    DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
+  };
+  for (const [name, source] of Object.entries(programs)) {
+    // nodeProgramArguments runs each as a script (vm.runInThisContext), not a CommonJS module.
+    const messages = linter.verify(source, {
+      languageOptions: { ecmaVersion: "latest", sourceType: "script", globals: globals.node },
+      rules: { "no-undef": "error" },
+    });
+    assert.deepEqual(
+      messages.map(({ line, message }) => `${line}: ${message}`),
+      [],
+      name,
+    );
+  }
+});
+
+// Only the external Codex CLI is substituted: it records each call and answers the probe READY.
+const codexCallRecorder = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const input = args.includes("login") ? fs.readFileSync(0, "utf8") : undefined;
+fs.appendFileSync(process.env.CODEX_HOME + "/../calls", JSON.stringify({ args, input }) + "\\n");
+if (args.includes("exec")) {
+  const events = [
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed" },
+  ];
+  process.stdout.write(events.map((event) => JSON.stringify(event)).join("\\n") + "\\n");
+}
+`;
+
+test("Codex startup logs in, probes and starts the app server in each login mode", (t) => {
+  const login = {
+    api_key: {
+      env: { OPENAI_API_KEY: "fixture-key" },
+      flag: "--with-api-key",
+      input: "fixture-key",
+    },
+    codex_pat: {
+      env: { CODEX_ACCESS_TOKEN: "at-fixture" },
+      flag: "--with-access-token",
+      input: "at-fixture",
+    },
+    oauth: { env: { OCE_CODEX_OAUTH_SOURCE_UID: "source", OCE_CODEX_OAUTH_VOLUME_UID: "volume" } },
+  };
+  for (const [mode, { env, flag, input }] of Object.entries(login)) {
+    const directory = mkdtempSync(join(tmpdir(), "oce-codex-login-mode-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const codexHome = join(directory, "codex");
+    mkdirSync(join(directory, "bin"));
+    mkdirSync(codexHome);
+    writeFileSync(join(directory, "bin", "codex"), codexCallRecorder, { mode: 0o755 });
+    if (mode === "oauth") {
+      writeFileSync(
+        join(codexHome, ".oce-oauth.json"),
+        JSON.stringify({ sourceUid: "source", volumeUid: "volume" }),
+      );
+      writeFileSync(
+        join(codexHome, "auth.json"),
+        JSON.stringify({
+          auth_mode: "chatgpt",
+          tokens: { id_token: "id", access_token: "access", refresh_token: "refresh" },
+        }),
+      );
+    }
+    const child = spawnSync(
+      process.execPath,
+      ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+      {
+        env: {
+          ...env,
+          PATH: `${join(directory, "bin")}:${dirname(process.execPath)}`,
+          HOME: directory,
+          TMPDIR: directory,
+          CODEX_HOME: codexHome,
+          CODEX_LOGIN_MODE: mode,
+          OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+          OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+          APP_SERVER_TOKEN: "fixture-transport-token",
+          APP_SERVER_PORT: "4500",
+        },
+        encoding: "utf8",
+        timeout: 20000,
+      },
+    );
+    assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
+    assert.match(child.stderr, /"event":"codex\.model_probe".*"code":"READY"/, mode);
+    const calls = readFileSync(join(directory, "calls"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      calls.map(({ args }) =>
+        ["login", "exec", "app-server"].find((command) => args.includes(command)),
+      ),
+      [...(flag === undefined ? [] : ["login"]), "exec", "app-server"],
+      mode,
+    );
+    if (flag !== undefined) {
+      assert.deepEqual(calls[0], {
+        args: ["-c", "cli_auth_credentials_store=file", "login", flag],
+        input,
+      });
+    }
+    const probe = calls.find(({ args }) => args.includes("exec")).args;
+    assert.equal(probe[probe.indexOf("--model") + 1], "gpt-5");
+    assert.deepEqual(
+      probe.slice(probe.indexOf("--model") + 2),
+      [
+        "-c",
+        "cli_auth_credentials_store=file",
+        "-c",
+        'web_search="disabled"',
+        "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "check_for_update_on_startup=false",
+        "Reply only READY. Do not use tools.",
+      ],
+      mode,
+    );
+  }
+});
+
+test("credential provisioning cannot replace transport while a Gateway survives in the shared namespace", async () => {
   const initial = credentialFixture();
   const gateway = initial.driver.manifest(
     "apps/v1",
     "Deployment",
     "gateway-existing",
     { namespaceId: namespace.id, agentId: agent.id },
-    { name: kubernetesGatewayNamespaceName(namespace.id), plane: "control" },
+    { name: kubernetesNamespaceName(namespace.id), plane: "control" },
   );
   const fixture = credentialFixture({ deployments: [gateway] });
   await assert.rejects(
@@ -725,8 +1062,17 @@ test("credential provisioning cannot replace transport while only the control-pl
   assert.equal(fixture.created.length, 0);
 });
 
-test("Agent deletion removes private Gateway storage after the data namespace disappears", async () => {
-  const initial = credentialFixture();
+test("Agent deletion is idempotent after its shared namespace disappears", async () => {
+  const fixture = credentialFixture({ namespaceReadStatus: 404 });
+  await fixture.driver.deleteAgentRuntimeCredentials(binding());
+  assert.equal(
+    fixture.calls.some(({ kind }) => kind === "deleteClaim" || kind === "deleteSecret"),
+    false,
+  );
+});
+
+test("two-cluster Agent deletion removes Gateway state after the execution namespace disappears", async () => {
+  const initial = credentialFixture({ twoCluster: true });
   const claim = initial.driver.gatewayPrivateStateClaim(
     agent.id,
     { namespaceId: namespace.id, agentId: agent.id },
@@ -734,16 +1080,16 @@ test("Agent deletion removes private Gateway storage after the data namespace di
   );
   claim.metadata.uid = "retained-gateway-claim";
   const claims = { [claim.metadata.name]: claim };
-  const fixture = credentialFixture({ claims, namespaceReadStatus: 404 });
+  const fixture = credentialFixture({ twoCluster: true, claims, namespaceReadStatus: 404 });
   await fixture.driver.deleteAgentRuntimeCredentials(binding());
   assert.deepEqual(Object.keys(claims), []);
 });
 
 for (const executionMode of ["embedded", "dedicated"]) {
-  test(`Agent deletion cleans both physical targets despite draft mode ${executionMode}`, async () => {
+  test(`Agent deletion cleans the shared target despite draft mode ${executionMode}`, async () => {
     const initial = credentialFixture();
     const ownership = { namespaceId: namespace.id, agentId: agent.id };
-    const targets = [initial.namespaceName, kubernetesGatewayNamespaceName(namespace.id)];
+    const targets = [initial.namespaceName];
     const claims = {};
     const secrets = {};
     for (const target of targets) {
@@ -769,11 +1115,11 @@ for (const executionMode of ["embedded", "dedicated"]) {
     assert.deepEqual(
       Object.keys(claims),
       [],
-      "Neither historical private claim may survive Agent deletion",
+      "The private claim must be removed at Agent deletion",
     );
-    assert.deepEqual(Object.keys(secrets), [], "Both owned transport Secrets must be removed");
+    assert.deepEqual(Object.keys(secrets), [], "The owned transport Secret must be removed");
     await fixture.driver.deleteAgentRuntimeCredentials(current);
-    assert.equal(fixture.calls.filter(({ kind }) => kind === "deleteClaim").length, 2);
-    assert.equal(fixture.deleted.length, 2);
+    assert.equal(fixture.calls.filter(({ kind }) => kind === "deleteClaim").length, 1);
+    assert.equal(fixture.deleted.length, 1);
   });
 }

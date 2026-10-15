@@ -104,3 +104,55 @@ for (const outcome of ["commit", "rollback", "unknown"]) {
     assert.deepEqual(releases, [outcome === "unknown"]);
   });
 }
+
+// pg's client-side query_timeout leaves the statement running on the connection; any later
+// statement on it (including ROLLBACK) would queue behind it until the same timeout again.
+for (const abandonedStatement of ["BEGIN", "SELECT"]) {
+  test(`a ${abandonedStatement} abandoned by the client query timeout discards the connection`, async () => {
+    const calls = [];
+    const releases = [];
+    const client = {
+      on() {},
+      removeListener() {},
+      async query(statement) {
+        calls.push(statement);
+        if (statement === abandonedStatement) {
+          throw new Error("Query read timeout");
+        }
+        if (statement === "BEGIN") {
+          return { command: "BEGIN", rows: [], rowCount: 0 };
+        }
+        if (statement === "ROLLBACK") {
+          return new Promise(() => {});
+        }
+        throw new Error("Unexpected query");
+      },
+      release(discard) {
+        releases.push(discard);
+      },
+    };
+    const state = new PostgresPlatformState({
+      async connect() {
+        return client;
+      },
+      async end() {},
+    });
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("the abandoned statement did not settle")), 1000);
+    });
+    try {
+      await assert.rejects(
+        Promise.race([
+          state.transact((unit) => state.queryInTransaction(unit, "SELECT")),
+          deadline,
+        ]),
+        (error) => !(error instanceof PostgresCommitOutcomeUnknownError),
+      );
+      assert.deepEqual(calls, abandonedStatement === "BEGIN" ? ["BEGIN"] : ["BEGIN", "SELECT"]);
+      assert.deepEqual(releases, [true]);
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+}

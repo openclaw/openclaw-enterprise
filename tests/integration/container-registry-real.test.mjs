@@ -211,6 +211,25 @@ globalThis.fetch = async (url) => {
       PUBLISH: "true",
     };
 
+    // Use the real registry name so Skopeo's unmodified diagnostic reaches the classifier.
+    const record = records[0];
+    execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+import assert from "node:assert/strict";
+import { remoteTagDigest } from "./scripts/ci/container-release.mjs";
+const image = ${JSON.stringify(`${address}/${record.repo}`)};
+assert.equal(remoteTagDigest(image, "absent", undefined, false), null);
+assert.throws(() => remoteTagDigest(image, "absent", undefined, true), { status: 1 });
+assert.equal(remoteTagDigest(image, ${JSON.stringify(record.sourceTag)}, undefined, false), ${JSON.stringify(record.current.digest)});
+`,
+      ],
+      { env, stdio: "pipe" },
+    );
+
     async function inspect(record, tag, expected) {
       const response = await fetch(`${registry}/v2/${record.repo}/manifests/${tag}`, {
         headers: { Accept: "application/vnd.oci.image.index.v1+json" },

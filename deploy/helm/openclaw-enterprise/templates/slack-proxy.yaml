@@ -11,7 +11,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: slack-proxy
   template:
     metadata:
@@ -56,14 +56,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "openclaw.slackProxy.serviceName" . }}
+  name: {{ include "openclaw.slackProxy.serviceName" . | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: openclaw-enterprise
-    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
     app.kubernetes.io/component: slack-proxy
   ports:
     - name: proxy
@@ -78,18 +78,18 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
       app.kubernetes.io/component: slack-proxy
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+              kubernetes.io/metadata.name: {{ .Release.Namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name | quote }}
               app.kubernetes.io/component: api
         {{- if .Values.gatewayRouting.enabled }}
         - namespaceSelector:
@@ -110,16 +110,7 @@ spec:
         - protocol: TCP
           port: {{ .Values.slackProxy.port }}
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
-          podSelector:
-            matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
+    {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
         # Slack rotates public endpoints; hostname authorization stays in the proxy.
         - ipBlock:

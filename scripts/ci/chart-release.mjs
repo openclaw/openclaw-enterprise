@@ -12,6 +12,7 @@ import {
   github,
   githubPages,
   inspectDigest,
+  remoteTagDigest,
   skopeo,
   validatePackage,
   verifyGhcr,
@@ -158,25 +159,6 @@ export async function chartArchiveContent(archive) {
     "Chart templates are missing.",
   );
   return [...files].sort(([left], [right]) => left.localeCompare(right));
-}
-
-function remoteTagDigest(image, tag, authfile, listed) {
-  try {
-    return inspectDigest(`docker://${image}:${tag}`, authfile);
-  } catch (error) {
-    const missing = `reading manifest ${tag} in ${image}: manifest unknown`;
-    const diagnostic = error.stderr?.toString().trim().replace(/"$/, "");
-    if (
-      listed ||
-      error.status !== 1 ||
-      (diagnostic !== missing &&
-        !diagnostic?.endsWith(`: ${missing}`) &&
-        !diagnostic?.endsWith(`${missing}: manifest unknown`))
-    ) {
-      throw error;
-    }
-    return null;
-  }
 }
 
 async function verifyReleaseContext(env, packagePath) {

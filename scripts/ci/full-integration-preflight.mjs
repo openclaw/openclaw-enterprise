@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 export const fullIntegrationLanes = Object.freeze([
+  "qa-matrix",
   "docker-model",
   "k3d-model",
   "gateway-routing",
@@ -9,14 +10,21 @@ export const fullIntegrationLanes = Object.freeze([
   "provider-account",
   "openshell",
   "helper-timeout",
+  "dev-up-k3d",
   "logging-collector",
   "k3d-otel",
   "all",
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
+const branchEligibleLanes = new Set(["k3d-model", "openshell", "dev-up-k3d"]);
+// TODO: include qa-matrix in `all` once the protected integration-qa
+// environment and its QA secrets exist; until then only an explicit qa-matrix
+// dispatch requires it, so `all` keeps passing preflight.
+const explicitOnlyLanes = new Set(["qa-matrix", "dev-up-k3d"]);
 const providerAccountEnvironment = "integration-provider-account";
 const laneEnvironments = Object.freeze({
+  "qa-matrix": "integration-qa",
   "docker-model": "integration-model",
   "k3d-model": "integration-model",
   "production-tui": "integration-model",
@@ -35,7 +43,7 @@ export function selectLane({ eventName, inputLane }) {
 }
 
 export function assertSourceRef(ref, lane) {
-  if (lane === "k3d-model" && /^refs\/heads\/.+/.test(ref ?? "")) {
+  if (branchEligibleLanes.has(lane) && /^refs\/heads\/.+/.test(ref ?? "")) {
     return;
   }
   if (ref !== "refs/heads/main") {
@@ -50,7 +58,9 @@ export function requiredEnvironmentsForLane(selected) {
   return [
     ...new Set(
       Object.entries(laneEnvironments)
-        .filter(([lane]) => selected === "all" || selected === lane)
+        .filter(
+          ([lane]) => (selected === "all" && !explicitOnlyLanes.has(lane)) || selected === lane,
+        )
         .map(([, environment]) => environment),
     ),
   ];
@@ -85,22 +95,15 @@ function assertCustomMainOnlyPolicy(environmentName, environment, policies) {
 }
 
 export function validateEnvironmentPolicy(environmentName, environment, policies) {
+  const reviewers = requiredReviewersRule(environment);
+  if ((reviewers?.reviewers ?? []).length > 0) {
+    throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
+  }
   if (environmentName === providerAccountEnvironment) {
-    const reviewers = requiredReviewersRule(environment);
-    if ((reviewers?.reviewers ?? []).length > 0) {
-      throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
-    }
     assertCustomMainOnlyPolicy(environmentName, environment, policies);
     return;
   }
 
-  const requiredReviewers = requiredReviewersRule(environment);
-  if (!requiredReviewers) {
-    throw new Error(`Protected environment ${environmentName} has no required reviewers.`);
-  }
-  if (requiredReviewers.prevent_self_review !== true) {
-    throw new Error(`Protected environment ${environmentName} does not prevent self-review.`);
-  }
   const policy = environment.deployment_branch_policy;
   if (policy?.protected_branches === true) {
     return;

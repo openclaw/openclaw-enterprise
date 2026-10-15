@@ -1,65 +1,13 @@
 package occclient
 
 import (
-	"bytes"
-	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
-	"strings"
-	"time"
 )
-
-// Config contains connection, authentication, and TLS settings for an OCC client.
-type Config struct {
-	URL            string
-	ServiceKeyFile string
-	CABundle       string
-	Timeout        time.Duration
-	// Context cancels in-flight requests, for example on Ctrl-C. Nil means no cancellation.
-	Context context.Context
-}
-
-// Client exposes supported OpenClaw Control Plane resource operations.
-type Client struct {
-	ctx        context.Context
-	baseURL    *url.URL
-	serviceKey string
-	http       *http.Client
-}
-
-type serviceKeyEnvelope struct {
-	Data struct {
-		Key string `json:"key"`
-	} `json:"data"`
-}
-
-type responseEnvelope struct {
-	Data jsontext.Value `json:"data"`
-	Meta jsontext.Value `json:"meta"`
-}
-
-// APIError is an OCC error response. RetryAfter is set when OCC sent Retry-After.
-type APIError struct {
-	Status     int
-	Code       string
-	Message    string
-	RetryAfter time.Duration
-}
-
-func (err *APIError) Error() string {
-	if err.Code == "" {
-		return fmt.Sprintf("OCC operation failed (HTTP %d)", err.Status)
-	}
-	return fmt.Sprintf("OCC operation failed (HTTP %d): %s: %s", err.Status, err.Code, err.Message)
-}
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
 // server's JSON so callers can re-emit them unchanged.
@@ -72,51 +20,6 @@ type RuntimeLogPage struct {
 	Withheld   int              `json:"withheld"`
 	Truncated  bool             `json:"truncated"`
 	Cursor     *string          `json:"cursor"`
-}
-
-type errorEnvelope struct {
-	Error struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
-// New validates the client configuration and prepares authenticated transport.
-func New(config Config) (*Client, error) {
-	baseURL, err := parseOrigin(config.URL)
-	if err != nil {
-		return nil, err
-	}
-	if config.Timeout <= 0 {
-		return nil, fmt.Errorf("OCC timeout must be positive")
-	}
-
-	serviceKey, err := readServiceKey(config.ServiceKeyFile)
-	if err != nil {
-		return nil, err
-	}
-	transport, err := httpTransport(config.CABundle)
-	if err != nil {
-		return nil, err
-	}
-
-	ctx := config.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	return &Client{
-		ctx:        ctx,
-		baseURL:    baseURL,
-		serviceKey: serviceKey,
-		http: &http.Client{
-			Transport: transport,
-			Timeout:   config.Timeout,
-			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-	}, nil
 }
 
 // GetInstallation fetches the singleton Installation.
@@ -196,6 +99,36 @@ func (client *Client) DeleteIAMAccessBinding(namespaceID, bindingID string) erro
 	)
 }
 
+// CreateIAMServicePrincipal creates a Namespace ServicePrincipal that holds no grant.
+func (client *Client) CreateIAMServicePrincipal(namespaceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "iam", "service-principals"},
+		map[string]any{},
+	)
+}
+
+// ListIAMServicePrincipals lists a Namespace's non-Agent ServicePrincipals.
+func (client *Client) ListIAMServicePrincipals(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "iam", "service-principals")
+}
+
+// GetIAMServicePrincipal fetches a Namespace ServicePrincipal.
+func (client *Client) GetIAMServicePrincipal(namespaceID, servicePrincipalID string) (any, error) {
+	return client.get("namespaces", namespaceID, "iam", "service-principals", servicePrincipalID)
+}
+
+// CreateServiceKey issues a key for an existing non-Agent ServicePrincipal. The
+// response holds the plaintext key, which the server returns only once.
+func (client *Client) CreateServiceKey(body map[string]any) (any, error) {
+	return client.send(http.MethodPost, []string{"api", "auth", "service-keys"}, body)
+}
+
+// RevokeServiceKey deletes a service key so it can no longer authenticate.
+func (client *Client) RevokeServiceKey(keyID string) (any, error) {
+	return client.send(http.MethodDelete, []string{"api", "auth", "service-keys", keyID}, nil)
+}
+
 // CreateConfiguration creates a Configuration in a Namespace.
 func (client *Client) CreateConfiguration(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(
@@ -231,6 +164,50 @@ func (client *Client) DeleteConfiguration(namespaceID, configurationID string) e
 	)
 }
 
+// ListServiceAccounts lists the ServiceAccounts in a Namespace that the caller can read.
+func (client *Client) ListServiceAccounts(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "service-accounts")
+}
+
+// DeleteServiceAccount deletes an unreferenced ServiceAccount. It returns nil after a
+// complete deletion. With force, an account whose issued access token no ChatGPT Backend can
+// revoke is deleted anyway, and the returned data reports the unrevoked token.
+func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string, force bool) (any, error) {
+	segments := []string{"namespaces", namespaceID, "service-accounts", serviceAccountID}
+	if !force {
+		return nil, client.sendEmpty(http.MethodDelete, segments)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodDelete,
+		segments,
+		url.Values{"force": {"true"}},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusNoContent:
+		if len(responseBody) != 0 {
+			return nil, fmt.Errorf("OCC returned an invalid empty response (HTTP %d)", status)
+		}
+		return nil, nil
+	case http.StatusOK:
+		var envelope responseEnvelope
+		var data any
+		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
+			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
+			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+		}
+		return data, nil
+	default:
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
+		}
+		return nil, client.apiError(status, header, responseBody)
+	}
+}
+
 // CreateSecret creates a Secret in a Namespace and returns metadata only.
 func (client *Client) CreateSecret(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "secrets"}, body)
@@ -254,6 +231,21 @@ func (client *Client) UpdateSecret(namespaceID, secretID string, body jsontext.V
 // DeleteSecret deletes an unbound Secret.
 func (client *Client) DeleteSecret(namespaceID, secretID string) error {
 	return client.sendEmpty(http.MethodDelete, []string{"namespaces", namespaceID, "secrets", secretID})
+}
+
+// ListPresets lists the Presets in a Namespace that the caller can read.
+func (client *Client) ListPresets(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "presets")
+}
+
+// GetPreset fetches a Preset with its template.
+func (client *Client) GetPreset(namespaceID, presetID string) (any, error) {
+	return client.get("namespaces", namespaceID, "presets", presetID)
+}
+
+// DeletePreset deletes a Preset and its exact-resource AccessBindings.
+func (client *Client) DeletePreset(namespaceID, presetID string) error {
+	return client.sendEmpty(http.MethodDelete, []string{"namespaces", namespaceID, "presets", presetID})
 }
 
 // CreateCredentialSource registers a Namespace Secret with the selected Credential Gateway.
@@ -285,6 +277,15 @@ func (client *Client) UpdateCredentialSource(
 		http.MethodPatch,
 		[]string{"namespaces", namespaceID, "credential-sources", sourceID},
 		body,
+	)
+}
+
+// RotateCredentialSource forces a refresh-type source to mint a new token.
+func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID, "rotate"},
+		nil,
 	)
 }
 
@@ -360,9 +361,75 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 	)
 }
 
-// ListAgentRevisions lists the readable immutable revisions of an Agent.
-func (client *Client) ListAgentRevisions(namespaceID, agentID string) (any, error) {
-	return client.get("namespaces", namespaceID, "agents", agentID, "revisions")
+// AgentRevisionPage is one page of readable revision summaries, newest first.
+// NextCursor is empty on the last page.
+type AgentRevisionPage struct {
+	Revisions  []any
+	NextCursor string
+}
+
+// ListAgentRevisions reads one page of an Agent's readable revision summaries,
+// newest first. A zero limit uses OCC's default; an empty cursor starts at the
+// newest revision. Read an exact revision for its saved settings.
+func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int, cursor string) (*AgentRevisionPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodGet,
+		[]string{"namespaces", namespaceID, "agents", agentID, "revisions"},
+		query,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, header, responseBody)
+	}
+	var envelope struct {
+		Data []any `json:"data"`
+		Meta struct {
+			NextCursor *string `json:"nextCursor"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Data == nil {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	page := &AgentRevisionPage{Revisions: envelope.Data}
+	if envelope.Meta.NextCursor != nil {
+		page.NextCursor = *envelope.Meta.NextCursor
+	}
+	return page, nil
+}
+
+// LatestAgentRevision returns the newest revision summary the caller can read,
+// or nil when there is none. A cursor reflects a read check in its issuing request;
+// a later page may be empty if access changes. The loop also supports older servers.
+func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(page.Revisions) > 0 {
+			return page.Revisions[0], nil
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
 }
 
 // GetAgentDeployment fetches durable deployment status for one Agent revision.
@@ -405,7 +472,7 @@ func (client *Client) GetAgentRuntimeLogs(
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, apiErrorWithHeader(status, header, responseBody)
+		return nil, client.apiError(status, header, responseBody)
 	}
 	var envelope responseEnvelope
 	if err := json.Unmarshal(responseBody, &envelope); err != nil || len(envelope.Data) == 0 {
@@ -434,179 +501,4 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		[]string{"namespaces", namespaceID, "agents", agentID},
 		nil,
 	)
-}
-
-func (client *Client) get(segments ...string) (any, error) {
-	return client.send(http.MethodGet, segments, nil)
-}
-
-func (client *Client) send(method string, segments []string, body any) (any, error) {
-	status, responseBody, err := client.execute(method, segments, body)
-	if err != nil {
-		return nil, err
-	}
-	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return nil, apiError(status, responseBody)
-	}
-
-	var envelope responseEnvelope
-	if err := json.Unmarshal(responseBody, &envelope); err != nil || len(envelope.Data) == 0 || len(envelope.Meta) == 0 {
-		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-	}
-	var data any
-	if err := json.Unmarshal(envelope.Data, &data); err != nil {
-		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-	}
-	return data, nil
-}
-
-func (client *Client) sendEmpty(method string, segments []string) error {
-	status, responseBody, err := client.execute(method, segments, nil)
-	if err != nil {
-		return err
-	}
-	if status < http.StatusOK || status >= http.StatusMultipleChoices {
-		return apiError(status, responseBody)
-	}
-	if status != http.StatusNoContent || len(responseBody) != 0 {
-		return fmt.Errorf("OCC returned an invalid empty response (HTTP %d)", status)
-	}
-	return nil
-}
-
-func (client *Client) execute(method string, segments []string, body any) (int, []byte, error) {
-	status, _, responseBody, err := client.executeQuery(method, segments, nil, body)
-	return status, responseBody, err
-}
-
-func (client *Client) executeQuery(
-	method string,
-	segments []string,
-	query url.Values,
-	body any,
-) (int, http.Header, []byte, error) {
-	resourceURL, err := resourceURL(client.baseURL, segments)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	if len(query) > 0 {
-		resourceURL.RawQuery = query.Encode()
-	}
-
-	var requestBody io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return 0, nil, nil, fmt.Errorf("failed to encode OCC request: %w", err)
-		}
-		requestBody = bytes.NewReader(encoded)
-	}
-
-	request, err := http.NewRequestWithContext(client.ctx, method, resourceURL.String(), requestBody)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("failed to create OCC request: %w", err)
-	}
-	request.Header.Set("x-api-key", client.serviceKey)
-	if body != nil {
-		request.Header.Set("content-type", "application/json")
-	}
-
-	response, err := client.http.Do(request)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("OCC operation failed: %w", err)
-	}
-	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
-	if err != nil {
-		return 0, nil, nil, fmt.Errorf("failed to read the OCC response: %w", err)
-	}
-	return response.StatusCode, response.Header, responseBody, nil
-}
-
-func parseOrigin(value string) (*url.URL, error) {
-	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return nil, fmt.Errorf("OCC URL must use http or https")
-	}
-	if parsed.Opaque != "" || parsed.User != nil || parsed.Hostname() == "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, fmt.Errorf("OCC URL must be an origin without credentials, a path, a query, or a fragment")
-	}
-	parsed.Path = ""
-	parsed.RawPath = ""
-	return parsed, nil
-}
-
-func resourceURL(baseURL *url.URL, segments []string) (*url.URL, error) {
-	path := make([]string, len(segments))
-	escapedPath := make([]string, len(segments))
-	for index, segment := range segments {
-		if segment == "" {
-			return nil, fmt.Errorf("OCC resource identifier cannot be empty")
-		}
-		path[index] = segment
-		escapedPath[index] = url.PathEscape(segment)
-	}
-	resource := baseURL.Clone()
-	resource.Path = "/" + strings.Join(path, "/")
-	resource.RawPath = "/" + strings.Join(escapedPath, "/")
-	return resource, nil
-}
-
-func apiError(status int, body []byte) error {
-	return apiErrorWithHeader(status, nil, body)
-}
-
-func apiErrorWithHeader(status int, header http.Header, body []byte) error {
-	result := &APIError{Status: status}
-	var envelope errorEnvelope
-	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Code != "" {
-		result.Code = envelope.Error.Code
-		result.Message = envelope.Error.Message
-	}
-	if seconds, err := strconv.Atoi(header.Get("retry-after")); err == nil && seconds > 0 && seconds <= 3600 {
-		result.RetryAfter = time.Duration(seconds) * time.Second
-	}
-	return result
-}
-
-func readServiceKey(path string) (string, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("failed to read service-key file %s: %w", path, err)
-	}
-	var envelope serviceKeyEnvelope
-	if err := json.Unmarshal(contents, &envelope); err != nil {
-		return "", fmt.Errorf("invalid service-key file %s: %w", path, err)
-	}
-	key := envelope.Data.Key
-	if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n") {
-		return "", fmt.Errorf("invalid service-key file %s", path)
-	}
-	return key, nil
-}
-
-func httpTransport(caBundle string) (*http.Transport, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if caBundle == "" {
-		return transport, nil
-	}
-
-	pem, err := os.ReadFile(caBundle)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CA bundle %s: %w", caBundle, err)
-	}
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load system CA certificates: %w", err)
-	}
-	if !roots.AppendCertsFromPEM(pem) {
-		return nil, fmt.Errorf("CA bundle %s contains no certificates", caBundle)
-	}
-	tlsConfig := &tls.Config{RootCAs: roots}
-	if transport.TLSClientConfig != nil {
-		tlsConfig = transport.TLSClientConfig.Clone()
-		tlsConfig.RootCAs = roots
-	}
-	transport.TLSClientConfig = tlsConfig
-	return transport, nil
 }

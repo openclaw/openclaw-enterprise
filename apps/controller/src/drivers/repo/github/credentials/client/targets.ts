@@ -72,11 +72,7 @@ function gitPushDestinations(
   manifest: RuntimeRepositoryManifest,
   destination: string,
 ): readonly RuntimeRepositoryBinding[] {
-  if (
-    !destination.startsWith("https://") ||
-    /[\s\\%?#]/.test(destination) ||
-    destination.includes("..")
-  ) {
+  if (!destination.startsWith("https://")) {
     return [];
   }
   let url: URL;
@@ -85,8 +81,36 @@ function gitPushDestinations(
   } catch {
     return [];
   }
+  if (
+    /[\s\\%?#]/.test(destination) ||
+    destination.includes("..") ||
+    url.password ||
+    url.pathname.startsWith("//")
+  ) {
+    // Git decodes the URL and trims leading path slashes before the credential
+    // helper matches, so an irregular gateway destination can still receive the
+    // bearer. Fail closed when a repository it may name has a push-ref policy.
+    let decoded: string | undefined;
+    try {
+      decoded = gitRepositoryPath(decodeURIComponent(url.pathname).replace(/^\/+/, ""));
+    } catch {
+      decoded = undefined;
+    }
+    const restricted = manifest.bindings.some(({ client }) => {
+      const repository = client.repository.toLowerCase();
+      return (
+        client.gatewayOrigin === url.origin &&
+        client.pushRefAllowlist !== undefined &&
+        (decoded === undefined || [repository, repository + ".git"].includes(decoded))
+      );
+    });
+    if (restricted) {
+      throw new Error("unsupported-push-destination");
+    }
+    return [];
+  }
   const path = gitRepositoryPath(url.pathname.slice(1));
-  if (url.password || path === undefined) {
+  if (path === undefined) {
     return [];
   }
   return manifest.bindings.filter(({ client }) => {
@@ -103,6 +127,25 @@ export function hasGitPushDestination(
   destination: string,
 ): boolean {
   return gitPushDestinations(manifest, destination).length > 0;
+}
+
+/**
+ * True only when the destination provably names none of `origins`. The authority must
+ * be plain (lowercase ASCII host, optional port, optional simple username), where Git's
+ * credential host and the URL parser's host agree; any other spelling stays in doubt.
+ */
+export function isUnrelatedPushDestination(
+  destination: string,
+  origins: ReadonlySet<string>,
+): boolean {
+  if (!/^https:\/\/(?:[A-Za-z0-9._~-]+@)?[a-z0-9.-]+(?::[0-9]+)?(?:\/|$)/.test(destination)) {
+    return false;
+  }
+  try {
+    return !origins.has(new URL(destination).origin);
+  } catch {
+    return false;
+  }
 }
 
 export function selectGitPushDestination(
@@ -159,7 +202,7 @@ export function selectImplicitGhRepository(
       const repository = client.repository.toLowerCase();
       return (
         [client.gatewayOrigin, `https://${client.canonicalApiHost}`].includes(url.origin) &&
-        [repository, `${repository}.git`].includes(url.pathname.slice(1).toLowerCase())
+        [repository, `${repository}.git`].includes(gitRepositoryPath(url.pathname.slice(1)) ?? "")
       );
     });
     const binding = selectBinding(matches);

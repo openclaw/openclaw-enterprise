@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RepositoryCredentialBoundSessionInput } from "../../../credentials/service-contracts.ts";
 import { readPrivateFile } from "./private-files.ts";
+import { hasControlCharacter } from "../../../credentials/client-contracts.ts";
 import type { ControlRequest, ControlResponse } from "../../../credentials/control-contracts.ts";
 import { writeClientConfiguration } from "./config.ts";
 
@@ -15,7 +16,7 @@ export async function callControl(
 ): Promise<ControlResponse> {
   if (
     !socket.startsWith("/") ||
-    socket.length > 103 ||
+    Buffer.byteLength(socket) > 103 ||
     !/^\/v1\/sessions(?:\/[A-Za-z0-9_-]{1,128}(?:\/close)?)?$/.test(request.path)
   ) {
     throw new Error("invalid-control-request");
@@ -49,6 +50,8 @@ export async function callControl(
         response.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
           if (bytes > 16 * 1024) {
+            // destroy() without an error emits neither "end" nor "error": settle first.
+            fail();
             response.destroy();
             outgoing.destroy();
             return;
@@ -107,10 +110,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     typeof input === "string" &&
     input.length > 0 &&
     input.length <= 512 &&
-    ![...input].some((character) => {
-      const code = character.charCodeAt(0);
-      return code <= 0x1f || code === 0x7f;
-    });
+    !hasControlCharacter(input);
   if (!isRecord(value) || !isRecord(value.expectedBinding)) {
     throw new Error("invalid-arguments");
   }

@@ -12,6 +12,17 @@ if [ "$operation" = 'show' ]; then
   [ "${1:-}" = '--value' ] && shift
 fi
 unit=${1:-}
+case "$operation" in
+  enable|link)
+    case "$unit" in
+      /*)
+        [ "$unit" = "$OCC_SSH_FIXTURE_UNIT_DIRECTORY/$(basename "$unit")" ]
+        [ -f "$unit" ]
+        unit=$(basename "$unit")
+        ;;
+    esac
+    ;;
+esac
 pidfile="$OCC_SSH_FIXTURE_STATE/$unit.pid"
 enabled="$OCC_SSH_FIXTURE_STATE/$unit.enabled"
 active() {
@@ -24,6 +35,7 @@ stop() {
 case "$operation" in
   --version) printf '%s\n' 'systemd SSH conformance fixture' ;;
   daemon-reload) : ;;
+  link) : ;;
   enable) : > "$enabled" ;;
   disable) rm -f "$enabled" ;;
   is-enabled) [ -f "$enabled" ] ;;
@@ -33,25 +45,28 @@ case "$operation" in
   restart|start)
     if [ "$operation" = start ] && active; then exit 0; fi
     stop
+    # The unit process only has to stay alive: the conformance test owns the gateway port
+    # for the fixture's whole life and serves /readyz for the live unit configured on it,
+    # so no other local process can take the port between reservation and start.
     port=$(sed -n 's/^Environment=OPENCLAW_GATEWAY_PORT=//p' "$OCC_SSH_FIXTURE_UNIT_DIRECTORY/$unit")
+    [ -n "$port" ] || { printf '%s\n' 'Unit has no OPENCLAW_GATEWAY_PORT' >&2; exit 1; }
+    # A second gateway on a live unit's port would fail to bind, leaving its unit inactive.
+    for other in "$OCC_SSH_FIXTURE_UNIT_DIRECTORY"/*; do
+      name=$(basename "$other")
+      [ "$name" != "$unit" ] || continue
+      grep -qsx "Environment=OPENCLAW_GATEWAY_PORT=$port" "$other" || continue
+      if kill -0 "$(cat "$OCC_SSH_FIXTURE_STATE/$name.pid" 2>/dev/null)" 2>/dev/null; then exit 0; fi
+    done
     node -e '
       const { spawn } = require("node:child_process");
-      const { writeFileSync, openSync, closeSync } = require("node:fs");
-      const [port, pidfile, state] = process.argv.slice(1);
-      const log = openSync(state + "/listener.log", "a", 0o600);
-      const listener = spawn(process.execPath, ["-e", `
-        const { createServer } = require("node:http");
-        const { appendFileSync } = require("node:fs");
-        createServer((request, response) => {
-          appendFileSync(process.argv[2] + "/readyz.log", request.method + " " + request.url + "\\n");
-          response.writeHead(request.method === "GET" && request.url === "/readyz" ? 200 : 404);
-          response.end();
-        }).listen(Number(process.argv[1]), "127.0.0.1");
-      `, port, state], { detached: true, stdio: ["ignore", log, log] });
-      writeFileSync(pidfile, String(listener.pid), { mode: 0o600 });
-      closeSync(log);
-      listener.unref();
-    ' "$port" "$pidfile" "$OCC_SSH_FIXTURE_STATE"
+      const { writeFileSync } = require("node:fs");
+      const service = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      writeFileSync(process.argv[1], String(service.pid), { mode: 0o600 });
+      service.unref();
+    ' "$pidfile"
     ;;
   *) printf '%s\n' 'Unsupported fixture systemctl invocation' >&2; exit 1 ;;
 esac

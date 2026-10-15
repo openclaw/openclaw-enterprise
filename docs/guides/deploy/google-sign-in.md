@@ -20,8 +20,9 @@ enable Google alone or together with GitHub.
 - Everything the [GitHub profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
   requires: one serving controller, PostgreSQL State, native IAM, one canonical HTTPS
   Console origin, and `agentNativeAdmin.enabled: false`.
-- A controller image that includes Google sign-in; the published image does not.
-  [Build a compatible image](production-installation.md#build-and-publish-production-images).
+- A controller image that includes Google sign-in: a
+  [published image](production-installation.md#use-published-images) from a revision that
+  has it, or [your own build](production-installation.md#build-and-publish-production-images).
 - A Google Cloud project where you can create an OAuth client.
 - API Pod HTTPS egress to `oauth2.googleapis.com` (code exchange) and
   `www.googleapis.com` (signing keys). Browsers, not the API, reach
@@ -77,12 +78,14 @@ Google-only install. It names an existing local password administrator; read it 
 administrator from `data.user.id` of `GET /api/auth/session`. The chart passes it as
 `OCC_AUTH_GITHUB_RECOVERY_USER_ID`, which designates the recovery account for either
 provider. Rendering fails on incomplete Google values, a shared Secret, an HTTP base URL,
-native administration, an invalid CIDR, or an allowed domain that is not a DNS name.
+native administration, an invalid CIDR, or an allowed domain that is not a DNS name. It
+also fails when `allowedDomains` is set without `auth.google.enabled`.
 
 The chart adds the API-only NetworkPolicy
 `openclaw-enterprise-api-google-login-egress` on TCP 443. Empty
-`auth.google.egressCidrs` allows `0.0.0.0/0`. Google publishes no small, stable address
-range for these hosts, so narrow egress with an egress proxy rather than static CIDRs.
+`auth.google.egressCidrs` allows any address except link-local `169.254.0.0/16`. Google
+publishes no small, stable address range for these hosts, so narrow egress with an egress
+proxy rather than static CIDRs.
 
 The API reads these variables; see
 [production settings](../../reference/settings/production.md#google-sign-in):
@@ -107,7 +110,8 @@ email address itself is never used for identity or authorization.
 Enable Google during the same stopped maintenance as the
 [GitHub procedure](production-installation.md#enable-github-browser-sign-in): verify
 password recovery, create the Secret, set the values above, close ingress, stop
-identity writers, run `helm upgrade`, and verify through restricted access before
+identity writers, run `helm upgrade`, and verify through
+[restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access) before
 reopening ingress. If the guarded profile is already active through GitHub, adding
 Google needs no new activation, but still use one serving controller and stopped
 writers for the upgrade.
@@ -117,7 +121,7 @@ writers for the upgrade.
 [recovery-only password sign-in](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in)
 leaves passwords to the recovery account. Activation is one-way: keep at least one provider configured,
 or startup refuses. To return to password-only sign-in, follow
-[sign-in maintenance](auth-maintenance.md#deactivate-github-sign-in), then set
+[sign-in maintenance](auth-maintenance.md#deactivate-external-sign-in), then set
 `auth.google.enabled: false` as well; without Helm also remove the
 `OCC_AUTH_GOOGLE_*` variables.
 
@@ -137,23 +141,30 @@ identifier. Email addresses can change owners and are never identity keys.
 
 ## Attach and detach
 
-As a human Installation administrator, read the account's current version with
-`GET /api/auth/accounts/:userId`, then attach the subject:
+As a human Installation administrator, [sign in as a human administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator)
+so `OCC_URL`, `OCC_ORIGIN` and `OCC_SESSION_COOKIE_JAR` are set, and set `USER_ID` to the
+account's `id`. Read the account's current version, then attach the subject:
 
 ```bash
-curl -sS -X POST "$OCC_AUTH_BASE_URL/api/auth/accounts/$USER_ID/providers/google" \
-  -H "Origin: $OCC_AUTH_BASE_URL" -H 'Content-Type: application/json' \
-  -b "$COOKIE_JAR" \
-  --data '{"subject":"<google sub>","expectedVersion":1}'
+VERSION="$(curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/api/auth/accounts/$USER_ID" | jq -er .data.version)" &&
+jq -n --arg subject '<google sub>' --argjson version "$VERSION" \
+  '{subject: $subject, expectedVersion: $version}' |
+  curl --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$OCC_URL/api/auth/accounts/$USER_ID/providers/google"
 ```
 
 The subject is 1–255 printable ASCII characters without spaces. The call returns `409`
-when Google is not configured, the version is stale, or another account owns the
-subject. Attachment advances the account version and ends the account's existing
-sessions. The account read then lists a method whose `providerId` starts with
+when Google is not configured, the version is stale, the account is disabled, or another
+account holds the subject ("The external identity is already assigned."). Attachment
+advances the account version and ends the account's existing sessions. The account read then lists a method whose `providerId` starts with
 `google:`. Detach it with
-`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for GitHub; the account's
-Google sessions end and the password keeps working.
+`POST /api/auth/accounts/:userId/methods/:methodId/detach`, as for GitHub. Detaching ends
+every session of the account, password sessions included; the password keeps working for
+new sign-ins.
 
 ## Rotation and outages
 
@@ -165,7 +176,9 @@ Rotating only the client secret keeps attachments and invalidates pending sign-i
 attempts. Rotating `OCC_AUTH_SECRET` also fails attempts in flight.
 
 A Google outage, blocked egress, or rejected ID token fails that sign-in closed and
-returns the browser to `/console/?authError=google`; password sign-in is unaffected.
+returns the browser to `/console/?authError=google`; password sign-in is unaffected. An
+outage adds `authReason=provider-unavailable`, and the Console says Google sign-in is
+unavailable right now.
 Google start and callback share GitHub's admission budget, so enabling both does not
 raise the external sign-in limits.
 

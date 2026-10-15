@@ -49,6 +49,7 @@ export function sessionKeyMatches(secret: string, sessionId: string, key: string
 }
 
 export interface LoginReceipt {
+  readonly providerId: string;
   readonly sessionId: string;
   readonly attemptId: string;
   readonly expiresAt: number;
@@ -56,7 +57,13 @@ export interface LoginReceipt {
 
 export function signLoginReceipt(secret: string, receipt: LoginReceipt): string {
   const payload = Buffer.from(
-    JSON.stringify({ s: receipt.sessionId, a: receipt.attemptId, e: receipt.expiresAt }),
+    JSON.stringify({
+      v: 2,
+      p: receipt.providerId,
+      s: receipt.sessionId,
+      a: receipt.attemptId,
+      e: receipt.expiresAt,
+    }),
   ).toString("base64url");
   return `${payload}.${mac(secret, "occ-login-receipt", payload)}`;
 }
@@ -64,6 +71,7 @@ export function signLoginReceipt(secret: string, receipt: LoginReceipt): string 
 export function verifyLoginReceipt(
   secret: string,
   value: string | null | undefined,
+  expectedProviderId: string,
   now: number,
 ): LoginReceipt | undefined {
   if (typeof value !== "string" || value.length > 1024) {
@@ -82,8 +90,12 @@ export function verifyLoginReceipt(
   } catch {
     return undefined;
   }
-  const { s, a, e } = (parsed ?? {}) as Record<string, unknown>;
+  const { v, p, s, a, e } = (parsed ?? {}) as Record<string, unknown>;
   if (
+    v !== 2 ||
+    typeof p !== "string" ||
+    p.length === 0 ||
+    p !== expectedProviderId ||
     typeof s !== "string" ||
     s.length === 0 ||
     !isBindingValue(a) ||
@@ -93,7 +105,7 @@ export function verifyLoginReceipt(
   ) {
     return undefined;
   }
-  return { sessionId: s, attemptId: a, expiresAt: e };
+  return { providerId: p, sessionId: s, attemptId: a, expiresAt: e };
 }
 
 /**

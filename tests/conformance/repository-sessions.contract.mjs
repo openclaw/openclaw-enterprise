@@ -332,18 +332,33 @@ export async function verifyRepositorySessions(t, store) {
           );
         });
       }
-      // PostgreSQL rejects malformed bigint/timestamp representations before CHECK constraints;
-      // both adapters must reject the value, regardless of their error classification.
+      // PostgreSQL rejects malformed bigint/timestamp representations while parsing parameters,
+      // before CHECK constraints, with the SQLSTATE for that type; the in-memory store refuses
+      // the same values through its input and timestamp validation.
       const malformedRepresentations = {
-        "duration is fractional": { durationSeconds: 1.5 },
-        "creation time is not a timestamp": { createdAt: "not-a-timestamp" },
+        "duration is fractional": [
+          { durationSeconds: 1.5 },
+          /The repository session input is invalid/,
+          "22P02",
+        ],
+        "creation time is not a timestamp": [
+          { createdAt: "not-a-timestamp" },
+          /The repository session timestamp is invalid/,
+          "22007",
+        ],
       };
-      for (const [name, override] of Object.entries(malformedRepresentations)) {
+      for (const [name, [override, memoryMessage, sqlState]] of Object.entries(
+        malformedRepresentations,
+      )) {
         await t.test(name, async () => {
           await assert.rejects(
             store.transact((unit) =>
               unit.repositorySessions.createAttempt(sessionAttempt(revision, override)),
             ),
+            (error) =>
+              error.name === "ScopeViolationError"
+                ? memoryMessage.test(error.message)
+                : error.code === sqlState,
           );
         });
       }

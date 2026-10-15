@@ -52,3 +52,10 @@ export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
     },
   });
 }
+
+/** A resource scope that closes after the test `t`. */
+export function createTestResourceScope(t, options) {
+  const resources = createResourceScope(options);
+  t.after(() => resources.close());
+  return resources;
+}

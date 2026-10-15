@@ -1,15 +1,13 @@
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { readFile, realpath } from "node:fs/promises";
-import { createRequire, findPackageJSON } from "node:module";
+import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
-import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadYaml } from "@kubernetes/client-node";
+import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   Backend,
   ComputeDriver,
   ConfigurationDriver,
   CredentialGatewayDriver,
+  CredentialRefreshDriver,
   DriverImplementation,
   IAMDriver,
   Identity,
@@ -24,18 +22,22 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import {
+  AuthorizationDeniedError,
+  DependencyUnavailableError,
   validateBackendDefinitions,
+  type BundledPresetVersion,
   type NativeWorkerSupport,
   type OpenClawController,
   type PostgresPlatformState,
+  type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
 import { Check, Errors } from "typebox/value";
-import { validatePresetTemplate } from "@openclaw-enterprise/contracts";
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
-import { currentComputeAbortSignal } from "../drivers/compute/operation-context.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
+import { createExternalDriver, loadDriverPackage } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
   KubernetesConfigurationDriver,
@@ -46,6 +48,13 @@ import {
   type KubernetesSecretDriverOptions,
 } from "../drivers/secret/kubernetes/index.ts";
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
+import {
+  closed,
+  type ConfigurationRecord,
+  nonempty,
+  object,
+  startupConfiguration,
+} from "./startup-file.ts";
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
@@ -56,8 +65,11 @@ import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
+import { OpenShellCredentialRefreshDriver } from "../drivers/credential-refresh/openshell.ts";
 
-type ConfigurationRecord = Readonly<Record<string, unknown>>;
+import { loadInstallationPresets, type ShadowedDefaultPreset } from "./installation-presets.ts";
+
+export { loadOperationalLoggingConfiguration } from "./startup-file.ts";
 
 export interface StartupConfigurationSnapshot {
   readonly configuration?: ConfigurationRecord;
@@ -88,6 +100,7 @@ export interface InstallationStartupConfiguration {
     readonly secret: SelectedDriverConfiguration;
     readonly sandbox?: SelectedDriverConfiguration;
     readonly credential_gateway?: SelectedDriverConfiguration;
+    readonly credential_refresh?: SelectedDriverConfiguration;
     readonly plugin?: SelectedDriverConfiguration;
     readonly service_account?: { readonly id: string };
     readonly repo?: SelectedDriverConfiguration;
@@ -101,12 +114,17 @@ export type ServiceAccountDriverFactory = (
 
 export interface InstallationRuntimeDrivers {
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  /** Bundled defaults replaced by a same-named `presets.files` entry; startup warns once each. */
+  readonly shadowedDefaultPresets?: readonly ShadowedDefaultPreset[];
+  /** Shipped versions of the bundled defaults, loaded even when they are not seeded. */
+  readonly bundledPresetVersions?: readonly BundledPresetVersion[];
   readonly installation: InstallationStartupConfiguration;
   readonly computeDriver: ComputeDriver;
   readonly configurationDriver: ConfigurationDriver;
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
   readonly repositoryReceipt?: Readonly<{
@@ -118,16 +136,28 @@ export interface InstallationRuntimeDrivers {
   readonly createIAMDriver: (state: NativeIAMStateStore) => IAMDriver;
 }
 
-/** Resolve an authorized startup actor without depending on persisted identity order. */
+/**
+ * Resolve an authorized startup actor without depending on persisted identity order.
+ *
+ * A refresh the policy refuses never stops startup: the copy stays and `onWarning` receives
+ * one `presets.default-refresh-skipped` event naming it. The first pass skips only refusals
+ * from a deny Restriction, which binds every administrator alike, so an administrator without
+ * a Namespace grant never stands in for one who could refresh. If none can, the second pass
+ * skips every refusal. Missing defaults still need an administrator who can create them,
+ * unless a deny Restriction refuses the creation: then the default stays missing and
+ * `onWarning` receives one `presets.default-create-skipped` event naming it.
+ */
 export async function initializeInstallationPresets(
   controller: OpenClawController,
   iam: IAMDriver,
   identities: readonly Identity[],
   defaults: readonly Pick<Preset, "name" | "template">[],
+  onWarning?: (event: Readonly<Record<string, unknown>>) => void,
 ): Promise<void> {
   if (defaults.length === 0) {
     return;
   }
+  const administrators: string[] = [];
   for (const identity of identities) {
     if (identity.kind !== "principal") {
       continue;
@@ -138,68 +168,49 @@ export async function initializeInstallationPresets(
       resource: { kind: "installation", id: controller.installation.id },
     });
     if (decision.allowed) {
-      await controller.initializeDefaultPresets(identity.id);
+      administrators.push(identity.id);
+    }
+  }
+  let denied: AuthorizationDeniedError | undefined;
+  for (const skipRefusedRefresh of ["restricted", "denied"] as const) {
+    for (const principalId of administrators) {
+      let skipped: readonly SkippedDefaultPreset[];
+      try {
+        skipped = await controller.initializeDefaultPresets(principalId, { skipRefusedRefresh });
+      } catch (error) {
+        // An administrator whose grant stops at the Installation (for example the admin Role
+        // bound to the installation resource only) cannot create Presets in a Namespace. Each
+        // attempt is one rolled-back transaction, so the next administrator starts clean.
+        // Outages are not denials: they stop startup with their own error.
+        if (
+          !(error instanceof AuthorizationDeniedError) ||
+          error instanceof DependencyUnavailableError
+        ) {
+          throw error;
+        }
+        denied = error;
+        continue;
+      }
+      for (const preset of skipped) {
+        onWarning?.({
+          event:
+            preset.operation === "create"
+              ? "presets.default-create-skipped"
+              : "presets.default-refresh-skipped",
+          namespaceId: preset.namespaceId,
+          ...(preset.operation === "update" ? { presetId: preset.presetId } : {}),
+          presetName: preset.presetName,
+          reason: preset.reason,
+          restrictionIds: preset.restrictionIds,
+        });
+      }
       return;
     }
   }
   throw new Error(
-    "Default Preset initialization requires an authorized Installation administrator.",
+    "Default Preset initialization requires an Installation administrator who can create Presets in every Namespace.",
+    denied === undefined ? undefined : { cause: denied },
   );
-}
-
-interface LoadedStartupConfiguration {
-  readonly configuration?: ConfigurationRecord;
-  readonly path?: string;
-}
-
-async function startupConfiguration(
-  options: {
-    readonly mode: "development" | "production";
-    readonly environment?: Readonly<Record<string, string | undefined>>;
-  },
-  required: boolean,
-): Promise<LoadedStartupConfiguration> {
-  const environment = options.environment ?? process.env;
-  const path = environment.OCC_CONFIG_PATH;
-  if (path === undefined) {
-    if (!required) {
-      return {};
-    }
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (typeof path !== "string" || path.trim().length === 0) {
-    throw new Error("OCC_CONFIG_PATH must identify the Installation startup YAML.");
-  }
-  if (!isAbsolute(path)) {
-    throw new Error("OCC_CONFIG_PATH must identify an absolute Installation startup YAML path.");
-  }
-
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error("The configured Installation startup YAML is unavailable.");
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = loadYaml(contents);
-  } catch {
-    throw new Error("The configured Installation startup file must contain valid YAML.");
-  }
-  const configuration = object(parsed, "Installation startup configuration");
-  safe(configuration, "Installation startup configuration");
-  if (Object.hasOwn(configuration, "integrations")) {
-    throw new Error(
-      "integrations is retired; configure ChatGPT with backend[].configuration.apiKeyPath.",
-    );
-  }
-  closed(
-    configuration,
-    ["occ", "drivers", "backend", "logging", "presets", "observability", "runtime"],
-    "Installation startup configuration",
-  );
-  return { configuration, path };
 }
 
 export async function loadStartupConfigurationSnapshot(options: {
@@ -218,21 +229,6 @@ export async function loadStartupConfigurationSnapshot(options: {
   });
 }
 
-interface ExternalDriverModule extends DriverImplementation {
-  createDriver(options: {
-    readonly id: string;
-    readonly implementation: string;
-    readonly configuration: ConfigurationRecord;
-    readonly platformState?: NativeIAMStateStore;
-    readonly getOperationAbortSignal?: () => AbortSignal | undefined;
-  }): unknown;
-}
-
-interface LoadedDriverPackage {
-  readonly module: ExternalDriverModule;
-  readonly implementation: string;
-}
-
 interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
   readonly OpenShellSandboxDriver: new (
     configuration: ConfigurationRecord,
@@ -242,35 +238,6 @@ interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
       readonly backend: Backend<OpenShellGateway>;
     },
   ) => SandboxDriver;
-}
-
-const PACKAGE_NAME = /^(?:@[a-zA-Z0-9][a-zA-Z0-9._~-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._~-]*$/;
-const FORBIDDEN_SECRET_KEY =
-  /(?:password|passwd|api[_-]?key|(?:access[_-]?)?token|private[_-]?key|(?:client[_-]?)?secret|credentials?)$/i;
-const FORBIDDEN_SECRET_VALUE =
-  /\bBearer\s+[A-Za-z0-9._~-]+|\bsk-(?:proj-)?[A-Za-z0-9_-]{12,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ghp|gho|github_pat)_[A-Za-z0-9_]{12,}|\bAKIA[0-9A-Z]{16}\b/i;
-
-function object(value: unknown, path: string): ConfigurationRecord {
-  const result = asRecord(value);
-  if (result === undefined) {
-    throw new Error(`${path} must be one object.`);
-  }
-  return result;
-}
-
-function closed(value: ConfigurationRecord, keys: readonly string[], path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!keys.includes(key)) {
-      throw new Error(`${path} contains unsupported option ${key}.`);
-    }
-  }
-}
-
-function nonempty(value: unknown, path: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new Error(`${path} must be a nonempty string.`);
-  }
-  return value;
 }
 
 function runtimeConfiguration(
@@ -311,39 +278,20 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
       "observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.",
     );
   }
+  // URL parsing drops an empty user info (http://@host), which profile preflight refuses.
+  refuseWrittenUserinfo("observability.url", raw);
+  // Other IPv4 spellings parse as a different address, so startup must not store url.href.
+  refuseRewrittenIpv4Host("observability.url", raw, url);
+  // A tab or newline is deleted. A backslash before the query becomes a slash, so the stored
+  // href can name another host. A backslash in the query does not change the host.
+  const queryAt = raw.search(/[?#]/u);
+  const beforeQuery = queryAt === -1 ? raw : raw.slice(0, queryAt);
+  if (/[\t\n\r]/u.test(raw) || beforeQuery.includes("\\")) {
+    throw new Error(
+      "observability.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
+    );
+  }
   return Object.freeze({ url: url.href });
-}
-
-function safe(value: unknown, path: string): void {
-  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
-    throw new Error(`${path} must be a safe integer.`);
-  }
-  if (typeof value === "string" && FORBIDDEN_SECRET_VALUE.test(value)) {
-    throw new Error(`${path} must not contain a plaintext credential.`);
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => safe(entry, `${path}[${index}]`));
-    return;
-  }
-  if (typeof value !== "object" || value === null) {
-    return;
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "installationId" || key === "installation_id") {
-      throw new Error("Installation startup configuration must not contain an Installation ID.");
-    }
-    if (key === "__proto__" || key === "constructor" || key === "prototype") {
-      throw new Error(`${path} contains an unsafe configuration key.`);
-    }
-    if (FORBIDDEN_SECRET_KEY.test(key) && typeof entry === "string") {
-      throw new Error(`${path}.${key} must not contain a plaintext credential.`);
-    }
-    if (key === "secretRef") {
-      nonempty(entry, `${path}.${key}`);
-      throw new Error("Installation-scoped secret references cannot be resolved safely.");
-    }
-    safe(entry, `${path}.${key}`);
-  }
 }
 
 function backendConfiguration(
@@ -351,6 +299,7 @@ function backendConfiguration(
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
   credentialGatewayId: string | undefined,
+  credentialRefreshId: string | undefined,
 ): readonly BackendDefinition[] {
   const backends = validateBackendDefinitions(value ?? []);
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
@@ -358,6 +307,9 @@ function backendConfiguration(
   }
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
     throw new Error("drivers.repo requires an owning backend entry with type github.");
+  }
+  if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
+    throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
   }
   if (
     credentialGatewayId !== undefined &&
@@ -373,6 +325,12 @@ function backendConfiguration(
       if (backend.drivers.credential_gateway !== credentialGatewayId) {
         throw new Error(
           `backend[${backend.id}].drivers.credential_gateway must match the selected drivers.credential_gateway.id.`,
+        );
+      }
+      // Refresh state lives on the gateway's provider record, so both roles share this Backend.
+      if (backend.drivers.credential_refresh !== credentialRefreshId) {
+        throw new Error(
+          `backend[${backend.id}].drivers.credential_refresh must match the selected drivers.credential_refresh.id.`,
         );
       }
       continue;
@@ -402,45 +360,6 @@ function backendConfiguration(
   return backends;
 }
 
-function presetDefinition(value: unknown, path: string): Pick<Preset, "name" | "template"> {
-  const preset = object(value, path);
-  closed(preset, ["name", "template"], path);
-  return Object.freeze({
-    name: nonempty(preset.name, `${path}.name`),
-    template: validatePresetTemplate(preset.template),
-  });
-}
-
-async function loadPresetDefinition(
-  path: string | URL,
-): Promise<Pick<Preset, "name" | "template">> {
-  let contents: string;
-  try {
-    contents = await readFile(path, "utf8");
-  } catch {
-    throw new Error(`Preset file ${path} is unavailable.`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(contents);
-  } catch {
-    throw new Error(`Preset file ${path} must contain valid JSON.`);
-  }
-  return presetDefinition(parsed, `Preset file ${path}`);
-}
-
-function appendDefaultPreset(
-  presets: Pick<Preset, "name" | "template">[],
-  names: Set<string>,
-  preset: Pick<Preset, "name" | "template">,
-): void {
-  if (names.has(preset.name)) {
-    throw new Error(`Default Preset ${preset.name} is configured more than once.`);
-  }
-  names.add(preset.name);
-  presets.push(preset);
-}
-
 export function backendSummariesFromDefinitions(
   backends: readonly BackendDefinition[],
 ): readonly BackendSummary[] {
@@ -454,139 +373,6 @@ export function backendSummariesFromDefinitions(
   );
 }
 
-function importEntrypoint(value: unknown): string | undefined {
-  if (typeof value === "string") {
-    return value;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
-
-  const conditions = value as Record<string, unknown>;
-  if (Object.hasOwn(conditions, ".")) {
-    return importEntrypoint(conditions["."]);
-  }
-  for (const [condition, target] of Object.entries(conditions)) {
-    if (condition !== "import" && condition !== "node" && condition !== "default") {
-      continue;
-    }
-    const selected = importEntrypoint(target);
-    if (selected !== undefined) {
-      return selected;
-    }
-  }
-  return undefined;
-}
-
-async function loadDriverPackage(
-  selection: ConfigurationRecord,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
-  packageRoot: string,
-  allowFixtureTarball: boolean,
-): Promise<LoadedDriverPackage | undefined> {
-  if (!Object.hasOwn(selection, "package")) {
-    return undefined;
-  }
-
-  const path = `drivers.${capability}`;
-  const packageName = nonempty(selection.package, `${path}.package`);
-  if (!PACKAGE_NAME.test(packageName)) {
-    throw new Error(`${path}.package must be one exact npm package name.`);
-  }
-  const ownerPath = resolve(packageRoot, "package.json");
-  let owner: ConfigurationRecord;
-  try {
-    owner = object(JSON.parse(await readFile(ownerPath, "utf8")), "controller package.json");
-  } catch {
-    throw new Error(`${path}.package cannot read the controller package manifest.`);
-  }
-  const dependencies =
-    owner.dependencies === undefined
-      ? {}
-      : object(owner.dependencies, "controller package.json dependencies");
-  if (
-    !Object.hasOwn(dependencies, packageName) ||
-    typeof dependencies[packageName] !== "string" ||
-    dependencies[packageName].trim().length === 0
-  ) {
-    throw new Error(`${path}.package must be a direct controller production dependency.`);
-  }
-  const dependencyVersion = dependencies[packageName];
-
-  let installedManifestPath: string;
-  try {
-    const ownerUrl = pathToFileURL(ownerPath);
-    const installed = findPackageJSON(packageName, ownerUrl);
-    if (installed === undefined) {
-      throw new Error("package metadata unavailable");
-    }
-    installedManifestPath = await realpath(installed);
-  } catch {
-    throw new Error(`${path}.package selects an unavailable installed Driver package.`);
-  }
-
-  let installedManifest: ConfigurationRecord;
-  try {
-    installedManifest = object(
-      JSON.parse(await readFile(installedManifestPath, "utf8")),
-      `${path}.package manifest`,
-    );
-  } catch {
-    throw new Error(`${path}.package has invalid installed package metadata.`);
-  }
-  if (installedManifest.name !== packageName) {
-    throw new Error(`${path}.package does not match the installed npm package name.`);
-  }
-  const installedVersion = nonempty(installedManifest.version, `${path}.package installed version`);
-  if (
-    dependencyVersion !== installedVersion &&
-    !(allowFixtureTarball && /^file:.+\.tgz$/.test(dependencyVersion))
-  ) {
-    throw new Error(`${path}.package must be pinned to its exact installed production version.`);
-  }
-  const exportedEntrypoint = importEntrypoint(installedManifest.exports);
-  if (exportedEntrypoint === undefined || !exportedEntrypoint.startsWith("./")) {
-    throw new Error(`${path}.package must declare an exported compiled ESM entry.`);
-  }
-  let entryPath: string;
-  try {
-    entryPath = await realpath(
-      createRequire(pathToFileURL(ownerPath)).resolve(
-        resolve(dirname(installedManifestPath), exportedEntrypoint),
-      ),
-    );
-  } catch {
-    throw new Error(`${path}.package selects an unavailable compiled ESM entry.`);
-  }
-  const extension = extname(entryPath);
-  if (extension !== ".mjs" && !(extension === ".js" && installedManifest.type === "module")) {
-    throw new Error(`${path}.package must export precompiled JavaScript ESM.`);
-  }
-  const contained = relative(dirname(installedManifestPath), entryPath);
-  if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
-    throw new Error(`${path}.package entry escapes its installed package root.`);
-  }
-
-  let imported: unknown;
-  try {
-    imported = await import(pathToFileURL(entryPath).href);
-  } catch {
-    throw new Error(`${path}.package failed to load its compiled Driver module.`);
-  }
-  const module = object(imported, `${path}.package exports`);
-  if (
-    typeof module.validateConfiguration !== "function" ||
-    typeof module.createDriver !== "function"
-  ) {
-    throw new Error(`${path}.package must export Driver validation and a factory.`);
-  }
-  object(module.configurationSchema, `${path}.configurationSchema`);
-  return Object.freeze({
-    module: module as unknown as ExternalDriverModule,
-    implementation: `${packageName}@${installedVersion}`,
-  });
-}
-
 function selected(
   value: unknown,
   capability:
@@ -596,6 +382,7 @@ function selected(
     | "secret"
     | "sandbox"
     | "credential_gateway"
+    | "credential_refresh"
     | "plugin"
     | "repo",
   implementation: string,
@@ -644,6 +431,37 @@ function schemaMismatch(schema: Record<string, unknown>, configuration: unknown)
   return "";
 }
 
+/**
+ * The CA bundle a dedicated Harness node trusts for its Gateway connection.
+ * `OCC_GATEWAY_CA_PATH`, when set, names the Gateway-only bundle; an empty value means
+ * no private Gateway CA. The chart sets it whenever the API's `NODE_EXTRA_CA_CERTS`
+ * also carries other roots (the OIDC CA opt-in), so those roots stay out of Harness Pods.
+ * Without it, the API's `NODE_EXTRA_CA_CERTS` is the Gateway bundle.
+ */
+export async function readHarnessNodeCa(
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<string | undefined> {
+  const gatewayCaPath = environment.OCC_GATEWAY_CA_PATH;
+  const path = gatewayCaPath ?? environment.NODE_EXTRA_CA_CERTS;
+  if (path === undefined || path === "") {
+    return undefined;
+  }
+  if (gatewayCaPath !== undefined && !isAbsolute(gatewayCaPath)) {
+    throw new Error("OCC_GATEWAY_CA_PATH must identify an absolute mounted-file path.");
+  }
+  const bundle = await readFile(path, "utf8");
+  const certificates = bundle.match(
+    /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+  );
+  if (
+    certificates === null ||
+    certificates.reduce((rest, certificate) => rest.replace(certificate, ""), bundle).trim()
+  ) {
+    throw new Error("The Harness trust bundle must contain only public CA certificates.");
+  }
+  return certificates.map((certificate) => new X509Certificate(certificate).toString()).join("\n");
+}
+
 export async function loadInstallationConfiguration(options: {
   readonly mode: "development" | "production";
   readonly environment?: Readonly<Record<string, string | undefined>>;
@@ -688,52 +506,8 @@ export async function loadInstallationConfiguration(options: {
   ) {
     return undefined;
   }
-  const presets = object(
-    configuration.presets === undefined ? {} : configuration.presets,
-    "presets",
-  );
-  closed(presets, ["includeDefaults", "files"], "presets");
-  if (presets.includeDefaults !== undefined && typeof presets.includeDefaults !== "boolean") {
-    throw new Error("presets.includeDefaults must be a boolean.");
-  }
-  if (
-    presets.files !== undefined &&
-    (!Array.isArray(presets.files) || presets.files.some((entry) => typeof entry !== "string"))
-  ) {
-    throw new Error("presets.files must be an array of Preset JSON file paths.");
-  }
-  const includeDefaults = presets.includeDefaults === true;
-  const defaultPresets: Pick<Preset, "name" | "template">[] = [];
-  const defaultPresetNames = new Set<string>();
-  if (includeDefaults) {
-    for (const preset of [
-      "../../../../deploy/presets/standard-codex.json",
-      "../../../../deploy/presets/standard-openclaw.json",
-    ]) {
-      appendDefaultPreset(
-        defaultPresets,
-        defaultPresetNames,
-        await loadPresetDefinition(new URL(preset, import.meta.url)),
-      );
-    }
-  }
-  const presetFiles = (presets.files ?? []) as readonly string[];
-  for (const entry of presetFiles) {
-    const trimmed = entry.trim();
-    if (trimmed.length === 0) {
-      throw new Error("presets.files entries must be nonempty file paths.");
-    }
-    if (!isAbsolute(trimmed) && configurationPath === undefined) {
-      throw new Error("Relative presets.files entries require an Installation startup YAML path.");
-    }
-    appendDefaultPreset(
-      defaultPresets,
-      defaultPresetNames,
-      await loadPresetDefinition(
-        isAbsolute(trimmed) ? trimmed : resolve(dirname(configurationPath!), trimmed),
-      ),
-    );
-  }
+  const { includeDefaults, bundledPresetVersions, defaultPresets, shadowedDefaultPresets } =
+    await loadInstallationPresets(configuration, configurationPath);
   const occ = object(configuration.occ, "occ");
   closed(occ, ["cluster"], "occ");
   const cluster = nonempty(occ.cluster, "occ.cluster");
@@ -749,6 +523,7 @@ export async function loadInstallationConfiguration(options: {
       "secret",
       "sandbox",
       "credential_gateway",
+      "credential_refresh",
       "plugin",
       "service_account",
       "repo",
@@ -784,11 +559,23 @@ export async function loadInstallationConfiguration(options: {
       OpenShellCredentialGatewayDriver,
     );
   }
+  let credentialRefresh: SelectedDriverConfiguration | undefined;
+  if (drivers.credential_refresh !== undefined) {
+    const selection = object(drivers.credential_refresh, "drivers.credential_refresh");
+    closed(selection, ["id", "configuration"], "drivers.credential_refresh");
+    credentialRefresh = selected(
+      selection,
+      "credential_refresh",
+      "openshell",
+      OpenShellCredentialRefreshDriver,
+    );
+  }
   const backends = backendConfiguration(
     configuration.backend,
     serviceAccount,
     repoSelection,
     credentialGateway?.id,
+    credentialRefresh?.id,
   );
   const openShellBackend = backends.find(
     (backend): backend is OpenShellBackendDefinition => backend.type === "openshell",
@@ -959,9 +746,6 @@ export async function loadInstallationConfiguration(options: {
         "Production Kubernetes workloads require the explicitly configured Codex runtime.",
       );
     }
-    if (kubernetes.servicePrincipalCredentials.mode !== "projectedServiceAccountToken") {
-      throw new Error("Production Codex Agents require projected ServicePrincipal credentials.");
-    }
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
@@ -977,6 +761,7 @@ export async function loadInstallationConfiguration(options: {
       secret,
       ...(sandbox === undefined ? {} : { sandbox }),
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
+      ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
       ...(repoSelection === undefined ? {} : { repo: repoSelection }),
@@ -1022,6 +807,14 @@ export async function loadInstallationConfiguration(options: {
             backend: openShell!,
           },
         );
+  const credentialRefreshDriver =
+    credentialRefresh === undefined
+      ? undefined
+      : new OpenShellCredentialRefreshDriver(credentialRefresh.configuration, {
+          id: credentialRefresh.id,
+          implementation: credentialRefresh.implementation,
+          backend: openShell!,
+        });
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1052,25 +845,7 @@ export async function loadInstallationConfiguration(options: {
             nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
           ),
         ),
-        readNodeCa: async () => {
-          const path = environment.NODE_EXTRA_CA_CERTS;
-          if (path === undefined) {
-            return undefined;
-          }
-          const bundle = await readFile(path, "utf8");
-          const certificates = bundle.match(
-            /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
-          );
-          if (
-            certificates === null ||
-            certificates.reduce((rest, certificate) => rest.replace(certificate, ""), bundle).trim()
-          ) {
-            throw new Error("The Harness trust bundle must contain only public CA certificates.");
-          }
-          return certificates
-            .map((certificate) => new X509Certificate(certificate).toString())
-            .join("\n");
-        },
+        readNodeCa: () => readHarnessNodeCa(environment),
       },
     );
   }
@@ -1103,24 +878,19 @@ export async function loadInstallationConfiguration(options: {
   }
   return Object.freeze({
     defaultPresets: Object.freeze(defaultPresets),
+    shadowedDefaultPresets: Object.freeze(shadowedDefaultPresets),
+    bundledPresetVersions,
     installation,
     computeDriver,
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+    ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),
   });
-}
-
-export async function loadOperationalLoggingConfiguration(options: {
-  readonly mode: "development" | "production";
-  readonly environment?: Readonly<Record<string, string | undefined>>;
-}): Promise<LoggingConfiguration> {
-  const { configuration } = await startupConfiguration(options, false);
-  return operationalLoggingConfiguration(configuration?.logging);
 }
 
 async function loadBundledOpenShellSandboxDriver(): Promise<BundledOpenShellSandboxDriverModule> {
@@ -1161,64 +931,4 @@ function validateCreatedSandboxDriver(
     throw new Error("drivers.sandbox factory returned an invalid Driver contract.");
   }
   return driver;
-}
-
-function createExternalDriver(
-  implementation: ExternalDriverModule,
-  selection: SelectedDriverConfiguration,
-  capability: "configuration" | "iam" | "compute" | "sandbox",
-  platformState?: NativeIAMStateStore,
-): ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver {
-  if (capability === "iam" && typeof platformState?.loadNativeIAMState !== "function") {
-    throw new Error("drivers.iam factory requires platform state.");
-  }
-  const created = object(
-    implementation.createDriver({
-      id: selection.id,
-      implementation: selection.implementation,
-      configuration: selection.configuration,
-      ...(platformState === undefined ? {} : { platformState }),
-      ...(capability === "compute" ? { getOperationAbortSignal: currentComputeAbortSignal } : {}),
-    }),
-    `drivers.${capability} factory result`,
-  );
-  if (
-    created.capability !== capability ||
-    created.id !== selection.id ||
-    created.implementation !== selection.implementation
-  ) {
-    throw new Error(`drivers.${capability} factory returned an unselected Driver identity.`);
-  }
-  const methods =
-    capability === "configuration"
-      ? ["create", "read", "update", "delete", "validate"]
-      : capability === "iam"
-        ? ["lookupIdentity", "authorize"]
-        : capability === "compute"
-          ? [
-              "ensureNamespace",
-              "deleteNamespace",
-              "prepareRevision",
-              "stopRevision",
-              "retireRevision",
-            ]
-          : ["cleanup"];
-  if (methods.some((method) => typeof created[method] !== "function")) {
-    throw new Error(`drivers.${capability} factory returned an invalid Driver contract.`);
-  }
-  if (
-    capability === "sandbox" &&
-    ((created.ensureNamespace !== undefined && typeof created.ensureNamespace !== "function") ||
-      (created.provisionHarness !== undefined && typeof created.provisionHarness !== "function"))
-  ) {
-    throw new Error("drivers.sandbox factory returned invalid optional lifecycle hooks.");
-  }
-  if (
-    capability === "compute" &&
-    created.setLifecycleDrivers !== undefined &&
-    typeof created.setLifecycleDrivers !== "function"
-  ) {
-    throw new Error("drivers.compute factory returned invalid lifecycle Driver wiring.");
-  }
-  return created as unknown as ConfigurationDriver | IAMDriver | ComputeDriver | SandboxDriver;
 }

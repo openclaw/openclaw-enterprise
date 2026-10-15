@@ -31,8 +31,8 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
   [credential service](../flows/repository-credentials.md), and
   [repository configuration](../flows/repository-credential-configuration.md)
 - [Repository credential tests](../testing/repository-credentials.md); the
-  [original RFC](../../specs/rfcs/31-repository-credentials/index.md) and
-  [qualification record](../../specs/rfcs/31-repository-credentials/qualification.md)
+  [original RFC](../../specs/rfcs/0008-repository-credentials/index.md) and
+  [qualification record](../../specs/rfcs/0008-repository-credentials/qualification.md)
   preserve proposal and historical evidence separately from current support
 
 - [Namespace IAM policy](../flows/namespace-iam-policy.md): authorized Role and AccessBinding changes and audit commit

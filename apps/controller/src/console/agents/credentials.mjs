@@ -14,6 +14,27 @@ function slackEnabled(values) {
   );
 }
 
+// Named accounts must not use the standard keys: OpenClaw reads SLACK_APP_TOKEN and
+// SLACK_BOT_TOKEN as an extra implicit default account. For them, require exactly the
+// environment keys the native document references; null means the default account only.
+function namedSlackAccountKeys(values) {
+  const slack = values?.channels?.slack;
+  if (slack?.accounts === undefined && slack?.account === undefined) {
+    return null;
+  }
+  const accounts =
+    slack.accounts !== null && typeof slack.accounts === "object" ? slack.accounts : {};
+  const keys = new Set();
+  for (const account of [slack, ...Object.values(accounts)]) {
+    for (const ref of [account?.appToken, account?.botToken]) {
+      if (ref?.source === "env" && typeof ref.id === "string") {
+        keys.add(ref.id);
+      }
+    }
+  }
+  return [...keys].sort();
+}
+
 function teamsEnabled(values) {
   const teams = values?.channels?.msteams;
   return (
@@ -48,11 +69,15 @@ export function channelCredentialBlockReason(values) {
 }
 
 export function missingChannelCredentialGroups(values, configuration) {
-  const missing = [];
-  if (slackEnabled(values) && !hasSlackBindings(configuration)) {
-    missing.push("Slack Secret bindings");
+  if (!slackEnabled(values)) {
+    return [];
   }
-  return missing;
+  const named = namedSlackAccountKeys(values);
+  if (named === null) {
+    return hasSlackBindings(configuration) ? [] : ["Slack Secret bindings"];
+  }
+  const unbound = named.filter((key) => !secretIdForBinding(configuration?.secretBindings?.[key]));
+  return unbound.length ? [`Slack Secret bindings (${unbound.join(", ")})`] : [];
 }
 
 export function hasRequiredChannelCredentials(values, configuration) {
@@ -88,7 +113,9 @@ function isDefinitiveRejection(error) {
 
 function renderSlackBindings(state) {
   const list = element("dl", { className: "credential-status-list" });
-  for (const binding of SLACK_SECRET_BINDINGS) {
+  const named = namedSlackAccountKeys(state.values);
+  const bindings = named?.map((key) => ({ key, label: key })) ?? SLACK_SECRET_BINDINGS;
+  for (const binding of bindings) {
     const stored = Boolean(secretIdForBinding(state.configuration.secretBindings?.[binding.key]));
     list.append(
       element("dt", {}, binding.label),
@@ -239,6 +266,13 @@ export function createChannelSecretsPanel({
   function renderChannelForm(error) {
     if (!slackEnabled(state.values)) {
       return null;
+    }
+    if (namedSlackAccountKeys(state.values) !== null) {
+      return element(
+        "p",
+        { className: "hint" },
+        "Named Slack accounts use their own token keys. Bind them through the Configuration API.",
+      );
     }
     const formId = "runtime-channel-secrets-form";
     const draft = {

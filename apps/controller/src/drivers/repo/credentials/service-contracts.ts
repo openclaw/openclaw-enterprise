@@ -65,6 +65,10 @@ export interface ServiceLimits {
   readonly gitFetchInputBytes: number;
   readonly gitPushInputBytes: number;
   readonly gitResponseBytes: number;
+  readonly gitFetchResponseBytes: number;
+  readonly gitFetchStallMs: number;
+  readonly gitFetchFirstHeaderMs: number;
+  readonly gitFetchExchangeMs: number;
   readonly apiInputBytes: number;
   readonly apiResponseBytes: number;
   readonly controlBodyBytes: number;
@@ -74,6 +78,7 @@ export interface ServiceLimits {
   readonly inputMs: number;
   readonly firstHeaderMs: number;
   readonly exchangeMs: number;
+  readonly maxExchangeMs: number;
   readonly providerActionMs: number;
   readonly shutdownGraceMs: number;
   readonly credentialMarginMs: number;
@@ -95,6 +100,9 @@ export interface SafeConfigurationSummary {
   readonly gatewayOrigin: string;
   readonly profiles: readonly string[];
   readonly maximumDurationSeconds: number;
+  readonly authority: "github-app" | "github-app-registry" | "github-token-development";
+  /** Token authority only: the class derived from the token prefix, never its value. */
+  readonly tokenClass?: string;
 }
 export interface SessionControl {
   open(

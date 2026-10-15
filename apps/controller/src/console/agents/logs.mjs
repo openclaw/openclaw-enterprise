@@ -1,5 +1,6 @@
 import { element, button } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
+import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
@@ -9,25 +10,7 @@ const TAIL_LINES = 200;
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();
 const deniedStatusViews = new Set();
-
-const SOURCE_LABELS = {
-  gateway: "Gateway",
-  agent: "Agent (Harness)",
-  sandbox: "Sandbox (policy decisions)",
-};
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
-const GAP_LABELS = {
-  stream_replaced: "Container restarted",
-  window_exceeded: "Lines skipped",
-  cursor_expired: "View resumed",
-  truncated: "Page limit reached",
-  buffer_lost: "Sandbox buffer lost lines",
-};
-const WITHHELD_LABELS = {
-  unrecognised_structured: "structured output withheld",
-  oversized: "oversized lines withheld",
-  malformed: "malformed structured lines withheld",
-};
 
 function runtimeErrorText(error, tier, source) {
   if (error.status === 403) {
@@ -68,158 +51,6 @@ function runtimeErrorText(error, tier, source) {
 
 function withRequestId(text, error) {
   return error.requestId ? `${text} Request ID: ${error.requestId}` : text;
-}
-
-function age(timestamp) {
-  const started = Date.parse(timestamp ?? "");
-  if (!Number.isFinite(started)) {
-    return "Unknown age";
-  }
-  const minutes = Math.max(0, Math.round((Date.now() - started) / 60_000));
-  if (minutes < 60) {
-    return `${minutes} min`;
-  }
-  const hours = Math.round(minutes / 60);
-  return hours < 48 ? `${hours} h` : `${Math.round(hours / 24)} d`;
-}
-
-function podCard(pod) {
-  const container = pod.containers.find(({ name }) => name === pod.role) ?? pod.containers[0];
-  const termination = container?.lastTermination;
-  const details = element("dl", { className: "credential-status-list" });
-  const add = (name, value) => details.append(element("dt", {}, name), element("dd", {}, value));
-  add("Phase", pod.phase);
-  add("Ready", pod.ready ? "Yes" : "No");
-  add("Restarts", String(container?.restartCount ?? 0));
-  if (container && container.state !== "running") {
-    add("State", `${container.state}${container.reason ? ` · ${container.reason}` : ""}`);
-  }
-  if (termination) {
-    add(
-      "Last termination",
-      [
-        termination.reason ?? "Unknown reason",
-        termination.exitCode === null ? null : `exit ${termination.exitCode}`,
-        termination.finishedAt ? displayDate(termination.finishedAt) : null,
-      ]
-        .filter(Boolean)
-        .join(" · "),
-    );
-  }
-  add("Age", age(pod.createdAt));
-  const warnings = pod.events.filter(({ type }) => type === "Warning").slice(0, 5);
-  return element(
-    "article",
-    { className: "runtime-pod", "aria-label": `${SOURCE_LABELS[pod.role]} Pod ${pod.name}` },
-    element(
-      "h4",
-      {},
-      `${SOURCE_LABELS[pod.role] ?? pod.role}${pod.cluster === "execution" ? " · execution cluster" : ""}`,
-    ),
-    element("p", { className: "muted" }, pod.name),
-    details,
-    warnings.length
-      ? element(
-          "ul",
-          { className: "runtime-events", "aria-label": "Recent warning Events" },
-          ...warnings.map((event) =>
-            element(
-              "li",
-              {},
-              `${event.container ? `${event.container} · ` : ""}${event.reason}${event.count > 1 ? ` ×${event.count}` : ""}: ${event.message}`,
-            ),
-          ),
-        )
-      : null,
-  );
-}
-
-/**
- * Which rule decided a sandbox policy decision (AL3). OpenShell names the rule and its
- * engine on every decision; the policy generation is missing on most paths, so a missing
- * value reads "unknown", never blank. `-` is OpenShell's name for "no rule matched".
- */
-function policyProvenance(fields = {}) {
-  const decision =
-    fields.action !== undefined || fields.rule_name !== undefined || fields.rule_type !== undefined;
-  if (!decision) {
-    return null;
-  }
-  const value = (name) =>
-    fields[name] === undefined || String(fields[name]) === "" ? "unknown" : String(fields[name]);
-  const rule = fields.rule_name === "-" ? "no matching rule" : value("rule_name");
-  return `rule ${rule} · engine ${value("rule_type")} · policy generation ${value("policy_generation")}`;
-}
-
-// OpenShell records no Agent turn, request or session id, so a sandbox decision can only
-// be related to Gateway or Harness lines by time. Never present that as exact (AL6).
-const INFERRED_JOIN_LABEL = "Gateway lines: inferred (time window)";
-const INFERRED_JOIN_TITLE =
-  "OpenShell does not record which Agent turn made this request. Gateway or Harness lines near this time may be related; clocks on different nodes can differ.";
-
-function recordRow(record) {
-  if (record.type === "gap") {
-    return element(
-      "div",
-      { className: "log-row log-row-gap", role: "note" },
-      element(
-        "strong",
-        {},
-        record.reason === "stream_replaced" && record.stream?.source === "sandbox"
-          ? "Sandbox recreated"
-          : (GAP_LABELS[record.reason] ?? record.reason),
-      ),
-      element("span", {}, ` ${record.remedy}`),
-    );
-  }
-  if (record.type === "withheld") {
-    return element(
-      "div",
-      { className: "log-row log-row-withheld", role: "note" },
-      `${record.count} ${WITHHELD_LABELS[record.reason] ?? "lines withheld"}`,
-    );
-  }
-  const summary = element(
-    "span",
-    { className: "log-line" },
-    element("span", { className: "log-time" }, record.time ? displayDate(record.time) : "—"),
-    element("span", { className: `log-level log-level-${record.level}` }, record.level),
-    element("span", { className: "log-kind" }, record.kind),
-    record.subsystem ? element("span", { className: "log-subsystem" }, record.subsystem) : null,
-    element("span", { className: "log-message" }, record.message),
-    // A failure code is the point of the line; keep it visible without expanding.
-    record.fields?.code === undefined
-      ? null
-      : element("span", { className: "log-code" }, `code=${record.fields.code}`),
-  );
-  const provenance = record.kind === "sandbox" ? policyProvenance(record.fields) : null;
-  if (provenance !== null) {
-    summary.append(
-      element("span", { className: "log-provenance" }, provenance),
-      element("span", { className: "log-join", title: INFERRED_JOIN_TITLE }, INFERRED_JOIN_LABEL),
-    );
-  }
-  let row;
-  if (!record.fields || Object.keys(record.fields).length === 0) {
-    row = element("div", { className: "log-row" }, summary);
-  } else {
-    const fields = element("dl", { className: "log-fields" });
-    for (const [name, value] of Object.entries(record.fields)) {
-      fields.append(element("dt", {}, name), element("dd", {}, String(value)));
-    }
-    row = element("details", { className: "log-row" }, element("summary", {}, summary), fields);
-  }
-  // Filters match only lines; gap and withheld rows always stay visible.
-  row.dataset.level = record.level;
-  row.dataset.search = [
-    record.kind,
-    record.subsystem ?? "",
-    record.message,
-    ...Object.entries(record.fields ?? {}).map(([name, value]) => `${name}=${value}`),
-  ]
-    .join(" ")
-    .toLowerCase();
-  return row;
 }
 
 /**
@@ -265,7 +96,13 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   );
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
   const podSelect = element("select", { id: "runtime-log-pod", hidden: true });
-  const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod");
+  const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod / container");
+  const podPicker = element(
+    "div",
+    { className: "log-picker log-pod-picker", hidden: true },
+    podLabel,
+    podSelect,
+  );
   const previous = element("input", {
     type: "checkbox",
     id: "runtime-log-previous",
@@ -280,6 +117,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   });
   const followButton = button("Follow", () => setFollow(!following), {
     "aria-pressed": "false",
+    className: "log-follow",
     disabled: true,
   });
   const refreshButton = button("Refresh logs", () => void readLogs({ restart: true }), {
@@ -310,17 +148,32 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     autocomplete: "off",
   });
   filterInput.addEventListener("input", () => applyFilters());
-  const filterStatus = element("p", { className: "hint", role: "status" });
-  const retention = element("p", { className: "hint" });
-  const sourceHint = element("p", { className: "hint", role: "note", hidden: true });
-  const logStatus = element("p", { className: "muted", role: "status" });
-  const logError = element("p", { className: "error", role: "alert", hidden: true });
+  const filterStatus = element("p", { className: "log-filter-status", role: "status" });
+  const retention = element("p", { className: "log-retention" });
+  const sourceHint = element("p", { className: "log-source-hint", role: "note", hidden: true });
+  const logStatus = element("p", { className: "log-output-status", role: "status" });
+  const logError = element("p", { className: "log-error", role: "alert", hidden: true });
   const pane = element("div", {
     className: "log-pane",
     role: "log",
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  // Detaching the view for Back's cache resets the pane to the top; resume restores the
+  // reader's last position so follow neither stalls as "scrolled up" nor jumps. A reader
+  // at the bottom returns to the bottom, even if a late scroll event or resize moved it.
+  let paneScrollTop = 0;
+  let paneAtBottom = true;
+  pane.addEventListener(
+    "scroll",
+    () => {
+      if (pane.isConnected) {
+        paneScrollTop = pane.scrollTop;
+        paneAtBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
+      }
+    },
+    { passive: true },
+  );
 
   let description = null;
   let cursor = null;
@@ -337,6 +190,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   let lastStream = null;
 
   const current = () => context.isCurrent();
+  // Runtime reads are live and audited: a view restored by Back resumes them instead of
+  // having the console replay every one of them to revalidate the cached view.
+  const read = (path, options = {}) => context.request(path, { ...options, revalidate: false });
 
   function selectedSource() {
     return description?.sources.find(({ id }) => id === sourceSelect.value);
@@ -344,7 +200,11 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   function selectedPod() {
     const source = selectedSource();
-    return source?.pods.find(({ name }) => name === podSelect.value) ?? source?.pods[0];
+    return (
+      source?.pods.find(
+        ({ name, container }) => JSON.stringify([name, container]) === podSelect.value,
+      ) ?? source?.pods[0]
+    );
   }
 
   // A sandbox source has no Pods: OCC derives the Sandbox from the revision.
@@ -357,6 +217,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     const query = new URLSearchParams({ source: source.id });
     if (source.kind !== "sandbox" && pod) {
       query.set("pod", pod.name);
+      query.set("container", pod.container);
     }
     if (previous.checked) {
       query.set("previous", "true");
@@ -408,11 +269,20 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     const source = selectedSource();
     const chosenPod = podSelect.value;
     podSelect.replaceChildren(
-      ...(source?.pods ?? []).map((pod) => element("option", { value: pod.name }, pod.name)),
+      ...(source?.pods ?? []).map((pod) =>
+        element(
+          "option",
+          { value: JSON.stringify([pod.name, pod.container]) },
+          `${pod.name} / ${pod.container}`,
+        ),
+      ),
     );
     podSelect.hidden = (source?.pods.length ?? 0) <= 1;
     podLabel.hidden = podSelect.hidden;
-    if (source?.pods.some(({ name }) => name === chosenPod)) {
+    podPicker.hidden = podSelect.hidden;
+    if (
+      source?.pods.some(({ name, container }) => JSON.stringify([name, container]) === chosenPod)
+    ) {
       podSelect.value = chosenPod;
     }
     retention.textContent = source?.retention ?? "";
@@ -478,7 +348,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!document.hidden) {
       try {
         const first = description === null;
-        description = await context.request(base);
+        description = await read(base);
         if (!current()) {
           return;
         }
@@ -515,7 +385,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (row.dataset.level === undefined) {
       return true;
     }
-    const text = filterInput.value.trim().toLowerCase();
+    // Rows hold escaped text, so a pasted line with an invisible character still matches.
+    const text = visibleText(filterInput.value.trim()).toLowerCase();
     return (
       !hiddenLevels.has(row.dataset.level) && (text === "" || row.dataset.search.includes(text))
     );
@@ -556,6 +427,29 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
   }
 
+  // A fresh download can name a different Pod, or report that no Pod remains.
+  // Only downloads without production metadata fall back to the loaded page.
+  function downloadPodName(text, source, pod) {
+    if (pod) {
+      return pod.name;
+    }
+    const header = text.slice(0, Math.max(0, text.indexOf("\n")));
+    const served = header.startsWith("# ") ? / pod=(\S+)/.exec(header)?.[1] : undefined;
+    const prefix = `# agent=${agent.id} revision=${revisionId} source=${source.id} `;
+    if (
+      source.kind === "container" &&
+      header.startsWith(prefix) &&
+      / observedAt=\S+ withheld=\d+$/.test(header)
+    ) {
+      return served ?? "no-pod";
+    }
+    return (
+      served ??
+      (statusDenied && lastStream?.source === source.id ? lastStream.pod : null) ??
+      source.id
+    );
+  }
+
   // A download is its own audited read of the last 1000 lines through the session.
   async function download() {
     const source = selectedSource();
@@ -567,7 +461,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     query.set("download", "true");
     downloadButton.disabled = true;
     try {
-      const text = await context.request(`${base}/logs?${query}`, { responseType: "text" });
+      const text = await read(`${base}/logs?${query}`, { responseType: "text" });
       if (!current()) {
         return;
       }
@@ -579,7 +473,12 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
       const link = element("a", {
         href: url,
-        download: downloadFileName(agent.id, revisionId, source.id, pod?.name ?? source.id),
+        download: downloadFileName(
+          agent.id,
+          revisionId,
+          source.id,
+          downloadPodName(text, source, pod),
+        ),
         hidden: true,
       });
       section.append(link);
@@ -655,14 +554,15 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
-      const page = await context.request(`${base}/logs?${query}`);
+      const page = await read(`${base}/logs?${query}`);
       if (!current() || restartPending) {
         return;
       }
       showLogError(null);
       cursor = page.cursor;
       appendRecords(page.records);
-      if (statusDenied && page.stream) {
+      if (statusDenied) {
+        // A page with no running Pod clears the last Pod, so nothing names it.
         lastStream = page.stream;
         renderPickers();
       }
@@ -688,10 +588,10 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         return;
       }
       if (error.code === "RUNTIME_LOGS_CURSOR_INVALID") {
-        // A new audited view replaces a rejected cursor.
+        // A new audited view replaces a rejected cursor. It starts in `finally`, after
+        // this read releases `reading`, so the new read keeps its own guard.
         cursor = null;
-        reading = false;
-        void readLogs({ restart: true });
+        restartPending = true;
         return;
       }
       if (restart) {
@@ -745,43 +645,78 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     element("h3", {}, "Runtime"),
     stripStatus,
     strip,
-    element("h3", {}, "Logs"),
-    element(
-      "p",
-      { className: "muted" },
-      "Operational output and sandbox policy decisions only: credential-shaped text is masked and structured payloads, prompts and protocol traffic are withheld. Nothing here is stored.",
-    ),
     element(
       "div",
-      { className: "log-toolbar" },
-      element("label", { for: "runtime-log-source" }, "Source"),
-      sourceSelect,
-      podLabel,
-      podSelect,
-      element("label", { className: "checkbox" }, previous, " Previous instance"),
-      element("label", { className: "checkbox" }, includeDebug, " Include debug"),
-      followButton,
-      refreshButton,
-      downloadButton,
+      { className: "log-viewer" },
+      element(
+        "div",
+        { className: "log-viewer-header" },
+        element("h3", {}, "Logs"),
+        element(
+          "p",
+          { className: "log-safety" },
+          "Only operational output and sandbox policy decisions. Credential-shaped text is masked; structured payloads, prompts and protocol traffic are withheld. Nothing here is stored.",
+        ),
+      ),
+      element(
+        "div",
+        { className: "log-controls" },
+        element(
+          "div",
+          { className: "log-toolbar" },
+          element(
+            "div",
+            { className: "log-picker" },
+            element("label", { for: "runtime-log-source" }, "Source"),
+            sourceSelect,
+          ),
+          podPicker,
+          element(
+            "div",
+            { className: "log-options" },
+            element("label", { className: "log-option" }, previous, " Previous instance"),
+            element("label", { className: "log-option" }, includeDebug, " Include debug"),
+          ),
+          element("div", { className: "log-actions" }, followButton, refreshButton, downloadButton),
+        ),
+        element(
+          "div",
+          { className: "log-filters", role: "group", "aria-label": "Log filters" },
+          element(
+            "div",
+            { className: "log-levels" },
+            element("span", { className: "log-filter-label" }, "Levels"),
+            ...levelChips,
+          ),
+          element(
+            "div",
+            { className: "log-search" },
+            element("label", { for: "runtime-log-filter" }, "Filter"),
+            filterInput,
+          ),
+        ),
+        filterStatus,
+      ),
+      sourceHint,
+      logError,
+      logStatus,
+      pane,
+      retention,
     ),
-    element(
-      "div",
-      { className: "log-toolbar", role: "group", "aria-label": "Log filters" },
-      element("span", { className: "muted" }, "Levels"),
-      ...levelChips,
-      element("label", { for: "runtime-log-filter" }, "Filter"),
-      filterInput,
-    ),
-    filterStatus,
-    retention,
-    sourceHint,
-    logStatus,
-    logError,
-    pane,
   );
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));
   }
+  // Timers that fired while Back's cache held this view stopped; pick both polls up again.
+  context.onResume?.(() => {
+    if (current()) {
+      pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
+      void loadStatus();
+      if (following) {
+        scheduleFollow(0);
+      }
+    }
+  });
   applyFilters();
   void loadStatus();
   return section;

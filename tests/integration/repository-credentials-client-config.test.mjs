@@ -8,6 +8,7 @@ import {
   lstat,
   mkdir,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -15,7 +16,7 @@ import {
 } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
-import test from "node:test";
+import { describe, it, test as isolatedTest } from "node:test";
 import { createServer } from "node:https";
 import { createServer as createHttpServer } from "node:http";
 import { once } from "node:events";
@@ -34,12 +35,38 @@ import {
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   cleanEnvironment,
   listen,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+
+// The two isolated cases mock child_process for the whole process, so they run
+// alone, first. Every other case owns its directories, servers and children and
+// mostly waits on stock Git; they register here and run two at a time in one
+// suite at the end of the file. The long push-policy case is registered last on
+// purpose: started first, it shares the CPU with every other case, and on an
+// overloaded host (8 copies on 1 CPU) that pushed it past its timeout.
+const cases = [];
+const test = (...registration) => cases.push(registration);
+
+// Runs the tasks two at a time and rethrows the first failure after all settle.
+async function pairwise(tasks) {
+  const queue = [...tasks];
+  const results = await Promise.allSettled(
+    [0, 1].map(async () => {
+      while (queue.length > 0) {
+        await queue.shift()();
+      }
+    }),
+  );
+  const failed = results.find(({ status }) => status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
+}
 
 const launcher = resolve("apps/controller/src/drivers/repo/github/credentials/client/launch.ts");
 const helper = resolve("apps/controller/src/drivers/repo/github/credentials/client/git-helper.ts");
@@ -69,7 +96,7 @@ const gitEnvironment = (root, extra = {}) => {
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
 
-test("gh refuses mixed and unsafe session files before starting a child", async (t) => {
+isolatedTest("gh refuses mixed and unsafe session files before starting a child", async (t) => {
   const parent = await temporaryDirectory(t);
   const session = join(parent, "session");
   await writeClientConfiguration(opened, session, undefined);
@@ -141,7 +168,7 @@ test("gh refuses mixed and unsafe session files before starting a child", async 
   await refuses(/unsafe-client-file/);
 });
 
-test("gh rechecks expiry after reading private session files", async (t) => {
+isolatedTest("gh rechecks expiry after reading private session files", async (t) => {
   const parent = await temporaryDirectory(t);
   const session = join(parent, "session");
   await writeClientConfiguration(opened, session, undefined);
@@ -249,6 +276,97 @@ test("generated native configuration selects exact endpoint authority through st
     );
     assert.equal(result.code, 0);
     assert.equal(result.stdout, "");
+  }
+});
+
+test("single-session launcher preserves native Git signal exit statuses", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const session = join(parent, "signal-session");
+  const repository = join(parent, "repository.git");
+  await writeClientConfiguration(opened, session, undefined);
+  const env = cleanEnvironment({ HOME: parent, GIT_CONFIG_GLOBAL: "/dev/null" });
+  await run("/usr/bin/git", ["init", "--bare", "--quiet", repository], { env });
+
+  // Numeric Git errors must remain numeric; only signal termination gets 128 + signal.
+  const invalid = await run(
+    process.execPath,
+    [launcher, session, "git", "-C", repository, "rev-parse", "--verify", "missing-ref"],
+    { env, allowFailure: true },
+  );
+  assert.equal(invalid.code, 128);
+  for (const [signal, expected] of [
+    ["SIGINT", 130],
+    ["SIGTERM", 143],
+  ]) {
+    const child = childProcess.spawn(
+      process.execPath,
+      [launcher, session, "git", "-C", repository, "cat-file", "--batch"],
+      { env, detached: true, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let output = "";
+    let errors = "";
+    let readyResolve;
+    let readyReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    const close = new Promise((resolve, reject) => {
+      child.once("error", (error) => {
+        readyReject(error);
+        reject(error);
+      });
+      child.once("close", (code, endedBy) => {
+        readyReject(new Error("Git ended before readiness"));
+        resolve({ code, endedBy });
+      });
+    });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes(`${"0".repeat(40)} missing\n`)) {
+        readyResolve();
+      }
+    });
+    child.stderr.on("data", (chunk) => {
+      errors += chunk;
+    });
+    child.stdin.on("error", () => {});
+    const stop = () => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          throw error;
+        }
+      }
+    };
+    // A hang guard only: on a loaded host, 10 s could expire after readiness and
+    // kill Git before the process check below.
+    const timer = setTimeout(() => {
+      readyReject(new Error("native Git signal test timed out"));
+      stop();
+    }, 30000);
+    try {
+      // A batch reply proves Git is alive, not that the launcher installed its handlers.
+      // Signal the owned native child to exercise the launcher's child-exit mapping.
+      child.stdin.write(`${"0".repeat(40)}\n`);
+      await ready;
+      const processes = await run("/bin/ps", ["-axo", "pid=,ppid=,comm="], { env });
+      const children = processes.stdout
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/))
+        .filter((fields) => Number(fields[1]) === child.pid);
+      assert.equal(children.length, 1, "launcher must own exactly one native Git child");
+      assert.match(children[0][2], /(?:^|\/)git$/);
+      process.kill(Number(children[0][0]), signal);
+      const result = await close;
+      assert.equal(result.endedBy, null, errors);
+      assert.equal(result.code, expected, `${signal}: ${errors}`);
+    } finally {
+      clearTimeout(timer);
+      stop();
+      await close;
+    }
   }
 });
 
@@ -501,7 +619,7 @@ test("encoded session files support the actual client without the operator write
 test("operator rejects unsafe or conflicting bound request files before admission", async (t) => {
   const parent = await temporaryDirectory(t);
   const requestPath = join(parent, "request.json");
-  const socket = join(parent, "control.sock");
+  const socket = join(await socketDirectory(t, "operator-control-"), "control.sock");
   const requests = [];
   // Observe the actual operator's HTTP boundary; this does not emulate admission.
   const server = createHttpServer(async (incoming, response) => {
@@ -593,16 +711,11 @@ test("operator rejects unsafe or conflicting bound request files before admissio
 
 test(
   "native push policy protects every destination and preserves common-directory hooks",
-  { timeout: 60000 },
+  { timeout: 120000 },
   async (t) => {
-    const reservation = createHttpServer();
-    reservation.listen(0, "127.0.0.1");
-    await once(reservation, "listening");
-    const port = reservation.address().port;
-    await new Promise((done) => reservation.close(done));
     const origin = "https://localhost";
     const fixture = await startRegistryCredentialServiceFixture(t, {
-      gateway: { listen: "127.0.0.1:" + port, publicOrigin: origin },
+      gateway: { listen: "127.0.0.1:0", publicOrigin: origin },
       repositories: [
         {
           repositoryRef: "guarded",
@@ -636,7 +749,7 @@ test(
         socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
         return;
       }
-      const upstream = connect(port, "127.0.0.1", () => {
+      const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         upstream.write(head);
         socket.pipe(upstream).pipe(socket);
@@ -692,48 +805,49 @@ test(
     );
     await invoke(["-C", linked, "push", "origin", "+HEAD:refs/heads/agent/one"]);
     assert.equal(await guarded.git.ref("refs/heads/agent/one"), head);
-    // Equivalent native HTTPS spellings retain the same allowlist decision.
-    for (const [index, destination] of [
+    // Equivalent native HTTPS spellings retain the same allowlist decision. The
+    // pushes are independent, so each batch runs two at a time (the gateway admits
+    // four exchanges per session): first the allowed pushes, then every refused
+    // one, with no allowed push in flight.
+    const spellings = [
       "https://github.com/fixture/repository.git/",
       "https://github.com/fixture/repository/",
       "https://gateway-session@localhost/fixture/repository.git",
       "https://gateway-session@localhost/fixture/repository.git/",
-    ].entries()) {
-      const ref = `refs/heads/agent/spelling-${index}`;
-      await invoke(["-C", linked, "push", destination, "HEAD:" + ref]);
-      assert.equal(await guarded.git.ref(ref), head);
-      const before = await snapshot();
-      const trace = guarded.git.trace.length;
-      const denied = await invoke(["-C", linked, "push", destination, "HEAD:refs/heads/main"], {
-        allowFailure: true,
-      });
-      assert.notEqual(denied.code, 0);
-      assert.match(denied.stderr, /repository-push-ref-not-allowed/);
-      assert.equal(await snapshot(), before);
-      assert.equal(
-        guarded.git.trace.slice(trace).some(({ path }) => path.endsWith("/git-receive-pack")),
-        false,
-      );
-    }
-    for (const refs of [
-      ["HEAD:refs/heads/agent/mixed", "HEAD:refs/heads/main"],
-      ["HEAD:refs/tags/v1"],
-      [":refs/heads/main"],
-      ["HEAD:refs/heads/agents/outside"],
-    ]) {
-      const before = await snapshot();
-      const trace = guarded.git.trace.length;
-      const result = await invoke(["-C", linked, "push", "origin", ...refs], {
-        allowFailure: true,
-      });
-      assert.notEqual(result.code, 0);
-      assert.match(result.stderr, /repository-push-ref-not-allowed/);
-      assert.equal(await snapshot(), before);
-      assert.equal(
-        guarded.git.trace.slice(trace).some(({ path }) => path.endsWith("/git-receive-pack")),
-        false,
-      );
-    }
+    ];
+    await pairwise(
+      spellings.map((destination, index) => async () => {
+        const ref = `refs/heads/agent/spelling-${index}`;
+        await invoke(["-C", linked, "push", destination, "HEAD:" + ref]);
+        assert.equal(await guarded.git.ref(ref), head);
+      }),
+    );
+    const before = await snapshot();
+    const trace = guarded.git.trace.length;
+    await pairwise(
+      [
+        ...spellings.map((destination) => [destination, "HEAD:refs/heads/main"]),
+        ["origin", "HEAD:refs/heads/agent/mixed", "HEAD:refs/heads/main"],
+        ["origin", "HEAD:refs/tags/v1"],
+        ["origin", ":refs/heads/main"],
+        ["origin", "HEAD:refs/heads/agents/outside"],
+      ].map((destinationAndRefs) => async () => {
+        const denied = await invoke(["-C", linked, "push", ...destinationAndRefs], {
+          allowFailure: true,
+        });
+        assert.notEqual(denied.code, 0, destinationAndRefs.join(" "));
+        assert.match(
+          denied.stderr,
+          /repository-push-ref-not-allowed/,
+          destinationAndRefs.join(" "),
+        );
+      }),
+    );
+    assert.equal(await snapshot(), before);
+    assert.equal(
+      guarded.git.trace.slice(trace).some(({ path }) => path.endsWith("/git-receive-pack")),
+      false,
+    );
     await invoke(["-C", linked, "push", "origin", ":refs/heads/agent/one"]);
     assert.equal(
       (await invoke(["-C", linked, "ls-remote", "origin", "refs/heads/agent/one"])).stdout,
@@ -769,3 +883,9 @@ test(
     );
   },
 );
+
+describe("repository credential client configuration", { concurrency: 2 }, () => {
+  for (const registration of cases) {
+    it(...registration);
+  }
+});

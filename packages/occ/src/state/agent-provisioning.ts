@@ -5,7 +5,7 @@ import type {
   ProvisioningEffectReceipt,
   ProvisioningEffectTarget,
 } from "../provisioning-effects.ts";
-import type { WorkClaim } from "./controller-work.ts";
+import type { ControllerWork, WorkClaim } from "./controller-work.ts";
 
 export type ControllerWorkKind = "lifecycle" | "provisioning";
 
@@ -51,9 +51,14 @@ export interface AgentProvisioningCheckpoint {
 }
 
 export interface AgentProvisioningFailure {
-  readonly disposition: "retry" | "permanent";
+  /**
+   * `defer` requeues the work after `delayMs` without spending an attempt: the attempt found
+   * nothing it could act on yet (a pending effect still inside its settle window).
+   */
+  readonly disposition: "retry" | "permanent" | "defer";
   readonly code: string;
   readonly message: string;
+  readonly delayMs?: number;
 }
 
 export interface AgentProvisioningReplay {
@@ -61,8 +66,15 @@ export interface AgentProvisioningReplay {
   readonly replayed: boolean;
 }
 
+export interface AgentProvisioningWithWork {
+  readonly record: Readonly<AgentProvisioningRecord>;
+  readonly work?: Readonly<ControllerWork>;
+}
+
 export interface AgentProvisioningReadRepository {
   findByWorkId(workId: string): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  /** The job and its queue row from one statement, so both reflect the same commits. */
+  findWithWork(workId: string): Promise<Readonly<AgentProvisioningWithWork> | undefined>;
   hasPendingNamespaceProvisioning(namespaceId: string): Promise<boolean>;
   findByAgent(
     namespaceId: string,
@@ -102,16 +114,33 @@ export interface AgentProvisioningRepository extends AgentProvisioningReadReposi
     claim: WorkClaim,
     error: { readonly code: string; readonly message: string },
   ): Promise<Readonly<AgentProvisioningRecord>>;
+  /**
+   * Cancels the Agent's job before handoff. When a worker still held its claim, the job keeps
+   * that claim's lease expiry, the latest moment its former attempt can still be writing.
+   */
   cancelByAgent(
     namespaceId: string,
     agentId: string,
     error: { readonly code: string; readonly message: string },
+  ): Promise<Readonly<AgentProvisioningRecord> | undefined>;
+  /**
+   * Records the receipt for a cancelled job's unsettled transport write once the claim that
+   * began it has lapsed, on the database clock. Returns undefined when nothing was settled.
+   */
+  settleAbandonedEffect(
+    namespaceId: string,
+    agentId: string,
   ): Promise<Readonly<AgentProvisioningRecord> | undefined>;
   retryByWorkId(
     namespaceId: string,
     workId: string,
     actorId: string,
   ): Promise<Readonly<AgentProvisioningRecord>>;
+  /**
+   * Clears a succeeded record's Configuration once its Agent selects another one, so that
+   * Configuration can be deleted. Returns false when the record still holds it.
+   */
+  releaseConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
 const PHASE_ORDER: Record<AgentProvisioningPhase, number> = Object.freeze({
@@ -127,6 +156,8 @@ const SAFE_TOKEN = /^[A-Za-z0-9._~:@/-]{1,200}$/u;
 const EFFECT_OWNER = /^[A-Za-z0-9._~:@/-]{1,600}$/u;
 const REQUEST_FINGERPRINT = /^[a-f0-9]{64}$/u;
 const FAILURE_MESSAGE_MAX_LENGTH = 1_000;
+// A deferral waits out a settle window, never longer than the queue's own maximum backoff.
+const MAX_DEFER_DELAY_MS = 300_000;
 
 function objectRecord(value: unknown, name: string): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -220,14 +251,36 @@ export function validateProvisioningCheckpoint(
 export function validateProvisioningFailure(
   input: AgentProvisioningFailure,
 ): AgentProvisioningFailure {
-  if (input.disposition !== "retry" && input.disposition !== "permanent") {
+  if (
+    input.disposition !== "retry" &&
+    input.disposition !== "permanent" &&
+    input.disposition !== "defer"
+  ) {
     throw new ScopeViolationError("Agent provisioning failure disposition is invalid.");
   }
   const code = safeToken(input.code, "Agent provisioning failure code");
   if (!isNonEmptyString(input.message) || input.message.length > FAILURE_MESSAGE_MAX_LENGTH) {
     throw new ScopeViolationError("Agent provisioning failure message is invalid.");
   }
-  return Object.freeze({ disposition: input.disposition, code, message: input.message });
+  if (input.disposition !== "defer") {
+    if (input.delayMs !== undefined) {
+      throw new ScopeViolationError("Only a deferred Agent provisioning failure has a delay.");
+    }
+    return Object.freeze({ disposition: input.disposition, code, message: input.message });
+  }
+  if (
+    !Number.isSafeInteger(input.delayMs) ||
+    input.delayMs! < 1 ||
+    input.delayMs! > MAX_DEFER_DELAY_MS
+  ) {
+    throw new ScopeViolationError("The deferred Agent provisioning delay is invalid.");
+  }
+  return Object.freeze({
+    disposition: input.disposition,
+    code,
+    message: input.message,
+    delayMs: input.delayMs!,
+  });
 }
 
 export function validateProvisioningEffectSettlement(
@@ -263,5 +316,3 @@ export function copyProvisioningRecord(
 ): Readonly<AgentProvisioningRecord> {
   return immutableCopy(record);
 }
-
-export const provisioningPhaseOrder = Object.freeze({ ...PHASE_ORDER });

@@ -117,6 +117,10 @@ SHA-256 of the exact Namespace, Agent, and AgentRevision IDs.
 <systemdUnitDirectory>/openclaw-enterprise-gateway-<agentHash>.service
 ```
 
+The Driver enables each unit by absolute path. When the configured directory is
+outside systemd's unit load path, lifecycle cleanup relinks the owned unit before
+stopping and disabling it; operators need not register that directory separately.
+
 Each Agent uses a distinct system user and private group. The account name is
 the first 19 characters of `runtime.user`, a hyphen, and the first 12 hex
 characters of SHA-256 of `<namespaceId>:<agentId>`. The Driver creates accounts
@@ -196,10 +200,20 @@ Home, state, operator credentials, and other revisions remain.
 stops/disables their units, removes the unit files, reloads systemd, and removes
 the Namespace tree including state and its owned runtime accounts. If the Namespace tree is already gone, deletion retries cleanup of any remaining
 owned account markers.
+Agent deletion retires every revision, then `deleteAgentRuntimeCredentials`
+verifies ownership, removes the Agent's unit, directory (home, state, operator
+file, port allocation) and runtime account. Absence is success.
 Foreign ownership or configuration failures are permanent; transport, timeouts,
 and unexpected helper failures are retryable.
 
 ## Credentials and supported boundaries
+
+The native listener must serve HTTP for readiness and private traffic.
+`gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
+before backend work. External proxy TLS is independent of this listener setting.
+`plugins.entries.codex.config.appServer.approvalPolicy: "untrusted"`, which the
+OpenClaw runtime retired, is refused the same way. Previously admitted TLS revisions retain their original configuration/hash for
+verified teardown.
 
 When native Configuration omits `gateway.auth.mode`, the Driver renders
 `password` mode with a managed environment SecretRef using
@@ -222,14 +236,14 @@ never put plaintext credentials in native Configuration or Installation YAML.
 
 The revision records only `{ "method": "runtime" }`; there is no Secret source,
 account identity, key value, or configurable environment-variable field in this
-binding. OCC still authorizes deployment and checks gateway `/readyz`, but makes
+binding. Any other method gets `400` naming `harnessAuth.method` at
+deployment, and at Agent create and update when they check the binding. OCC still authorizes deployment and checks gateway `/readyz`, but makes
 no model request and does not inspect the operator file. A gateway can be ready
 while its model credentials are invalid. Verify model access separately.
 
 Redeployment, stop, and revision retirement preserve the operator file. Changing
 it can affect an existing revision without redeployment; restart the process to
-load changed environment values. Namespace deletion removes the owned Namespace
-tree, including this file.
+load changed environment values. Agent and Namespace deletion remove this file.
 
 Embedded Agents may use any channel provider supported by the host's OpenClaw
 build. Separate Unix users and private groups protect sibling state and native

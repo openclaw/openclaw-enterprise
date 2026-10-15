@@ -4,9 +4,9 @@ import type {
   ChannelDriver,
 } from "@openclaw-enterprise/contracts";
 import { ChannelCredentialError, ChannelDirectoryError } from "@openclaw-enterprise/occ";
-import { asRecord } from "@openclaw-enterprise/utils";
+import { asRecord, readCappedBody } from "@openclaw-enterprise/utils";
 import { isIP } from "node:net";
-import { fetch as undiciFetch, ProxyAgent } from "undici";
+import { fetch as undiciFetch, ProxyAgent, type Response as UndiciResponse } from "undici";
 
 const SLACK_API = "https://slack.com/api/";
 const PAGE_SIZE = 100;
@@ -19,6 +19,12 @@ const MANAGED_SERVICE_PROXY_ENDPOINT =
   /^https?:\/\/([a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc):([1-9][0-9]{0,4})$/;
 
 type SlackRecord = Record<string, unknown>;
+
+function configuredValue(value: unknown): boolean {
+  return typeof value === "string"
+    ? value.trim().length > 0
+    : value !== undefined && value !== null;
+}
 
 function boundedString(value: unknown, maxLength = 200): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
@@ -95,6 +101,12 @@ export class SlackChannelDriver implements ChannelDriver {
           "Slack directory proxy must be an HTTP(S) literal IPv4 endpoint or the exact managed Kubernetes Service endpoint with an explicit port.",
         );
       }
+      // Like Compute's channel proxy rule: the unspecified address names no proxy.
+      if (address === "0.0.0.0") {
+        throw new Error(
+          "Slack directory proxy must not use host 0.0.0.0, which names no proxy address.",
+        );
+      }
       this.proxy = new ProxyAgent(proxyUrl);
     }
   }
@@ -109,13 +121,21 @@ export class SlackChannelDriver implements ChannelDriver {
     }
     const signal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     const accounts = asRecord(slack.accounts);
-    const targets =
-      accounts === undefined || Object.keys(accounts).length === 0
-        ? [{ config: slack, path: "/channels/slack" }]
-        : Object.entries(accounts).map(([id, value]) => ({
-            config: { ...slack, ...asRecord(value) },
-            path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
-          }));
+    const named = accounts === undefined ? [] : Object.entries(accounts);
+    // OpenClaw still starts an implicit "default" account from the top-level bot and app
+    // tokens when named accounts exist, unless one of them is named "default".
+    const implicitDefault =
+      named.length === 0 ||
+      (!Object.hasOwn(accounts ?? {}, "default") &&
+        configuredValue(slack.botToken) &&
+        (slack.mode === "http" || configuredValue(slack.appToken)));
+    const targets = [
+      ...(implicitDefault ? [{ config: slack, path: "/channels/slack" }] : []),
+      ...named.map(([id, value]) => ({
+        config: { ...slack, ...asRecord(value) },
+        path: `/channels/slack/accounts/${id.replaceAll("~", "~0").replaceAll("/", "~1")}`,
+      })),
+    ];
     for (const { config, path } of targets) {
       if (config.enabled === false) {
         continue;
@@ -177,11 +197,13 @@ export class SlackChannelDriver implements ChannelDriver {
     if (method !== "auth.test") {
       url.search = parameters.toString();
     }
-    let response: Pick<Response, "status" | "ok" | "text">;
+    let response: Response | UndiciResponse;
     try {
       const options = {
         method: method === "auth.test" ? "POST" : "GET",
         headers: { authorization: `Bearer ${token}` },
+        // Never send the bot token to a redirect target, even on slack.com (finding 1349).
+        redirect: "error" as const,
         signal:
           signal === undefined
             ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
@@ -195,16 +217,20 @@ export class SlackChannelDriver implements ChannelDriver {
     } catch {
       throw new ChannelDirectoryError("unavailable");
     }
-    if (response.status === 429) {
-      throw new ChannelDirectoryError("rate_limited");
-    }
     if (!response.ok) {
-      throw new ChannelDirectoryError("unavailable");
+      await response.body?.cancel().catch(() => {});
+      throw new ChannelDirectoryError(response.status === 429 ? "rate_limited" : "unavailable");
     }
     let body: SlackRecord | undefined;
     try {
-      const content = await response.text();
-      body = content.length <= 2_000_000 ? asRecord(JSON.parse(content)) : undefined;
+      // Each UTF-16 unit decodes from at most three UTF-8 bytes, so a body over 8,000,000
+      // bytes is always over the 2,000,000-character limit: stop reading there.
+      const bytes = await readCappedBody(response.body, 8_000_000);
+      const content = bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+      body =
+        content !== undefined && content.length <= 2_000_000
+          ? asRecord(JSON.parse(content))
+          : undefined;
     } catch {
       throw new ChannelDirectoryError("invalid_response");
     }

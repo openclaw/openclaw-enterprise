@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,50 +23,74 @@ import (
 )
 
 func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
-	requestStarted := make(chan struct{}, 1)
-	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-		requestStarted <- struct{}{}
-		select {
-		case <-request.Context().Done():
-		case <-release:
-		}
-	}))
-	defer server.Close()
-	defer close(release)
+	for _, test := range []struct {
+		name            string
+		args            []string
+		lookupRevisions bool
+		cleanExit       bool
+	}{
+		{name: "installation", args: []string{"installation", "get"}},
+		{name: "logs Agent lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway"}},
+		{name: "follow Agent lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway", "--follow"}, cleanExit: true},
+		{name: "logs revision lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway"}, lookupRevisions: true},
+		{name: "follow revision lookup", args: []string{"agent", "logs", "agt_22222222-2222-4222-8222-222222222222", "--source", "gateway", "--follow"}, lookupRevisions: true, cleanExit: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requestStarted := make(chan struct{}, 1)
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if test.lookupRevisions && request.URL.Path == "/namespaces/ns_11111111-1111-4111-8111-111111111111/agents/agt_22222222-2222-4222-8222-222222222222" {
+					// A draft Agent makes revision selection issue its second HTTP request.
+					fmt.Fprint(writer, `{"data":{"id":"agt_22222222-2222-4222-8222-222222222222","activeRevisionId":null},"meta":{}}`)
+					return
+				}
+				requestStarted <- struct{}{}
+				select {
+				case <-request.Context().Done():
+				case <-release:
+				}
+			}))
+			defer server.Close()
+			defer close(release)
 
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+			keyFile := filepath.Join(t.TempDir(), "service-key.json")
+			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	command := New(io.Discard, io.Discard)
-	command.SetArgs([]string{
-		"installation", "get",
-		"--url", server.URL,
-		"--service-key-file", keyFile,
-		"--timeout-seconds", "30",
-	})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			command := New(io.Discard, io.Discard)
+			command.SetArgs(append(test.args,
+				"--namespace", "ns_11111111-1111-4111-8111-111111111111",
+				"--url", server.URL,
+				"--service-key-file", keyFile,
+				"--timeout-seconds", "30",
+			))
 
-	result := make(chan error, 1)
-	go func() { result <- command.ExecuteContext(ctx) }()
+			result := make(chan error, 1)
+			go func() { result <- command.ExecuteContext(ctx) }()
 
-	select {
-	case <-requestStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("request never reached the server")
-	}
-	cancel()
+			select {
+			case <-requestStarted:
+			case <-time.After(5 * time.Second):
+				t.Fatal("request never reached the server")
+			}
+			cancel()
 
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("expected a canceled request to fail")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("command ignored context cancellation and kept waiting on the request")
+			select {
+			case err := <-result:
+				if test.cleanExit {
+					if err != nil {
+						t.Fatalf("log follow must exit cleanly on cancellation: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected a canceled request to fail with context cancellation, got %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("command ignored context cancellation and kept waiting on the request")
+			}
+		})
 	}
 }
 
@@ -97,6 +122,7 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 	}{
 		{[]string{"credential-source", "update", "cs_1"}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", "{}"}},
 		{[]string{"credential-source", "update", "cs_1", "--file", replacement}, call{http.MethodPatch, "/namespaces/ns_1/credential-sources/cs_1", secrets}},
+		{[]string{"credential-source", "rotate", "cs_1"}, call{http.MethodPost, "/namespaces/ns_1/credential-sources/cs_1/rotate", ""}},
 		{[]string{"agent", "credential-withdrawal", "request", "agt_1", "cs_1"}, call{http.MethodPost, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdraw", ""}},
 		{[]string{"agent", "credential-withdrawal", "get", "agt_1", "cs_1"}, call{http.MethodGet, "/namespaces/ns_1/agents/agt_1/credential-sources/cs_1/withdrawal", ""}},
 	} {
@@ -110,6 +136,22 @@ func TestCredentialSourceUpdateAndWithdrawalCommandsReachTheirRoutes(t *testing.
 			t.Fatalf("%v: got %+v, want %+v", test.args, calls, test.want)
 		}
 	}
+
+	calls = nil
+	command := New(io.Discard, io.Discard)
+	command.SetArgs([]string{
+		"credential-source", "update", "cs_1", "--file=",
+		"--url", server.URL,
+		"--service-key-file", keyFile,
+		"--namespace", "ns_1",
+	})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--file must name a JSON document") {
+		t.Fatalf("explicit empty --file error = %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("explicit empty --file sent requests: %+v", calls)
+	}
 }
 
 type runtimeLogStub struct {
@@ -118,9 +160,17 @@ type runtimeLogStub struct {
 	queries       []url.Values
 	pages         []func(http.ResponseWriter, url.Values)
 	activeID      string
+	// activeRevision is the exact revision response; "forbidden" denies the read.
+	activeRevision string
 	// revisions is the JSON revision list; empty means the Agent has none.
 	revisions string
 	paths     []string
+	// podless lists revisions whose runtime description has no Pods.
+	podless []string
+	// harness is the provider status returned for a podless newer revision.
+	harness map[string]any
+	// forbidden lists revisions whose runtime description is refused with 403.
+	forbidden []string
 }
 
 func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Request) {
@@ -130,6 +180,12 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 		fmt.Fprintf(response, `{"data":{"id":"agt_1","activeRevisionId":%q},"meta":{}}`, stub.activeID)
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions":
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.revisions, "[]"))
+	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions/"+stub.activeID:
+		if stub.activeRevision == "forbidden" {
+			logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
+		} else {
+			fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.activeRevision, `{"id":"rev_1","revision":1}`))
+		}
 	case strings.HasSuffix(request.URL.Path, "/runtime/logs"):
 		if request.Header.Get("x-api-key") != "test-key" {
 			stub.t.Errorf("missing service key")
@@ -147,8 +203,26 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 		next := stub.pages[0]
 		stub.pages = stub.pages[1:]
 		next(response, query)
+	case strings.HasSuffix(request.URL.Path, "/runtime") && slices.ContainsFunc(stub.forbidden, func(id string) bool {
+		return strings.HasSuffix(request.URL.Path, "/deployments/"+id+"/runtime")
+	}):
+		logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
+	case strings.HasSuffix(request.URL.Path, "/runtime") && slices.ContainsFunc(stub.podless, func(id string) bool {
+		return strings.HasSuffix(request.URL.Path, "/deployments/"+id+"/runtime")
+	}):
+		segments := strings.Split(request.URL.Path, "/")
+		data := map[string]any{"revisionId": segments[len(segments)-2], "observedAt": "2026-09-30T12:00:00.000Z", "pods": []any{}, "sources": []any{}}
+		if stub.harness != nil {
+			data["harness"] = stub.harness
+		}
+		payload, err := json.Marshal(map[string]any{"data": data, "meta": map[string]any{}})
+		if err != nil {
+			stub.t.Fatal(err)
+		}
+		_, _ = response.Write(payload)
 	case strings.HasSuffix(request.URL.Path, "/runtime"):
-		fmt.Fprint(response, `{"data":{"revisionId":"rev_1","observedAt":"2026-09-30T12:00:00.000Z","pods":[{"role":"gateway","cluster":"control","name":"gw-0","uid":"u","phase":"Running","ready":true,"createdAt":null,"containers":[{"name":"gateway","state":"running","reason":null,"ready":true,"restartCount":2,"startedAt":null,"lastTermination":{"reason":"OOMKilled","exitCode":137,"finishedAt":null}}],"events":[{"type":"Warning","container":"gateway","reason":"Unhealthy","message":"Readiness probe failed","count":146,"lastObservedAt":"2026-09-30T11:59:00.000Z"},{"type":"Normal","container":"prepare-private-state","reason":"Started","message":"Container started","count":1,"lastObservedAt":"2026-09-30T11:00:00.000Z"},{"type":"Normal","container":null,"reason":"Scheduled","message":"Successfully assigned","count":1,"lastObservedAt":null}]}],"sources":[{"id":"gateway","kind":"container","pods":[],"available":true,"retention":"current and previous instance"}]},"meta":{}}`)
+		segments := strings.Split(request.URL.Path, "/")
+		fmt.Fprintf(response, `{"data":{"revisionId":%q,"observedAt":"2026-09-30T12:00:00.000Z","pods":[{"role":"gateway","cluster":"control","name":"gw-0","uid":"u","phase":"Running","ready":true,"createdAt":null,"containers":[{"name":"gateway","state":"running","reason":null,"ready":true,"restartCount":2,"startedAt":null,"lastTermination":{"reason":"OOMKilled","exitCode":137,"finishedAt":null}}],"events":[{"type":"Warning","container":"gateway","reason":"Unhealthy","message":"Readiness probe failed","count":146,"lastObservedAt":"2026-09-30T11:59:00.000Z"},{"type":"Normal","container":"prepare-private-state","reason":"Started","message":"Container started","count":1,"lastObservedAt":"2026-09-30T11:00:00.000Z"},{"type":"Normal","container":null,"reason":"Scheduled","message":"Successfully assigned","count":1,"lastObservedAt":null}]}],"sources":[{"id":"gateway","kind":"container","pods":[],"available":true,"retention":"current and previous instance"}]},"meta":{}}`, segments[len(segments)-2])
 	default:
 		stub.t.Errorf("unexpected request %s", request.URL)
 		response.WriteHeader(http.StatusNotFound)
@@ -306,34 +380,47 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		{"agent", "runtime", "my-agent"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "0"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--tail", "1001"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "0"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "500ms"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "999ms"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--since", "25h"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--follow", "--previous"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "--level", "unknown"},
 		{"agent", "logs", "agt_1", "--source", "gateway", "-o", "yaml"},
 		{"agent", "runtime", "agt_1", "-o", "text"},
+		{"agent", "logs", "agt_1", "--source", "gateway", "--revision", "3"},
+		{"agent", "runtime", "agt_1", "--revision", "my-deploy"},
 	} {
 		stub := &runtimeLogStub{t: t, activeID: "rev_1"}
 		if _, _, err := runLogsCommand(t, context.Background(), stub, args...); err == nil {
 			t.Errorf("%v: expected an error", args)
 		}
-		if len(stub.queries) != 0 {
-			t.Errorf("%v: sent %d log requests", args, len(stub.queries))
+		if len(stub.paths) != 0 {
+			t.Errorf("%v: sent requests %v", args, stub.paths)
 		}
 	}
-	stub := &runtimeLogStub{t: t}
-	_, _, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
-	if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
-		t.Fatalf("expected a missing revision error, got %v", err)
-	}
-	if len(stub.queries) != 0 {
-		t.Fatalf("sent %d log requests for an Agent without revisions", len(stub.queries))
+	// --follow exits cleanly only when the lookup failed because of cancellation.
+	for _, follow := range []bool{false, true} {
+		args := []string{"agent", "logs", "agt_1", "--source", "gateway"}
+		if follow {
+			args = append(args, "--follow")
+		}
+		stub := &runtimeLogStub{t: t}
+		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
+		if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
+			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
+		}
+		if len(stub.queries) != 0 {
+			t.Fatalf("follow=%v: sent %d log requests for an Agent without revisions", follow, len(stub.queries))
+		}
 	}
 }
 
 // A first deploy that fails leaves no active revision; the failed version is
 // the one an operator needs to inspect, so runtime and logs default to it.
 func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *testing.T) {
-	revisions := `[{"id":"rev_1","revision":1},{"id":"rev_2","revision":2}]`
+	// OCC lists revisions newest first.
+	revisions := `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`
 	stub := &runtimeLogStub{t: t, revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
 		logPage("", logLine(1, "error", "startup failed")),
 	}}
@@ -356,6 +443,162 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 	}
 	if !strings.Contains(runtimeErr, "using latest revision rev_2") {
 		t.Fatalf("runtime notice = %q", runtimeErr)
+	}
+}
+
+// A failed or still-deploying dedicated replacement leaves the active revision
+// stopped while the newer revision's Pods hold the failure: read the newer one
+// while it has Pods, and always say which revision was read.
+func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T) {
+	// OCC lists revisions newest first.
+	revisions := `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`
+	for _, test := range []struct {
+		name      string
+		podless   []string
+		forbidden []string
+		revision  string
+		notice    string
+	}{
+		{"newer revision has Pods", nil, nil, "rev_2", "notice: reading revision rev_2, newer than the active revision rev_1 and not yet active; pass --revision rev_1 for the active revision"},
+		{"newer revision has no Pods", []string{"rev_2"}, nil, "rev_1", "notice: reading the active revision rev_1\n"},
+		// A log reader without Agent operate cannot read the runtime description;
+		// the notice still names the newer revision it may read with --revision.
+		{"newer revision runtime is refused", nil, []string{"rev_2"}, "rev_1", "notice: reading the active revision rev_1; a newer revision rev_2 exists but its runtime could not be read (OCC operation failed (HTTP 403): FORBIDDEN: fixed message); pass --revision rev_2 to read it"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions, podless: test.podless, forbidden: test.forbidden, pages: []func(http.ResponseWriter, url.Values){
+				logPage("", logLine(1, "error", "plugin install failed")),
+			}}
+			out, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "agent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, "plugin install failed") {
+				t.Fatalf("logs output = %q", out)
+			}
+			if want := "/namespaces/ns_1/agents/agt_1/deployments/" + test.revision + "/runtime/logs"; !slices.Contains(stub.paths, want) {
+				t.Fatalf("requests = %v, want %s", stub.paths, want)
+			}
+			if !strings.Contains(errOut, test.notice) {
+				t.Fatalf("notice = %q, want %q", errOut, test.notice)
+			}
+		})
+	}
+	// `occ agent runtime` reuses the probed description of the newer revision.
+	runtimeStub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions}
+	if _, _, err := runLogsCommand(t, context.Background(), runtimeStub, "agent", "runtime", "agt_1"); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := "/namespaces/ns_1/agents/agt_1/deployments/rev_2/runtime"
+	if got := slices.Index(runtimeStub.paths, runtimePath); got < 0 || slices.Contains(runtimeStub.paths[got+1:], runtimePath) {
+		t.Fatalf("runtime requests = %v, want %s exactly once", runtimeStub.paths, runtimePath)
+	}
+	// The active revision is the latest: no runtime probe, and the notice names it.
+	stub := &runtimeLogStub{t: t, activeID: "rev_2", revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
+		logPage("", logLine(1, "info", "ready")),
+	}}
+	_, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "notice: reading the active revision rev_2") {
+		t.Fatalf("notice = %q", errOut)
+	}
+	for _, path := range stub.paths {
+		if strings.HasSuffix(path, "/runtime") {
+			t.Fatalf("probed runtime %s although the active revision is the latest", path)
+		}
+	}
+	// An explicit --revision skips every lookup.
+	stub = &runtimeLogStub{t: t, activeID: "rev_1", revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
+		logPage("", logLine(1, "info", "ready")),
+	}}
+	if _, _, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway", "--revision", "rev_1"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/namespaces/ns_1/agents/agt_1/deployments/rev_1/runtime/logs"}; !slices.Equal(stub.paths, want) {
+		t.Fatalf("requests = %v, want %v", stub.paths, want)
+	}
+}
+
+func TestAgentCommandsSelectNewerPodlessHarnessStatus(t *testing.T) {
+	for _, state := range []string{"running", "starting", "lost", "unknown"} {
+		for _, action := range []string{"runtime", "logs"} {
+			t.Run(state+"/"+action, func(t *testing.T) {
+				expected := "rev_2"
+				if state == "unknown" {
+					expected = "rev_1"
+				}
+				harness := map[string]any{"state": state}
+				switch state {
+				case "starting":
+					harness["code"], harness["exitCode"], harness["restarts"] = "HARNESS_RESTARTING", 1, 1
+				case "lost":
+					harness["code"] = "SANDBOX_FAILED"
+				case "unknown":
+					harness["code"] = "UNAVAILABLE"
+				}
+				message := "sandbox policy denied egress for " + expected
+				page := func(response http.ResponseWriter, _ url.Values) {
+					fmt.Fprintf(response, `{"data":{"revisionId":%q,"source":"sandbox","stream":{"source":"sandbox","sandbox":%q},"observedAt":"2026-09-30T12:00:00.000Z","records":[{"type":"line","time":"2026-09-30T12:00:00.000Z","stream":{"source":"sandbox","sandbox":%q},"contentClass":"operational","kind":"sandbox","level":"warn","message":%q}],"withheld":0,"truncated":false,"cursor":null},"meta":{}}`, expected, "sandbox-"+expected, "sandbox-"+expected, message)
+				}
+				stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`, podless: []string{"rev_2"}, harness: harness, pages: []func(http.ResponseWriter, url.Values){page}}
+				args := []string{"agent", action, "agt_1"}
+				if action == "logs" {
+					args = append(args, "--source", "sandbox")
+				}
+				out, notices, err := runLogsCommand(t, context.Background(), stub, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				suffix := "/runtime"
+				if action == "logs" {
+					suffix += "/logs"
+					if !strings.Contains(out, message) {
+						t.Fatalf("sandbox log output=%q", out)
+					}
+				}
+				path := "/namespaces/ns_1/agents/agt_1/deployments/" + expected + suffix
+				if !slices.Contains(stub.paths, path) {
+					t.Fatalf("requests=%v; want final %s", stub.paths, path)
+				}
+				if !strings.Contains(notices, "revision "+expected) {
+					t.Fatalf("notice=%q", notices)
+				}
+				if action == "runtime" && state != "unknown" && !strings.Contains(out, "Harness Sandbox: "+state) {
+					t.Fatalf("output=%q", out)
+				}
+			})
+		}
+	}
+}
+
+func TestAgentRuntimeRetainsActiveWhenPodlessCandidateIsNotProvablyNewer(t *testing.T) {
+	for _, test := range []struct{ name, activeID, revisions, metadata string }{
+		{"older-only readable list", "rev_2", `[{"id":"rev_1","revision":1}]`, `{"id":"rev_2","revision":2}`},
+		{"active metadata denied", "rev_1", `[{"id":"rev_2","revision":2}]`, "forbidden"},
+		{"active number missing", "rev_1", `[{"id":"rev_2","revision":2}]`, `{"id":"rev_1"}`},
+		{"active identity mismatched", "rev_1", `[{"id":"rev_2","revision":2}]`, `{"id":"rev_other","revision":1}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := "rev_2"
+			if test.activeID == "rev_2" {
+				candidate = "rev_1"
+			}
+			stub := &runtimeLogStub{t: t, activeID: test.activeID, activeRevision: test.metadata, revisions: test.revisions, podless: []string{candidate}, harness: map[string]any{"state": "lost", "code": "SANDBOX_FAILED"}}
+			out, notices, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_1", "-o", "json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The runtime description returned to the operator must be the active revision.
+			var description map[string]any
+			if err := json.Unmarshal([]byte(out), &description); err != nil || description["revisionId"] != test.activeID {
+				t.Fatalf("runtime output=%q error=%v", out, err)
+			}
+			if !strings.Contains(notices, "reading the active revision "+test.activeID) || strings.Contains(notices, "newer than") {
+				t.Fatalf("notice=%q", notices)
+			}
+		})
 	}
 }
 
@@ -526,5 +769,296 @@ func TestAgentRuntimePrintsPodsAndSources(t *testing.T) {
 		if strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Errorf("Event row %d = %q, want %q:\n%s", index, got, want, out)
 		}
+	}
+}
+
+func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
+	for _, test := range []struct {
+		harness any
+		want    string
+	}{
+		{
+			map[string]any{"state": "lost", "code": "HARNESS_EXITED"},
+			"Harness Sandbox: lost (HARNESS_EXITED). OCC will not restart it; deploy the Agent again to replace it.\n\n",
+		},
+		{map[string]any{"state": "running"}, "Harness Sandbox: running\n\n"},
+		{map[string]any{"state": "starting"}, "Harness Sandbox: starting\n\n"},
+		// A crash-looping Harness is told apart from a first start (finding 1043).
+		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(3)},
+			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox).\n\n",
+		},
+		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(-1), "restarts": float64(1)},
+			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code -1, restart 1). The Harness process exited",
+		},
+		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": 1.5, "restarts": "3"},
+			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
+		},
+		{
+			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(math.MaxUint32), "restarts": float64(0)},
+			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
+		},
+		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},
+		// Anything but OCC's fixed states and codes is not echoed to the terminal.
+		{map[string]any{"state": "lost\u202e", "code": "x\u001b[2J"}, "Harness Sandbox: unknown\n\n"},
+		{nil, "No resources found."},
+	} {
+		var out strings.Builder
+		app := &application{out: &out}
+		description := map[string]any{"pods": []any{}, "sources": []any{}}
+		if test.harness != nil {
+			description["harness"] = test.harness
+		}
+		if err := app.printRuntime(description); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(out.String(), test.want) {
+			t.Errorf("harness %v: output = %q, want prefix %q", test.harness, out.String(), test.want)
+		}
+	}
+}
+
+func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"id":"agt_1","name":"stopped-agent","namespaceId":"ns_1","desiredRuntimeState":"stopped"},"meta":{"requestId":"req_1"}}`)
+	}))
+	t.Cleanup(server.Close)
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	command := New(&out, &errOut)
+	command.SetArgs([]string{"agent", "stop", "agt_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"POST /namespaces/ns_1/agents/agt_1/stop"}; !slices.Equal(requests, want) {
+		t.Fatalf("requests = %v, want %v", requests, want)
+	}
+	if !strings.Contains(out.String(), "stopped-agent") {
+		t.Fatalf("stdout = %q", out.String())
+	}
+	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
+	}
+	// Structured output stays machine-readable: the notice goes to stderr only.
+	out.Reset()
+	errOut.Reset()
+	command = New(&out, &errOut)
+	command.SetArgs([]string{"agent", "stop", "agt_1", "-o", "json", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil || decoded["id"] != "agt_1" {
+		t.Fatalf("json stdout = %q, %v", out.String(), err)
+	}
+	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+		t.Fatalf("json stderr = %q, want %q", errOut.String(), want)
+	}
+	stop, _, err := New(io.Discard, io.Discard).Find([]string{"agent", "stop"})
+	if err != nil || !strings.Contains(stop.Long, `run "occ agent deploy ID" to start the Agent again`) {
+		t.Fatalf("occ agent stop help = %q, %v", stop.Long, err)
+	}
+}
+
+func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *testing.T) {
+	source := `{"id":"cs_1","name":"openai","type":"openai","state":"ready"`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/namespaces/ns_1/credential-sources":
+			// The list API returns metadata only, never a live status.
+			_, _ = io.WriteString(w, `{"data":[`+source+`}],"meta":{"requestId":"req_1"}}`)
+		case "/namespaces/ns_1/credential-sources/cs_1":
+			_, _ = io.WriteString(w, `{"data":`+source+`,"status":{"state":"ready"}},"meta":{"requestId":"req_2"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		args []string
+		rows [][]string
+	}{
+		{[]string{"list"}, [][]string{{"ID", "NAME", "TYPE", "STATE"}, {"cs_1", "openai", "openai", "ready"}}},
+		{[]string{"get", "cs_1"}, [][]string{{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS"}, {"cs_1", "openai", "openai", "ready", "ready"}}},
+	} {
+		var out strings.Builder
+		command := New(&out, io.Discard)
+		command.SetArgs(append(append([]string{"credential-source"}, test.args...), "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
+		if err := command.Execute(); err != nil {
+			t.Fatalf("%v: %v", test.args, err)
+		}
+		var got [][]string
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			got = append(got, strings.Fields(line))
+		}
+		if !reflect.DeepEqual(got, test.rows) {
+			t.Errorf("%v table = %q, want %q", test.args, got, test.rows)
+		}
+	}
+}
+
+func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
+	var followed bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		followed = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	for _, testCase := range []struct {
+		name     string
+		location string
+		want     string
+	}{
+		{
+			name:     "other origin",
+			location: "https://user:pass@" + strings.TrimPrefix(target.URL, "http://") + "/installation?code=secret#frag",
+			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
+		},
+		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var sawKey string
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				sawKey = r.Header.Get("x-api-key")
+				w.Header().Set("location", testCase.location)
+				w.WriteHeader(http.StatusPermanentRedirect)
+			}))
+			defer origin.Close()
+			keyFile := filepath.Join(t.TempDir(), "service-key.json")
+			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := New(io.Discard, io.Discard)
+			command.SetArgs([]string{"installation", "get", "--url", origin.URL, "--service-key-file", keyFile})
+			err := command.Execute()
+			if err == nil {
+				t.Fatal("expected the redirect to fail the command")
+			}
+			if !strings.Contains(err.Error(), "HTTP 308") || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error = %q, want it to contain HTTP 308 and %q", err, testCase.want)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "pass") {
+				t.Fatalf("error echoed redirect credentials: %q", err)
+			}
+			if testCase.name == "same origin" && !strings.Contains(err.Error(), origin.URL+"/elsewhere/installation") {
+				t.Fatalf("relative Location was not resolved against the request: %q", err)
+			}
+			if sawKey != "test-key" || followed {
+				t.Fatalf("origin key = %q, redirect followed = %v", sawKey, followed)
+			}
+		})
+	}
+}
+
+func TestUnknownTopLevelCommandFailsInsteadOfPrintingHelp(t *testing.T) {
+	// Bare occ validates the global options, so keep the caller's OCC_* values out.
+	for _, name := range []string{"OCC_URL", "OCC_SERVICE_KEY_FILE", "OCC_CA_BUNDLE", "OCC_TIMEOUT_SECONDS", "OCC_NAMESPACE"} {
+		t.Setenv(name, "")
+	}
+	for _, args := range [][]string{{"presets", "list"}, {"agnet", "list"}} {
+		var out, errOut strings.Builder
+		command := New(&out, &errOut)
+		command.SetArgs(args)
+		err := command.Execute()
+		if want := fmt.Sprintf("unknown command %q for \"occ\"", args[0]); err == nil || err.Error() != want {
+			t.Fatalf("occ %v error = %v, want %q", args, err, want)
+		}
+		if out.Len() != 0 {
+			t.Fatalf("occ %v stdout = %q, want nothing", args, out.String())
+		}
+	}
+	var out strings.Builder
+	command := New(&out, io.Discard)
+	command.SetArgs(nil)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("bare occ error = %v", err)
+	}
+	if !strings.Contains(out.String(), "Available Commands:") {
+		t.Fatalf("bare occ stdout = %q, want help", out.String())
+	}
+}
+
+// Cobra treats --flag= as set. Each of these flags reads an empty value as
+// omitted, so an explicit empty value is refused before any work instead of
+// silently taking the default or failing later with a misleading error.
+func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	directory := t.TempDir()
+	keyFile := filepath.Join(directory, "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(directory, "new-key.json")
+	// Should the dev up check regress, fail without starting a development stack.
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "none")
+	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+	serviceKeyCreate := []string{"service-key", "create", "--service-principal", "spn_1", "--name", "ci", "--out", outFile}
+
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "runtime", "agt_1", "--revision="}, "--revision must name a revision ID"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--revision="}, "--revision must name a revision ID"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--pod="}, "--pod must name a Pod"},
+		{[]string{"agent", "logs", "agt_1", "--source", "sandbox", "--pod="}, "--pod must name a Pod"},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway", "--level="}, "--level must name error, warn, info or debug"},
+		{[]string{"agent", "logs", "agt_1", "--source="}, "--source must name gateway, agent or sandbox"},
+		{[]string{"dev", "up", "--key-output="}, "--key-output must name a key file path"},
+		{[]string{"configuration", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"configuration", "update", "cfg_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"secret", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"secret", "update", "sec_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"credential-source", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"credential-source", "update", "cs_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"agent", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"agent", "update", "agt_1", "--file="}, "--file must name a JSON document"},
+		{[]string{"iam", "role", "create", "--file="}, "--file must name a JSON document"},
+		{[]string{"iam", "access-binding", "create", "--file="}, "--file must name a JSON document"},
+		{append(slices.Clone(serviceKeyCreate), "--out="), "--out must name a key file path"},
+		{append(slices.Clone(serviceKeyCreate), "--service-principal="), "--service-principal must name a ServicePrincipal ID"},
+		{[]string{"agent", "runtime", "agt_1", "--url="}, "--url must name the OCC endpoint URL"},
+		{[]string{"agent", "runtime", "agt_1", "--service-key-file="}, "--service-key-file must name a bootstrap or service-key response file"},
+	} {
+		requests = 0
+		command := New(io.Discard, io.Discard)
+		// Connection flags come first so a test's own explicit empty value wins.
+		command.SetArgs(append(slices.Clone(connection), test.args...))
+		err := command.Execute()
+		if err == nil || err.Error() != test.want {
+			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
+		}
+		if requests != 0 {
+			t.Errorf("%v: sent %d requests", test.args, requests)
+		}
+		if _, statErr := os.Stat(outFile); !os.IsNotExist(statErr) {
+			t.Fatalf("%v: created the key file: %v", test.args, statErr)
+		}
+	}
+
+	// --ca-bundle= is the exception: it clears OCC_CA_BUNDLE, and the request is sent.
+	requests = 0
+	command := New(io.Discard, io.Discard)
+	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_1", "--revision", "rev_1", "--ca-bundle="))
+	if err := command.Execute(); err == nil || requests != 1 {
+		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
 	}
 }

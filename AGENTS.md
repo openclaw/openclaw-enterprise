@@ -13,9 +13,6 @@ authorize every exact resource operation through the selected IAM Driver, and
 emit attributable audit evidence for bootstrap, successful mutations, and
 authorization denials.
 
-Preserve Git history, registered worktrees, ignored local `.env` files, and
-existing root or nested `node_modules/` directories.
-
 The authoritative architecture is the repository's
 [platform design](docs/design.md).
 Read its [implementation status](docs/design.md#implementation-status) before
@@ -38,6 +35,12 @@ and filter by author before making changes; ask if unclear.
 Keep other authors' PRs, branches, and worktrees read-only unless explicitly
 assigned. Repository permissions and dependencies do not expand scope.
 Subagents inherit these limits.
+
+Maintainers retain their review, merge, and approved bypass permissions.
+When assigned to update an existing PR, preserve its head repository and branch.
+Follow the [PR workflow](CONTRIBUTING.md#prepare-a-pull-request);
+verify repository URLs and ownership rather than inferring them from remote names.
+Preserve existing remotes.
 
 "Refresh against main" does not authorize force pushes. Preserve published
 history by default. Rewrite history only with explicit authorization for the
@@ -118,6 +121,10 @@ Use [local-dev](.agents/skills/local-dev/SKILL.md) for repository development
 changes. It requires creating or updating a source-backed flow doc for non-trivial
 runtime changes and defines when trivial maintenance needs no new flow doc.
 Update the existing behavior owner under `docs/flows/` whenever possible.
+Complete its [PR readiness checklist](.agents/skills/local-dev/references/pr-readiness.md)
+before handoff. Default image-version changes must pass its
+[image verification workflow](.agents/skills/local-dev/references/image-version-verification.md)
+before merging; track the authorized publication from main separately.
 
 Use [spec](.agents/skills/spec/SKILL.md) to draft or update RFCs and implementation
 plans. Its `rfc` and `plan` commands follow the
@@ -135,7 +142,7 @@ PR. It provides a shared template and distinguishes implemented from pending pat
 When the user or owning workflow requests an independent code review, use
 [autoreview](.agents/skills/autoreview/SKILL.md). Follow the
 [Enterprise review guide](docs/testing/autoreview.md) for usage and upstream sync.
-Keep the vendored skill unchanged; shared fixes belong in `openclaw/agent-skills`.
+Keep only the shared-skill entrypoint here; shared fixes belong in `openclaw/agent-skills`.
 See [Developer skills](docs/testing/developer-skills.md) for provenance and updates.
 
 ## Product terminology
@@ -291,7 +298,8 @@ an independent plan can build on the existing architecture without a new RFC.
 Keep verification in the owning document or its supporting pages, not a separate
 reports area. Keep completed and superseded records in place.
 
-RFC entry points require `status` in YAML frontmatter. Companion notes link to
+RFC entry points require `status` and the original PR author's GitHub login in
+`author` YAML frontmatter. Companion notes link to
 their parent through `rfc` frontmatter instead of duplicating its decision
 status. Follow the specification process for historical status uncertainty.
 
@@ -302,7 +310,8 @@ retroactively update the earlier spec to match the later implementation;
 preserve its original design decisions and implementation details.
 
 Use stable feature names in `docs/reference/` and preserve grandfathered
-specification names and IDs when grouping companions under `index.md`.
+plan names when grouping companions under `index.md`. RFCs require unique numeric
+IDs of at least four digits; keep the old-to-new lookup current when renumbering.
 This first organization phase preserves `specs/.archive/` content and placement;
 only the removed console-image links change to a preserved Git revision. Do not
 add new records to it. A behavior-changing implementation PR
@@ -329,6 +338,8 @@ adapter may mirror a constraint when it substitutes for the database.
 Tests must verify real, supported application behavior. A test that merely
 confirms behavior invented by its own mock, monkeypatch, fixture, or hand-written
 adapter is invalid and must be rewritten or deleted.
+
+Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credential-bearing URLs at runtime; do not commit complete credential-bearing URL literals, which TruffleHog treats as secrets.
 
 - Use actual API routes, request methods, server-owned resource scope, response
   envelopes, authorization rules, and lifecycle transitions. Never invent
@@ -402,6 +413,10 @@ and PostgreSQL, tenant-local RoleBindings, model turns before and after revision
 cutover, and allowed/denied NetworkPolicy checks. Configure API egress for its
 actual translated `/32` endpoint and port. The fixture suite's scoped RBAC does
 not verify shared-cluster admission guardrails.
+
+## Browser automation
+
+On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 

@@ -1,18 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
+import { constants as osConstants } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { allowsPushRef } from "../../../credentials/client-contracts.ts";
+import { allowsPushRef, readPushedBranchRef } from "../../../credentials/client-contracts.ts";
 import { readClientConfiguration } from "./config.ts";
 import {
   inheritedRepositoryBinding,
+  readManifestOrigins,
   readRuntimeRepositoryManifest,
   requireCurrentBinding,
   type RuntimeRepositoryBinding,
   type RuntimeRepositoryManifest,
 } from "./manifest.ts";
-import { hasGitPushDestination, selectGitPushDestination } from "./targets.ts";
+import {
+  hasGitPushDestination,
+  isUnrelatedPushDestination,
+  selectGitPushDestination,
+} from "./targets.ts";
 
 function gitOutput(args: readonly string[], absent = false): string | undefined {
   const result = spawnSync("/usr/bin/git", args, {
@@ -40,7 +46,27 @@ function setting(name: string): string | undefined {
   return output.slice(0, -1) || undefined;
 }
 
-async function checkPush(destination: string, input: Buffer): Promise<boolean> {
+/**
+ * Whether a destination names none of the configured generation's origins. Operator
+ * sessions configure no manifest and stay refused. An agent can point these settings
+ * at its own material, but it can equally bypass hooks; the guard is not a boundary.
+ */
+async function isUnrelatedToManifest(destination: string): Promise<boolean> {
+  try {
+    const root = setting("manifestRoot");
+    const generation = setting("generation");
+    return (
+      root !== undefined &&
+      generation !== undefined &&
+      isUnrelatedPushDestination(destination, await readManifestOrigins(root, generation))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** True when the push may proceed, or the refusal message the hook prints. */
+async function checkPush(destination: string, input: Buffer): Promise<true | string> {
   if (!destination.startsWith("https://")) {
     return true;
   }
@@ -48,25 +74,35 @@ async function checkPush(destination: string, input: Buffer): Promise<boolean> {
   let manifest: RuntimeRepositoryManifest;
   let expectedGeneration: string | undefined;
   let pinned: RuntimeRepositoryBinding | undefined;
-  if (directory) {
-    const configuration = await readClientConfiguration(directory);
-    const binding: RuntimeRepositoryBinding = {
-      repositoryRef: "operator",
-      sessionId: configuration.sessionId,
-      deadlineWallMs: configuration.deadlineWallMs,
-      directory: resolve(directory),
-      materialDirectory: resolve(directory),
-      client: configuration.client,
-      configuration,
-    };
-    manifest = { generation: "", bindings: [binding] };
-  } else {
-    const root = setting("manifestRoot");
-    expectedGeneration = setting("generation");
-    if (!root || !expectedGeneration) {
-      throw new Error("invalid-repository-selection");
+  try {
+    if (directory) {
+      const configuration = await readClientConfiguration(directory);
+      const binding: RuntimeRepositoryBinding = {
+        repositoryRef: "operator",
+        sessionId: configuration.sessionId,
+        deadlineWallMs: configuration.deadlineWallMs,
+        directory: resolve(directory),
+        materialDirectory: resolve(directory),
+        client: configuration.client,
+        configuration,
+      };
+      manifest = { generation: "", bindings: [binding] };
+    } else {
+      const root = setting("manifestRoot");
+      expectedGeneration = setting("generation");
+      if (!root || !expectedGeneration) {
+        throw new Error("invalid-repository-selection");
+      }
+      manifest = await readRuntimeRepositoryManifest(root);
     }
-    manifest = await readRuntimeRepositoryManifest(root);
+  } catch (error) {
+    // One unusable session, or a session setting naming other material, must not
+    // stop pushes elsewhere. Only a destination that provably names none of the
+    // configured manifest's origins proceeds; any doubt keeps the failure.
+    if (await isUnrelatedToManifest(destination)) {
+      return true;
+    }
+    throw error;
   }
   // An unrelated destination must not be rejected by an inherited pin.
   if (!hasGitPushDestination(manifest, destination)) {
@@ -83,22 +119,28 @@ async function checkPush(destination: string, input: Buffer): Promise<boolean> {
     return true;
   }
   requireCurrentBinding(binding);
-  const lines = input.toString("utf8").split("\n");
+  // Read as latin1 so each byte is one character; the remote ref is then decoded as
+  // strict UTF-8 with the gateway's rules, so both refuse the same refs.
+  const lines = input.toString("latin1").split("\n");
   if (lines.pop() !== "") {
     throw new Error("invalid-pre-push-input");
   }
   for (const line of lines) {
-    const fields = line.split(" ");
-    if (
-      fields.length !== 4 ||
-      !fields[0] ||
-      !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(fields[1] ?? "") ||
-      !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(fields[3] ?? "")
-    ) {
+    // Git writes an object-name source (`HEAD@{1 hour ago}`) verbatim, so the
+    // local ref may contain spaces; the last three fields cannot.
+    const fields =
+      /^(.+) ([a-f0-9]{40}(?:[a-f0-9]{24})?) ([^ ]+) ([a-f0-9]{40}(?:[a-f0-9]{24})?)$/.exec(line);
+    if (!fields) {
       throw new Error("invalid-pre-push-input");
     }
-    if (!allowsPushRef(binding.client.pushRefAllowlist, fields[2] ?? "")) {
-      return false;
+    const read = readPushedBranchRef(Buffer.from(fields[3]!, "latin1"));
+    if (!("ref" in read)) {
+      // The reason names a code point, never the raw name, so the terminal shows no
+      // invisible or direction-changing character.
+      return `repository-push-ref-not-allowed: ${read.refused}`;
+    }
+    if (!allowsPushRef(binding.client.pushRefAllowlist, read.ref)) {
+      return "repository-push-ref-not-allowed";
     }
   }
   return true;
@@ -123,23 +165,43 @@ function defaultPushToCheckout(args: readonly string[]): number {
   if (args.length !== 1 || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(args[0]!)) {
     throw new Error("invalid-push-to-checkout-input");
   }
-  const checkedGit = (arguments_: readonly string[]): void => {
+  // Each refusal uses the reason Git's built-in implementation reports.
+  const refused = (arguments_: readonly string[], reason: string): boolean => {
     const result = spawnSync("/usr/bin/git", arguments_, { stdio: "inherit" });
     if (result.error || result.status !== 0) {
-      throw new Error("repository-checkout-update-failed");
+      process.stderr.write(reason + "\n");
+      return true;
     }
+    return false;
   };
   // Preserve Git's default clean-index/worktree checks, including an unborn HEAD.
-  checkedGit(["update-index", "-q", "--ignore-submodules", "--refresh"]);
-  checkedGit(["diff-files", "--quiet", "--ignore-submodules", "--"]);
+  if (
+    refused(
+      ["update-index", "-q", "--ignore-submodules", "--refresh"],
+      "Up-to-date check failed",
+    ) ||
+    refused(
+      ["diff-files", "--quiet", "--ignore-submodules", "--"],
+      "Working directory has unstaged changes",
+    )
+  ) {
+    return 1;
+  }
   const history = spawnSync("/usr/bin/git", ["cat-file", "-e", "HEAD"], { stdio: "ignore" });
   if (history.error || history.signal) {
     throw new Error("repository-hook-inspection-failed");
   }
   const head =
     history.status === 0 ? "HEAD" : gitOutput(["hash-object", "-t", "tree", "--stdin"])!.trim();
-  checkedGit(["diff-index", "--quiet", "--cached", "--ignore-submodules", head, "--"]);
-  checkedGit(["read-tree", "-u", "-m", args[0]!]);
+  if (
+    refused(
+      ["diff-index", "--quiet", "--cached", "--ignore-submodules", head, "--"],
+      "Working directory has staged changes",
+    ) ||
+    refused(["read-tree", "-u", "-m", args[0]!], "Could not update working tree to new HEAD")
+  ) {
+    return 1;
+  }
   return 0;
 }
 
@@ -174,12 +236,18 @@ async function run(): Promise<number> {
   }
   let input: Buffer | undefined;
   if (name === "pre-push") {
-    if (args.length !== 2) {
-      throw new Error("invalid-pre-push-input");
+    let verdict: true | string;
+    try {
+      if (args.length !== 2) {
+        throw new Error("invalid-pre-push-input");
+      }
+      input = await readPushInput();
+      verdict = await checkPush(args[1]!, input);
+    } catch (error) {
+      verdict = failure("repository-pre-push-guard-failed", error);
     }
-    input = await readPushInput();
-    if (!(await checkPush(args[1]!, input))) {
-      process.stderr.write("repository-push-ref-not-allowed\n");
+    if (verdict !== true) {
+      process.stderr.write(verdict + "\n");
       return 1;
     }
   }
@@ -208,7 +276,44 @@ async function run(): Promise<number> {
   if (child.error) {
     throw new Error("repository-hook-execution-failed");
   }
+  if (child.signal) {
+    // Report a signal as Git reports its own hooks: 128 + N, silent for SIGINT,
+    // SIGQUIT and SIGPIPE. Git prints the hook's path; this prints only its name.
+    const signal = osConstants.signals[child.signal] ?? 0;
+    if (!["SIGINT", "SIGQUIT", "SIGPIPE"].includes(child.signal)) {
+      process.stderr.write(`error: hooks/${name} died of signal ${signal}\n`);
+    }
+    return signal ? 128 + signal : 1;
+  }
   return child.status ?? 1;
+}
+
+// Only these fixed codes are printed. Other errors, including Node file-system and
+// JSON parse messages, can name private paths or material contents.
+const publicReasons = new Set([
+  "client-file-changed",
+  "conflicting-repository-selection",
+  "invalid-client-configuration",
+  "invalid-pre-push-input",
+  "invalid-push-to-checkout-input",
+  "invalid-repository-hook",
+  "invalid-repository-material",
+  "invalid-repository-selection",
+  "name-one-repository-ref",
+  "pre-push-input-too-large",
+  "recursive-repository-hook",
+  "repository-hook-execution-failed",
+  "repository-hook-inspection-failed",
+  "repository-not-admitted",
+  "repository-session-expired",
+  "unsafe-client-directory",
+  "unsafe-client-file",
+  "unsupported-push-destination",
+]);
+
+function failure(prefix: string, error: unknown): string {
+  const reason = error instanceof Error ? error.message : "";
+  return publicReasons.has(reason) ? `${prefix}: ${reason}` : prefix;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -216,8 +321,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     (code) => {
       process.exitCode = code;
     },
-    () => {
-      process.stderr.write("repository-pre-push-guard-failed\n");
+    (error: unknown) => {
+      const name = process.argv[2] ?? "";
+      const hook = /^[a-z][a-z0-9-]{0,63}$/.test(name) ? `: ${name}` : "";
+      process.stderr.write(failure("repository-hook-failed" + hook, error) + "\n");
       process.exitCode = 1;
     },
   );

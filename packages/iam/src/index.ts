@@ -1,4 +1,4 @@
-import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
   PERMISSION_ACTIONS,
@@ -12,6 +12,7 @@ import {
   type IAMDriver,
   type IAMManagedAccessBindingInput,
   type IAMManagedRoleInput,
+  type IAMManagedServicePrincipalInput,
   type IAMPolicyManagementContext,
   type IAMPolicyReadContext,
   type IAMPolicyReadRepository,
@@ -411,10 +412,72 @@ function immutableBinding(binding: Readonly<AccessBinding>): Readonly<AccessBind
 }
 
 export function validateNativeIAMState(state: NativeIAMState): void {
-  validateAndIndexNativeIAMState(state);
+  nativeIAMPolicy(state);
 }
 
-function validateAndIndexNativeIAMState(state: NativeIAMState): ReadonlyMap<string, Role> {
+/**
+ * A validated policy state with the lookups a decision needs. Every list keeps the
+ * state's order, so a lookup visits exactly the entries a scan of the state would match.
+ */
+interface NativeIAMPolicy {
+  readonly roles: ReadonlyMap<string, Role>;
+  readonly identities: ReadonlyMap<string, Identity>;
+  /** Identities carrying string `issuer` and `subject`, by issuer, then subject. */
+  readonly externalIdentities: ReadonlyMap<string, ReadonlyMap<string, readonly Identity[]>>;
+  readonly membershipsByPrincipal: ReadonlyMap<string, readonly GroupMembership[]>;
+  readonly identityBindings: ReadonlyMap<string, readonly AccessBinding[]>;
+  readonly groupBindings: ReadonlyMap<string, readonly AccessBinding[]>;
+  /** Restrictions by action, then resource kind. */
+  readonly restrictions: ReadonlyMap<string, ReadonlyMap<string, readonly Restriction[]>>;
+}
+
+function appendTo<K, V>(index: Map<K, V[]>, key: K, value: V): void {
+  const values = index.get(key);
+  if (values === undefined) {
+    index.set(key, [value]);
+  } else {
+    values.push(value);
+  }
+}
+
+function nestedAppendTo<V>(
+  index: Map<string, Map<string, V[]>>,
+  outer: string,
+  inner: string,
+  value: V,
+): void {
+  let values = index.get(outer);
+  if (values === undefined) {
+    values = new Map();
+    index.set(outer, values);
+  }
+  appendTo(values, inner, value);
+}
+
+/**
+ * Validated policies of immutable snapshots, by snapshot. A snapshot can never change, so
+ * its policy is computed once; a store that returns a new snapshot per transaction (as the
+ * PostgreSQL State does) makes this per unit of work, never across requests. Mutable states
+ * are validated and indexed on every call, as before. Only valid policies are kept.
+ */
+const snapshotPolicies = new WeakMap<object, NativeIAMPolicy>();
+
+function nativeIAMPolicy(state: NativeIAMState): NativeIAMPolicy {
+  const snapshot = isImmutableSnapshot(state);
+  if (snapshot) {
+    const known = snapshotPolicies.get(state);
+    if (known !== undefined) {
+      return known;
+    }
+  }
+  const policy = validateAndIndexNativeIAMState(state);
+  if (snapshot) {
+    snapshotPolicies.set(state, policy);
+  }
+  return policy;
+}
+
+function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy {
   assertCondition(typeof state === "object" && state !== null, "state is missing");
   const expectedCollections = [
     "identities",
@@ -641,7 +704,43 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): ReadonlyMap<stri
     );
   }
 
-  return roles;
+  const identitiesByExternal = new Map<string, Map<string, Identity[]>>();
+  for (const identity of state.identities) {
+    if (!("issuer" in identity) || !("subject" in identity)) {
+      continue;
+    }
+    // A lookup compares nonempty strings with ===, so no other value can ever match.
+    if (typeof identity.issuer === "string" && typeof identity.subject === "string") {
+      nestedAppendTo(identitiesByExternal, identity.issuer, identity.subject, identity);
+    }
+  }
+  const membershipsByPrincipal = new Map<string, GroupMembership[]>();
+  for (const membership of state.memberships) {
+    appendTo(membershipsByPrincipal, membership.principalId, membership);
+  }
+  const identityBindings = new Map<string, AccessBinding[]>();
+  const groupBindings = new Map<string, AccessBinding[]>();
+  for (const binding of state.bindings) {
+    appendTo(
+      binding.subjectKind === "identity" ? identityBindings : groupBindings,
+      binding.subjectId,
+      binding,
+    );
+  }
+  const restrictions = new Map<string, Map<string, Restriction[]>>();
+  for (const restriction of state.restrictions) {
+    nestedAppendTo(restrictions, restriction.action, restriction.resourceKind, restriction);
+  }
+
+  return {
+    roles,
+    identities,
+    externalIdentities: identitiesByExternal,
+    membershipsByPrincipal,
+    identityBindings,
+    groupBindings,
+    restrictions,
+  };
 }
 
 export function validatePersistedNativeIAMState(state: NativeIAMState): void {
@@ -735,29 +834,21 @@ function restrictionMatches(restriction: Restriction, request: AuthorizationRequ
 
 function evaluateValidatedAuthorization(
   request: AuthorizationRequest,
-  state: Readonly<NativeIAMState>,
-  roles: ReadonlyMap<string, Role>,
+  policy: NativeIAMPolicy,
   driverId: string,
 ): AuthorizationDecision {
   if (!validRequest(request)) {
     return decision(driverId, false, "The exact authorization request is invalid.");
   }
 
-  const identities = state.identities.filter((identity) => identity.id === request.principalId);
-  if (identities.length === 0) {
+  // Validation proved identity ids unique, so at most one identity has this id.
+  const identity = policy.identities.get(request.principalId);
+  if (identity === undefined) {
     return decision(
       driverId,
       false,
       "The identity is not explicitly provisioned for the singleton Installation.",
     );
-  }
-  if (identities.length !== 1) {
-    return decision(driverId, false, "The provisioned identity is ambiguous.");
-  }
-
-  const identity = identities[0];
-  if (!identity) {
-    return decision(driverId, false, "The provisioned identity is unavailable.");
   }
 
   const identityEvidence = { identityId: identity.id };
@@ -773,12 +864,11 @@ function evaluateValidatedAuthorization(
   const applicableGroupIds = new Set(
     identity.kind !== "principal"
       ? []
-      : state.memberships
+      : (policy.membershipsByPrincipal.get(identity.id) ?? [])
           .filter(
             (membership) =>
-              membership.principalId === identity.id &&
-              (membership.namespaceId === undefined ||
-                membership.namespaceId === request.resource.namespaceId),
+              membership.namespaceId === undefined ||
+              membership.namespaceId === request.resource.namespaceId,
           )
           .map((membership) => membership.groupId),
   );
@@ -786,15 +876,17 @@ function evaluateValidatedAuthorization(
   const matchedRoleIds = new Set<string>();
   const grantingGroupIds = new Set<string>();
 
-  for (const binding of state.bindings) {
-    const subjectMatches =
-      (binding.subjectKind === "identity" && binding.subjectId === identity.id) ||
-      (binding.subjectKind === "group" && applicableGroupIds.has(binding.subjectId));
-    if (!subjectMatches || !bindingScopeMatches(binding, request.resource)) {
+  // Exactly the bindings whose subject is this identity or one of its applicable Groups.
+  const subjectBindings = [
+    ...(policy.identityBindings.get(identity.id) ?? []),
+    ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
+  ];
+  for (const binding of subjectBindings) {
+    if (!bindingScopeMatches(binding, request.resource)) {
       continue;
     }
 
-    const role = roles.get(binding.roleId);
+    const role = policy.roles.get(binding.roleId);
     if (
       role === undefined ||
       (role.namespaceId !== undefined && role.namespaceId !== request.resource.namespaceId) ||
@@ -813,7 +905,9 @@ function evaluateValidatedAuthorization(
     }
   }
 
-  const applicableRestrictionIds = state.restrictions
+  const applicableRestrictionIds = (
+    policy.restrictions.get(request.action)?.get(request.resource.kind) ?? []
+  )
     .filter((restriction) => restrictionMatches(restriction, request))
     .map((restriction) => restriction.id);
   const authorizationEvidence = evidence({
@@ -858,28 +952,22 @@ interface EffectiveGrant {
 }
 
 /** Every binding that can grant `identity` anything, with its combined scope. */
-function effectiveGrants(
-  identity: Identity,
-  state: Readonly<NativeIAMState>,
-  roles: ReadonlyMap<string, Role>,
-): EffectiveGrant[] {
+function effectiveGrants(identity: Identity, policy: NativeIAMPolicy): EffectiveGrant[] {
   const subjects: { groupId?: string; namespaceId?: string | undefined }[] = [{}];
   if (identity.kind === "principal") {
-    for (const membership of state.memberships) {
-      if (membership.principalId === identity.id) {
-        subjects.push({ groupId: membership.groupId, namespaceId: membership.namespaceId });
-      }
+    for (const membership of policy.membershipsByPrincipal.get(identity.id) ?? []) {
+      subjects.push({ groupId: membership.groupId, namespaceId: membership.namespaceId });
     }
   }
   const grants: EffectiveGrant[] = [];
   for (const subject of subjects) {
-    for (const binding of state.bindings) {
-      const matches =
-        subject.groupId === undefined
-          ? binding.subjectKind === "identity" && binding.subjectId === identity.id
-          : binding.subjectKind === "group" && binding.subjectId === subject.groupId;
-      const role = roles.get(binding.roleId);
-      if (!matches || role === undefined) {
+    const bindings =
+      subject.groupId === undefined
+        ? policy.identityBindings.get(identity.id)
+        : policy.groupBindings.get(subject.groupId);
+    for (const binding of bindings ?? []) {
+      const role = policy.roles.get(binding.roleId);
+      if (role === undefined) {
         continue;
       }
       const namespaces = new Set(
@@ -904,15 +992,27 @@ function effectiveGrants(
   return grants;
 }
 
+/**
+ * Agent `read_logs` admits only runtime log text, which Agent `administer` also admits (the
+ * log route accepts either), so for coverage an `administer` grant stands in for it. This
+ * changes coverage only: authorization still treats the two actions as unrelated. No other
+ * action pair is related this way.
+ */
+function coveringActions(permission: Permission): readonly string[] {
+  return permission.resourceKind === "agent" && permission.action === "read_logs"
+    ? ["read_logs", "administer"]
+    : [permission.action];
+}
+
 function grantCovers(holder: EffectiveGrant, target: EffectiveGrant, permission: Permission) {
+  const actions = coveringActions(permission);
   return (
     (holder.namespaceId === undefined || holder.namespaceId === target.namespaceId) &&
     (holder.resourceKind === undefined ||
       (holder.resourceKind === target.resourceKind && holder.resourceId === target.resourceId)) &&
     holder.permissions.some(
       (candidate) =>
-        candidate.action === permission.action &&
-        candidate.resourceKind === permission.resourceKind,
+        actions.includes(candidate.action) && candidate.resourceKind === permission.resourceKind,
     )
   );
 }
@@ -923,8 +1023,7 @@ function grantCovers(holder: EffectiveGrant, target: EffectiveGrant, permission:
  */
 function identityAccessCovered(
   request: IdentityAccessCoverageRequest,
-  state: Readonly<NativeIAMState>,
-  roles: ReadonlyMap<string, Role>,
+  policy: NativeIAMPolicy,
 ): boolean {
   if (
     typeof request !== "object" ||
@@ -934,17 +1033,14 @@ function identityAccessCovered(
   ) {
     return false;
   }
-  const exact = (id: string) => {
-    const matches = state.identities.filter((identity) => identity.id === id);
-    return matches.length === 1 ? matches[0] : undefined;
-  };
-  const holder = exact(request.principalId);
-  const target = exact(request.targetIdentityId);
+  // Validation proved identity ids unique.
+  const holder = policy.identities.get(request.principalId);
+  const target = policy.identities.get(request.targetIdentityId);
   if (holder === undefined || target === undefined) {
     return false;
   }
-  const holderGrants = effectiveGrants(holder, state, roles);
-  return effectiveGrants(target, state, roles).every((grant) =>
+  const holderGrants = effectiveGrants(holder, policy);
+  return effectiveGrants(target, policy).every((grant) =>
     grant.permissions.every((permission) =>
       holderGrants.some((held) => grantCovers(held, grant, permission)),
     ),
@@ -961,8 +1057,7 @@ export function evaluateAuthorization(
   }
 
   try {
-    const roles = validateAndIndexNativeIAMState(state);
-    return evaluateValidatedAuthorization(request, state, roles, driverId);
+    return evaluateValidatedAuthorization(request, nativeIAMPolicy(state), driverId);
   } catch {
     return decision(driverId, false, "The native IAM policy is invalid.");
   }
@@ -1027,24 +1122,26 @@ export class NativeIAMDriver implements IAMDriver {
     }
 
     const state = await this.state.loadNativeIAMState();
+    let policy: NativeIAMPolicy;
     try {
-      validateNativeIAMState(state);
+      policy = nativeIAMPolicy(state);
     } catch {
       return undefined;
     }
 
-    const matches = state.identities.filter((identity) => {
-      if (identity.namespaceId !== undefined && identity.namespaceId !== input.namespaceId) {
-        return false;
-      }
-      if (input.servicePrincipalId !== undefined) {
-        return identity.kind === "service_principal" && identity.id === input.servicePrincipalId;
-      }
-      if (!("issuer" in identity) || !("subject" in identity)) {
-        return false;
-      }
-      return identity.issuer === input.issuer && identity.subject === input.subject;
-    });
+    // The candidates are exactly the identities whose id, or issuer and subject, match.
+    let candidates: readonly Identity[];
+    if (input.servicePrincipalId !== undefined) {
+      const identity = policy.identities.get(input.servicePrincipalId);
+      candidates = identity?.kind === "service_principal" ? [identity] : [];
+    } else {
+      candidates =
+        policy.externalIdentities.get(input.issuer as string)?.get(input.subject as string) ?? [];
+    }
+    const matches = candidates.filter(
+      (identity) =>
+        identity.namespaceId === undefined || identity.namespaceId === input.namespaceId,
+    );
 
     const identity = matches.length === 1 ? matches[0] : undefined;
     return identity === undefined ? undefined : (Object.freeze({ ...identity }) as Identity);
@@ -1052,24 +1149,24 @@ export class NativeIAMDriver implements IAMDriver {
 
   async authorize(request: AuthorizationRequest): Promise<AuthorizationDecision> {
     const state = await this.state.loadNativeIAMState();
-    let roles: ReadonlyMap<string, Role>;
+    let policy: NativeIAMPolicy;
     try {
-      roles = validateAndIndexNativeIAMState(state);
+      policy = nativeIAMPolicy(state);
     } catch {
       return decision(this.id, false, "The native IAM policy is invalid.");
     }
-    return evaluateValidatedAuthorization(request, state, roles, this.id);
+    return evaluateValidatedAuthorization(request, policy, this.id);
   }
 
   async coversIdentityAccess(request: IdentityAccessCoverageRequest): Promise<boolean> {
     const state = await this.state.loadNativeIAMState();
-    let roles: ReadonlyMap<string, Role>;
+    let policy: NativeIAMPolicy;
     try {
-      roles = validateAndIndexNativeIAMState(state);
+      policy = nativeIAMPolicy(state);
     } catch {
       return false;
     }
-    return identityAccessCovered(request, state, roles);
+    return identityAccessCovered(request, policy);
   }
 
   async listNamespaceRoles(
@@ -1150,6 +1247,52 @@ export class NativeIAMDriver implements IAMDriver {
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
+  }
+
+  async listNamespaceServicePrincipals(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ServicePrincipal>[]> {
+    const repository = this.policyRepository(context, ["listServicePrincipals"]);
+    this.assertNamespace(namespaceId);
+    return Object.freeze(
+      (await repository.listServicePrincipals(namespaceId)).map((principal) =>
+        Object.freeze({ ...principal }),
+      ),
+    );
+  }
+
+  async getNamespaceServicePrincipal(
+    context: IAMPolicyReadContext,
+    namespaceId: string,
+    servicePrincipalId: string,
+  ): Promise<Readonly<ServicePrincipal> | undefined> {
+    const repository = this.policyRepository(context, ["getServicePrincipal"]);
+    this.assertNamespace(namespaceId);
+    this.assertIdentifier(servicePrincipalId, "ServicePrincipal");
+    const principal = await repository.getServicePrincipal(namespaceId, servicePrincipalId);
+    return principal === undefined ? undefined : Object.freeze({ ...principal });
+  }
+
+  /** Creates an automation identity with no grant; bindings and keys are separate steps. */
+  async createNamespaceServicePrincipal(
+    context: IAMPolicyManagementContext,
+    input: IAMManagedServicePrincipalInput,
+  ): Promise<Readonly<ServicePrincipal>> {
+    const repository = this.policyRepository(context, ["createServicePrincipal"]);
+    assertCondition(
+      typeof input === "object" && input !== null && exactKeys(input, ["id", "namespaceId"]),
+      "managed ServicePrincipal input contains unsupported fields",
+    );
+    this.assertIdentifier(input.id, "ServicePrincipal");
+    this.assertNamespace(input.namespaceId);
+    return Object.freeze({
+      ...(await repository.createServicePrincipal({
+        kind: "service_principal",
+        id: input.id,
+        namespaceId: input.namespaceId,
+      })),
+    });
   }
 
   private policyRepository<Repository extends IAMPolicyReadRepository>(

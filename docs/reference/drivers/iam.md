@@ -20,7 +20,8 @@ The [shared interface](../../../packages/contracts/src/index.ts) requires two
 methods. Optional `coversIdentityAccess(request)` takes a `principalId` and
 `targetIdentityId` and returns `true` only when the principal already holds
 every grant of the target at the same or a broader scope. OCC requires it before
-issuing a service key; a Driver without it cannot issue service keys.
+issuing or revoking a service key and before changing a human account; a Driver
+without it cannot issue or revoke service keys.
 
 | Method                  | Contract                                                                                                                                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -55,8 +56,11 @@ disposal, identity-provisioning, or policy-mutation method.
 
 ### Native IAM behavior
 
-The native Driver reads controller-owned IAM state on every lookup and decision
-and accepts only an empty startup configuration. Lookup returns no identity for
+The native Driver reads controller-owned IAM state once per PostgreSQL State unit
+of work, such as one list request, and validates and indexes it once there; a
+lookup or decision outside a unit opens its own. A later unit reads the policy
+again, so a revocation applies to the next request. The Driver accepts only an
+empty startup configuration. Lookup returns no identity for
 an absent or ambiguous match, invalid scope, or invalid policy. Authorization
 denies invalid requests or policy, unknown identities, cross-Namespace identity
 use, and requests without an applicable grant. A storage error propagates instead

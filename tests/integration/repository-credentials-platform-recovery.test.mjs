@@ -35,12 +35,17 @@ test(
     void gate.observed.then((result) => {
       observed = result;
     });
+    const gatewayLog = fixture.followGatewayLog(pod);
     try {
+      gatewayLog.mark("stop requested");
       await fixture.request("POST", `${path}/stop`, undefined, 202);
-      await kube.waitFor(
-        "confirmed terminal response at the Unix control transport",
-        () => observed,
-        30_000,
+      gatewayLog.mark("stop accepted");
+      await gatewayLog.attachOnFailure(context, "confirmed terminal response wait", () =>
+        kube.waitFor(
+          "confirmed terminal response at the Unix control transport",
+          () => observed,
+          30_000,
+        ),
       );
       assert.equal(observed.sessionId, sessionId);
       const attempts = await fixture.attempts(revision);
@@ -71,13 +76,19 @@ test(
           "-l",
           `openclaw.dev/agent=${agent.id}`,
         );
-        return (
-          current.activeRevisionId === undefined && pods.length === 0 && saved?.phase === "disposed"
-        );
+        const retired =
+          current.activeRevisionId === undefined &&
+          pods.length === 0 &&
+          saved?.phase === "disposed";
+        if (!retired) {
+          await fixture.expediteWork(revision);
+        }
+        return retired;
       });
       assert.equal(credentials.repositories[0].github.issuesOfTokens.length, issued);
       assert.equal((await credentials.status(sessionId)).state, "DISPOSED");
     } finally {
+      await gatewayLog.stop();
       gate.disconnect();
       if (!credentials.process.alive) {
         await credentials.start();

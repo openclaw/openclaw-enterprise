@@ -5,9 +5,9 @@ import { connect as connectTcp } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
-import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
-import { createServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
 import {
   startGitHubFixture,
   fixtureRepository,
@@ -18,19 +18,17 @@ import {
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
 async function fixture(t) {
-  const resources = createResourceScope();
-  t.after(() => resources.close());
+  const resources = createTestResourceScope(t);
   const { createSystemClock } = await appModule("drivers/repo/credentials/clock");
   const clock = createSystemClock();
   const tls = await createTlsMaterial(resources);
-  const base = await createServiceConfiguration(resources, {
+  const config = await createLoopbackServiceConfiguration(resources, {
     headerMs: 200,
     stallMs: 2000,
     connectMs: 2000,
     firstHeaderMs: 2000,
     exchangeMs: 5000,
   });
-  const config = { ...base, gateway: { ...base.gateway, listen: "127.0.0.1:0" } };
   const github = await startGitHubFixture(resources, { clock, tls });
   const upstream = createHttpsServer(tls, (request, response) => {
     if (!github.authorize(request.headers.authorization, "git")) {

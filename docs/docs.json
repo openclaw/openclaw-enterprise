@@ -185,6 +185,10 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "reference/credential-sources/withdrawal",
+                    "label": "Credential Withdrawal"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -381,6 +385,10 @@
                       {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
+                      },
+                      {
+                        "page": "reference/public-github-reads",
+                        "label": "Public GitHub Reads"
                       }
                     ]
                   }
@@ -409,7 +417,11 @@
                 ]
               }
             ],
-            "hidden": ["guides/repository-credentials/standalone-service"]
+            "hidden": [
+              "guides/repository-credentials/standalone-service",
+              "guides/repository-credentials/development-token",
+              "reference/repository-credentials/development-token"
+            ]
           },
           {
             "tab": "Operate",
@@ -443,12 +455,52 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-archive",
+                    "label": "Earlier Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
+                    "label": "Breaking Changes Before 2026-10-13"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
+                    "label": "Breaking Changes Before 2026-10-12"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-11",
+                    "label": "Breaking Changes Before 2026-10-11"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
+                    "label": "Breaking Changes Before 2026-10-10"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
                   },
                   {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
+                  },
+                  {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
@@ -456,7 +508,7 @@
                   },
                   {
                     "page": "guides/deploy/auth-maintenance",
-                    "label": "Sign-in Maintenance"
+                    "label": "External Sign-in Maintenance"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
@@ -465,6 +517,14 @@
                   {
                     "page": "guides/deploy/oidc-sign-in",
                     "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -511,6 +571,10 @@
                   {
                     "page": "guides/operate/model-verification",
                     "label": "Model Response Verification"
+                  },
+                  {
+                    "page": "guides/operate/network-isolation",
+                    "label": "Network Isolation Check"
                   },
                   {
                     "page": "guides/deploy/native-admin",
@@ -579,7 +643,8 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
-              "guides/deploy/production-tui"
+              "guides/deploy/production-tui",
+              "reference/settings/oidc"
             ]
           },
           {
@@ -715,12 +780,20 @@
                         "label": "Compute"
                       },
                       {
+                        "page": "reference/drivers/compute-admission",
+                        "label": "Compute Admission"
+                      },
+                      {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
                       },
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-refresh",
+                        "label": "Credential Refresh"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -809,6 +882,18 @@
                         "label": "CI"
                       },
                       {
+                        "page": "testing/ci-k3d-images",
+                        "label": "k3d Images"
+                      },
+                      {
+                        "page": "testing/first-agent-smoke",
+                        "label": "First Agent Smoke"
+                      },
+                      {
+                        "page": "testing/keycloak",
+                        "label": "Keycloak OIDC Lane"
+                      },
+                      {
                         "page": "testing/ci-manual-integration",
                         "label": "Manual Integration Lanes"
                       },
@@ -867,6 +952,7 @@
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
+              "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/audit-ledger",
@@ -889,6 +975,7 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
+              "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -905,6 +992,7 @@
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
               "testing/images",
@@ -916,11 +1004,17 @@
               "testing/gateway-routing",
               "testing/production-tui",
               "testing/slack",
+              "testing/qa-matrix",
+              "testing/qa-matrix-results",
               "testing/service-accounts",
               "testing/plugins",
+              "testing/plugins-proof-notes",
               "testing/openshell",
+              "testing/openshell-coverage",
+              "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
               "flows/agent-repository-credentials",
+              "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",

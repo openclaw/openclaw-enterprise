@@ -3,11 +3,13 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import {
   KubernetesComputeDriver,
-  kubernetesGatewayNamespaceName,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { withYieldingComputeStop } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -67,7 +69,11 @@ function workloadPod(deployment, namespace, name, ready = true) {
       uid: `${name}-uid`,
     },
     spec: structuredClone(deployment.spec.template.spec),
-    status: { phase: "Running", conditions: [{ type: "Ready", status: ready ? "True" : "False" }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.30",
+      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+    },
   };
 }
 
@@ -109,6 +115,9 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
           podLabels: { app: "credentials" },
           port: 8443,
         },
+        ...(options.publicGithubRead === undefined
+          ? {}
+          : { publicGithubRead: options.publicGithubRead }),
       },
       ...(nodeEnrollment === undefined
         ? {}
@@ -129,6 +138,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     },
     { nodeEnrollment },
   );
+  // Fixture failures are final; skip the driver's API retry waits.
+  driver.waitBeforeRetry = async () => {};
   const revision = {
     id: "revision-repository-material",
     namespaceId: "namespace-repository-material",
@@ -140,6 +151,8 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     configurationGeneration: 1,
     configuration: {
       gateway: {
+        // Kubernetes renders lan for an omitted bind; this admitted document already is.
+        bind: "lan",
         trustedProxies: ["127.0.0.1/32"],
         allowRealIpFallback: true,
         auth: {
@@ -185,6 +198,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
   }
   if (nodeEnrollment !== undefined) {
     revision.configuration.gateway = {
+      bind: "lan",
       trustedProxies: ["10.42.0.0/16"],
       allowRealIpFallback: true,
       auth: {
@@ -294,7 +308,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     kind: "Secret",
     metadata: {
       name: "model-key",
-      namespace: kubernetesGatewayNamespaceName(revision.namespaceId),
+      namespace: kubernetesNamespaceName(revision.namespaceId),
       uid: "model-key-uid",
     },
     data: { value: Buffer.from("fixture-key").toString("base64") },
@@ -473,7 +487,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
     harnessAuth: {
       ...revision.harnessAuth,
       backendRef: {
-        namespaceName: kubernetesGatewayNamespaceName(revision.namespaceId),
+        namespaceName: kubernetesNamespaceName(revision.namespaceId),
         name: "model-key",
         key: "value",
         uid: "model-key-uid",
@@ -487,9 +501,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       (object) =>
         object.kind === "Secret" &&
         object.metadata.namespace === namespace &&
-        !object.metadata.name.startsWith("gateway-secrets-") &&
-        !object.metadata.name.startsWith("harness-secrets-") &&
-        !object.metadata.name.startsWith("workspace-node-"),
+        object.metadata.labels?.["openclaw.dev/repository-material"] === "session",
     );
   const enroll = (selected) => {
     const name = driver.workspaceNodeName(selected);
@@ -614,10 +626,14 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
   const agent = f.consumer();
   const gateway = f.deployments().find((deployment) => deployment !== agent);
-  assert.equal(
-    preparedNativeDocument(f),
-    original,
-    "the separate gateway receives no native exec prefix",
+  const gatewayConfiguration = JSON.parse(preparedNativeDocument(f));
+  // Compute adds the hook callback independently of repository credential custody.
+  // Repository material must leave every other Gateway setting unchanged.
+  delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
+  assert.deepEqual(
+    gatewayConfiguration,
+    JSON.parse(original),
+    "repository material does not change the separate Gateway's execution configuration",
   );
   const assertGatewayIsolated = (deployment) => {
     const pod = deployment.spec.template.spec;
@@ -1313,6 +1329,538 @@ test("Dedicated Codex without repository bindings does not receive broker policy
   assert.equal(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, undefined);
 });
 
+const publicReader = {
+  namespace: "control",
+  podLabels: { app: "read-public-github" },
+  address: "10.43.0.19",
+};
+
+function publicReaderPolicies(f) {
+  return [...f.objects.values()].filter(
+    ({ kind, spec }) =>
+      kind === "NetworkPolicy" &&
+      spec.egress?.some(({ to }) =>
+        to?.some(({ podSelector }) => podSelector?.matchLabels?.app === publicReader.podLabels.app),
+      ),
+  );
+}
+
+test("enabling the reader cannot grant an already admitted revision during activation or repair", async () => {
+  const f = await fixture("dedicated");
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+
+  // The serialized revision predates the operator enabling the service.
+  const oldRevision = structuredClone(f.revision);
+  f.driver.options.network.publicGithubRead = publicReader;
+  await f.driver.prepareRevision(oldRevision, context);
+  await f.driver.activateRevision(oldRevision, context);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  assert.equal(preparedCodexManifest(f).publicGithubRead, undefined);
+
+  // Reconstructing a lost immutable projection must retain the old decision.
+  for (const [key, object] of f.objects) {
+    if (object.kind === "ConfigMap" && object.data?.["runtime.json"]) {
+      f.objects.delete(key);
+    }
+  }
+  await f.driver.prepareRevision(oldRevision, context);
+  assert.equal(preparedCodexManifest(f).publicGithubRead, undefined);
+  assert.equal(publicReaderPolicies(f).length, 0);
+});
+
+test("withdrawing a selected reader narrows access and stops only its revision", async () => {
+  for (const replacement of [undefined, { ...publicReader, podLabels: { app: "replacement" } }]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      domains: { [publicReader.address]: "allow" },
+    };
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    const context = f.context(undefined);
+    await f.driver.prepareRevision(f.revision, context);
+    f.markReady();
+    await f.driver.activateRevision(f.revision, context);
+    const selected = f.consumer();
+    const successor = { ...structuredClone(f.revision), id: "unselected-successor", revision: 2 };
+    successor.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {};
+    delete successor.compute.admission;
+    f.enroll(successor);
+    await f.driver.prepareRevision(successor, context);
+    const successorDeployment = f
+      .deployments()
+      .find(
+        (deployment) =>
+          deployment.spec.template.metadata.labels["openclaw.dev/revision"] === successor.id,
+      );
+    assert.ok(successorDeployment);
+    const successorPod = workloadPod(successorDeployment, f.namespace, "successor");
+    f.setPods([workloadPod(selected, f.namespace, "selected"), successorPod]);
+    assert.equal(publicReaderPolicies(f).length, 1);
+    f.driver.options.network.publicGithubRead = replacement;
+    const deleteDeployment = f.clients.apps.deleteNamespacedDeployment;
+    const readDeployment = f.clients.apps.readNamespacedDeployment;
+    let deleting = false;
+    let observedTerminatingDeployment = false;
+    let releaseObservation;
+    let reachedObservation;
+    const reached = new Promise((resolve) => {
+      reachedObservation = resolve;
+    });
+    const release = new Promise((resolve) => {
+      releaseObservation = resolve;
+    });
+    f.clients.apps.deleteNamespacedDeployment = async (request) => {
+      assert.equal(publicReaderPolicies(f).length, 0);
+      assert.equal(request.body.propagationPolicy, "Foreground");
+      assert.equal(request.body.preconditions.uid, selected.metadata.uid);
+      await deleteDeployment(request);
+      deleting = true;
+    };
+    f.clients.apps.readNamespacedDeployment = async (request) => {
+      if (deleting && request.name === selected.metadata.name && !observedTerminatingDeployment) {
+        observedTerminatingDeployment = true;
+        reachedObservation();
+        await release;
+      }
+      return readDeployment(request);
+    };
+    let observed = false;
+    f.observePods(() => {
+      observed = true;
+      assert.equal(observedTerminatingDeployment, true);
+      assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+      assert.ok(
+        f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+      );
+      assert.equal(
+        publicReaderPolicies(f).length,
+        0,
+        "new connections are narrowed before Pod termination",
+      );
+      f.setPods([successorPod]);
+    });
+    const withdrawal = f.driver.prepareRevision(f.revision, context);
+    await reached;
+    assert.equal(
+      observed,
+      false,
+      "Pods cannot establish completion before the Deployment observation",
+    );
+    releaseObservation();
+    await assert.rejects(withdrawal, (error) => {
+      assert.match(error.message, /reader peer was withdrawn/);
+      assert.equal(
+        f.driver.describePrepareRevisionFailure(error).code,
+        "KUBERNETES_CONFIGURATION_INVALID",
+      );
+      return true;
+    });
+    assert.equal(observed, true);
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.ok(
+      f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+    );
+    f.observePods(undefined);
+    let removedProjection = 0;
+    for (const [key, object] of f.objects) {
+      if (
+        object.kind === "ConfigMap" &&
+        object.data?.["runtime.json"] &&
+        object.metadata.labels?.["openclaw.dev/revision"] === f.revision.id
+      ) {
+        f.objects.delete(key);
+        removedProjection++;
+      }
+    }
+    assert.equal(removedProjection, 1);
+    await assert.rejects(
+      f.driver.activateRevision(f.revision, context),
+      /reader peer was withdrawn/,
+    );
+    await assert.rejects(
+      f.driver.prepareRevision(f.revision, context),
+      /reader peer was withdrawn/,
+    );
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+    assert.ok(
+      f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+    );
+  }
+});
+
+test("withdrawal precedes missing or expired repository material in preparation and activation", async () => {
+  for (const operation of ["prepareRevision", "activateRevision"]) {
+    for (const invalid of ["missing", "expired"]) {
+      const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+      f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+        enabled: true,
+        domains: { [publicReader.address]: "allow" },
+      };
+      f.revision.compute.admission = f.driver.admitRevision(f.revision);
+      const valid = f.context([runtimeBinding()]);
+      await f.driver.prepareRevision(f.revision, valid);
+      f.markReady();
+      await f.driver.activateRevision(f.revision, valid);
+      assert.equal(publicReaderPolicies(f).length, 1);
+      const selected = f.consumer();
+      f.setPods([]);
+      f.driver.options.network.publicGithubRead = undefined;
+      const context =
+        invalid === "missing"
+          ? f.context(undefined)
+          : f.context([{ ...runtimeBinding(), deadlineWallMs: 1 }]);
+      await assert.rejects(f.driver[operation](f.revision, context), /reader peer was withdrawn/);
+      assert.equal(publicReaderPolicies(f).length, 0);
+      assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+    }
+  }
+});
+
+test("reader withdrawal uses the admitted Compute ownership when the Sandbox changes", async () => {
+  for (const [operation, replacement] of [
+    ["prepareRevision", undefined],
+    ["activateRevision", { id: "different-sandbox" }],
+    ["prepareRevision", { id: "sandbox", async provisionHarness() {} }],
+  ]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.sandboxDriverId = "sandbox";
+    f.driver.sandboxDriver = { id: "sandbox" };
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      domains: { [publicReader.address]: "allow" },
+    };
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    const context = f.context(undefined);
+    await f.driver.prepareRevision(f.revision, context);
+    f.markReady();
+    await f.driver.activateRevision(f.revision, context);
+    const selected = f.consumer();
+    assert.equal(publicReaderPolicies(f).length, 1);
+    f.setPods([]);
+    f.driver.options.network.publicGithubRead = undefined;
+    f.driver.sandboxDriver = replacement;
+    await assert.rejects(f.driver[operation](f.revision, context), /reader peer was withdrawn/);
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+  }
+});
+
+test("stop and retirement fence an admitted reader when the Sandbox is unavailable or changed", async () => {
+  for (const [operation, replacement] of [
+    ["stopRevision", undefined],
+    ["retireRevision", { id: "different-sandbox" }],
+    ["stopRevision", { id: "sandbox", async provisionHarness() {}, async cleanup() {} }],
+    ["retireRevision", { id: "sandbox", async provisionHarness() {}, async cleanup() {} }],
+  ]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.sandboxDriverId = "sandbox";
+    f.driver.sandboxDriver = { id: "sandbox" };
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      domains: { [publicReader.address]: "allow" },
+    };
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    const context = f.context(undefined);
+    await f.driver.prepareRevision(f.revision, context);
+    f.markReady();
+    await f.driver.activateRevision(f.revision, context);
+    const selected = f.consumer();
+    assert.equal(publicReaderPolicies(f).length, 1);
+    f.setPods([]);
+    f.driver.sandboxDriver = replacement;
+    await assert.rejects(f.driver[operation](f.revision), /SandboxDriver|Sandbox-owned/);
+    assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+    assert.equal(publicReaderPolicies(f).length, 0);
+  }
+});
+
+test("yielding stop starts foreground deletion before OAuth cleanup", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  await f.driver.prepareRevision(f.revision, f.context(undefined));
+  const selected = f.consumer();
+  // Exercise the OAuth stop branch with the same admitted Compute-owned workload.
+  f.revision.harnessAuth = { method: "oauth" };
+  const read = f.clients.apps.readNamespacedDeployment;
+  const remove = f.clients.apps.deleteNamespacedDeployment;
+  let deletion;
+  let reachedOAuth = false;
+  f.clients.apps.deleteNamespacedDeployment = async (request) => {
+    if (request.name === selected.metadata.name) {
+      deletion = request;
+      return; // Foreground deletion is still in progress at the API server.
+    }
+    return remove(request);
+  };
+  f.clients.apps.readNamespacedDeployment = async (request) => {
+    if (deletion) {
+      if (request.name === selected.metadata.name) {
+        throw new Error("waited for Deployment before OAuth cleanup");
+      }
+      reachedOAuth = true;
+      throw new Error("OAuth cleanup reached");
+    }
+    return read(request);
+  };
+  await assert.rejects(
+    withYieldingComputeStop(() => f.driver.stopRevision(f.revision)),
+    /OAuth cleanup reached/,
+  );
+  assert.equal(deletion.body.preconditions.uid, selected.metadata.uid);
+  assert.equal(deletion.body.propagationPolicy, "Foreground");
+  assert.equal(reachedOAuth, true);
+});
+
+test("reader withdrawal refuses an ambiguous workload profile", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  const selected = f.consumer();
+  selected.spec.template.metadata.labels["openclaw.dev/network-profile"] = "provider-fenced-v1";
+  f.save(selected);
+  f.driver.options.network.publicGithubRead = undefined;
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /workload profile/);
+  assert.ok(f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+});
+
+test("withdrawal cannot complete when Pod termination cannot be observed completely", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+  f.driver.options.network.publicGithubRead = undefined;
+  const listPods = f.clients.core.listNamespacedPod;
+  f.clients.core.listNamespacedPod = async () => ({ items: [], metadata: { continue: "next" } });
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /invalid workload Pod list/);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  f.clients.core.listNamespacedPod = listPods;
+  f.setPods([]);
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /reader peer was withdrawn/);
+  assert.equal(publicReaderPolicies(f).length, 0);
+});
+
+test("withdrawal fails if the reader policy reappears during Pod termination", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+  const policy = publicReaderPolicies(f)[0];
+  f.driver.options.network.publicGithubRead = undefined;
+  f.observePods(() => {
+    f.save(policy);
+    f.setPods([]);
+  });
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /reader policy reappeared/);
+});
+
+test("ordinary dedicated revision gets only the public reader peer and skill; a disabled proxy or deny removes both", async () => {
+  const { address } = publicReader;
+  for (const [proxy, allowed] of [
+    [
+      {
+        enabled: true,
+        mode: "limited",
+        allowLocalBinding: false,
+        domains: { "example.org": "deny", [address]: "allow" },
+      },
+      true,
+    ],
+    [{ enabled: true }, false],
+    [{ enabled: false, domains: { [address]: "allow" } }, false],
+    [{ enabled: true, domains: { [address]: "allow", "10.43.0.*": "deny" } }, false],
+    [{ enabled: true, domains: { [address]: "allow", [`[${address}]:8080`]: "deny" } }, false],
+  ]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = proxy;
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    await f.driver.prepareRevision(f.revision, f.context(undefined));
+    f.markReady();
+    await f.driver.activateRevision(f.revision, f.context(undefined));
+
+    // Inspect the mounts and policies that the kubelet and CNI actually consume,
+    // then run the Gateway's generated translator on this revision's real artifacts.
+    const agent = f.consumer().spec.template.spec;
+    const mounts = agent.containers[0].volumeMounts;
+    const skill = mounts.find(({ mountPath }) => mountPath.endsWith("public-github-read/SKILL.md"));
+    assert.equal(Boolean(skill), allowed, JSON.stringify(proxy));
+    const gateway = f
+      .deployments()
+      .find(({ spec }) => spec.template.metadata.labels["openclaw.dev/workload-role"] === "gateway")
+      .spec.template.spec;
+    const gatewaySkill = gateway.containers[0].volumeMounts.find(({ mountPath }) =>
+      mountPath.endsWith("public-github-read/SKILL.md"),
+    );
+    assert.equal(Boolean(gatewaySkill), allowed, "Gateway managed skill discovery");
+    if (allowed) {
+      assert.equal(gatewaySkill.readOnly, true);
+      assert.equal(gatewaySkill.subPath, skill.subPath);
+    }
+    // Prepare the private parent as the runtime user before projecting a read-only
+    // file there. A root-owned .openclaw would break the node's existing skill publication.
+    const prepareHome = agent.initContainers.find(({ name }) => name === "prepare-private-state");
+    assert.equal(
+      prepareHome.args[0].includes("/runtime-state/home/.openclaw/skills/public-github-read"),
+      allowed,
+    );
+    const policies = publicReaderPolicies(f);
+    assert.equal(policies.length, allowed ? 1 : 0, JSON.stringify(proxy));
+    const manifest = preparedCodexManifest(f);
+    assert.equal(manifest.repositoryBrokerNetworkPolicy, undefined);
+    const { files } = runOpenClawRuntimeHelper({ manifest }, [], {
+      baseConfig: JSON.parse(preparedNativeDocument(f)),
+    });
+    const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+    const effective = config.plugins.entries.codex.config.appServer.networkProxy;
+    if (allowed) {
+      assert.deepEqual(policies[0].spec.egress, [
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { "kubernetes.io/metadata.name": publicReader.namespace },
+              },
+              podSelector: { matchLabels: publicReader.podLabels },
+            },
+          ],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ]);
+      assert.equal(skill.readOnly, true);
+      assert.deepEqual(effective.domains, { "example.org": "deny", [address]: "allow" });
+      assert.equal(effective.allowLocalBinding, false);
+      assert.equal(effective.mode, "limited");
+      assert.deepEqual(effective.readOnlyPaths, ["/app/node_modules/openclaw", skill.mountPath]);
+      const runtime = [...f.objects.values()].find(({ data }) => data?.[skill.subPath]);
+      assert.ok(runtime.data[skill.subPath].includes("http://" + address + ":8080/repos/"));
+    } else {
+      assert.equal(manifest.publicGithubRead, undefined);
+      assert.deepEqual(effective.domains, proxy.domains);
+      assert.deepEqual(effective.readOnlyPaths, ["/app/node_modules/openclaw"]);
+    }
+  }
+});
+
+for (const [change, previouslySelected] of [
+  ["selects", false],
+  ["deselects", true],
+]) {
+  test(`successor that ${change} the public reader changes only its own grant, through exact retirement`, async () => {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    const context = f.context(undefined);
+    const prepare = (revision, selected) => {
+      revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+        enabled: true,
+        domains: selected ? { [publicReader.address]: "allow" } : {},
+      };
+      revision.compute.admission = f.driver.admitRevision(revision);
+      return f.driver.prepareRevision(revision, context);
+    };
+    const deployment = (revision) =>
+      f
+        .deployments()
+        .find(
+          ({ spec }) =>
+            spec.template.metadata.labels["openclaw.dev/workload-role"] === "agent" &&
+            spec.template.metadata.labels["openclaw.dev/revision"] === revision.id,
+        );
+    const assertGatewaySkill = (selected) => {
+      const gateway = f
+        .deployments()
+        .find(
+          ({ spec }) => spec.template.metadata.labels["openclaw.dev/workload-role"] === "gateway",
+        );
+      const mounts = gateway.spec.template.spec.containers[0].volumeMounts;
+      assert.equal(
+        mounts.some(({ mountPath }) => mountPath.endsWith("public-github-read/SKILL.md")),
+        selected,
+        "the serving Gateway follows its selected revision",
+      );
+    };
+    const assertAccess = (revision, selected) => {
+      const { labels } = deployment(revision).spec.template.metadata;
+      const grants = publicReaderPolicies(f).filter(({ spec }) =>
+        Object.entries(spec.podSelector.matchLabels).every(([key, value]) => labels[key] === value),
+      );
+      assert.equal(grants.length, selected ? 1 : 0, revision.id + ": public reader egress");
+    };
+
+    const current = f.revision;
+    await prepare(current, previouslySelected);
+    f.markReady();
+    await f.driver.activateRevision(current, context);
+    assertGatewaySkill(previouslySelected);
+    const next = { ...structuredClone(current), id: "revision-public-read-successor", revision: 2 };
+    f.enroll(next);
+
+    // Compute must preserve the serving revision's choice even when its worker
+    // has not stopped it before preparing a successor with the opposite choice.
+    assert.equal((await prepare(next, !previouslySelected)).ready, false);
+    assertAccess(current, previouslySelected);
+    assertAccess(next, !previouslySelected);
+    assertGatewaySkill(previouslySelected);
+    f.markReady();
+    assert.equal((await f.driver.prepareRevision(next, context)).ready, true);
+    await assert.rejects(f.driver.activateRevision(next, context), /gateway is not ready/);
+    f.markReady();
+    await f.driver.activateRevision(next, context);
+    assertGatewaySkill(!previouslySelected);
+    assertAccess(current, previouslySelected);
+    assertAccess(next, !previouslySelected);
+
+    // Kubernetes has terminated the predecessor's Pods. The successor still serves.
+    f.setPods([workloadPod(deployment(next), f.namespace, "serving-successor")]);
+    await f.driver.retireRevision(current);
+    assert.deepEqual(
+      publicReaderPolicies(f).map(
+        ({ spec }) => spec.podSelector.matchLabels["openclaw.dev/revision"],
+      ),
+      previouslySelected ? [] : [next.id],
+    );
+    f.setPods([]);
+    await f.driver.retireRevision(next);
+    assert.equal(publicReaderPolicies(f).length, 0);
+  });
+}
+
 test("Embedded OpenClaw repository bindings without Codex plugins do not receive broker policy", async () => {
   const f = await fixture("embedded");
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
@@ -1335,12 +1883,25 @@ test("Embedded OpenClaw plugin runtime does not receive Codex broker policy", as
 });
 
 test("Embedded Codex plugin runtime receives broker network policy centrally", async () => {
-  const f = await fixture("embedded");
+  const address = "10.43.0.19";
+  const f = await fixture("embedded", undefined, {
+    publicGithubRead: { namespace: "control", podLabels: { app: "read-public-github" }, address },
+  });
   f.revision.plugins = codexPluginState();
+  const networkProxy = { enabled: true, domains: { [address]: "allow" } };
+  f.revision.configuration.plugins = {
+    entries: { codex: { config: { appServer: { networkProxy } } } },
+  };
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
+  const manifest = preparedCodexManifest(f);
+  assert.equal(
+    manifest.publicGithubRead,
+    undefined,
+    "the public reader is scoped to ordinary dedicated Codex",
+  );
+  assert.deepEqual(manifest.repositoryBrokerNetworkPolicy, {
     host: "git.credentials.svc.cluster.local",
-    domains: {},
+    domains: { [address]: "allow" },
   });
 });
 
@@ -1367,68 +1928,68 @@ for (const mode of ["embedded", "dedicated"]) {
   });
 }
 
-test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async (t) => {
-  for (const roster of ["list", "entries"]) {
-    await t.test(roster, async () => {
+// OCC refuses a nonempty agents.list and the pinned OpenClaw Gateway rejects any list, so
+// the projected roster is the keyed agents.entries.
+test("Kubernetes projects the repository client into native exec paths without changing admitted configuration", async () => {
+  const f = await fixture();
+  const shim = "/opt/oce/repository-credentials/bin";
+  f.revision.configuration.tools = {
+    allow: ["exec", "process"],
+    exec: {
+      host: "gateway",
+      mode: "full",
+      timeoutSec: 120,
+      pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
+    },
+  };
+  f.revision.configuration.agents.ownership = "explicit";
+  f.revision.configuration.agents.entries = {
+    custom: {
+      tools: {
+        allow: ["exec"],
+        exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
+      },
+    },
+    "own-exec": { tools: { exec: { mode: "full" } } },
+    inherits: { tools: { allow: ["exec", "process"] } },
+    plain: {},
+  };
+  const original = structuredClone(f.revision.configuration);
+  deepFreeze(f.revision.configuration);
+
+  // The actual runtime document must survive OpenClaw's exec environment
+  // construction; setting only the Kubernetes container PATH is insufficient.
+  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
+  const expected = structuredClone(original);
+  expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
+  expected.agents.entries.custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
+  expected.agents.entries["own-exec"].tools.exec.pathPrepend = [
+    shim,
+    "/operator/bin",
+    "/shared/bin",
+  ];
+  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
+  assert.deepEqual(f.revision.configuration, original);
+});
+
+test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async (t) => {
+  // OpenClaw drops an empty agents.list beside an implicit empty roster, so it passes through.
+  for (const list of [undefined, []]) {
+    await t.test(list === undefined ? "no list" : "empty list", async () => {
       const f = await fixture();
-      const shim = "/opt/oce/repository-credentials/bin";
-      f.revision.configuration.tools = {
-        allow: ["exec", "process"],
-        exec: {
-          host: "gateway",
-          mode: "full",
-          timeoutSec: 120,
-          pathPrepend: ["/operator/bin", shim, "/shared/bin", shim],
-        },
-      };
-      f.revision.configuration.agents.ownership = "explicit";
-      f.revision.configuration.agents.list = [
-        {
-          id: "custom",
-          tools: {
-            allow: ["exec"],
-            exec: { host: "gateway", mode: "full", pathPrepend: ["/agent/bin", shim] },
-          },
-        },
-        { id: "own-exec", tools: { exec: { mode: "full" } } },
-        { id: "inherits", tools: { allow: ["exec", "process"] } },
-        { id: "plain" },
-      ];
-      if (roster === "entries") {
-        f.revision.configuration.agents.entries = Object.fromEntries(
-          f.revision.configuration.agents.list.map(({ id, ...entry }) => [id, entry]),
-        );
-        delete f.revision.configuration.agents.list;
+      if (list !== undefined) {
+        f.revision.configuration.agents.list = list;
       }
       const original = structuredClone(f.revision.configuration);
       deepFreeze(f.revision.configuration);
-
-      // The actual runtime document must survive OpenClaw's exec environment
-      // construction; setting only the Kubernetes container PATH is insufficient.
       await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-      const expected = structuredClone(original);
-      expected.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      const custom = roster === "list" ? expected.agents.list[0] : expected.agents.entries.custom;
-      const ownExec =
-        roster === "list" ? expected.agents.list[1] : expected.agents.entries["own-exec"];
-      custom.tools.exec.pathPrepend = [shim, "/agent/bin"];
-      ownExec.tools.exec.pathPrepend = [shim, "/operator/bin", "/shared/bin"];
-      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), expected);
+      assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
+        ...original,
+        tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
+      });
       assert.deepEqual(f.revision.configuration, original);
     });
   }
-});
-
-test("Kubernetes supplies a native repository exec prefix when no tools configuration exists", async () => {
-  const f = await fixture();
-  const original = structuredClone(f.revision.configuration);
-  deepFreeze(f.revision.configuration);
-  await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(JSON.parse(preparedNativeDocument(f)), {
-    ...original,
-    tools: { exec: { pathPrepend: ["/opt/oce/repository-credentials/bin"] } },
-  });
-  assert.deepEqual(f.revision.configuration, original);
 });
 
 test("Kubernetes preserves native configuration bytes without repository bindings", async (t) => {
@@ -1450,43 +2011,109 @@ test("Kubernetes preserves native configuration bytes without repository binding
 });
 
 test("Kubernetes rejects malformed repository exec configuration before any API access", async (t) => {
+  const rosterRefusal =
+    "The OpenClaw Gateway rejects agents.list: remove it and configure each Agent under agents.entries, keyed by its Agent ID.";
   const malformed = [
-    ["tools null", { tools: null }],
-    ["tools array", { tools: [] }],
-    ["exec string", { tools: { exec: "full" } }],
-    ["exec null", { tools: { exec: null } }],
-    ["exec array", { tools: { exec: [] } }],
-    ["prefix scalar", { tools: { exec: { pathPrepend: "/operator/bin" } } }],
-    ["prefix null", { tools: { exec: { pathPrepend: null } } }],
-    ["prefix nonstring", { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } }],
-    ["agents null", { agents: null }],
-    ["agents array", { agents: [] }],
-    ["agent list object", { agents: { list: {} } }],
-    ["agent list null", { agents: { list: null } }],
-    ["agent entries null", { agents: { entries: null } }],
-    ["agent entries array", { agents: { entries: [] } }],
-    ["agent entry null", { agents: { entries: { main: null } } }],
-    ["agent entry exec string", { agents: { entries: { main: { tools: { exec: "full" } } } } }],
+    ["tools null", { tools: null }, "Repository credentials require tools to be an object."],
+    ["tools array", { tools: [] }, "Repository credentials require tools to be an object."],
+    [
+      "exec string",
+      { tools: { exec: "full" } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec null",
+      { tools: { exec: null } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "exec array",
+      { tools: { exec: [] } },
+      "Repository credentials require tools.exec to be an object.",
+    ],
+    [
+      "prefix scalar",
+      { tools: { exec: { pathPrepend: "/operator/bin" } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix null",
+      { tools: { exec: { pathPrepend: null } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    [
+      "prefix nonstring",
+      { tools: { exec: { pathPrepend: ["/operator/bin", 1] } } },
+      "Repository credentials require tools.exec.pathPrepend to be an array of strings.",
+    ],
+    ["agents null", { agents: null }, "Repository credentials require agents to be an object."],
+    ["agents array", { agents: [] }, "Repository credentials require agents to be an object."],
+    // The projection leaves agents.list to the roster refusal: the Gateway rejects every list.
+    ["agent list object", { agents: { list: {} } }, rosterRefusal],
+    ["agent list null", { agents: { list: null } }, rosterRefusal],
+    ["agent list entry null", { agents: { list: [null] } }, rosterRefusal],
+    [
+      "agent list prefix nonstring",
+      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      rosterRefusal,
+    ],
+    [
+      "agent entries null",
+      { agents: { entries: null } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entries array",
+      { agents: { entries: [] } },
+      "Repository credentials require agents.entries to be an object.",
+    ],
+    [
+      "agent entry null",
+      { agents: { entries: { main: null } } },
+      "Repository credentials require agents.entries entry to be an object.",
+    ],
+    [
+      "agent entry exec string",
+      { agents: { entries: { main: { tools: { exec: "full" } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
     [
       "agent entry prefix nonstring",
       { agents: { entries: { main: { tools: { exec: { pathPrepend: [false] } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
-    ["agent null", { agents: { list: [null] } }],
-    ["agent array", { agents: { list: [[]] } }],
-    ["agent tools null", { agents: { list: [{ id: "main", tools: null }] } }],
-    ["agent tools array", { agents: { list: [{ id: "main", tools: [] }] } }],
-    ["agent exec null", { agents: { list: [{ id: "main", tools: { exec: null } }] } }],
-    ["agent exec array", { agents: { list: [{ id: "main", tools: { exec: [] } }] } }],
+    [
+      "agent entry array",
+      { agents: { entries: { main: [] } } },
+      "Repository credentials require agents.entries entry to be an object.",
+    ],
+    [
+      "agent tools null",
+      { agents: { entries: { main: { tools: null } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
+    ],
+    [
+      "agent tools array",
+      { agents: { entries: { main: { tools: [] } } } },
+      "Repository credentials require agents.entries entry.tools to be an object.",
+    ],
+    [
+      "agent exec null",
+      { agents: { entries: { main: { tools: { exec: null } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
+    [
+      "agent exec array",
+      { agents: { entries: { main: { tools: { exec: [] } } } } },
+      "Repository credentials require agents.entries entry.tools.exec to be an object.",
+    ],
     [
       "agent prefix scalar",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: "/agent/bin" } } }] } },
-    ],
-    [
-      "agent prefix nonstring",
-      { agents: { list: [{ id: "main", tools: { exec: { pathPrepend: [false] } } }] } },
+      { agents: { entries: { main: { tools: { exec: { pathPrepend: "/agent/bin" } } } } } },
+      "Repository credentials require agents.entries entry.tools.exec.pathPrepend to be an array of strings.",
     ],
   ];
-  for (const [name, configuration] of malformed) {
+  for (const [name, configuration, message] of malformed) {
     await t.test(name, async () => {
       const f = await fixture();
       const agentDefaults = f.revision.configuration.agents.defaults;
@@ -1495,7 +2122,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
         f.revision.configuration.agents.defaults = agentDefaults;
       }
       const before = structuredClone(f.revision.configuration);
-      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.prepareRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(
         f.apiCalls,
         [],
@@ -1503,7 +2132,9 @@ test("Kubernetes rejects malformed repository exec configuration before any API 
       );
       // Activation is a separate reconciliation entrypoint and must not bypass
       // the same native configuration validation before consulting workloads.
-      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])));
+      await assert.rejects(f.driver.activateRevision(f.revision, f.context([runtimeBinding()])), {
+        message,
+      });
       assert.deepEqual(f.apiCalls, [], "activation must reject before Kubernetes reads or writes");
       assert.deepEqual(f.revision.configuration, before);
     });
@@ -1560,6 +2191,7 @@ for (const mode of ["embedded", "dedicated"]) {
         assert.deepEqual(native.volumeMounts, [{ ...mount, readOnly: false }]);
         assert.equal(pod.securityContext.runAsNonRoot, true);
         for (const initializer of [init, native]) {
+          assert.deepEqual(initializer.command, [...SETUP_WRAPPER_COMMAND]);
           assert.equal(initializer.securityContext.readOnlyRootFilesystem, true);
           assert.equal(initializer.securityContext.allowPrivilegeEscalation, false);
           assert.deepEqual(initializer.securityContext.capabilities, { drop: ["ALL"] });
@@ -1642,13 +2274,39 @@ for (const mode of ["embedded", "dedicated"]) {
           ready: false,
           repositoryCredentialMaterialMissing: [missing],
         });
-        await assert.rejects(f.driver.activateRevision(f.revision, context));
+        // Dedicated activation reports the missing material. Embedded activation refuses
+        // earlier: preparation stopped, so the shared gateway Deployment was never created.
+        await assert.rejects(
+          f.driver.activateRevision(f.revision, context),
+          mode === "dedicated"
+            ? {
+                name: "DependencyUnavailableError",
+                message: "Repository credential material is unavailable for activation.",
+              }
+            : { message: "The Agent gateway workload is unavailable." },
+        );
         assert.equal(
           f.calls.filter((call) => call.operation === "write" && call.kind === "Secret").length,
           0,
         );
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
+        if (mode === "embedded") {
+          // Once the shared gateway exists, embedded activation reaches the same refusal and
+          // publishes no Secret for the set while one retained reference is missing.
+          const project = runtimeBinding("session_material_project");
+          await f.driver.prepareRevision(f.revision, f.context([pending, project]));
+          assert.equal(f.deployments().length, 1);
+          const writes = f.calls.length;
+          await assert.rejects(f.driver.activateRevision(f.revision, context), {
+            name: "DependencyUnavailableError",
+            message: "Repository credential material is unavailable for activation.",
+          });
+          assert.deepEqual(
+            f.calls.slice(writes).filter((call) => call.operation === "write"),
+            [],
+          );
+        }
       },
     );
 
@@ -1660,7 +2318,9 @@ for (const mode of ["embedded", "dedicated"]) {
         const document = JSON.parse(binding.files["client.json"]);
         document.sessionId = "another-session";
         binding.files["client.json"] = JSON.stringify(document);
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])));
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([binding])), {
+          message: "Repository credential material is invalid.",
+        });
         assert.equal(f.secrets().length, 0);
         assert.equal(f.deployments().length, 0);
       },
@@ -1689,11 +2349,23 @@ for (const mode of ["embedded", "dedicated"]) {
           }
           return create(request);
         };
-        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])));
+        // The API error is replaced so a Secret body it may carry never reaches callers.
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material could not be created.",
+        });
         assert.equal(f.secrets().length, 1);
         assert.equal(f.deployments().length, 0);
         await f.driver.stopRevision(f.revision);
         assert.equal(f.secrets().length, 0);
+        // A conflict whose Secret is gone by the follow-up read cannot confirm custody.
+        f.clients.core.createNamespacedSecret = async () => {
+          throw Object.assign(new Error("Secret already exists"), { statusCode: 409 });
+        };
+        await assert.rejects(f.driver.prepareRevision(f.revision, f.context([first, second])), {
+          message: "Repository credential material creation could not be confirmed.",
+        });
+        assert.equal(f.secrets().length, 0);
+        assert.equal(f.deployments().length, 0);
       },
     );
 
@@ -1802,7 +2474,10 @@ for (const mode of ["embedded", "dedicated"]) {
         f.setPods([oldPod, replacementPod]);
         const waiting = await f.driver.prepareRevision(f.revision, f.context([replacement]));
         assert.equal(waiting.ready, false);
-        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])));
+        await assert.rejects(f.driver.activateRevision(f.revision, f.context([replacement])), {
+          name: "DependencyUnavailableError",
+          message: "The exact repository credential runtime generation is not ready.",
+        });
 
         replacementPod.status.conditions = [{ type: "Ready", status: "True" }];
         f.setPods([replacementPod]);
@@ -1871,10 +2546,8 @@ for (const mode of ["embedded", "dedicated"]) {
           createdAt: f.revision.createdAt,
         });
         assert.equal(result.namespaceDeleted, true, JSON.stringify(result));
-        assert.deepEqual(
-          f.secrets().map((secret) => secret.metadata.name),
-          ["external-owner"],
-        );
+        assert.deepEqual(f.secrets(), []);
+        assert.ok(f.objects.has(`Secret:${f.namespace}:external-owner`));
         assert.ok(f.objects.has(`Namespace::${f.namespace}`));
       },
     );

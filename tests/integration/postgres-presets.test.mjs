@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { startController, request } from "../helpers/postgres-platform-state.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const identifier = (kind) => `${kind}_${randomUUID()}`;
 
 async function exercisePresets(store, reopened = store) {
@@ -63,10 +64,13 @@ async function exercisePresets(store, reopened = store) {
     ),
   ]);
   assert.equal(contenders.filter((result) => result.status === "fulfilled").length, 1);
-  assert.equal(
-    contenders.find((result) => result.status === "rejected").reason.name,
-    "ResourceConflictError",
-  );
+  // A duplicate name names the taken kind; only server-chosen identity collisions stay generic.
+  const presetNameConflict = {
+    name: "ResourceStateConflictError",
+    message: "A Preset with this name already exists in this Namespace. Choose a different name.",
+  };
+  const { name, message } = contenders.find((result) => result.status === "rejected").reason;
+  assert.deepEqual({ name, message }, presetNameConflict);
   await store.transact((state) =>
     state.presets.createPreset({
       ...preset,
@@ -78,7 +82,7 @@ async function exercisePresets(store, reopened = store) {
     store.transact((state) =>
       state.presets.updatePreset(namespace.id, preset.id, { name: duplicate.name, template: {} }),
     ),
-    { name: "ResourceConflictError" },
+    presetNameConflict,
   );
   assert.deepEqual(
     await reopened.read((state) => state.presets.findPreset(namespace.id, preset.id)),
@@ -135,12 +139,55 @@ test("in-memory Presets preserve template copies, Namespace isolation, and delet
 });
 
 test(
-  "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
-  {
-    skip: databaseUrl
-      ? false
-      : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
+  "shipped Preset API preserves contract-sized templates through PostgreSQL",
+  requiresPostgres,
+  async (context) => {
+    const api = await startController(context);
+    const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
+      import("pg"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const namespace = {
+      id: identifier("ns"),
+      name: `Preset HTTP fixture ${randomUUID()}`,
+      status: "ready",
+      createdAt: new Date().toISOString(),
+    };
+    // Storage fixtures isolate HTTP/template persistence from Compute provisioning.
+    await state.transact((store) => store.namespaces.createNamespace(namespace));
+    const content = (
+      "# Workspace guidance\n" + "Routine fixture instructions.\n".repeat(600)
+    ).slice(0, 16 * 1024);
+    const template = {
+      agent: {
+        initialWorkspaceFiles: Object.fromEntries(
+          ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"].map((name) => [name, content]),
+        ),
+      },
+    };
+    const path = `/namespaces/${namespace.id}/presets`;
+    const created = await request(api, "POST", path, { name: "Full workspace", template });
+    assert.equal(created.status, 201, JSON.stringify(created.error));
+    const replacement = await request(api, "POST", path, { name: "Replacement", template: {} });
+    assert.equal(replacement.status, 201);
+    const updated = await request(api, "PATCH", `${path}/${replacement.data.id}`, { template });
+    assert.equal(updated.status, 200, JSON.stringify(updated.error));
+    const readback = await request(api, "GET", `${path}/${replacement.data.id}`);
+    assert.equal(readback.status, 200);
+    assert.deepEqual(readback.data.template, template);
+    const persisted = await state.read((store) =>
+      store.presets.findPreset(namespace.id, created.data.id),
+    );
+    assert.deepEqual(persisted.template, template);
   },
+);
+
+test(
+  "PostgreSQL Presets survive reopening and enforce names, ownership, and Namespace deletion",
+  requiresPostgres,
   async (context) => {
     const [{ Pool }, { PostgresPlatformState }] = await Promise.all([
       import("pg"),

@@ -1,76 +1,51 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { createServer, connect } from "node:net";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
-const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
-const requiresPostgres = {
-  skip: databaseUrl ? false : "Set OCC_TEST_DATABASE_URL to run real PostgreSQL integration tests.",
-};
-
-async function waitFor(description, read, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (value !== undefined) {
-      return value;
+// A TCP relay between one pool and PostgreSQL. `silence()` keeps every connection open but
+// forwards nothing, like a failover or partition that drops packets without a reset: queries
+// are sent and never answered. `reset()` closes every connection.
+async function startDatabaseRelay(url) {
+  const target = new URL(url);
+  const sockets = new Set();
+  let silent = false;
+  const server = createServer((client) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    for (const [from, to] of [
+      [client, upstream],
+      [upstream, client],
+    ]) {
+      sockets.add(from);
+      from.on("data", (chunk) => {
+        if (!silent) {
+          to.write(chunk);
+        }
+      });
+      from.on("error", () => to.destroy());
+      from.on("close", () => to.destroy());
     }
-    await delay(20);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
-}
-
-async function ensureInstallation(state, createDevelopmentIAMState, createAuthPrincipalSeed) {
-  const existing = await state.loadInstallation();
-  if (existing !== undefined) {
-    return existing;
-  }
-
-  const installation = {
-    id: `ins_${randomUUID()}`,
-    name: "Controller worker stale-claim integration",
-    createdAt: new Date().toISOString(),
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const relayed = new URL(url);
+  relayed.hostname = "127.0.0.1";
+  relayed.port = String(server.address().port);
+  return {
+    url: relayed.href,
+    silence() {
+      silent = true;
+    },
+    async reset() {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      await new Promise((resolve) => server.close(resolve));
+    },
   };
-  state.setBootstrapNativeIAM(
-    createDevelopmentIAMState(
-      createAuthPrincipalSeed(
-        installation.id,
-        "worker-stale-claim-integration",
-        {
-          id: `account-worker-${randomUUID()}`,
-        },
-        { grant: "administrator" },
-      ),
-    ),
-  );
-  await state.transact((unit) => unit.installations.createInstallation(installation));
-  return installation;
-}
-
-function authorizedPrincipal(iam) {
-  const grants = new Set(
-    iam.roles
-      .filter(({ permissions }) =>
-        permissions.some(
-          ({ action, resourceKind }) => action === "create" && resourceKind === "namespace",
-        ),
-      )
-      .map(({ id }) => id),
-  );
-  return iam.identities.find(
-    ({ id, kind }) =>
-      kind === "principal" &&
-      iam.bindings.some(
-        (binding) =>
-          binding.subjectKind === "identity" &&
-          binding.subjectId === id &&
-          binding.namespaceId === undefined &&
-          binding.resourceKind === undefined &&
-          grants.has(binding.roleId),
-      ),
-  );
 }
 
 function codexPluginRevisionState(pluginId) {
@@ -93,29 +68,23 @@ test(
       { Pool },
       { createControllerWorker },
       { createDevelopmentComputeDriver },
-      { createAuthPrincipalSeed },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { createDevelopmentIAMState },
+      { authorizedPrincipal, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
-      import("../../packages/iam/src/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
-      import("../helpers/development-iam-state.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
 
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const workerPool = new Pool({ connectionString: databaseUrl, max: 8 });
     const state = new PostgresPlatformState(observerPool);
-    const installation = await ensureInstallation(
-      state,
-      createDevelopmentIAMState,
-      createAuthPrincipalSeed,
-    );
-    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
     assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
 
     const namespace = {
@@ -270,6 +239,157 @@ test(
 );
 
 test(
+  "a worker whose lease renewal is never answered stops its Compute effect once the lease runs out",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createControllerWorker, workerDatabasePoolOptions },
+      { currentComputeAbortSignal },
+      { createDevelopmentComputeDriver },
+      { PostgresPlatformState },
+      { PostgresWorkQueue },
+      { authorizedPrincipal, ensureInstallation },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../../apps/controller/src/drivers/compute/operation-context.ts"),
+      import("../helpers/development.mjs"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/state/postgres-work-queue.ts"),
+      import("../helpers/postgres-backend-state.mjs"),
+    ]);
+
+    const leaseDurationMs = 1_500;
+    const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
+    const relay = await startDatabaseRelay(databaseUrl);
+    // The production worker pool settings: a silent query is abandoned only after 60 s.
+    const workerPool = new Pool({
+      connectionString: relay.url,
+      max: 4,
+      ...workerDatabasePoolOptions(60_000),
+    });
+    const state = new PostgresPlatformState(observerPool);
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
+    assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+
+    const namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `worker-silent-lease-${randomUUID()}`,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    };
+    const idempotencyKey = `namespace:${namespace.id}:reconcile:ready`;
+    await state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.createNamespace(namespace);
+      await queue.enqueue({
+        idempotencyKey,
+        namespaceId: namespace.id,
+        namespaceTarget: "ready",
+        actorId: actor.id,
+        availableAt: new Date(0),
+      });
+    });
+
+    const events = [];
+    let effectSignal;
+    let stoppedAt;
+    const developmentCompute = createDevelopmentComputeDriver();
+    const worker = createControllerWorker({
+      pool: workerPool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs,
+      maxAttempts: 5,
+      computeDriver: {
+        ...developmentCompute,
+        // Like the shipped Drivers, this long Compute effect keeps writing until the
+        // worker's claim-owned signal tells it the claim is gone.
+        async ensureNamespace() {
+          effectSignal = currentComputeAbortSignal();
+          await new Promise((resolve) => {
+            effectSignal.addEventListener("abort", resolve, { once: true });
+          });
+          stoppedAt = Date.now();
+          throw effectSignal.reason;
+        },
+      },
+      emit(event) {
+        events.push(event);
+      },
+    });
+
+    const recoveryQueue = new PostgresWorkQueue(observerPool, {
+      leaseDurationMs: 30_000,
+      maxAttempts: 5,
+      random: () => 0,
+    });
+    let takeover;
+    context.after(async () => {
+      await relay.reset();
+      await worker.stop();
+      await workerPool.end().catch(() => {});
+      // Leave no claimed work behind for later tests that share this database.
+      if (takeover !== undefined) {
+        await recoveryQueue.complete(takeover);
+      }
+      await observerPool.end();
+    });
+    await worker.start();
+    await waitFor("the worker to enter its Compute effect", async () => effectSignal);
+
+    // The worker's database path goes silent: its next renewal is sent and never answered,
+    // so its lease runs out while Compute still runs.
+    relay.silence();
+    await waitFor(
+      "the silent worker's lease to expire",
+      async () => {
+        const rows = await observerPool.query(
+          `SELECT lease_expires_at <= clock_timestamp() AS expired
+           FROM occ.controller_work WHERE idempotency_key = $1 AND state = 'claimed'`,
+          [idempotencyKey],
+        );
+        return rows.rows[0]?.expired === true ? true : undefined;
+      },
+      leaseDurationMs * 4,
+    );
+    // A healthy worker recovers the expired claim and becomes the owner.
+    assert.ok((await recoveryQueue.recoverStale()).recovered >= 1);
+    const claimed = await waitFor("the healthy worker's fresh claim", () => recoveryQueue.claim());
+    assert.equal(claimed.idempotencyKey, idempotencyKey);
+    takeover = claimed;
+    const takeoverAt = Date.now();
+
+    // The silent worker cannot learn about the takeover, so it must stop on its own once
+    // its last confirmed lease runs out. Otherwise it keeps writing beside the new owner
+    // until the 60 s database timeout.
+    await waitFor("the silent worker to stop its Compute effect", async () => stoppedAt, 1_000);
+    assert.equal(effectSignal.reason?.name, "WorkClaimLostError");
+    assert.ok(
+      stoppedAt <= takeoverAt + 250,
+      `the stale effect stopped ${stoppedAt - takeoverAt} ms after the takeover`,
+    );
+
+    // Once its connections fail, the stale worker reports the lost claim and publishes nothing.
+    await relay.reset();
+    await waitFor("the stale worker's claim-loss error", async () =>
+      events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
+    );
+    const current = await observerPool.query(
+      `SELECT namespaces.status, work.state, work.claim_token
+       FROM occ.namespaces AS namespaces
+       JOIN occ.controller_work AS work ON work.namespace_id = namespaces.id
+       WHERE namespaces.id = $1 AND work.idempotency_key = $2`,
+      [namespace.id, idempotencyKey],
+    );
+    assert.deepEqual(current.rows, [
+      { status: "provisioning", state: "claimed", claim_token: takeover.claimToken },
+    ]);
+  },
+);
+
+test(
   "a worker that loses its claim before committing plugin warnings cannot write them",
   requiresPostgres,
   async (context) => {
@@ -278,19 +398,17 @@ test(
       { createControllerWorker },
       { createDevelopmentComputeDriver },
       { DEVELOPMENT_HARNESS_DESCRIPTOR },
-      { createAuthPrincipalSeed },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { createDevelopmentIAMState },
+      { authorizedPrincipal, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/composition/production-harness.ts"),
-      import("../../packages/iam/src/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
-      import("../helpers/development-iam-state.mjs"),
+      import("../helpers/postgres-backend-state.mjs"),
     ]);
 
     const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
@@ -299,12 +417,8 @@ test(
     const recoveredWorkerPool = new Pool({ connectionString: databaseUrl, max: 4 });
     const state = new PostgresPlatformState(observerPool);
     const releasePreparation = Promise.withResolvers();
-    const installation = await ensureInstallation(
-      state,
-      createDevelopmentIAMState,
-      createAuthPrincipalSeed,
-    );
-    const actor = authorizedPrincipal(await state.loadNativeIAMState());
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
     assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
 
     let worker;

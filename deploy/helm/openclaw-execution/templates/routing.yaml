@@ -2,6 +2,30 @@
 {{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
 {{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
 {{- end }}
+{{- /* YAML and --set read an all-digit or true/false hostname as a number or boolean, which len cannot measure. */ -}}
+{{- if not (kindIs "string" $r.hostname) }}
+{{- fail "routing.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string" }}
+{{- end }}
+{{- /* Compute validateDnsHostname refuses the same harness routing hostname at startup. */ -}}
+{{- if or (gt (len $r.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $r.hostname)) }}
+{{- fail "routing.hostname must be a DNS hostname without a port or path" }}
+{{- end }}
+{{- /* Compute validateGatewayName refuses the same harness Gateway name at startup: Envoy Gateway copies it into a label value. */ -}}
+{{- if or (gt (len (toString $r.gatewayName)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" (toString $r.gatewayName))) }}
+{{- fail "routing.gatewayName must be a DNS-safe Kubernetes resource name of at most 63 characters" }}
+{{- end }}
+{{- /* Compute isKubernetesNamespaceName refuses the same harness Envoy namespace at startup. */ -}}
+{{- if or (gt (len (toString $r.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $r.envoyNamespace))) }}
+{{- fail "routing.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
+{{- end }}
+{{- /* Compute validatePort refuses the same Envoy HTTPS target port at startup. Sprig int truncates 10443.5, so check the spelling first. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $r.envoyHttpsTargetPort))) (lt (int $r.envoyHttpsTargetPort) 1) (gt (int $r.envoyHttpsTargetPort) 65535) }}
+{{- fail "routing.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" }}
+{{- end }}
+{{- /* The harness proxy egress selects the DNS peer by its kubernetes.io/metadata.name label, which holds a Namespace name. */ -}}
+{{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) }}
+{{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" }}
+{{- end }}
 {{- if not (has $r.serviceType (list "ClusterIP" "LoadBalancer")) }}
 {{- fail "routing.serviceType must be ClusterIP or LoadBalancer" }}
 {{- end }}
@@ -9,26 +33,26 @@
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: {{ $r.gatewayName }}
+  name: {{ $r.gatewayName | quote }}
 spec:
   provider:
     type: Kubernetes
     kubernetes:
       envoyService:
-        name: {{ $r.gatewayName }}
+        name: {{ $r.gatewayName | quote }}
         type: {{ $r.serviceType }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: {{ $r.gatewayName }}
+  name: {{ $r.gatewayName | quote }}
 spec:
   gatewayClassName: {{ $r.gatewayClassName | quote }}
   infrastructure:
     parametersRef:
       group: gateway.envoyproxy.io
       kind: EnvoyProxy
-      name: {{ $r.gatewayName }}
+      name: {{ $r.gatewayName | quote }}
   listeners:
     - name: https
       hostname: {{ $r.hostname | quote }}
@@ -53,15 +77,15 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ .Release.Name }}-harness-proxy
-  namespace: {{ $r.envoyNamespace }}
+  namespace: {{ $r.envoyNamespace | quote }}
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/component: proxy
       app.kubernetes.io/managed-by: envoy-gateway
       app.kubernetes.io/name: envoy
-      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace }}
-      gateway.envoyproxy.io/owning-gateway-name: {{ $r.gatewayName }}
+      gateway.envoyproxy.io/owning-gateway-namespace: {{ .Release.Namespace | quote }}
+      gateway.envoyproxy.io/owning-gateway-name: {{ $r.gatewayName | quote }}
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
@@ -75,13 +99,16 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+        # Allow port 5353 for compatibility with OpenShift DNS backends.
+        - { protocol: UDP, port: 5353 }
+        - { protocol: TCP, port: 5353 }
     - to:
         - namespaceSelector:
             matchLabels:
@@ -95,7 +122,7 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $r.envoyNamespace }}
+              kubernetes.io/metadata.name: {{ $r.envoyNamespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml $r.envoyGatewayPodLabels | nindent 14 }}

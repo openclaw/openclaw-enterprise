@@ -1,6 +1,6 @@
 # Install the standard Codex Preset
 
-Install [standard-codex](../../../deploy/presets/standard-codex.json) in a ready
+Install the [Standard Codex](../../../deploy/presets/standard-codex.json) Preset in a ready
 Namespace through Installation defaults or the existing Preset API. It creates drafts for a dedicated
 Codex Harness connected to its own separate OpenClaw gateway. The template
 requests cached hosted search and allows the hosts used to build OCE from source.
@@ -26,7 +26,7 @@ Read the enforcement boundary below before deploying.
 
 ## Install and select
 
-To include both bundled Presets (**Standard Codex** and **Standard OpenClaw**) automatically, add this to the Installation YAML
+To include the three [bundled Presets](../../reference/presets.md#configuration-inventory) automatically, add this to the Installation YAML
 selected by `OCC_CONFIG_PATH`, then restart the API:
 
 ```yaml
@@ -52,20 +52,23 @@ bundled file does not overwrite an installed same-name Preset. PATCH existing
 copies to receive the build allowlist; existing Agent drafts and deployments
 keep their independent Configuration until explicitly updated and redeployed.
 
-Open **Agents → Create Agent**, choose **standard-codex**, and supply:
+Open **Agents → Create Agent**, choose **Standard Codex**, and supply:
 
-| Variable      | Value                                                       |
-| ------------- | ----------------------------------------------------------- |
-| `name`        | A unique Agent name.                                        |
-| `model`       | Your available Codex model ID, without the `codex/` prefix. |
-| `modelSecret` | The model API key, entered in a masked password field.      |
+| Variable      | Value                                                                                   |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `name`        | A unique Agent name.                                                                    |
+| `model`       | Your available Codex model ID, without the `codex/` prefix; for example, `gpt-6-astra`. |
+| `modelSecret` | The model API key, entered in a masked password field.                                  |
 
-Select **Use Preset** and review the draft; the API key remains masked.
-**Create Agent** stores it as a Secret in the current Namespace and binds that
-Secret to the Agent. The template needs no Namespace ID or existing Secret ID. Complete the
-existing [credentials and deployment procedure](../../reference/console/create-and-deploy.md#initial-runtime-credentials),
-including the Agent's authorization to use its model Secret and gateway runtime
-credentials. The template keeps `${APP_SERVER_URL}`, `${APP_SERVER_TOKEN}`,
+Select **Use Preset** and review the draft; the API key remains masked. With
+supported Dedicated provisioning, such as Kubernetes, **Create Agent** stores it
+as a Secret in the current Namespace, binds it, grants the Agent `operate` on it,
+creates gateway runtime credentials, and deploys the first revision; check it on
+the Agent page. Otherwise it saves a draft: follow the
+[credentials and deployment procedure](../../reference/console/create-and-deploy.md#initial-runtime-credentials).
+To bind an API key Secret already in the Namespace, choose **Use existing
+Secret** instead; nothing new is stored. The template needs no Namespace ID or
+existing Secret ID. It keeps `${APP_SERVER_URL}`, `${APP_SERVER_TOKEN}`,
 and the gateway password SecretRef unresolved. Compute supplies transport
 credentials; the model credential belongs only in the dedicated Harness.
 
@@ -79,15 +82,15 @@ optional plugins, channels, browser, web fetch, or elevated execution.
 The template grants these exact hostnames with value `allow` under
 `plugins.entries.codex.config.appServer.networkProxy.domains`:
 
-| Hosts                                      | Observed use                                                                  |
-| ------------------------------------------ | ----------------------------------------------------------------------------- |
-| `github.com`                               | Git access, verified with the pinned Carapace source tag.                     |
-| `codeload.github.com`                      | The docs site's pinned Carapace source archive.                               |
-| `registry.npmjs.org`                       | pnpm bootstrap and workspace, docs, and Storybook packages.                   |
-| `nodejs.org`                               | Node.js toolchain archive and checksum manifest.                              |
-| `go.dev`, `dl.google.com`                  | Go release metadata, toolchain archive, and its download redirect.            |
-| `proxy.golang.org`                         | Go modules and automatic toolchain selection.                                 |
-| `sum.golang.org`, `storage.googleapis.com` | Automatic Go toolchain checksum verification and redirected archive download. |
+| Hosts                                      | Observed use                                                                                                                                   |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `github.com`                               | Git access to the pinned Carapace source tag in the trace; limited mode blocks Git over HTTPS ([enforcement boundary](#enforcement-boundary)). |
+| `codeload.github.com`                      | The docs site's pinned Carapace source archive.                                                                                                |
+| `registry.npmjs.org`                       | pnpm bootstrap and workspace, docs, and Storybook packages.                                                                                    |
+| `nodejs.org`                               | Node.js toolchain archive and checksum manifest.                                                                                               |
+| `go.dev`, `dl.google.com`                  | Go release metadata, toolchain archive, and its download redirect.                                                                             |
+| `proxy.golang.org`                         | Go modules and automatic toolchain selection.                                                                                                  |
+| `sum.golang.org`, `storage.googleapis.com` | Automatic Go toolchain checksum verification and redirected archive download.                                                                  |
 
 These hosts were observed on 2026-09-24 while building source revision
 `63a70947fed440a875b2e6338d0a22500f9a9f5e` on Linux amd64 with Node 24.16.0,
@@ -125,7 +128,10 @@ host when Go downloads it through its module proxy.
 ## Enforcement boundary
 
 The native bridge requests a workspace-write permission profile with its managed
-network proxy enabled, `mode: limited`, and the build allowlist above. The
+network proxy enabled, `mode: limited`, and the build allowlist above. In Codex
+0.160.0, limited mode passes only `GET`, `HEAD`, and `OPTIONS` requests, so Git
+over HTTPS fails: `git ls-remote` or clone sends a `POST` to `git-upload-pack`
+and gets `403`. The trace above used a proxy without that limit. The
 shipped map has no wildcard grants. Upstream proxies, local binding, SOCKS, and unrestricted
 Unix-socket access are disabled. `approvalPolicy: on-request` lets Codex request
 approval when needed; `approvalsReviewer: user` selects the user as reviewer.
@@ -165,10 +171,13 @@ On your selected runtime, verify all of these through a fresh gateway session:
 
 1. Read effective app-server thread configuration: the named permission profile
    contains only the listed build hosts, the approval policy is `on-request`, and search is cached.
-   Inspect the rendered runtime configuration as well as the saved draft.
+   Inspect the rendered runtime configuration as well as the saved draft. On
+   Kubernetes, that is the gateway's `/etc/openclaw/openclaw.json`.
 2. Execute a tool request to a listed package host, then to a known reachable,
    operator-controlled hostname outside the allowlist. Confirm success for the
-   listed host and native proxy denial for the unlisted host. Attempt direct-IP/proxy-bypass access from
+   listed host and native proxy denial for the unlisted host. The Harness log
+   records `CONNECT allowed`, `CONNECT blocked … reason=not_allowed`, or
+   `MITM blocked by method policy`. Attempt direct-IP/proxy-bypass access from
    the same sandbox. A timeout alone does not establish policy enforcement.
 3. Confirm a normal model turn and cached hosted-search result succeed while
    direct web fetch and browser access remain unavailable.

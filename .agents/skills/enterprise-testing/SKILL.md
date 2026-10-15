@@ -33,7 +33,7 @@ their own scope. Never run `npm run precommit`.
 
 Run `pnpm check:workspace` and applicable `pnpm format:check` with the installed
 graph. The root formatter does not include `.agents/skills/**/*.md`; inspect
-adapted skill Markdown separately. Keep the vendored autoreview directory unchanged.
+adapted skill Markdown separately. Keep autoreview implementation and test changes in `openclaw/agent-skills`.
 Use the [local checks guide](../../../docs/testing/local.md) for formatting and
 generated-artifact procedures. Resolve `<name>` to existing owner/sibling tests;
 do not run placeholder commands. When all conformance and integration contracts

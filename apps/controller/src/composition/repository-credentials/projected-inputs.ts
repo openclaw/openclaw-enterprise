@@ -10,9 +10,13 @@ import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
 import { loadConfiguration } from "./config.ts";
 import { runService } from "./service.ts";
 
-const inputNames = ["config.json", "private-key.pem", "tls.crt", "tls.key"] as const;
-const privateNames = [...inputNames, "registry.json"];
-const maxima = [262144, 65536, 131072, 65536] as const;
+const inputLimits = {
+  "config.json": 262144,
+  "private-key.pem": 65536,
+  "tls.crt": 131072,
+  "tls.key": 65536,
+} as const;
+const privateNames = [...Object.keys(inputLimits), "registry.json"];
 const controlSocket = "/run/openclaw/repository-control/private/control.sock";
 
 interface ProjectedInputs {
@@ -172,8 +176,8 @@ export async function prepareProjectedInputs(
   const contents = new Map<string, Buffer>();
   try {
     const generation = await projectionGeneration(options.inputsDirectory);
-    for (const [index, name] of inputNames.entries()) {
-      contents.set(name, await readProjected(join(generation, name), maxima[index]!));
+    for (const [name, maximum] of Object.entries(inputLimits)) {
+      contents.set(name, await readProjected(join(generation, name), maximum));
     }
     const registryGeneration = await projectionGeneration(dirname(options.registryFile));
     contents.set(

@@ -92,6 +92,23 @@ async function waitForDisconnect(nodeId) {
   }
   throw new Error("Stopped workspace node remained connected.");
 }
+// The Gateway lists the node before it finishes the setup handoff (registered, then
+// delivery-uncertain, hello-ok, confirmed), so wait for the confirmation.
+async function waitForConfirmedSetup(nodeId) {
+  let status;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    status = await call("device.pair.setupStatus", { setupId: setup.setupId });
+    if (status.completion) {
+      assert.equal(status.completion.deviceId, nodeId);
+      return status.completion;
+    }
+    if (status.deliveryUncertain) {
+      assert.equal(status.deliveryUncertain.deviceId, nodeId);
+    }
+    await setTimeout(500);
+  }
+  throw new Error(`Setup completion was never confirmed: ${JSON.stringify(status)}`);
+}
 async function waitForNode(expectedId) {
   for (let attempt = 0; attempt < 20; attempt++) {
     if (child.exitCode !== null) {
@@ -142,9 +159,8 @@ try {
   // The packaged CLI must enroll with exactly the production command surface.
   start();
   const nodeId = await waitForNode();
-  const completed = await call("device.pair.setupStatus", { setupId: setup.setupId });
-  assert.equal(completed.completion?.deviceId, nodeId);
-  assert.equal(completed.completion?.access, "node");
+  const completion = await waitForConfirmedSetup(nodeId);
+  assert.equal(completion.access, "node");
   await stop();
   await waitForDisconnect(nodeId);
   // Replay the already-redeemed setup code with the same durable node state.
@@ -152,7 +168,7 @@ try {
   start();
   await waitForNode(nodeId);
   const reconnected = await call("device.pair.setupStatus", { setupId: setup.setupId });
-  assert.deepEqual(reconnected.completion, completed.completion);
+  assert.deepEqual(reconnected.completion, completion);
   console.log(
     JSON.stringify({ commands, sameIdentityAfterRestart: true, singleBootstrapCompletion: true }),
   );

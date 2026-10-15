@@ -4,13 +4,13 @@ import { message } from "./list.mjs";
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
 
-// `allowed` resolves to false when the caller's permission summary lacks Agent delete; the API
-// still authorizes the request, so an unknown answer leaves the control enabled.
 export function createAgentDeletion(context, path, agent, onDeleting, allowed = null) {
   const section = element("section", {
     className: "agent-card deletion-note",
     "aria-labelledby": "agent-deletion-title",
   });
+  const permissionNotice = "Your access does not include deleting this Agent.";
+  let restrictConfirmation;
   const feedback = element("div");
   const actions = element("div", { className: "form-actions" });
   const remove = button("Delete Agent", openConfirmation, { className: "danger" });
@@ -18,32 +18,39 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   const state = {
     deleting: agent.status === "deleting",
     pending: false,
-    needsRefresh: false,
     forbidden: false,
+    needsRefresh: false,
+    // Finishing the deletion removes the bindings that target this Agent, so a deleter whose
+    // only grants came from them can no longer read it.
+    accessEnded: false,
     notice: "",
     error: null,
   };
   let pollTimer;
+  const heading = element("h2", { id: "agent-deletion-title", tabindex: "-1" }, "Delete Agent");
 
   section.append(
-    element("h2", { id: "agent-deletion-title" }, "Delete Agent"),
+    heading,
     element(
       "p",
       { className: "muted" },
-      "Permanently delete this Agent, its revision history, and its workspace data. Namespace-owned Configurations and Secrets are kept. This cannot be undone.",
+      "Permanently delete this Agent, its version history, and its workspace data. Namespace-owned Configurations and Secrets are kept. This cannot be undone.",
     ),
     feedback,
     actions,
   );
 
   function render() {
-    const status = state.deleting
-      ? "Deletion in progress. Cleanup runs in the background; this Agent cannot be edited or deployed."
-      : state.forbidden
-        ? "Your access does not include deleting this Agent."
+    const status = state.accessEnded
+      ? "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup."
+      : state.deleting
+        ? "Deletion was requested. The Agent cannot be edited or deployed. If cleanup has stopped after a failure, fix the cause and request deletion again."
         : state.notice;
     feedback.replaceChildren(
       ...(status ? [element("p", { className: "notice", role: "status" }, status)] : []),
+      ...(state.forbidden && !state.accessEnded
+        ? [element("p", { className: "notice", role: "status" }, permissionNotice)]
+        : []),
       ...(state.error
         ? [
             element(
@@ -57,11 +64,14 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
           ]
         : []),
     );
+    remove.textContent = state.deleting ? "Request deletion again" : "Delete Agent";
     remove.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh deletion status";
-    if (state.deleting) {
-      actions.replaceChildren(refresh);
+    if (state.accessEnded) {
+      actions.replaceChildren();
+    } else if (state.deleting) {
+      actions.replaceChildren(remove, refresh);
     } else if (state.needsRefresh) {
       actions.replaceChildren(remove, refresh);
     } else {
@@ -80,7 +90,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   function schedulePoll() {
     clearTimeout(pollTimer);
     pollTimer = setTimeout(() => {
-      if (context.isCurrent() && state.deleting) {
+      if (context.isCurrent() && state.deleting && !state.accessEnded) {
         void refreshStatus({ poll: true });
       }
     }, DELETION_POLL_MS);
@@ -93,6 +103,9 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       }
       return;
     }
+    // Disabling Refresh while it checks drops its focus, so remember where focus was first.
+    const focusedHere =
+      section.contains(document.activeElement) || document.activeElement === document.body;
     state.pending = true;
     state.error = null;
     render();
@@ -103,6 +116,9 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       }
       if (current?.status === "deleting") {
         if (state.deleting) {
+          // A confirmed deleting read settles an uncertain repeat request, too.
+          state.needsRefresh = false;
+          state.notice = "";
           schedulePoll();
         } else {
           setDeleting();
@@ -121,6 +137,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         context.onExpired();
       } else if (error.status === 404) {
         context.navigate("agents");
+      } else if (error.status === 403 && state.deleting) {
+        // Most likely the finished deletion removed the bindings that target this Agent, so a
+        // reader with only those grants can no longer follow it. Stop polling instead of
+        // showing a denial.
+        state.accessEnded = true;
+        clearTimeout(pollTimer);
       } else {
         state.error = {
           text: `Could not refresh deletion status. ${message(error)}`,
@@ -132,7 +154,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       if (context.isCurrent()) {
         state.pending = false;
         render();
-        if (!poll) {
+        if (state.accessEnded) {
+          // Refresh is gone, so keep focus in this section on its heading.
+          if (focusedHere) {
+            heading.focus({ preventScroll: true });
+          }
+        } else if (!poll) {
           (state.deleting || state.needsRefresh ? refresh : remove).focus();
         }
       }
@@ -140,7 +167,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   }
 
   async function deleteAgent(dialog, cancel, confirm) {
-    if (state.pending || state.needsRefresh || !context.isCurrent()) {
+    if (state.forbidden || state.pending || state.needsRefresh || !context.isCurrent()) {
       return;
     }
     state.pending = true;
@@ -164,6 +191,11 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       if (!context.isCurrent()) {
         return;
       }
+      // The pending guard serializes status reads and writes. Cancel any poll rearmed
+      // while this repeat was pending, so only a manual read can clear its failure.
+      if (state.deleting) {
+        clearTimeout(pollTimer);
+      }
       if (error.status === 401) {
         context.onExpired();
         return;
@@ -172,7 +204,11 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       let text;
       if (error.status === 403) {
         text =
-          "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+          state.deleting &&
+          error.serverMessage !== undefined &&
+          error.serverMessage !== "The exact platform operation was not authorized."
+            ? error.serverMessage
+            : "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -198,30 +234,59 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }
   }
 
+  // Agent deletion keeps the Configuration and model credential Secret, even ones Create Agent made
+  // for this Agent, and the console cannot list or delete them, so name them and the commands.
+  function keptResourcesText() {
+    const source = agent.harnessAuth?.source;
+    if (source?.kind !== "secret") {
+      return `Its Configuration is kept, even if it was created with this Agent. Once nothing else uses it, delete it with occ configuration delete ${agent.configurationId}.`;
+    }
+    return `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${source.id}.`;
+  }
+
   function openConfirmation() {
-    if (state.pending || state.deleting || state.needsRefresh) {
+    if (state.forbidden || state.pending || state.needsRefresh) {
       return;
     }
+    const retry = state.deleting;
     const dialog = element("dialog", {
       className: "agent-delete-dialog",
       "aria-labelledby": "agent-delete-confirm-title",
-      "aria-describedby": "agent-delete-confirm-description",
+      "aria-describedby": "agent-delete-confirm-description agent-delete-confirm-kept",
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
-      "Permanently delete Agent",
+      retry ? "Request deletion again" : "Permanently delete Agent",
       () => void deleteAgent(dialog, cancel, confirm),
       {
         className: "danger",
       },
     );
+    const description = element(
+      "p",
+      { id: "agent-delete-confirm-description", "aria-live": "polite" },
+      retry
+        ? "Request cleanup again for this Agent already marked for deletion. Cleanup that is queued or running continues unchanged. Removed data cannot be restored."
+        : "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.",
+    );
+    const showRestriction = () => {
+      // A late answer cannot undo a request already sent.
+      if (!dialog.open || state.pending) {
+        return;
+      }
+      confirm.disabled = true;
+      description.textContent = permissionNotice;
+      cancel.focus();
+    };
+    restrictConfirmation = showRestriction;
     dialog.append(
-      element("h2", { id: "agent-delete-confirm-title" }, `Delete ${agent.name}?`),
       element(
-        "p",
-        { id: "agent-delete-confirm-description" },
-        "This permanently deletes the Agent, its revision history, and its workspace data. This cannot be undone.",
+        "h2",
+        { id: "agent-delete-confirm-title" },
+        retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
       ),
+      description,
+      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText()),
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
@@ -232,9 +297,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     dialog.addEventListener(
       "close",
       () => {
+        if (restrictConfirmation === showRestriction) {
+          restrictConfirmation = undefined;
+        }
         dialog.remove();
         if (context.isCurrent() && !state.pending) {
-          (state.deleting || state.needsRefresh ? refresh : remove).focus();
+          (state.forbidden ? heading : state.needsRefresh ? refresh : remove).focus();
         }
       },
       { once: true },
@@ -251,6 +319,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   void allowed?.then((permitted) => {
     if (permitted === false && context.isCurrent()) {
       state.forbidden = true;
+      restrictConfirmation?.();
       render();
     }
   });

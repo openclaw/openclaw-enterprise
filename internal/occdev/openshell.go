@@ -1,19 +1,16 @@
 package occdev
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +20,6 @@ import (
 )
 
 const (
-	openShellVersion                = "0.1.3-pre.1"
 	openShellRuntimeClass           = "openshell-sandbox"
 	openShellGatewayService         = "openshell-gateway"
 	openShellGatewayNamespace       = "openshell-system"
@@ -34,14 +30,10 @@ const (
 	openShellBoundaryRoleLabel      = "openshell.ai/boundary-role"
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
-	openShellSourceSHA256           = "b140c4b6ee108ed968ac69f277ba937637ed660bdb1d536129ae5c3fcab48c4b"
-	agentSandboxManifestSHA256      = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:7d03ee5b949f06fd3a3244b495c4aa07fb8720c16977c9da3f1ecdd966e84c28"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:7a7fd8c765fd19cbddd61a525d08a73ce37cdbe999078f385e2892e659d684bd"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:dde8a9a57f34f9d998618b3d35821608165c980f@sha256:406d9da06b506ec67993754608962f568aeffeae918ed7df0c84ba19cd904124"
-	openShellSourceArchiveURL       = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
-	agentSandboxManifestURL         = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:021400be8af471f8669369e679de3e18cf0bd672@sha256:17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:021400be8af471f8669369e679de3e18cf0bd672@sha256:b46ed57b080946d0fe80490dbe1441ebf4a83c6eec79369ddbcfc49ec19dc0cf"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:021400be8af471f8669369e679de3e18cf0bd672@sha256:971d71f45f677a7b1084385322bae4ac6fd09e9450e680684ab79a04d07c5c9f"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
 )
 
@@ -117,6 +109,7 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 		return nil, err
 	}
 	if err := r.run(ctx, "kubectl", "rollout", "status", "deployment/agent-sandbox-controller", "--namespace", "agent-sandbox-system", "--timeout", timeout.String()); err != nil {
+		r.captureAgentSandboxRollout(state)
 		return nil, err
 	}
 	assets := &openShellDevelopmentAssets{gatewayChart: gatewayChart}
@@ -244,7 +237,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
 		return "", err
 	}
-	if err := r.run(ctx, "k3d", "image", "import", "--mode", "direct", archive, "-c", state.Cluster); err != nil {
+	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
 		return "", err
 	}
 
@@ -285,183 +278,6 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 		return "", fmt.Errorf("register imported OpenShell %s image digest: %w", component, err)
 	}
 	return runtimeReference, nil
-}
-
-func (r *runner) openShellCharts(ctx context.Context, root string) (string, string, error) {
-	gatewaySelected := r.env["OCC_DEVELOPMENT_OPENSHELL_HELM_CHART"]
-	workspaceSelected := r.env["OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART"]
-	if gatewaySelected != "" || workspaceSelected != "" {
-		if gatewaySelected == "" || workspaceSelected == "" {
-			return "", "", fmt.Errorf("both OpenShell development Helm charts must be selected together")
-		}
-		for _, selected := range []struct {
-			name string
-			path string
-		}{
-			{"OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", gatewaySelected},
-			{"OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", workspaceSelected},
-		} {
-			if !filepath.IsAbs(selected.path) || filepath.Clean(selected.path) != selected.path {
-				return "", "", fmt.Errorf("%s must be an absolute canonical path", selected.name)
-			}
-			if _, err := os.Stat(selected.path); err != nil {
-				return "", "", fmt.Errorf("OpenShell Helm chart is unavailable: %w", err)
-			}
-			if _, err := r.output(ctx, "helm", "show", "chart", selected.path); err != nil {
-				return "", "", err
-			}
-		}
-		return gatewaySelected, workspaceSelected, nil
-	}
-	sourceArchive := filepath.Join(root, "openshell-source.tar.gz")
-	if err := downloadVerified(ctx, openShellSourceArchiveURL, sourceArchive, openShellSourceSHA256); err != nil {
-		return "", "", err
-	}
-	sourceRoot := filepath.Join(root, "source")
-	if err := os.Mkdir(sourceRoot, 0700); err != nil {
-		return "", "", err
-	}
-	prefix := "OpenShell-" + openShellVersion + "/deploy/helm"
-	if err := extractArchiveSubtree(sourceArchive, sourceRoot, prefix); err != nil {
-		return "", "", err
-	}
-	packageDirectory := filepath.Join(root, "chart")
-	if err := os.Mkdir(packageDirectory, 0700); err != nil {
-		return "", "", err
-	}
-	charts := make([]string, 0, 2)
-	for _, name := range []string{"openshell", "openshell-workspace"} {
-		chartDirectory := filepath.Join(sourceRoot, filepath.FromSlash(prefix), name)
-		output, err := r.output(ctx, "helm", "package", chartDirectory, "--version", openShellVersion, "--app-version", openShellVersion, "--destination", packageDirectory)
-		if err != nil {
-			return "", "", err
-		}
-		fields := strings.Fields(string(output))
-		if len(fields) == 0 {
-			return "", "", fmt.Errorf("OpenShell Helm packaging returned no chart path")
-		}
-		chart := fields[len(fields)-1]
-		if !filepath.IsAbs(chart) {
-			chart = filepath.Join(packageDirectory, filepath.Base(chart))
-		}
-		if _, err := r.output(ctx, "helm", "show", "chart", chart); err != nil {
-			return "", "", err
-		}
-		charts = append(charts, chart)
-	}
-	return charts[0], charts[1], nil
-}
-
-func (r *runner) agentSandboxManifest(ctx context.Context, root string) (string, error) {
-	if selected := r.env["OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"]; selected != "" {
-		if !filepath.IsAbs(selected) || filepath.Clean(selected) != selected {
-			return "", fmt.Errorf("OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST must be an absolute canonical path")
-		}
-		if _, err := os.Stat(selected); err != nil {
-			return "", fmt.Errorf("Agent Sandbox manifest is unavailable: %w", err)
-		}
-		return selected, nil
-	}
-	path := filepath.Join(root, "agent-sandbox-v0.5.2.yaml")
-	if err := downloadVerified(ctx, agentSandboxManifestURL, path, agentSandboxManifestSHA256); err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-func downloadVerified(ctx context.Context, url, destination, expected string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return fmt.Errorf("download %s failed: %w", url, err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s failed: HTTP %d", url, response.StatusCode)
-	}
-	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	hash := sha256.New()
-	_, copyErr := io.Copy(io.MultiWriter(file, hash), response.Body)
-	closeErr := file.Close()
-	if copyErr != nil {
-		return copyErr
-	}
-	if closeErr != nil {
-		return closeErr
-	}
-	actual := hex.EncodeToString(hash.Sum(nil))
-	if actual != expected {
-		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", filepath.Base(destination), expected, actual)
-	}
-	return nil
-}
-
-func extractArchiveSubtree(archive, destination, prefix string) error {
-	file, err := os.Open(archive)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	compressed, err := gzip.NewReader(file)
-	if err != nil {
-		return err
-	}
-	defer compressed.Close()
-	reader := tar.NewReader(compressed)
-	found := false
-	for {
-		header, err := reader.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if header.Name != prefix && !strings.HasPrefix(header.Name, prefix+"/") {
-			continue
-		}
-		clean := filepath.Clean(filepath.FromSlash(header.Name))
-		target := filepath.Join(destination, clean)
-		relative, err := filepath.Rel(destination, target)
-		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-			return fmt.Errorf("OpenShell source archive contains an unsafe path")
-		}
-		found = true
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0700); err != nil {
-				return err
-			}
-		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-				return err
-			}
-			output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-			if err != nil {
-				return err
-			}
-			_, copyErr := io.Copy(output, reader)
-			closeErr := output.Close()
-			if copyErr != nil {
-				return copyErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-		default:
-			return fmt.Errorf("OpenShell source archive contains unsupported entry %s", header.Name)
-		}
-	}
-	if !found {
-		return fmt.Errorf("OpenShell source archive does not contain %s", prefix)
-	}
-	return nil
 }
 
 func (r *runner) installOpenShellGateway(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, namespace string, timeout time.Duration) error {
@@ -518,6 +334,28 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		}
 	}
 	return nil
+}
+
+func (r *runner) openShellGatewayAddress(ctx context.Context, namespace string) (string, error) {
+	data, err := r.output(
+		ctx,
+		"kubectl",
+		"get",
+		"service",
+		openShellGatewayService,
+		"--namespace",
+		namespace,
+		"-o",
+		"jsonpath={.spec.clusterIP}",
+	)
+	if err != nil {
+		return "", fmt.Errorf("resolve OpenShell Gateway address: %w", err)
+	}
+	address := string(data)
+	if net.ParseIP(address) == nil {
+		return "", fmt.Errorf("OpenShell Gateway returned an invalid ClusterIP")
+	}
+	return address, nil
 }
 
 func openShellImageValues(prefix, image string) []string {

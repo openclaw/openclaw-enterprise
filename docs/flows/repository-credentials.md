@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-09-28"
-last_updated_session: authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352
+updated: 2026-10-15
+last_updated_session: authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb
 ---
 
 # Repository credential service flow
@@ -104,8 +104,22 @@ Admission IDs bind the complete request: platform Namespace, repository referenc
 normalized profile, expected grant and absolute deadline. Registry mode requires
 this binding and independently resolves its fingerprint. A worker-owned private
 journal reserves the exact attempt before bearer delivery; recovery durably fences
-a missing admission. Known nondelivery closes the session. Reconciliation cannot
-recover a bearer, change its binding or replay provider work.
+a missing admission. The broker opens the session before reserving, so a capacity
+or shutdown refusal leaves no receipt and the same admission can retry or be
+fenced. When the broker refuses a reserved admission as invalid, or cannot record
+its session, it fences its own reservation. A fence that does not commit stays
+with that admission, and the next open or recovery fences it; past the admission
+window a sweep retries it and forgets it once the fence commits, so it stops
+counting toward capacity. Known nondelivery closes the session.
+Reconciliation cannot recover a bearer, change its binding or replay provider work.
+
+The receipt and operator control clients reject private-socket replies over
+16,384 bytes before destroying the response.
+[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/credentials/receipt-client.ts)
+reports `RECEIPT_UNAVAILABLE`;
+[`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
+retains the admission ID in `control-request-failed` and also closes the request.
+Neither waits for the oversized response to end.
 
 Factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
@@ -152,7 +166,9 @@ configuration. `apps/controller/src/drivers/repo/github/credentials/client/comma
 checks gh 2.100.0 and the canonical host/port profile.
 `apps/controller/src/drivers/repo/github/credentials/client/launch.ts:launchClient`
 provides single-session stock Git execution, signal forwarding and original child
-exit status, without Git command parsing or temporary-HOME cleanup. The
+exit status. `executeClientCommand` preserves numeric exits and maps signal
+termination to `128 + signal number` (SIGINT 130; SIGTERM 143), without Git
+command parsing or temporary-HOME cleanup. The
 [reference](../reference/repository-credentials.md#client-routing-and-limits)
 owns configuration overrides and generation limits.
 
@@ -182,7 +198,11 @@ rejects them before dispatch. The shared PR/issue comment routes also rely on
 GitHub's resource authorization. Raw README and diff/patch replies remain bounded
 and bypass JSON rewriting. GraphQL uses the exact installation-token grant without
 field-level or branch-only authorization. GitHub may return permitted public
-information; every GraphQL POST is a possible write.
+information; every GraphQL POST is a possible write. The GraphQL plan carries
+`apps/controller/src/drivers/repo/github/credentials/graphql-input.ts:allowsGraphqlInput`:
+`apps/controller/src/drivers/repo/credentials/transport/agent.ts:createAgentHandler`
+buffers the body within the input bounds before credential use and refuses
+invalid JSON or any decoded string naming `tempCloneToken` with 400.
 
 `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
 reserves the exchange. Its
@@ -216,7 +236,9 @@ credential. Rejected material retains its cleanup owner.
 Its bounded credential transport,
 `apps/controller/src/drivers/repo/github/credentials/provider-transport.ts:createProviderTransport`,
 uses `apps/controller/src/drivers/repo/github/credentials/provider-transport/request.ts:sendProviderRequest`
-to dispatch and join the actual request close event. Opaque scope freezes
+to dispatch and join the actual request close event. It latches dispatch, after
+rechecking admission, only when TCP connects, so DNS and connection-refused
+failures are definite and only later failures are uncertain. Opaque scope freezes
 installation, repository and profile. The adapter can issue that scope or revoke
 a token, never supply arbitrary targets, bodies or headers. After authentication
 preparation, a synchronous gate rechecks admission, registers cancellation and
@@ -228,7 +250,11 @@ bounded transport headers before dispatch. Credential bytes stay
 inside private adapter/sender callbacks. The sender's final-response-header wait
 starts after the bounded input pipeline finishes, unless headers have already
 arrived. Connection, upload, stall and total deadlines remain active in their
-respective phases.
+respective phases. Upload-pack plans carry separate response byte, first-header,
+stall and total budgets; discovery, receive-pack and API requests retain their
+ordinary limits. The service caps every plan by `maxExchangeMs` and the session
+deadline. Static-token plans also cap upload-pack to the available lease. The
+streaming byte counter applies backpressure without buffering the pack.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -241,7 +267,8 @@ and `rewritePaginationLinks` with
 `apps/controller/src/drivers/repo/github/credentials/response-resources.ts:createResourceRewriter`.
 Before releasing bounded JSON, it removes `temp_clone_token` from repository
 objects, their `parent`/`source` relationships and PR `head.repo`/`base.repo`
-objects. This is not a generic credential-string scanner.
+objects. GraphQL cannot select the equivalent `tempCloneToken` (see above).
+This is not a generic credential-string scanner.
 The URL owner maps the configured repository ID to admitted
 `/repos/owner/repository` before checking route and resource purpose; other IDs
 are refused. Issue pagination accepts bounded `after`/`before` cursors. Rewritten
@@ -336,6 +363,18 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 04:44: Bound upload-pack streaming separately while retaining exchange and credential fencing. (authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
+
+- 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
+- 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
+
+- 2026-10-12 07:39: A refused admission keeps a reservation whose fence did not commit, and the next open or recovery fences it. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
+
+- 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
+
+- 2026-10-03: Refuse GraphQL bodies that select the provider clone credential before dispatch.
 
 - 2026-09-28 08:12: Trace durable admission fencing and original-broker disposal acknowledgments. (authoring-run/41ba3c72-c44a-4a26-8285-7d4724f24352 - e06ff9625e72ff5ab3483a504a2f02a69a370cbb)
 

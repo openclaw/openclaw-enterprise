@@ -30,6 +30,20 @@ export function githubConfigurationData(overrides = {}) {
   };
 }
 
+export function githubTokenConfigurationData(overrides = {}) {
+  return {
+    kind: "github-token",
+    providerInstanceId: "github-test",
+    configVersion: "1",
+    repositoryId: "73",
+    repository: "fixture/repository",
+    tokenFile: "/protected/token",
+    developmentOnly: true,
+    pushRefAllowlist: ["refs/heads/agent/*"],
+    ...overrides,
+  };
+}
+
 // Keep raw targets byte-for-byte, including deliberately invalid protocol inputs.
 export function requestHead(
   method,
@@ -92,3 +106,11 @@ export function pullResponse(overrides = {}) {
     ...overrides,
   };
 }
+
+/** Custody limits for driver tests: two slots and callbacks, 16 KiB access and renewal bodies. */
+export const custodyLimits = Object.freeze({
+  maximumSlots: 2,
+  maximumAccessBytes: 16384,
+  maximumRenewalBytes: 16384,
+  maximumCallbacks: 2,
+});

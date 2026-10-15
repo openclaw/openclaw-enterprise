@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +22,9 @@ var (
 	namespaceIDArg        = idArg{kind: "Namespace", prefix: "ns_", lookup: "occ namespace list"}
 	configurationIDArg    = idArg{kind: "Configuration", prefix: "cfg_", lookup: "occ agent get AGENT_ID"}
 	secretIDArg           = idArg{kind: "Secret", prefix: "sec_", lookup: "occ secret list"}
+	presetIDArg           = idArg{kind: "Preset", prefix: "pre_", lookup: "occ preset list"}
 	credentialSourceIDArg = idArg{kind: "credential source", prefix: "cs_", lookup: "occ credential-source list"}
+	serviceAccountIDArg   = idArg{kind: "ServiceAccount", prefix: "sa_", lookup: "occ service-account list"}
 	agentIDArg            = idArg{kind: "Agent", prefix: "agt_", lookup: "occ agent list"}
 	revisionIDArg         = idArg{kind: "deployment", prefix: "rev_", lookup: "occ agent revisions AGENT_ID"}
 )
@@ -65,29 +68,29 @@ func idArgs(args ...idArg) cobra.PositionalArgs {
 	}
 }
 
-// latestRevisionID picks the highest-numbered revision from a revision list.
-func latestRevisionID(agentID string, value any) (string, error) {
-	revisions, ok := value.([]any)
+// latestRevisionID returns the ID of the newest revision the caller can read.
+func latestRevisionID(client *occclient.Client, namespace, agentID string) (string, error) {
+	id, _, err := latestReadableRevision(client, namespace, agentID)
+	return id, err
+}
+
+// latestReadableRevision retains the summary number for ordering diagnostics.
+func latestReadableRevision(client *occclient.Client, namespace, agentID string) (string, float64, error) {
+	latest, err := client.LatestAgentRevision(namespace, agentID)
+	if err != nil {
+		return "", 0, err
+	}
+	if latest == nil {
+		return "", 0, fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
+	}
+	revision, ok := latest.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("OCC returned an invalid resource collection")
+		return "", 0, fmt.Errorf("OCC returned an invalid resource")
 	}
-	latestID, latestNumber := "", -1.0
-	for _, item := range revisions {
-		revision, ok := item.(map[string]any)
-		if !ok {
-			return "", fmt.Errorf("OCC returned an invalid resource")
-		}
-		id, idOK := revision["id"].(string)
-		number, numberOK := revision["revision"].(float64)
-		if !idOK || !numberOK {
-			return "", fmt.Errorf("OCC returned an invalid revision")
-		}
-		if number > latestNumber {
-			latestID, latestNumber = id, number
-		}
+	id, idOK := revision["id"].(string)
+	number, numberOK := revision["revision"].(float64)
+	if !idOK || !numberOK {
+		return "", 0, fmt.Errorf("OCC returned an invalid revision")
 	}
-	if latestID == "" {
-		return "", fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
-	}
-	return latestID, nil
+	return id, number, nil
 }

@@ -110,14 +110,14 @@ production Driver's fail-closed behavior.
 4. Remove the operator bootstrap Job when upstream OpenShell accepts the complete
    request. Run the same model, identity, filesystem, egress, replacement, and
    cleanup assertions through that native path.
-5. Keep mode `0` so a projection regression cannot be mistaken for a successful
-   Agent deployment.
+5. Retain direct negative coverage for malformed verifiers, provider files, and
+   bearer authorization so a delivery regression cannot look like success.
 
 ## Re-run criteria
 
 Follow the [OpenShell test guide](openshell.md) and use its CI-owned preparation
-path. Use `OCC_TEST_OPENSHELL_SECRET_PROJECTION=0` for unchanged production
-requirements and `1` for the documented verification-only compatibility bridge.
+path. The default Codex case uses provider-file delivery and bearer passthrough;
+`OCC_TEST_OPENSHELL_HARNESS=openclaw` selects the remaining native compatibility bridge.
 Record:
 
 - exact OpenShell source tag and immutable gateway, sandbox, and supervisor

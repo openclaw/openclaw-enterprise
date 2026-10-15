@@ -8,7 +8,7 @@ current behavior from remaining design work.
 
 Secret storage, exact binding authorization, revision-scoped delivery, and
 transactional mutation audit are implemented. With Kubernetes, canonical Secrets
-live in the tenant control-plane namespace; the worker materializes admitted
+live in the tenant storage namespace; the worker materializes admitted
 runtime Secrets for the exact consumer. Model credentials still reach the executing Harness.
 Brokered model access, OAG audit, universal pre-execution policy enforcement, and
 mutually authenticated workload transport remain broader design requirements.
@@ -56,7 +56,8 @@ Environment-delivery guarantees do not describe this path. The project-root `ref
 the external broker-target owner handoff outside this implementation worktree.
 
 Production execution retains scoped direct-credential delivery, because the
-Credential Gateway path is limited to the unsupported OpenShell Sandbox. The Agent's `harnessAuth`
+Credential Gateway path is limited to the experimental local OpenShell Sandbox
+workflow. The Agent's `harnessAuth`
 API-key binding references an OCC Secret in its exact Namespace. The Secret
 Driver owns storage; Kubernetes projects the source only into dedicated Codex
 or the combined embedded OpenClaw gateway/Harness. Each consumer requires its
@@ -64,7 +65,7 @@ own admission and dispatch authorization; the dedicated gateway gets no key.
 
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
-tenant control-plane namespace. The revision snapshots only the OCC account
+tenant storage namespace. The revision snapshots only the OCC account
 identity, exact credential reference, and verified private Backend/workspace
 ownership. The worker materializes the admitted credential into a revision-owned
 runtime Secret in the data plane, which Kubernetes projects into the associated
