@@ -101,6 +101,8 @@ Driver activation. Requests do not reread configuration or credentials.
 `apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
 paths return the shell with `404`; API routes retain JSON errors.
+`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
+`Accept-Encoding`, with `Vary`). The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
@@ -374,6 +376,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 
@@ -384,11 +387,5 @@ refresh and inspection.
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
-- 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.
-- 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
-
-- 2026-09-29 07:19: Guard recovery until session and Namespace reads finish. (authoring-run/1ca6a40a-a247-465f-9a83-182dbcb6ff4e - 90326e6fab11f84fc11b8990b6c8e197a2752c60)
-
-- 2026-09-28 01:39: Move the sharing trace to its child flow. (authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a - 4f32ebbca5d699296a142dfbd34c8ec46844fce7)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
