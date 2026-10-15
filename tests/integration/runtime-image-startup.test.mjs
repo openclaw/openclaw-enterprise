@@ -1148,7 +1148,7 @@ test(
   "runtime image Gateway preserves OpenShell Codex isolation policy",
   imageTestOptions,
   async () => {
-    // The bundled resolver must preserve both PAT and API-key isolation choices and the
+    // The bundled resolver must preserve OpenShell isolation for both login modes and the
     // human reviewer, including models without model-backed review support.
     const documented = {
       mode: "guardian",
@@ -1166,12 +1166,10 @@ test(
     ].flatMap(({ documented: appServer }) =>
       // The Gateway passes no provider for the documented `codex/<model>` ref; `openai` is a
       // model it can verify for model-backed review.
-      [undefined, "openai"].flatMap((modelProvider) =>
-        ["workspace-write", "danger-full-access"].map((sandbox) => ({
-          appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY, sandbox },
-          modelProvider,
-        })),
-      ),
+      [undefined, "openai"].map((modelProvider) => ({
+        appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY },
+        modelProvider,
+      })),
     );
     const script = String.raw`
 import { readdirSync } from "node:fs";

@@ -566,7 +566,7 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     mode: "dedicated",
   });
   assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
-    sandbox: "workspace-write",
+    sandbox: "danger-full-access",
     approvalsReviewer: "user",
   });
   assert.throws(
@@ -580,14 +580,14 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
   );
 });
 
-test("OpenShell selects Codex isolation from the admitted credential source", () => {
+test("OpenShell owns Codex isolation for every admitted credential source", () => {
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: backendFor(workspaceGatewayClient()),
   });
   const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  // API keys preserve outer-only isolation; PAT and unresolved sources retain native policy.
+  // Account policy is enforced by Codex; login mode does not change outer isolation.
   for (const loginMode of [undefined, "codex_pat", "api_key"]) {
     for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
       const appServer = {
@@ -606,7 +606,7 @@ test("OpenShell selects Codex isolation from the admitted credential source", ()
       assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
         mode: "guardian",
         approvalPolicy: "on-request",
-        sandbox: loginMode === "api_key" ? "danger-full-access" : "workspace-write",
+        sandbox: "danger-full-access",
         transport: "websocket",
         url: "${APP_SERVER_URL}",
         authToken: "${APP_SERVER_TOKEN}",

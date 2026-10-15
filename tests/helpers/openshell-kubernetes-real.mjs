@@ -396,7 +396,6 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.3-pre.2",
-  codexSandbox = "workspace-write",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -1116,6 +1115,7 @@ export function createOpenShellKubernetesFixture({
         try {
           await request("initialize", {
             clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+            capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
@@ -1125,19 +1125,18 @@ export function createOpenShellKubernetesFixture({
             cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: ${JSON.stringify(codexSandbox)},
+            approvalsReviewer: "user",
+            permissions: ":danger-full-access",
             config: { project_doc_max_bytes: 131072 },
           });
+          // Fail before inference when account policy refuses the outer-sandbox mode.
+          if (started.sandbox?.type !== "dangerFullAccess") {
+            throw new Error("OpenShell requires the Codex account to allow :danger-full-access.");
+          }
           await request("turn/start", {
             threadId: started.thread.id,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            // Match the admitted source mode; PAT retains native managed restrictions.
-            sandboxPolicy: ${JSON.stringify(codexSandbox)} === "danger-full-access"
-              ? { type: "dangerFullAccess" }
-              : {
-                  type: "workspaceWrite", writableRoots: [workspace], networkAccess: true,
-                  excludeTmpdirEnvVar: false, excludeSlashTmp: false,
-                },
+            permissions: ":danger-full-access",
           });
         } catch (error) {
           fail(error);

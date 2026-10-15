@@ -95,6 +95,10 @@ node scripts/ci/run-tests.mjs run openshell \
   --results "$OCC_OPENSHELL_TEST_ROOT/results.json"
 ```
 
+The Codex account must permit `:danger-full-access`; OpenShell supplies the outer
+sandbox. The live probe checks the effective profile before starting inference
+and fails immediately if managed policy selects a restricted sandbox.
+
 The lane includes both setup tests, the Sandbox test, and first-Agent tests for
 both control-plane variants. It fails when selected prerequisites are missing.
 Run cleanup even if preparation or a test fails:

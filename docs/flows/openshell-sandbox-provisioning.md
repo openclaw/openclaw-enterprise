@@ -1,15 +1,14 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-15
-last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
+last_updated_session: authoring-run/7eb24321-3670-4154-adde-41a0f1b36728
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex and native OpenClaw Harnesses to
-OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
+Kubernetes Compute delegates dedicated Harnesses to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
 Agent Secret permission. Codex authenticates Gateway requests through revision-owned
 provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
@@ -173,9 +172,8 @@ adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It converts the admitted plug
 snapshot into `runtime.json`/`config.toml` workload files and removes their ConfigMap
 paths from the environment.
 
-OCC supplies admitted login metadata to `OpenShellSandboxDriver.configureAgent`.
-API-key sources select `danger-full-access`; PAT and unresolved sources retain
-`workspace-write`. Both require user review.
+`OpenShellSandboxDriver.configureAgent` selects full access with user review.
+`deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access` on thread and turn requests, subject to account policy.
 OpenShell blocks nested bubblewrap user namespaces; model readiness does not
 prove shell execution.
 
@@ -268,7 +266,7 @@ For Codex, `GetService` must also return the unnamed bearer-passthrough endpoint
 on the admitted port. Workspace `sandbox:write` is the trust boundary because a
 holder can replace the Sandbox.
 
-The Backend reuses endpoint clients and retries failed setup. Cancellation is
+The Backend reuses clients and retries setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads
 remain unbounded. After dispatch, cancellation stops local gRPC; remote mutations
 may continue and require recovery.
@@ -359,6 +357,8 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
 

@@ -1,0 +1,55 @@
+diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/codex/src/app-server/thread-requests.ts
+--- a/extensions/codex/src/app-server/thread-requests.ts
++++ b/extensions/codex/src/app-server/thread-requests.ts
+@@ -684,8 +684,12 @@
+ export function codexThreadSandboxOrPermissions(
+   appServer: Pick<CodexAppServerRuntimeOptions, "networkProxy" | "sandbox">,
+-): Pick<CodexThreadStartParams, "sandbox"> {
++): Pick<CodexThreadStartParams, "sandbox" | "permissions"> {
+   if (appServer.networkProxy) {
+     return {};
+   }
+-  return { sandbox: appServer.sandbox };
+-}
++  // A managed default_permissions can supersede the legacy sandbox field.
++  // Select full access explicitly; native Codex still enforces managed requirements.
++  return appServer.sandbox === "danger-full-access"
++    ? { permissions: ":danger-full-access" }
++    : { sandbox: appServer.sandbox };
++}
+diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
+--- a/extensions/codex/src/app-server/turn-params.ts
++++ b/extensions/codex/src/app-server/turn-params.ts
+@@ -114,6 +114,13 @@
+     collaborationMode.settings.developer_instructions = null;
+   }
+   const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
++  const sandboxPolicy =
++    options.sandboxPolicy ??
++    codexSandboxPolicyForTurn(
++      options.appServer.sandbox,
++      options.appServer.sessionRoot ?? options.cwd,
++      options.appServer.start?.args,
++    );
+   const currentSender = params.trigger === "user" ? readCodexCurrentSender(params) : undefined;
+   // Codex emits only changed values and cannot retract omitted fragments from model history.
+   // Always send configured-or-host context so warm threads see rollover and removed overrides.
+@@ -180,15 +187,9 @@
+     approvalsReviewer: options.appServer.approvalsReviewer,
+     ...(useThreadPermissionProfile
+       ? {}
+-      : {
+-          sandboxPolicy:
+-            options.sandboxPolicy ??
+-            codexSandboxPolicyForTurn(
+-              options.appServer.sandbox,
+-              options.appServer.sessionRoot ?? options.cwd,
+-              options.appServer.start?.args,
+-            ),
+-        }),
++      : sandboxPolicy.type === "dangerFullAccess"
++        ? { permissions: ":danger-full-access" }
++        : { sandboxPolicy }),
+     ...(modelSelection
+       ? { model: modelSelection.model, personality: CODEX_NATIVE_PERSONALITY_NONE }
+       : {}),
