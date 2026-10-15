@@ -1019,7 +1019,8 @@ test("console retained views clear after session expiry and exact Agent denial",
   // The heading shows before the detail finishes loading; leaving earlier keeps no preview.
   await waitForSettledView(page);
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
-  await page.getByText("Denied retained Agent", { exact: true }).waitFor();
+  // The detail stays on screen, inert, until the list replaces it.
+  await page.getByRole("link", { name: "Denied retained Agent", exact: true }).waitFor();
   fixture.policy.restrictions.push({
     id: "deny-retained-agent-read",
     namespaceId: namespace.id,
@@ -1827,14 +1828,18 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   const missingId = "ns_00000000-0000-4000-8000-000000000099";
   const { page } = await newPage(t, fixture, mobile);
   await login(page, fixture, `/console/namespaces?namespace=${missingId}`);
-  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  // A navigation keeps the previous list on screen, inert and busy, until the next one replaces it.
+  const shownList = page
+    .locator('.content [aria-live="polite"][aria-busy="false"]')
+    .getByRole("list", { name: "Namespaces", exact: true });
+  await shownList.waitFor();
 
   // A stale bookmark must offer recovery on this page without opening the drawer.
   const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
   assert.equal(await selector.isVisible(), true);
   assert.equal(await page.locator(".page-header select").count(), 0);
   await selector.selectOption({ label: "Alpha" });
-  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await shownList.waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
   assert.equal(new URL(page.url()).searchParams.get("namespace"), alpha.id);
   assert.equal(
@@ -1847,7 +1852,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await selector.waitFor();
   assert.equal(new URL(page.url()).searchParams.get("namespace"), missingId);
   await selector.selectOption({ label: "Alpha" });
-  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await shownList.waitFor();
 
   // Revocation comes from the real IAM Driver; the recovery must never offer that scope.
   fixture.policy.restrictions.push({
@@ -1858,10 +1863,11 @@ test("Namespaces recovers stale selection inline and handles losing all readable
     effect: "deny",
   });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await shownList.waitFor();
   await selector.waitFor();
   assert.equal(await page.getByRole("option", { name: "Alpha", exact: true }).count(), 0);
   await selector.selectOption({ label: "Beta" });
-  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await shownList.waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
   assert.equal(new URL(page.url()).searchParams.get("namespace"), beta.id);
 

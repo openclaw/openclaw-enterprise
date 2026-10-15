@@ -439,6 +439,8 @@ const request = createApiClient({
   sessionKey: () => pinnedSessionKey,
 });
 const retainedViews = new Map();
+// A load that settles sooner swaps pages without showing loading (finding 1407).
+const loadingDelayMs = 250;
 let mountedRouteKey = null;
 let mountedAgent = null;
 let mountedViewState = null;
@@ -914,24 +916,48 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   }
   const retainedView = knownPrivateState ? takeRetainedView(current) : null;
   let retained = retainedView !== null;
-  // A return keeps the shown page until the retained view revalidates; other loads show loading.
-  let shell = retained ? holdShownView(current) : null;
+  // Every load keeps the shown page, inert, and swaps once: a return when its retained view
+  // revalidates, any other load when admission and the destination's first read settle.
+  let shell = knownPrivateState ? holdShownView(current) : null;
   let held = shell !== null;
-  if (!held) {
-    publicPanel("Loading…", "Checking your session.");
-  }
+  let sessionResolved = false;
+  let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
     return;
   }
-  if (current.feature !== "login" && !held) {
-    shell = renderShell(current.feature, true);
-    panel(shell.view, "Loading…", "Checking your session and Namespace access.");
-  }
-  let sessionResolved = false;
-  let accessResolved = false;
+  // Loading appears only once a load outlasts loadingDelayMs, so a fast one never flashes it.
+  // A return's held page stays until it revalidates (finding 1415).
+  let loadingTimer =
+    held && retained
+      ? null
+      : setTimeout(() => {
+          loadingTimer = null;
+          if (!lifetime.isCurrent(active)) {
+            return;
+          }
+          held = false;
+          if (current.feature === "login") {
+            publicPanel("Loading…", "Checking your session.");
+            return;
+          }
+          shell = renderShell(current.feature, !accessResolved);
+          panel(
+            shell.view,
+            "Loading…",
+            !accessResolved
+              ? "Checking your session and Namespace access."
+              : current.agentId
+                ? "Reading this Agent."
+                : `Reading ${pages[current.feature].toLowerCase()}.`,
+          );
+        }, loadingDelayMs);
+  const stopLoadingTimer = () => {
+    clearTimeout(loadingTimer);
+    loadingTimer = null;
+  };
   const authError = current.url.searchParams.get("authError");
   const providerError = Object.hasOwn(externalProviders, authError ?? "")
     ? externalProviders[authError]
@@ -1017,6 +1043,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       retained = false;
       if (held) {
         // Another account's page must not stay on screen.
+        stopLoadingTimer();
         held = false;
         shell = null;
         publicPanel("Loading…", "Checking your session.");
@@ -1093,27 +1120,24 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
-    if (retained && current.namespace !== null) {
+    if (current.namespace !== null) {
       // Namespace admission is done, so the header selector is usable while the destination's
-      // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the full render below picks the default. A held page keeps
-      // the scope beside its rows until the destination replaces them.
+      // first read runs. A switch resets the lifetime, discarding these reads. Without a URL
+      // selection the full render below picks the default. A held page keeps the scope
+      // beside its rows until the destination replaces them.
       shellUI.updateNamespaces(namespaces, { preservePageScope: held });
     }
-    let retainedItems = null;
-    let retainedAgent = null;
-    if (
-      retained &&
-      !agentsNamespaceUnavailable &&
-      current.feature !== "settings" &&
-      !current.creating
-    ) {
+    // The destination's first read runs before its shell renders, so the held page (or
+    // loading) is replaced once, by the page itself (finding 1407).
+    let firstItems = null;
+    let firstAgent = null;
+    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
-        retainedAgent = await request(
+        firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         );
       } else {
-        retainedItems =
+        firstItems =
           current.feature === "namespaces"
             ? namespaces
             : await request(
@@ -1129,17 +1153,17 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     const retainedState = retainedView?.state;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
-      if (retainedAgent) {
+      if (firstAgent) {
         fresh.set(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          retainedAgent,
+          firstAgent,
         );
-      } else if (retainedItems && current.feature !== "namespaces") {
+      } else if (firstItems && current.feature !== "namespaces") {
         fresh.set(
           current.feature === "backends"
             ? "/backends"
             : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          retainedItems,
+          firstItems,
         );
       }
       const validations = await Promise.allSettled(
@@ -1166,6 +1190,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
       if (unchanged) {
+        stopLoadingTimer();
         shell = mountRetainedView(current, retainedView);
         mountedViewState = retainedState;
         retainedState.active = active;
@@ -1180,6 +1205,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         return;
       }
     }
+    stopLoadingTimer();
     shell = renderShell(current.feature, false);
     const viewState = {
       active,
@@ -1309,15 +1335,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       return;
     }
     if (current.agentId) {
-      if (retainedAgent) {
-        viewState.reads.set(
-          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          JSON.stringify(retainedAgent),
-        );
-      }
+      viewState.reads.set(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+        JSON.stringify(firstAgent),
+      );
       const agent = await renderAgentDetail(
         { ...agentContext, agentId: current.agentId },
-        { agent: retainedAgent },
+        { agent: firstAgent },
       );
       if (lifetime.isCurrent(active)) {
         mountedAgent = agent;
@@ -1330,19 +1354,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
       return;
     }
-    panel(shell.view, "Loading…", `Reading ${pages[current.feature].toLowerCase()}.`);
-    const items =
-      retainedItems ??
-      (current.feature === "namespaces"
-        ? namespaces
-        : await request(
-            current.feature === "backends"
-              ? "/backends"
-              : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          ));
-    if (!lifetime.isCurrent(active)) {
-      return;
-    }
+    const items = firstItems;
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
@@ -1364,6 +1376,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (!lifetime.isCurrent(active) || error.name === "AbortError") {
       return;
     }
+    stopLoadingTimer();
     if (error.status === 401) {
       showLogin("Your session has expired.");
       return;
@@ -1457,6 +1470,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       error.requestId,
     );
   } finally {
+    stopLoadingTimer();
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
