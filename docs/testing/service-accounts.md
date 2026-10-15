@@ -100,6 +100,12 @@ references. The shared storage contract covers active and historical revisions
 in both storage adapters. These are persistence and controller checks, not live
 credential-revocation or model-turn proof.
 
+`tests/integration/postgres-service-account-issuance-recovery.test.mjs` runs the
+ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an issuance that
+never committed. The next issuance and account deletion reclaim its Secret and
+credential, and a session ended mid-reclaim leaves a later issuance intact. The
+provider and Secret store are in-memory; their behavior is covered by conformance.
+
 The real account suite above creates a provider account and runs dedicated Codex
 with its issued credential. The ordinary
 [Kubernetes runtime suite](kubernetes.md#kubernetes-model-turns-and-secrets)

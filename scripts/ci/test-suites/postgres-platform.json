@@ -23,6 +23,7 @@
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.mjs",
+    "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
     "tests/integration/postgres-presets.test.mjs",
     "tests/integration/postgres-workspace-setup.test.mjs",
     "tests/integration/postgres-connection-auth.test.mjs",
@@ -133,6 +134,14 @@
       "expectedTests": [
         "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
         "a forced ServiceAccount delete without a Driver audits the unrevoked credential and decides on the locked account"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
+      "expectedTests": [
+        "an issuance that never committed is reclaimed by the next issuance under the account lock",
+        "deleting an account after an issuance that never committed revokes its credential and removes its Secret",
+        "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact"
       ]
     },
     {
