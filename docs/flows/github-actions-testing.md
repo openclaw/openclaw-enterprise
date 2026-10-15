@@ -8,7 +8,7 @@ last_updated_session: authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c
 
 ## Overview
 
-CI's twenty-two noncredentialed lanes reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
@@ -24,7 +24,7 @@ graph TD
   A --> N["Suite Audit"]
   S -->|full PR| Q["Report affected packages (advisory)"]
   S -->|docs| D["Documentation checks"]
-  S -->|full or tests| B["All twenty-two or selected CI test lanes"]
+  S -->|full or tests| B["All ordinary or selected CI lanes"]
   B --> F["Prepare owned resources"]
   F -->|prepared| H["Run tests and validate cases"]
   F -->|preparation fails| J["Owned-resource cleanup"]
@@ -60,7 +60,7 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. Full mode runs the twenty-two-lane matrix (both `checks-baseline` and `checks-browser` parts) and `runtime-image-fixture`; tests mode, only the selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`; `keycloak-oidc` uses `blacksmith-8vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`; `keycloak-oidc` uses `blacksmith-8vcpu-ubuntu-2404`.
 
 For a PR, the selector verifies the tested checkout and that the event head is the merge's second parent, then compares the first parent (the current base) and tested trees. Git path decoding preserves a leading UTF-8 BOM as filename data; paths outside the allowlist select full. API reference outputs and Markdown under `docs/reference/api/` select full for `openapi:check`. Only nonempty changes to allowlisted regular Markdown files select docs mode. Registered test files (with documentation and their own lane manifest entries) select tests mode: their `ci` lanes in either tree (`checks-baseline-1` if only the fixture job would run). Other test-tree, code, configuration, workflow or unknown changes and non-PR events select full. Missing or unverifiable policy or source evidence selects full or fails closed. Policy comes from that first parent; a base without it selects full. `CI Required` re-verifies the mode (and tests mode's lane set) and requires impact, audit and every selected job to succeed and the rest skipped. Full and tests modes aggregate same-source results of their lanes; docs mode does not aggregate or invent test artifacts.
 

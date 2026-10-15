@@ -6,7 +6,7 @@ Run live Slack and ChatGPT service-account integration checks. Both need the [Ku
 
 ## Slack
 
-The [QA matrix](qa-matrix.md) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
+The [QA matrix](ci.md#qa-matrix) checks live ingress and a threaded reply. The focused test below checks root replies, credential placement, proxy isolation, and Socket Mode. Prepare an authorized model credential.
 
 Use an authorized test channel in one Slack workspace. Both the gateway bot and a distinct sender bot must join it. Use an existing Socket Mode app, an immutable `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`, a gateway image containing the Slack plugin and its dependencies, and a compatible Codex app-server. Run the [image smoke](docker.md#images-and-helm) first; version output alone does not prove compatibility.
 

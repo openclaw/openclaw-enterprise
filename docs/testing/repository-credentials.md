@@ -176,7 +176,7 @@ The dedicated installed qualification is **disabled**. Its old automatic cleanup
 could race with changes to a branch or pull request. Preparation and selected
 tests fail before creating resources. Do not use that lane for qualification.
 
-Use the [QA matrix](qa-matrix.md) for an installed Agent's real Git journey. It
+Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
 requires an authorized disposable repository and independent provider readback;
 check the commit, pull request, credential disposal, and cleanup results. A direct
 container command or ready Pod does not prove an Agent model turn.

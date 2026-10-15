@@ -975,7 +975,6 @@
               "testing/ssh",
               "testing/kubernetes",
               "testing/slack",
-              "testing/qa-matrix",
               "testing/plugins",
               "testing/openshell",
               "testing/openshell-coverage",
