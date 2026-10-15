@@ -274,7 +274,7 @@ owns initialization, retries, and cleanup. Live editing requires deployment.
 
 ### 7. Request a stop and read back the Agent
 
-[Permission advice](../../../specs/rfcs/0021-caller-permission-summaries.md) can disable
+[Permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions) can disable
 Stop before confirmation. If the dialog is open, a negative answer disables confirmation and
 focuses Cancel. Missing advice leaves the normal path available; late advice cannot recall a request.
 
