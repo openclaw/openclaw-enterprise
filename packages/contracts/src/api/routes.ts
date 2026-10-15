@@ -69,6 +69,8 @@ import {
   AgentProvisioningStatusResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeImagesResponse,
+  AgentCallerPermissionsResponse,
+  NamespaceCallerPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -480,6 +482,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceCallerPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/permissions",
+    action: "openclaw.namespaces.permissions.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
     },
   },
   {
@@ -1417,6 +1436,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentRuntimeImagesResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentCallerPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/permissions",
+    action: "openclaw.agents.permissions.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentCallerPermissionsResponse, ...readErrors },
     },
   },
   {

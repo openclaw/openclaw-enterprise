@@ -36,6 +36,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
+  withholdPermissionSummary,
   assertRevisionUrl,
   agentDeleteRequests,
   agentStopRequests,
@@ -760,6 +761,7 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
   await login(
     page,
     fixture,
@@ -1803,6 +1805,15 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
   });
   assert.equal(operateBinding.status, 201);
+  // Stop was granted independently; reloading obtains the new advice without granting version read.
+  const refreshedAdvice = recipient.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/permissions`),
+  );
+  await recipient.reload();
+  const advice = await refreshedAdvice;
+  assert.equal(advice.status(), 200);
+  assert.equal((await advice.json()).data.operate, true);
+  await recipient.getByRole("heading", { name: "You cannot read this version" }).waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")
@@ -2751,7 +2762,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Open version draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);

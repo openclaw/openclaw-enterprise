@@ -924,6 +924,9 @@ export function installFixture(scenario, evidence) {
           return response(saved);
         }
       }
+      if (resource === "permissions" && method === "GET") {
+        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
+      }
       if (resource === "agents") {
         if (method === "GET") {
           return response([...agents.values()]);
@@ -1158,6 +1161,10 @@ export function installFixture(scenario, evidence) {
             deleted.add(id);
             return response(saved, 202);
           }
+        }
+        if (suffix === "/permissions" && method === "GET") {
+          const allowed = !scenario.readOnlyPermissionSummary;
+          return response({ update: allowed, deploy: allowed, operate: allowed, delete: allowed });
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";

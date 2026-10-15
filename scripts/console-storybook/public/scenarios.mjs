@@ -779,6 +779,15 @@ export const scenarios = {
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
   },
+  agentsCreateRestricted: {
+    group: "Pages/Agents",
+    name: "Create Agent unavailable for this caller",
+    readOnlyPermissionSummary: true,
+    description: "The permission summary says this caller cannot create an Agent here.",
+    steps: [
+      "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -4326,6 +4335,20 @@ export const scenarios = {
     description:
       "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
   },
+  deletionPermissionDuringConfirmation: {
+    group: "Components/Deletion",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Delete Agent")],
+    description: "The story opens Delete before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+    ],
+  },
   deletionConfirm: {
     group: "Components/Deletion",
     name: "Confirmation",
@@ -4381,6 +4404,7 @@ export const scenarios = {
     name: "Permission denied",
     path: draft,
     rules: [
+      { suffix: "/permissions", status: 503 },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -4389,7 +4413,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "A denied deletion leaves the Agent available and explains the missing permission.",
+      "Permission advice is unavailable. The attempted deletion is denied and the Console explains the missing access.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -4692,6 +4716,20 @@ export const scenarios = {
     ],
     gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
   },
+  stopPermissionDuringConfirmation: {
+    group: "Components/Stop Agent",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Stop Agent")],
+    description: "The story opens Stop before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+    ],
+  },
   stopConfirm: {
     group: "Components/Stop Agent",
     name: "Confirmation",
@@ -4759,10 +4797,13 @@ export const scenarios = {
     name: "Permission denied",
     path: revision,
     deployed: true,
-    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    rules: [
+      { suffix: "/permissions", status: 503 },
+      { suffix: "/stop", method: "POST", status: 403 },
+    ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "An authorization denial keeps the Agent running and explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",
