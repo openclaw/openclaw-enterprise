@@ -951,15 +951,17 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   }
   // A load without a shown private page shows the startup status (no signed-in navigation
   // before the session check) and keeps it, as a held page stays, until the load outlasts
-  // loadingDelayMs, so a fast one never flashes loading. A return's held page stays until it
+  // loadingDelayMs, so a fast one never flashes loading. A load that continues from the startup
+  // status (a sign-in destination) keeps it too. A return's held page stays until it
   // revalidates (finding 1415). A signed-in load with no page to hold (an error panel, say)
   // shows the pending shell at once.
-  const startup = !held && !knownPrivateState;
+  const startup =
+    !held && (!knownPrivateState || app.firstElementChild?.classList.contains("startup") === true);
   if (!held) {
-    if (knownPrivateState) {
-      shell = renderPendingNamespaceShell(current.feature);
-    } else {
+    if (startup) {
       showCheckingSession();
+    } else {
+      shell = renderPendingNamespaceShell(current.feature);
     }
   }
   let loadingTimer =
@@ -1075,7 +1077,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       installationAdmin = null;
       draftUserId = owner;
       retained = false;
-      if (shell && previousOwner !== null && previousOwner !== owner) {
+      if (shell && (!owner || (previousOwner !== null && previousOwner !== owner))) {
         // Another account's page, or a shell naming it, must not stay on screen.
         stopLoadingTimer();
         held = false;
@@ -1116,7 +1118,9 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       return;
     }
     if (loadingTimer === null) {
-      // The startup status stays until the loading delay passes or the first reads settle.
+      // The loading delay passed while the session was checked (or there was none): show
+      // the pending shell now. Otherwise the startup status stays until the delay passes or
+      // the first reads settle.
       shell ??= renderPendingNamespaceShell(current.feature);
     }
     // Read the admin-only destination once per session owner. Non-administrators

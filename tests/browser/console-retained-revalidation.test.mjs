@@ -319,6 +319,28 @@ test("A first visit that outlasts the loading delay shows loading only after it"
   assert.equal(await loading.count(), 0);
 });
 
+test("A full load whose session check outlasts the loading delay shows no navigation before it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slow session", { ready: true });
+  await fixture.createAgent(namespace.id, "Session Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  const url = `/console/agents?namespace=${namespace.id}`;
+  await login(page, fixture, url);
+  await page.locator(settledView).getByRole("link", { name: "Session Agent" }).waitFor();
+  await pauseClock(page);
+  const session = await holdRead(t, page);
+
+  await page.reload();
+  await session.requested;
+  await page.clock.runFor(400);
+  await page.locator("#app > .startup", { hasText: "Checking session…" }).waitFor();
+  assert.equal(await page.locator(".content, nav").count(), 0);
+  session.release();
+  await page.locator(settledView).getByRole("link", { name: "Session Agent" }).waitFor();
+});
+
 test("A full load replaces the startup status once when its reads settle in time", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
