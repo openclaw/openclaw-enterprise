@@ -234,8 +234,9 @@ export function createPublicGithubReadServer({
     client.updatedAt = now;
   }
 
-  // Admit one provider read per client at a time, within the client's share.
-  function admit(address: string): Result | Client {
+  // Admit one read per client at a time. Joining an identical read in flight
+  // spends no quota, so only a new provider read needs a token.
+  function admit(address: string, joining: boolean): Result | Client {
     const now = Date.now();
     if (now - sweptAt >= share.refillMs) {
       sweptAt = now;
@@ -259,7 +260,7 @@ export function createPublicGithubReadServer({
         { "retry-after": "2" },
       );
     }
-    if (client.tokens < 1) {
+    if (!joining && client.tokens < 1) {
       return message(
         429,
         "This caller used its share of public GitHub reads. Retry after the indicated seconds.",
@@ -374,7 +375,8 @@ export function createPublicGithubReadServer({
       } else if (Date.now() < retryAt) {
         result = limited();
       } else {
-        const client = admit(req.socket.remoteAddress ?? "");
+        // A socket that already closed has no address; its reply goes nowhere.
+        const client = admit(req.socket.remoteAddress ?? "", pending.has(route.target));
         if ("status" in client) {
           result = client;
         } else {

@@ -96,10 +96,14 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         .get(base + repo + path, { agent: false, localAddress: address }, async (res) => {
           let text = "";
           res.setEncoding("utf8");
-          for await (const chunk of res) {
-            text += chunk;
+          try {
+            for await (const chunk of res) {
+              text += chunk;
+            }
+            resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
+          } catch (error) {
+            reject(error);
           }
-          resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
         })
         .once("error", reject);
     });
@@ -109,7 +113,10 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     probe.once("error", () => resolve(false));
     probe.listen(0, aliases.at(-1), () => probe.close(() => resolve(true)));
   });
-  const multipleCallers = aliased ? {} : { skip: "loopback aliases 127.0.0.2-4 are unavailable" };
+  // Bound the cases that wait for held provider reads, so a regression fails instead of hanging.
+  const multipleCallers = aliased
+    ? { timeout: 15_000 }
+    : { skip: "loopback aliases 127.0.0.2-4 are unavailable" };
   const answer = (status, body, headers) => {
     reply = (req, res) => {
       res
