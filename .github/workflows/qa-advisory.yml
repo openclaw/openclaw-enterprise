@@ -2,14 +2,17 @@ name: QA Matrix Advisory
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: qa-advisory-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'push' && format('qa-advisory-push-{0}', github.sha) || format('qa-advisory-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   eligibility:
@@ -20,7 +23,7 @@ jobs:
     steps:
       - id: check
         env:
-          TRUSTED: ${{ (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
+          TRUSTED: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || ((github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]') }}
         run: |
           echo "trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
           if [[ "$TRUSTED" != true ]]; then
@@ -30,7 +33,7 @@ jobs:
   local-installation:
     name: QA advisory (local installation)
     needs: eligibility
-    if: needs.eligibility.outputs.trusted == 'true'
+    if: github.event_name != 'push' && needs.eligibility.outputs.trusted == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
@@ -55,7 +58,7 @@ jobs:
   qa:
     name: QA advisory (${{ matrix.installation }})
     needs: eligibility
-    if: needs.eligibility.outputs.trusted == 'true'
+    if: github.event_name != 'push' && needs.eligibility.outputs.trusted == 'true'
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 120
     environment: integration-qa-pr
