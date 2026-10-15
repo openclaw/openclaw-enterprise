@@ -1,4 +1,4 @@
-import { button, element, setText } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import {
   configuredHarnessId,
   createHarnessAuthFields,
@@ -179,27 +179,16 @@ const DEPLOYMENT_FAILURE_LINK_LABELS = {
   configuration: "Open Configuration",
 };
 
-function deploymentFailure(error, hrefs = {}, logsLink = null) {
+function deploymentFailure(error) {
   if (!error) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
   }
   const runtimeFailure = error.data?.runtimeFailure;
   const preparation = error.data?.preparation;
-  const guidanceLink = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, error.code)
-    ? DEPLOYMENT_FAILURE_LINKS[error.code]
-    : null;
-  const guidanceHref = guidanceLink ? (hrefs[guidanceLink] ?? null) : null;
   return element(
     "div",
     {},
     element("p", { className: "error", role: "alert" }, `${error.code}: ${error.message}`),
-    guidanceHref
-      ? element(
-          "p",
-          { className: "hint deployment-failure-guidance" },
-          element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidanceLink]),
-        )
-      : null,
     preparation
       ? element(
           "div",
@@ -243,8 +232,6 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
           ),
         )
       : null,
-    // A failed version may never become current, so link its output directly.
-    logsLink ? element("p", { className: "hint" }, logsLink) : null,
     runtimeFailure && typeof runtimeFailure === "object"
       ? element(
           "dl",
@@ -270,7 +257,7 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
 
 // A recorded result: the failure, or a neutral note when a newer version superseded this one
 // or the owner stopped the Agent during its deployment.
-function deploymentResult(record, hrefs = {}, logsLink = null) {
+function deploymentResult(record) {
   const neutral = neutralDeploymentOutcome(record);
   if (neutral === "superseded") {
     return element(
@@ -286,7 +273,7 @@ function deploymentResult(record, hrefs = {}, logsLink = null) {
       `The Agent was stopped before this deployment finished (${record.error.code}). This version did not fail; deploy a new version when you want it running.`,
     );
   }
-  return deploymentFailure(record.error, hrefs, logsLink);
+  return deploymentFailure(record.error);
 }
 
 function deploymentProgress(record) {
@@ -354,17 +341,19 @@ export const DEPLOYMENT_POLL_MS = 5000;
 export const FIRST_ACTIVITY_WAIT_MS = 1000;
 const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 
-function createDeploymentStatusPanel(
-  context,
-  path,
-  revision,
-  onAgentChange,
-  onStatusChange,
-  credentialsHref = null,
-  logsLink = null,
-  configurationHref = null,
-) {
-  const section = element("section", { className: "agent-card deployment-status" });
+function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
+  const refresh = button("Refresh deployment", () => void loadStatus(true), {
+    className: "overview-text-button",
+  });
+  const content = element("div", { className: "deployment-evidence-content" });
+  const details = element("details", {}, element("summary", {}, "Deployment details"), content);
+  const section = element(
+    "section",
+    { className: "deployment-status deployment-evidence", "aria-label": "Deployment activity" },
+    details,
+    refresh,
+  );
+  let previousEvidence;
   const state = { loading: false, status: null, error: null, overviewError: false };
   let pollTimer = null;
 
@@ -528,11 +517,7 @@ function createDeploymentStatusPanel(
         { className: "deployment-outcome" },
         `Recorded status: ${deploymentOutcome(state.status)}`,
       ),
-      deploymentResult(
-        state.status,
-        { credentials: credentialsHref, configuration: configurationHref },
-        logsLink,
-      ),
+      state.status.error ? deploymentResult(state.status) : null,
       state.status.warnings?.length
         ? element(
             "div",
@@ -551,32 +536,30 @@ function createDeploymentStatusPanel(
   }
 
   function render() {
-    section.replaceChildren(
-      element(
-        "div",
-        { className: "deployment-heading" },
-        element(
-          "div",
-          {},
-          element("h2", {}, "Deployment activity"),
-          element(
-            "p",
-            { className: "muted" },
-            `Most recent visible deployment · v${revision.revision}`,
-          ),
-        ),
-        button(
-          state.loading ? "Refreshing..." : "Refresh deployment",
-          () => void loadStatus(true),
-          {
-            disabled: state.loading,
-          },
-        ),
-      ),
+    // Keep both controls mounted during reads. Only a routine completed record starts folded;
+    // a new outcome, read error, cleanup or startup warning is visible without opening details.
+    refresh.setAttribute("aria-disabled", String(state.loading));
+    if (state.loading) {
+      return;
+    }
+    const outcome = state.status ? deploymentOutcome(state.status) : null;
+    const { cleanup, warnings } = state.status ?? {};
+    const evidence = [outcome, cleanup?.status, warnings?.length, state.overviewError].join("/");
+    if (evidence !== previousEvidence) {
+      details.open = Boolean(
+        previousEvidence !== undefined ||
+        outcome !== "succeeded" ||
+        state.overviewError ||
+        cleanup ||
+        warnings?.length,
+      );
+      previousEvidence = evidence;
+    }
+    replaceChildrenIfChanged(content, [
       element(
         "p",
         { className: "muted" },
-        "Progress comes from the persisted deployment record. It does not check live serving or model access.",
+        `Most recent visible deployment · v${revision.revision}`,
       ),
       renderStatus(),
       ...(state.overviewError
@@ -588,10 +571,9 @@ function createDeploymentStatusPanel(
             ),
           ]
         : []),
-    );
+    ]);
   }
 
-  render();
   void loadStatus();
   return section;
 }
@@ -918,15 +900,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   };
   const headerNewVersion =
     selected !== "draft"
-      ? button("Create new version", () => change("draft", "configuration"), {
-          className: "primary",
-        })
+      ? button("Create new version", () => change("draft", "configuration"))
       : null;
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   const header = element(
     "div",
-    { className: "agent-toolbar" },
-    link("← Agents", "agents", context),
+    { className: "agent-toolbar agent-overview-toolbar" },
+    element(
+      "div",
+      { className: "agent-overview-identity" },
+      link("← Agents", "agents", context),
+      element("span", { className: "resource-id", title: "Agent ID" }, agent.id),
+    ),
     headerActions,
   );
   const currentVersionValue = element("strong");
@@ -941,21 +926,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     element(
       "div",
       {},
-      element("span", { className: "eyebrow" }, "Current version"),
+      element("span", { className: "overview-fact-label" }, "Selected version"),
       currentVersionValue,
       currentVersionNote,
     ),
     element(
       "div",
       {},
-      element("span", { className: "eyebrow" }, "Latest visible deployment"),
+      element("span", { className: "overview-fact-label" }, "Latest visible deployment"),
       latestDeploymentValue,
       latestDeploymentNote,
     ),
     element(
       "div",
       {},
-      element("span", { className: "eyebrow" }, "Live serving"),
+      element("span", { className: "overview-fact-label" }, "Live serving"),
       liveServingValue,
       liveServingNote,
     ),
@@ -991,11 +976,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ? "No version is currently selected for service."
         : revisionHidden(currentRevisionId)
           ? "Selected for service · you cannot read this version"
-          : "Selected for service · live serving unverified",
+          : "",
     );
   }
   renderCurrentVersion();
-  const identity = element("p", { className: "resource-id" }, agent.id);
   // Stop changes only the runtime state and the current version, so update the page in place.
   // Reloading it collapsed the version detail, moved the reader and dropped focus (finding 1419).
   const stopPanel = createAgentStop(
@@ -1017,7 +1001,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     deleting = true;
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
     view.classList.remove("agent-detail-pending");
-    view.replaceChildren(header, identity, deletion);
+    view.replaceChildren(header, deletion);
   }
   if (deleting) {
     showDeleting();
@@ -1098,21 +1082,37 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   detailPane.append(detailHeading, versionEvidence, tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
+  const recoveryTitle = element("h2");
+  const recoveryMessage = element("p");
+  const recoveryActions = element("div", { className: "deployment-recovery-actions" });
+  const recovery = element(
+    "section",
+    { className: "deployment-recovery", hidden: true, "aria-label": "Deployment needs attention" },
+    element("span", { className: "recovery-label" }, "Deployment needs attention"),
+    recoveryTitle,
+    recoveryMessage,
+    recoveryActions,
+  );
+  let recoveryTarget;
   view.replaceChildren(
     header,
-    identity,
-    currentSummary,
-    statusLine,
-    deploymentStatus,
+    recovery,
     nativeAdmin.section,
+    element(
+      "div",
+      { className: "agent-overview-status" },
+      currentSummary,
+      statusLine,
+      deploymentStatus,
+    ),
     // Sharing policy reads need Installation administration and a denial is audited, so
     // skip the panel when the session probe already showed that access is missing.
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
     versionLayout,
   );
-  // Deployment activity grows from its placeholder when its first read settles, and the
-  // status line appears above it. Until then only the header and summary show, so nothing
-  // already on screen moves; the rest appears below them at once (findings 1408, 1414).
+  // Recovery or native administration can appear above the facts. Keep the Agent heading and
+  // controls in place, then reveal the overview once its first deployment and access reads settle.
+  // The bounded wait still exposes loading, refresh and the version controls on a slow read.
   view.classList.add("agent-detail-pending");
   let revealTimer = null;
   let markRevealed;
@@ -1421,6 +1421,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderLatestDeployment() {
     const latest = visibleRevisions[0];
     if (!latest) {
+      recovery.hidden = true;
+      delete latestDeploymentValue.dataset.outcome;
       setText(
         latestDeploymentValue,
         latestRevisionResult?.status === "rejected"
@@ -1452,7 +1454,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const label = {
       queued: "Queued",
       running: "In progress",
-      succeeded: "Succeeded",
+      succeeded: "Completed",
       failed: "Failed",
       superseded: "Superseded",
       stopped: "Stopped",
@@ -1472,13 +1474,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // one starts, so a failed newer deployment usually leaves nothing serving.
     const replacementFailed =
       latestDeploymentStatus === "failed" &&
+      currentRuntimeState === "running" &&
       current !== undefined &&
       current.revision < latest.revision &&
       latest.harness?.mode === "dedicated";
     // Embedded activation selects the new version before its gateway is ready, and that
     // gateway replaces the previous one, so a failed selected version is the only one left.
     const selectedFailed =
-      latestDeploymentStatus === "failed" && current !== undefined && current.id === latest.id;
+      latestDeploymentStatus === "failed" &&
+      currentRuntimeState === "running" &&
+      current !== undefined &&
+      current.id === latest.id;
     // Each poll rereads the same record, so every text is written once with its final value.
     if (newerHidden) {
       setText(latestDeploymentValue, "Newer version hidden");
@@ -1498,26 +1504,23 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             ? `${NEUTRAL_DEPLOYMENT_NOTES.stopped}. Deploy a new version when you want it running.`
             : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`
           : latestDeploymentStatus
-            ? `Recorded status: ${latestDeploymentStatus}`
+            ? ""
             : latestDeploymentError
               ? "Recorded deployment status could not be read."
               : "Reading recorded deployment status.",
       );
     }
-    if (replacementFailed) {
-      setText(liveServingValue, "Probably down");
-      setText(
-        liveServingNote,
-        `v${latest.revision} failed; ${currentLabel} was probably stopped for it.`,
-      );
-    } else if (selectedFailed) {
-      setText(liveServingValue, "Probably down");
-      setText(liveServingNote, `${currentLabel} is selected and its deployment failed.`);
-    } else {
-      setText(liveServingValue, "Not verified");
-      setText(liveServingNote, "Serving version and model access are unknown.");
+    const mayBeOffline = replacementFailed || selectedFailed;
+    setText(liveServingValue, mayBeOffline ? "May be offline" : "Not verified");
+    setText(
+      liveServingNote,
+      mayBeOffline ? "" : "Deployment records don’t verify live serving or model access.",
+    );
+    const outcome = newerHidden ? "" : (latestDeploymentStatus ?? "");
+    if (latestDeploymentValue.dataset.outcome !== outcome) {
+      latestDeploymentValue.dataset.outcome = outcome;
     }
-    statusLine.hidden = (!latestDeploymentStatus || neutral) && !requestedHidden;
+    statusLine.hidden = !requestedHidden && !newerHidden;
     if (requestedHidden || newerHidden) {
       setText(
         statusLine,
@@ -1533,24 +1536,44 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           .filter(Boolean)
           .join(" "),
       );
-    } else if (replacementFailed) {
-      setText(
-        statusLine,
-        `v${latest.revision} deployment failed. ${currentLabel} is still recorded as current, but deploying a dedicated Agent stops the previous version first, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`,
+    }
+
+    recovery.hidden = latestDeploymentStatus !== "failed";
+    if (!recovery.hidden) {
+      const version = `v${latest.revision}`;
+      const code = latestDeploymentErrorCode;
+      const modelCheck = ["RUNTIME_MODEL_PROBE_FAILED", "RUNTIME_MODEL_PROBE_TIMEOUT"].includes(
+        code,
       );
-    } else if (selectedFailed) {
       setText(
-        statusLine,
-        `${currentLabel} deployment failed. ${currentLabel} is still selected because its runtime already replaced the previous version, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`,
+        recoveryTitle,
+        mayBeOffline ? "This Agent may be offline" : `${version} deployment failed`,
       );
-    } else if (latestDeploymentStatus && !neutral) {
-      const selection = currentRevisionId
-        ? `${currentLabel} is selected.`
-        : "No version is selected.";
-      setText(
-        statusLine,
-        `v${latest.revision} deployment is recorded as ${latestDeploymentStatus}. ${selection} Live serving is unverified.`,
-      );
+      const failure = modelCheck
+        ? `${version} failed its startup model check.`
+        : `${version} did not deploy successfully.`;
+      let impact = "Check the failed version’s logs before deploying a new version.";
+      if (replacementFailed) {
+        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
+      } else if (selectedFailed) {
+        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.`;
+      }
+      setText(recoveryMessage, `${failure} ${impact}`);
+      const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
+        ? DEPLOYMENT_FAILURE_LINKS[code]
+        : null;
+      const tab =
+        guidance === "credentials" && agent.harnessAuth?.method === "runtime" ? null : guidance;
+      const actionsFor = `${latest.id}/${tab}`;
+      if (recoveryTarget !== actionsFor) {
+        recoveryTarget = actionsFor;
+        const logs = link(`Open ${version} Logs`, target(latest.id, "logs"), context);
+        logs.className = "overview-primary";
+        const next = tab
+          ? link(DEPLOYMENT_FAILURE_LINK_LABELS[tab], target("draft", tab), context)
+          : null;
+        recoveryActions.replaceChildren(logs, ...(next ? [next] : []));
+      }
     }
   }
 
@@ -1652,7 +1675,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        revealDetail();
+        void nativeAdmin.ready.then(revealDetail);
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
@@ -1690,11 +1713,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               renderLatestDeployment();
               refreshDeployControls();
             },
-            agent.harnessAuth?.method === "runtime"
-              ? null
-              : context.pageUrl(`agents/${agent.id}?revision=draft&tab=credentials`, namespaceId),
-            link(`Open v${mostRecent.revision} Logs`, target(mostRecent.id, "logs"), context),
-            context.pageUrl(`agents/${agent.id}?revision=draft&tab=configuration`, namespaceId),
           )
         : element(
             "section",

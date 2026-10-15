@@ -76,11 +76,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       callback,
     );
   });
-  // These cases send every read from one caller, so they use a share that no
-  // case exhausts. The fair-share case below uses the production defaults.
-  const reader = createPublicGithubReadServer({
-    share: { burst: 1000, refillMs: 1000 },
-  }).listen(0, "127.0.0.1");
+  const reader = createPublicGithubReadServer().listen(0, "127.0.0.1");
   await once(reader, "listening");
   t.after(() => {
     reader.closeAllConnections();
@@ -426,12 +422,12 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     },
   );
   await t.test(
-    "each caller gets a fair share: one read in flight, a small refilling budget, and an honest shared park",
+    "each caller gets a fair share: one read in flight, back-to-back reads, and an honest shared park",
     multipleCallers,
-    async () => {
+    async (st) => {
       const fair = createPublicGithubReadServer().listen(0, "127.0.0.1");
       await once(fair, "listening");
-      t.after(() => {
+      st.after(() => {
         fair.closeAllConnections();
         fair.close();
       });
@@ -462,7 +458,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       for (let poll = 0; held.length + answered.length < 3 && poll < 500; poll++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      t.after(() => {
+      st.after(() => {
         for (const res of held) {
           res.writeHead(200, { "content-type": "application/json" }).end("{}");
         }
@@ -477,17 +473,11 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       // Another caller is still served while the first caller's read is slow.
       assert.equal((await from(first, "/pulls/9", base)).status, 200);
 
-      // A caller that uses its burst waits for its own refill; other callers are unaffected.
-      const spent = [];
-      for (let read = 2; read <= 11; read++) {
-        spent.push((await from(first, "/releases/" + read, base)).status);
+      // Back-to-back reads are not a volume budget: a caller that reads one at a
+      // time keeps being served (First Agent Smoke's control reads once a second).
+      for (let read = 2; read <= 30; read++) {
+        assert.equal((await from(first, "/releases/" + read, base)).status, 200);
       }
-      assert.deepEqual(spent, [...Array(9).fill(200), 429]);
-      const refused = await from(first, "/releases/12", base);
-      assert.equal(refused.status, 429);
-      assert.match(refused.body.message, /share/);
-      const wait = Number(refused.headers["retry-after"]);
-      assert.ok(wait > 0 && wait <= 120, String(wait));
       assert.equal((await from(second, "/releases/1", base)).status, 200);
       held.shift().writeHead(200, { "content-type": "application/json" }).end("{}");
       assert.equal((await Promise.all(slow)).filter(({ status }) => status === 200).length, 1);

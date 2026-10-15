@@ -878,7 +878,10 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(initiallyStopped.status, 200);
   assert.deepEqual(initiallyStopped.data, { status: "stopped" });
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 
   // A real deployment requests running before reconciliation selects the admitted revision.
   const pending = await fixture.deployAgent(namespace.id, agent.id);
@@ -894,7 +897,10 @@ test("Agent detail opens native admin UI only after real API access checks pass"
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
     )
     .waitFor({ timeout: 5_000 });
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 
   let active = { revision: pending };
   await fixture.activateRevision(namespace.id, agent.id, pending.id);
@@ -910,13 +916,16 @@ test("Agent detail opens native admin UI only after real API access checks pass"
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByRole("heading", { name: "Gateway administration" }).waitFor();
   await page
     .getByText(
       "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
     )
     .waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 
   fixture.policy.restrictions.push({
     id: "deny-native-administer",
@@ -937,7 +946,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   page = await browserContext.newPage();
   requests = apiRequests(page, fixture.origin);
   await page.goto(`${fixture.origin}${detail().pathname}${detail().search}`);
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByRole("heading", { name: "Gateway administration" }).waitFor();
 
   const stopped = await fixture.request(
     "POST",
@@ -951,9 +960,12 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.equal(cleared.activeRevisionId, undefined);
   await page.reload();
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByRole("heading", { name: "Native admin UI" }).waitFor();
+  await page.getByRole("heading", { name: "Gateway administration" }).waitFor();
   await page.getByText("Start this Agent before opening its native admin UI.").waitFor();
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 
   await fixture.updateConfiguration(
     namespace.id,
@@ -963,7 +975,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByText("Native admin UI is available for this Agent’s current version.").waitFor();
+  await page.getByRole("link", { name: "Open admin console" }).waitFor();
   const expectedAccess = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
@@ -977,10 +989,10 @@ test("Agent detail opens native admin UI only after real API access checks pass"
 
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Available versions").selectOption(historicalRevisionId);
-  await page.getByText("Native admin UI is available for this Agent’s current version.").waitFor();
+  await page.getByRole("link", { name: "Open admin console" }).waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
-    await page.getByRole("link", { name: "Open native admin UI" }).getAttribute("href"),
+    await page.getByRole("link", { name: "Open admin console" }).getAttribute("href"),
     expectedAccess.data.url,
   );
   const sharedCookies = await page.context().cookies(expectedAccess.data.origin);
@@ -1028,7 +1040,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   );
 
   const popupPromise = page.waitForEvent("popup");
-  await page.getByRole("link", { name: "Open native admin UI" }).click();
+  await page.getByRole("link", { name: "Open admin console" }).click();
   const popup = await popupPromise;
   await popup.waitForLoadState("domcontentloaded");
   assert.equal(popup.url(), expectedAccess.data.url);
@@ -1593,7 +1605,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
-  await page.getByRole("heading", { name: "Deployment activity", exact: true }).waitFor();
+  await page.getByText("No readable deployment records.").waitFor();
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),
@@ -1769,7 +1781,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
       .count(),
     0,
   );
-  await recipient.getByRole("link", { name: "Open native admin UI" }).waitFor();
+  await recipient.getByRole("link", { name: "Open admin console" }).waitFor();
   // A non-administrator never reads sharing policy: each denial would be audited.
   assert.equal(
     await recipient.getByRole("region", { name: "Share Agent", exact: true }).count(),

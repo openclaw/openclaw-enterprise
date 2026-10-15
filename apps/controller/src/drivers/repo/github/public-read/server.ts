@@ -191,32 +191,17 @@ function retryAfter(milliseconds: number) {
 }
 
 /**
- * Each caller's share of the one anonymous GitHub quota. Every Agent Pod is a
- * separate client address: the reader policy admits Agent Pods directly, so
- * the peer address is the caller's Pod IP, not a shared proxy or node address.
+ * Fair share of the reader's provider slots. Every Agent Pod is a separate
+ * client address: the reader policy admits Agent Pods directly, so the peer
+ * address is the caller's Pod IP, not a shared proxy or node address. One read
+ * in flight per caller keeps one slow caller from holding every slot; GitHub's
+ * own quota, shared at the egress address, is the only request-volume limit.
  */
-export interface PublicGithubReadShare {
-  /** Provider reads a client may start back to back. */
-  readonly burst: number;
-  /** Time in which a client earns one more read. */
-  readonly refillMs: number;
-}
-const defaultShare: PublicGithubReadShare = { burst: 10, refillMs: 120_000 };
-
-interface Client {
-  tokens: number;
-  updatedAt: number;
-  reading: boolean;
-}
-
-export function createPublicGithubReadServer({
-  share = defaultShare,
-}: { share?: PublicGithubReadShare } = {}) {
+export function createPublicGithubReadServer() {
   const agent = new Agent({ keepAlive: true, maxSockets: maxConcurrent });
   const pending = new Map<string, Promise<Result>>();
-  const clients = new Map<string, Client>();
+  const reading = new Set<string>();
   let retryAt = 0;
-  let sweptAt = 0;
 
   function limited(): Result {
     return message(
@@ -224,51 +209,6 @@ export function createPublicGithubReadServer({
       "GitHub anonymous reads are rate limited for every caller. Retry after the indicated seconds.",
       retryAfter(retryAt - Date.now()),
     );
-  }
-
-  function refill(client: Client, now: number) {
-    client.tokens = Math.min(
-      share.burst,
-      client.tokens + (now - client.updatedAt) / share.refillMs,
-    );
-    client.updatedAt = now;
-  }
-
-  // Admit one read per client at a time. Joining an identical read in flight
-  // spends no quota, so only a new provider read needs a token.
-  function admit(address: string, joining: boolean): Result | Client {
-    const now = Date.now();
-    if (now - sweptAt >= share.refillMs) {
-      sweptAt = now;
-      for (const [key, idle] of clients) {
-        refill(idle, now);
-        if (!idle.reading && idle.tokens >= share.burst) {
-          clients.delete(key);
-        }
-      }
-    }
-    let client = clients.get(address);
-    if (!client) {
-      client = { tokens: share.burst, updatedAt: now, reading: false };
-      clients.set(address, client);
-    }
-    refill(client, now);
-    if (client.reading) {
-      return message(
-        429,
-        "This caller already has a public GitHub read in progress. Wait for it, then retry.",
-        { "retry-after": "2" },
-      );
-    }
-    if (!joining && client.tokens < 1) {
-      return message(
-        429,
-        "This caller used its share of public GitHub reads. Retry after the indicated seconds.",
-        retryAfter((1 - client.tokens) * share.refillMs),
-      );
-    }
-    client.reading = true;
-    return client;
   }
 
   async function read(route: Route): Promise<Result> {
@@ -314,7 +254,9 @@ export function createPublicGithubReadServer({
         const now = Date.now();
         // GitHub's anonymous quota belongs to the egress address, so the park is
         // shared. Report the later of its retry and reset times, or a minute.
-        const reset = exhausted ? Number(headers["x-ratelimit-reset"]) - now / 1000 : 0;
+        const reset = exhausted
+          ? Math.max(1, Number(headers["x-ratelimit-reset"]) - now / 1000)
+          : 0;
         const seconds = Math.max(Number(headers["retry-after"]) || 0, reset || 0) || 60;
         retryAt = Math.max(retryAt, now + Math.min(86400, Math.max(1, seconds)) * 1000);
       }
@@ -376,29 +318,32 @@ export function createPublicGithubReadServer({
         result = limited();
       } else {
         // A socket that already closed has no address; its reply goes nowhere.
-        const client = admit(req.socket.remoteAddress ?? "", pending.has(route.target));
-        if ("status" in client) {
-          result = client;
+        const address = req.socket.remoteAddress ?? "";
+        if (reading.has(address)) {
+          result = message(
+            429,
+            "This caller already has a public GitHub read in progress. Wait for it, then retry.",
+            { "retry-after": "2" },
+          );
         } else {
+          reading.add(address);
           try {
             const sameRead = pending.get(route.target);
             if (sameRead) {
-              // Joining an identical read spends no provider quota.
               result = await sameRead;
             } else if (pending.size >= maxConcurrent) {
               result = message(503, "Public GitHub reader is busy. Retry shortly.", {
                 "retry-after": "2",
               });
             } else {
-              client.tokens -= 1;
-              const reading = read(route).finally(() => {
+              const started = read(route).finally(() => {
                 pending.delete(route.target);
               });
-              pending.set(route.target, reading);
-              result = await reading;
+              pending.set(route.target, started);
+              result = await started;
             }
           } finally {
-            client.reading = false;
+            reading.delete(address);
           }
         }
       }

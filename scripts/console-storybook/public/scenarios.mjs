@@ -358,7 +358,7 @@ const devdayCreateCheckpoint = [
 ];
 const devdayAdminCheckpoint = [
   { selector: 'a[href*="agt_00000000-0000-4000-8000-000000000001"]', click: true },
-  { selector: ".native-admin-access a.primary" },
+  { selector: ".native-admin-access a[href]" },
 ];
 
 const shareExistingPerson = [
@@ -2916,7 +2916,10 @@ export const scenarios = {
     path: revision,
     deployed: true,
     description:
-      "The selected immutable version has recorded deployment success. It is not proof of current live serving health.",
+      "v1 is selected, its recorded deployment completed, and live serving is not verified.",
+    steps: [
+      "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
+    ],
   },
   repositoryDraft: {
     group: "Pages/Agent detail",
@@ -3131,7 +3134,11 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     description:
-      "v7 failed its startup model check; the recorded error states the next step, the record names the runtime's classified cause (the provider rejected the model or request format), and Open Configuration links the draft.",
+      "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
+    steps: [
+      "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying.",
+      "At phone width, the failure, both recovery links, and selected version are still near the top.",
+    ],
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -4248,7 +4255,11 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "available",
     description:
-      "Authorized launch link and warning. The fixture opens an explanatory page instead of a real gateway.",
+      "The Agent overview puts the authorized admin launch beside its access and configuration warning. The link opens a fixture, not a gateway.",
+    steps: [
+      "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
+      "Expand Deployment details, then open the admin console. Compare Denied and hidden: there is no launch or access warning there.",
+    ],
   },
   nativeStopped: {
     group: "Components/Native admin",
@@ -4700,7 +4711,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list and open oceclaw.",
       "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
-      "Click Open native admin UI. The target fixture opens with an existing #openclaw-feedback message.",
+      "Click Open admin console. The target fixture opens with an existing #openclaw-feedback message.",
       "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
     ],
     gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",

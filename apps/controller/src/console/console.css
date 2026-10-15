@@ -616,41 +616,202 @@ select:not([multiple])[size="1"] {
   gap: 12px;
   flex-wrap: wrap;
 }
-.agent-current-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  background: var(--surface);
+.page-header:has(+ div .agent-overview-toolbar) h1 {
+  font-size: clamp(27px, 3vw, 36px);
+  letter-spacing: -0.045em;
+  line-height: 1.12;
+}
+.agent-overview-toolbar {
+  border-bottom: 1px solid var(--line);
+  gap: 10px;
+  padding-bottom: 14px;
+  margin: 0 0 22px;
+}
+.agent-overview-identity {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  min-width: 0;
+}
+.agent-overview-identity a,
+.overview-text-button:not(:hover) {
+  color: var(--muted);
+}
+.agent-overview-identity .resource-id {
+  font-size: 11px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.agent-overview-status,
+.native-admin-access,
+.deployment-recovery {
+  padding: clamp(15px, 2vw, 24px);
+  margin-bottom: 16px;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.agent-overview-status {
+  padding-block: 3px 0;
 }
 .agent-current-summary > div {
   display: grid;
-  align-content: start;
-  gap: 3px;
-  min-width: 0;
-  padding: 16px 20px;
+  grid-template-columns: minmax(104px, 34%) minmax(0, 1fr);
+  align-items: baseline;
+  padding: 13px 0;
+  column-gap: 10px;
 }
-.agent-current-summary > div + div {
-  border-left: 1px solid var(--line);
+.agent-current-summary > div + div,
+.deployment-evidence {
+  border-top: 1px solid var(--line);
+}
+.overview-fact-label {
+  color: var(--muted);
+  line-height: 1.25;
 }
 .agent-current-summary strong {
+  font-weight: 650;
   color: var(--text-strong);
-  font-size: 21px;
+}
+.agent-current-summary strong[data-outcome="succeeded"]::before,
+.agent-current-summary strong[data-outcome="failed"]::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: var(--success);
+  border-radius: 50%;
+}
+.agent-current-summary strong[data-outcome="failed"]::before {
+  background: var(--warning);
+}
+.agent-current-summary p,
+.native-admin-access p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 .agent-current-summary p {
-  margin: 0;
-  font-size: 12px;
+  grid-column: 2;
 }
-/* Until Deployment activity first settles, Agent detail shows its header and summary only. */
-.agent-detail-pending > :not(.agent-toolbar, .resource-id, .agent-current-summary) {
+.agent-current-summary p:empty,
+.native-admin-access p:empty {
+  display: none;
+}
+/* Keep the heading and controls stable while the first overview reads settle. */
+.agent-detail-pending > :not(.agent-overview-toolbar) {
   display: none;
 }
 .agent-status-line {
-  margin: 10px 0 0;
   padding: 10px 14px;
   border-radius: var(--radius);
   color: var(--warning);
   background: var(--warning-subtle);
+}
+.deployment-evidence {
+  position: relative;
+}
+.deployment-evidence summary {
+  width: fit-content;
+  max-width: 53%;
+  padding: 13px 0;
+  cursor: pointer;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+.deployment-evidence > button {
+  position: absolute;
+  right: 0;
+  top: 6px;
+  max-width: 45%;
+}
+.overview-text-button {
+  background: transparent;
+  border-color: transparent;
+  padding: 5px 2px;
+  font-size: 12px;
+}
+.deployment-evidence-content {
+  padding-bottom: 12px;
+}
+.native-admin-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+.native-admin-heading h2 {
+  margin: 0;
+  color: var(--text-strong);
+  letter-spacing: -0.025em;
+}
+.native-admin-access .overview-text-button {
+  margin-top: 4px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.overview-primary,
+.deployment-recovery-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: var(--radius);
+  text-decoration: none;
+  font-weight: 650;
+  line-height: 1.25;
+}
+.overview-primary,
+.deployment-recovery-actions .overview-primary {
+  color: var(--surface);
+  background: var(--text-strong);
+  border: 1px solid var(--text-strong);
+}
+.overview-primary:hover {
+  background: var(--text);
+}
+.deployment-recovery:not([hidden]) + .native-admin-access .overview-primary {
+  color: var(--text-strong);
+  background: var(--surface);
+  border-color: var(--input-border);
+}
+.deployment-recovery {
+  background: #fff8ed;
+  border-color: #e7c590;
+}
+.recovery-label {
+  color: #78450c;
+  font-size: 13px;
+  font-weight: 650;
+}
+.deployment-recovery h2 {
+  color: var(--text-strong);
+  font-size: clamp(23px, 2.5vw, 28px);
+  line-height: 1.14;
+  letter-spacing: -0.045em;
+  margin: 6px 0;
+}
+.deployment-recovery p {
+  margin: 0;
+  line-height: 1.45;
+}
+.deployment-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.deployment-recovery-actions a {
+  border: 1px solid #cbbb9e;
+  color: var(--text-strong);
+  background: var(--surface);
 }
 .eyebrow {
   color: var(--muted);
@@ -1097,13 +1258,6 @@ summary:focus-visible {
 @media (max-width: 760px) {
   .agent-card {
     padding: 18px;
-  }
-  .agent-current-summary {
-    grid-template-columns: 1fr;
-  }
-  .agent-current-summary > div + div {
-    border-left: 0;
-    border-top: 1px solid var(--line);
   }
   .deployment-progress {
     grid-template-columns: 1fr;

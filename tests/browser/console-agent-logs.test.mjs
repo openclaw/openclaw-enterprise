@@ -79,7 +79,7 @@ test("a failed deployment's Logs link opens its version in view without reloadin
     } else {
       await page.goto(url.href);
     }
-    const link = page.locator(".deployment-status").getByRole("link", { name: "Open v2 Logs" });
+    const link = page.getByRole("link", { name: "Open v2 Logs" });
     await link.waitFor();
     await page.evaluate(() => {
       globalThis.document.logsNavigationMarker = true;
