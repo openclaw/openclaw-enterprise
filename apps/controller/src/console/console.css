@@ -146,8 +146,9 @@ p {
   color: var(--muted);
 }
 .startup {
-  margin: 14vh auto;
-  padding: 28px;
+  /* Padding, not margin: a margin collapses through #app and body, so the page jumps when it is replaced. */
+  margin: 0;
+  padding: calc(14vh + 28px) 28px;
   color: var(--muted);
   text-align: center;
 }

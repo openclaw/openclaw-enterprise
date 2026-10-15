@@ -1113,10 +1113,13 @@ test("Agent detail does not move shown sections when Deployment activity first s
     .waitFor({ state: "attached" });
   assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   assert.equal(await page.locator(".agent-version-layout").isVisible(), false);
-  // Paint what is shown, with its fonts, then measure only from the first read settling.
+  // Paint what is shown, with its fonts. The load up to here (startup status, shell, summary)
+  // must not shift either; then measure the first read settling on its own.
   await page.evaluate(() => globalThis.document.fonts.ready);
   await new Promise((resolve) => setTimeout(resolve, 300));
-  await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  const loadShifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  const loadShift = loadShifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(loadShift < 0.01, `load shift ${loadShift}: ${JSON.stringify(loadShifts)}`);
 
   releaseRecord();
   await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
