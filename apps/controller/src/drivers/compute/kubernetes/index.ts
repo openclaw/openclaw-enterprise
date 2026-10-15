@@ -663,8 +663,9 @@ function preparationFailure(
       }
     }
   }
-  // A request timeout is the failure itself: its cause is the deadline's DOMException, whose
-  // numeric code (TIMEOUT_ERR, 23) must not read as an HTTP status (finding 1386).
+  // A request timeout is the failure itself. Its cause is whatever the in-flight call threw once
+  // the deadline lapsed, usually the deadline's DOMException, whose numeric code (TIMEOUT_ERR,
+  // 23) must not read as an HTTP status (finding 1386).
   const cause = asRecord(error)?.cause;
   return cause === undefined || error instanceof KubernetesRequestTimeout
     ? { stage: "prepare_revision", error }
