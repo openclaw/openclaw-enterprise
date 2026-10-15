@@ -48,8 +48,8 @@ the destination heading when the previous control disappears.
 **Open navigation** opens a mobile drawer; desktop closes it
 and releases page controls.
 
-A return keeps the shown page inert until session, Namespace access, and the
-retained view's reads pass; only matching views reappear. Refresh always
+Navigation keeps the shown page inert until session, Namespace access, and the
+destination's reads pass; only matching returns reappear. Refresh always
 rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
 Namespace; sign-out, session changes, exit, or Backend denial clear them.
