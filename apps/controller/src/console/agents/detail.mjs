@@ -2329,11 +2329,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       details ??= loadDetails();
       // Polling views are rebuilt on every visit instead of being retained.
       state.reusable = false;
-      content.append(renderAgentLogs(tabContext, { agent, revisionId: selected }));
+      const logs = renderAgentLogs(tabContext, { agent, revisionId: selected });
+      content.append(logs.section);
       state.loading = false;
       content.style.minHeight = "";
-      // Finish the overview layout before bringing this version's output into view.
-      await Promise.all([details, revealed]);
+      // Finish the overview layout and the Logs view's first reads before bringing this
+      // version's output into view, so nothing above it grows afterwards (finding 1413).
+      await Promise.all([details, revealed, logs.firstView]);
+      // Lay the view out in one frame and scroll in the next: content below that moves in the
+      // frame that scrolls counts as shifted (finding 1413).
+      await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
       if (tabContext.isCurrent() && !deleting) {
         tabControls.get("logs").focus({ preventScroll: true });
         detailPane.scrollIntoView({ block: "start" });

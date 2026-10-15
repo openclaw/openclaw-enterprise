@@ -530,7 +530,9 @@ p {
 }
 @media (max-width: 760px) {
   .shell {
-    display: block;
+    /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
+       it moved the whole page when the shell replaced the startup status (finding 1413). */
+    display: flow-root;
   }
   .content {
     padding: 30px 20px;
@@ -2363,6 +2365,11 @@ summary:focus-visible {
   }
 }
 
+/* Held back until the Logs view's first reads settle (finding 1413). */
+.agent-logs-pending > .runtime-strip,
+.agent-logs-pending > .log-viewer {
+  display: none;
+}
 .runtime-strip {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
