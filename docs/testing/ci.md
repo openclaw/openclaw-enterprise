@@ -9,7 +9,7 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 | Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                   |
 | --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
 | CI                                | Every PR                   | Yes, through `CI Required` | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
-| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No; outside `CI Required`  | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
+| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
 | QA Matrix Advisory                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)        |
 | Full Integration                  | Manual                     | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)   |
 | Observability Demo                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
