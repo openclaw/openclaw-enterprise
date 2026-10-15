@@ -1445,11 +1445,19 @@ export function installFixture(scenario, evidence) {
             message,
             ...extra,
           });
-          return response({
+          const page = {
             revisionId,
             source: "gateway",
             stream,
             observedAt: "2026-09-27T12:00:00.000Z",
+            truncated: false,
+            cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
+          };
+          if (url.searchParams.has("cursor")) {
+            return response({ ...page, records: [], withheld: 0 });
+          }
+          return response({
+            ...page,
             records: [
               line("2026-09-27T11:40:01.120Z", "wrapper", "info", "runtime.startup_phase", {
                 fields: { container: "gateway", phase: "config", outcome: "ok", ms: 12 },
@@ -1473,8 +1481,6 @@ export function installFixture(scenario, evidence) {
               ),
             ],
             withheld: 3,
-            truncated: false,
-            cursor: `v1.${"a".repeat(40)}.${"b".repeat(43)}`,
           });
         }
         if (

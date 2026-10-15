@@ -394,22 +394,29 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   // Client-side only: filters narrow the rows already loaded, never the server read.
   function applyFilters() {
-    let lines = 0;
-    let shown = 0;
     for (const row of pane.children) {
       row.hidden = !rowVisible(row);
-      if (row.dataset.level !== undefined) {
-        lines += 1;
-        shown += row.hidden ? 0 : 1;
-      }
     }
-    const filtering = hiddenLevels.size > 0 || filterInput.value.trim() !== "";
-    filterStatus.textContent = filtering
-      ? `Showing ${shown} of ${lines} loaded lines. Filters search only the lines loaded in this view, not the whole container log.`
-      : "Filters search only the lines loaded in this view, not the whole container log.";
+    updateFilterStatus();
+  }
+
+  function updateFilterStatus() {
+    let text = "Filters search only the lines loaded in this view, not the whole container log.";
+    if (hiddenLevels.size > 0 || filterInput.value.trim() !== "") {
+      // Count the retained lines after eviction. Gap and withheld notices have no level.
+      const lines = pane.querySelectorAll("[data-level]").length;
+      const shown = pane.querySelectorAll("[data-level]:not([hidden])").length;
+      text = `Showing ${shown} of ${lines} loaded lines. ${text}`;
+    }
+    if (filterStatus.textContent !== text) {
+      filterStatus.textContent = text;
+    }
   }
 
   function appendRecords(records) {
+    if (records.length === 0) {
+      return;
+    }
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
     for (const record of records) {
       const row = recordRow(record);
@@ -421,7 +428,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       pane.firstChild.remove();
       rows -= 1;
     }
-    applyFilters();
+    updateFilterStatus();
     if (atBottom) {
       pane.scrollTop = pane.scrollHeight;
     }
@@ -543,6 +550,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       cursor = null;
       pane.replaceChildren();
       rows = 0;
+      updateFilterStatus();
       logStatus.textContent = "Reading output…";
     }
     const query = logQuery(source, pod);
@@ -566,18 +574,21 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         lastStream = page.stream;
         renderPickers();
       }
-      const lines = page.records.filter(({ type }) => type === "line").length;
-      if (restart) {
-        logStatus.textContent =
+      const hasLine = page.records.some(({ type }) => type === "line");
+      if (restart || hasLine) {
+        const text =
           page.stream === null
             ? "This version has no running Pod for this source."
-            : lines === 0 && page.withheld > 0
+            : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
-              : lines === 0
+              : !hasLine
                 ? `No ${includeDebug.checked ? "" : "info-or-higher "}output in the last ${TAIL_LINES} lines.`
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
+        if (logStatus.textContent !== text) {
+          logStatus.textContent = text;
+        }
       }
     } catch (error) {
       if (!current() || (restartPending && error.status !== 401)) {

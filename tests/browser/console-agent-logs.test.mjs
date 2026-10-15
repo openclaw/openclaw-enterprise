@@ -13,9 +13,11 @@ import {
   nativeValues,
   newPage,
   settlePageRequests,
+  settledFetches,
   trackSettledFetches,
   waitForCondition,
   waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 
 // The console runs against the production controller app, IAM, cursor signing and
@@ -1080,4 +1082,80 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
     readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
     [],
   );
+});
+
+test("Follow keeps filtered rows and accessible status stable across idle and appended polls", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "keep first"), line(2, "hide first")];
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("hide first").waitFor();
+  await page.locator("#runtime-log-filter").fill("keep");
+  await pane.getByText("hide first").waitFor({ state: "hidden" });
+  const status = page.locator(".log-filter-status");
+  const scope = "Filters search only the lines loaded in this view, not the whole container log.";
+  assert.equal(await status.textContent(), `Showing 1 of 2 loaded lines. ${scope}`);
+
+  // A screenshot cannot distinguish an untouched live status from one rewritten verbatim.
+  // Observe the existing rows, not the new rows we expect Follow to append.
+  const writes = await pane.evaluateHandle((output) => {
+    const status = globalThis.document.querySelector(".log-filter-status");
+    const changed = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      changed.push(...records.map(({ target }) => (target === status ? "status" : "existing row")));
+    });
+    for (const row of output.children) {
+      observer.observe(row, { attributeFilter: ["hidden"] });
+    }
+    observer.observe(status, { childList: true });
+    return changed;
+  });
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}/runtime/logs`;
+  const before = await settledFetches(page, path);
+  const idleResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === path && url.searchParams.has("cursor");
+  });
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  const response = await idleResponse;
+  assert.equal(response.status(), 200);
+  assert.deepEqual((await response.json()).data.records, []);
+  // Response arrival alone is too early: the body and the UI continuation must finish.
+  await waitForSettledFetches(page, path, before + 1);
+  assert.deepEqual(await writes.jsonValue(), []);
+
+  computeDriver.state.lines.push(line(3, "keep later"), line(4, "hide later"));
+  await page.clock.runFor(2_000);
+  await waitForSettledFetches(page, path, before + 2);
+  await pane.getByText("keep later").waitFor();
+  assert.equal(await pane.getByText("hide later").count(), 1);
+  assert.equal(await pane.getByText("hide later").isVisible(), false);
+  assert.equal(await pane.getByText("hide first").isVisible(), false);
+  assert.equal(await pane.getByText("keep first").isVisible(), true);
+  assert.equal(await status.textContent(), `Showing 2 of 4 loaded lines. ${scope}`);
+  assert.deepEqual(await writes.jsonValue(), ["status"]);
+});
+
+test("Follow reports the first output after an empty tail", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const status = page.locator(".log-output-status");
+  await status.filter({ hasText: "No info-or-higher output in the last 200 lines." }).waitFor();
+
+  // The first followed line must replace the initial empty-tail explanation.
+  computeDriver.state.lines.push(line(1, "first followed output"));
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("first followed output")
+    .waitFor();
+  assert.match(await status.textContent(), /^Showing /);
 });

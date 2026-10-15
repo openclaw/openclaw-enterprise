@@ -3213,6 +3213,7 @@ export const scenarios = {
       "Download saves the redacted text tail as a .log file through its own audited read. Hiding info and filtering for slack narrows the loaded window to the redacted reconnect warning; the status line counts the hidden rows.",
     steps: [
       "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
+      "Select Follow, then select a few words in the visible warning. Across idle polls, check that the text stays selected and the filter count does not change. Stop Following before clearing the filter.",
       "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
     ],
   },

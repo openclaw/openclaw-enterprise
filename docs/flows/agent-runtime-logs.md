@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-13
-last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
+updated: 2026-10-15
+last_updated_session: authoring-run/c4eba313-1afc-4809-b1d2-0d64db45c712
 ---
 
 # Agent runtime logs flow
@@ -189,27 +189,23 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 
 ### 4. Return
 
-`apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` accepts only
-sanitized records and fails on the reserved `content` class.
-`runtimeLogDownloadBody` serializes the same branded records as text lines with
-the same check, and `runtimeLogDownloadFileName` names the attachment
-`<agent>-<revision>-<source>-<pod>.log`. A `minLevel` query
-(`runtime-logs/read.ts:runtimeLogPageAtLevel`) removes sanitized lines below that
-level after the cursor is signed, so polls resume after hidden lines; unknown-level
-lines, gaps and withheld counts stay. The console asks for `minLevel=info` unless
-**Include debug** is selected; its level chips and text filter
-(`apps/controller/src/console/agents/logs.mjs`) run only over loaded rows. The
-console caches a `403` per operator page session, so reopening adds no audited
-denial. Its status
-names log-text grants. Pod cards show every actual container's state and exit;
-the Pod/container picker selects its exact stream. Gateway views point to the Harness source while no Harness
-Pod is ready, or Deployment activity while none exists. The CLI rejects explicit
-zero or positive sub-second `--since` before revision selection or API client
-setup; omission keeps the unfiltered default. Its `--follow` loop re-sends the
-cursor every 2 seconds.
-`runAgentLogs` ends a follow cleanly on cancellation; without `--follow`, it is an
-error. Driver errors map to
-fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
+`apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and `runtimeLogDownloadBody`
+accept only branded, sanitized records and reject the reserved `content` class.
+Downloads are named `<agent>-<revision>-<source>-<pod-or-sandbox>.log` (`no-pod` if absent).
+`runtimeLogPageAtLevel` applies `minLevel` after signing the cursor, so polls resume
+past hidden lines. Unknown levels, gaps and withheld counts remain.
+
+The console requests `minLevel=info` unless **Include debug** is selected. Level and
+text filters affect loaded lines only; gap and withheld notices stay visible. Follow
+filters new lines and leaves the pane, scroll position and filter status alone on an
+empty poll. A cached `403` avoids repeat audited denials per operator page session;
+status names the required grants. Pod cards show container state and exit; the picker
+selects the stream. Gateway points to Harness logs if unready, Deployment activity if absent.
+
+The CLI rejects an explicit zero or positive sub-second `--since` before selecting a
+revision or creating an API client; omission leaves time unfiltered. `--follow` sends
+the cursor every two seconds and treats cancellation as normal; otherwise cancellation
+is an error. Requests have a ten-second deadline; Driver errors use fixed `RUNTIME_LOGS_*` codes.
 
 ## Debugging and Verification
 
@@ -235,6 +231,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 09:59: Keep filtered console rows stable during Follow polls. (authoring-run/c4eba313-1afc-4809-b1d2-0d64db45c712 - f795e4825eb54164a808f2dc36536306846dd776)
 
 - 2026-10-13: Key cursor hashes; `v1` cursors expire. (#2274)
 
