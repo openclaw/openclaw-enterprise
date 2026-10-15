@@ -3252,6 +3252,8 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   );
   await page.getByRole("heading", { name: "Repeat Stop", exact: true }).waitFor();
   const repeat = page.getByRole("button", { name: "Request Stop again", exact: true });
+  // Stop shows with the rest of the page once Deployment activity settles.
+  await repeat.waitFor();
   assert.equal(await repeat.count(), 1, "the existing Stop API permits another authorized intent");
   assert.equal(await repeat.isEnabled(), true);
   await repeat.focus();
