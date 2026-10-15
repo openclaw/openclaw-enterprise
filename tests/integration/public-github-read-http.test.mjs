@@ -135,6 +135,107 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       );
     },
   );
+  await t.test("issue cursors survive local pagination when earlier issues disappear", async () => {
+    const issued = "opaque+/cursor==";
+    reply = (req, res) => {
+      const url = new URL(req.url, "https://api.github.com");
+      const after = url.searchParams.get("after");
+      if (!url.searchParams.has("page")) {
+        const next = new URL("https://api.github.com/repositories/12/issues");
+        next.searchParams.set("per_page", "2");
+        next.searchParams.set("after", issued);
+        next.searchParams.set("page", "2");
+        next.searchParams.set("state", "open");
+        res.writeHead(200, { "content-type": "application/json", link: `<${next}>; rel="next"` });
+        res.end(JSON.stringify([{ number: 1 }, { number: 2 }]));
+      } else {
+        assert.equal(url.searchParams.get("state"), "all");
+        res.writeHead(200, { "content-type": "application/json" });
+        // After issue 1 disappears, offset page 2 is empty; the issued cursor still finds issue 3.
+        res.end(JSON.stringify(after === issued ? [{ number: 3 }] : []));
+      }
+    };
+    const first = await get("/issues?state=all&per_page=2");
+    assert.deepEqual(
+      (await first.json()).map(({ number }) => number),
+      [1, 2],
+    );
+    const next = new URL(first.headers.get("link").split(">")[0].slice(1), origin);
+    assert.equal(next.pathname, repo + "/issues");
+    assert.deepEqual(Object.fromEntries(next.searchParams), {
+      per_page: "2",
+      state: "all",
+      page: "2",
+      after: issued,
+    });
+    const second = await fetch(next);
+    assert.equal(second.status, 200);
+    assert.deepEqual(
+      (await second.json()).map(({ number }) => number),
+      [3],
+    );
+
+    const newer = new URL("https://api.github.com/repositories/12/issues?page=3");
+    newer.searchParams.set("before", "next_cursor");
+    answer(200, [], { link: `<${newer}>; rel="next"` });
+    const replacement = await fetch(next);
+    const replaced = new URL(replacement.headers.get("link").split(">")[0].slice(1), origin);
+    assert.equal(replaced.searchParams.get("after"), null);
+    assert.equal(replaced.searchParams.get("before"), "next_cursor");
+
+    answer(200, [], {
+      link: '<https://api.github.com/repos/example/project/issues?page=2&after=cursor>; rel="next"',
+    });
+    const named = await fetch(origin + "/repos/Example/Project/issues?state=all");
+    assert.equal(named.status, 200);
+    const namedNext = new URL(named.headers.get("link").split(">")[0].slice(1), origin);
+    assert.equal(namedNext.pathname, "/repos/Example/Project/issues");
+    assert.equal(namedNext.searchParams.get("after"), "cursor");
+  });
+  await t.test("unsafe issue continuations fail instead of reporting a complete list", async () => {
+    for (const query of [
+      "page=2&after=invalid%20cursor",
+      "page=2&after=one&after=two",
+      "page=2&after=one&before=two",
+      "page=2&page=3&after=one",
+      "page=2&after=" + "a".repeat(1025),
+      "page=1001&after=one",
+      "after=one",
+      "page=2&after=" + "%2F".repeat(700),
+    ]) {
+      answer(200, [], {
+        link: `<https://api.github.com/repositories/12/issues?${query}>; rel="next"`,
+      });
+      const response = await get("/issues?state=all");
+      assert.equal(response.status, 502, query);
+      assert.match((await response.json()).message, /incomplete/i);
+    }
+    answer(200, [], {
+      link: "<https://api.github.com/repositories/12/issues?page=2>; rel=next",
+    });
+    assert.equal((await get("/issues")).status, 502);
+    answer(200, [], {
+      link: '<https://unrelated.invalid/repositories/12/issues?page=2>; rel="next"',
+    });
+    assert.equal((await get("/issues")).status, 502);
+    answer(200, [], {
+      link: '<https://api.github.com/repositories/12/pulls?page=2&after=cursor>; rel="next"',
+    });
+    assert.equal((await get("/pulls")).status, 502);
+    const before = requests;
+    for (const path of [
+      "/issues?after=bad%20cursor",
+      "/issues?after=one&after=two",
+      "/issues?after=one&before=two",
+      "/issues?after=" + "a".repeat(1025),
+      "/issues/1?after=one",
+      "/pulls?after=one",
+      "/releases?before=one",
+    ]) {
+      assert.equal((await get(path)).status, 400, path);
+    }
+    assert.equal(requests, before);
+  });
   await t.test("page 1000 succeeds only if the provider has no next page", async () => {
     const path = "/pulls?page=1000";
     answer(200, []);
@@ -148,6 +249,11 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     const incomplete = await get(path);
     assert.equal(incomplete.status, 502);
     assert.match((await incomplete.json()).message, /incomplete.*1000/i);
+
+    answer(200, [], {
+      link: '<https://api.github.com/repositories/12/issues?page=1000&after=cursor>; rel="next"',
+    });
+    assert.equal((await get("/issues?page=1000")).status, 502);
   });
   await t.test("a directory at GitHub's entry limit cannot establish completeness", async () => {
     const entry = { name: "entry", type: "file", size: 0 };

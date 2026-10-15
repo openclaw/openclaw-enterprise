@@ -64,8 +64,10 @@ component must contain 1–100 ASCII letters, digits, periods, underscores or
 hyphens, and cannot be `.` or `..`; filenames containing spaces are unsupported.
 GitHub limits directory listings to 1000 entries. At that limit, the reader
 reports the listing as possibly incomplete instead of returning it as complete. Pagination
-links are relative to the reader. If GitHub advertises a next page beyond page
-1000, the reader reports an incomplete listing. When looking for merges, filter by
+links are relative to the reader. Issue-list links preserve a bounded GitHub
+`after` or `before` cursor and the original filters. If a next link cannot be
+represented safely or goes beyond page 1000, the reader reports an incomplete
+listing. When looking for merges, filter by
 `merged_at` and use the descending `updated_at` order to tell when the pages cover
 the requested dates. The reader offers no search, Git clone, arbitrary
 destination, redirects, client-header forwarding or write operations.

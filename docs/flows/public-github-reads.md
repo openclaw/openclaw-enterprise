@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-10-15"
-last_updated_session: authoring-run/acd06c56-509b-44d8-9dd3-0858ab106ad0
+last_updated_session: authoring-run/6399ddc9-8441-4407-8b0f-9ee9755a1cc0
 ---
 
 # Public GitHub read flow
@@ -61,6 +61,8 @@ Harness to use its proxy even if a shell client normally bypasses private addres
 accepts only approved GET paths. The fixed anonymous provider request carries
 neither caller headers nor credentials. In-flight work and rate-limit backoff are process-local;
 no completed representation, bearer, repository session or durable state is kept.
+List links retain the original local path and filters; issue links carry a validated
+provider cursor. An unsafe or out-of-range next link reports an incomplete listing.
 
 ### 4. Retire the revision's access
 
@@ -87,6 +89,8 @@ admitted peer; a new revision is needed to select the new peer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 09:27: Preserve bounded issue pagination cursors (authoring-run/6399ddc9-8441-4407-8b0f-9ee9755a1cc0 - c620c8372898c4720998445f7f7df89b2799336e)
 
 - 2026-10-15 09:03: Freeze reader selection at admission and revoke changed peers (authoring-run/acd06c56-509b-44d8-9dd3-0858ab106ad0 - 07d2178e530c07883a24c17efc950378c52e2b86)
 - 2026-10-15 05:37: Bind reader access and retirement to the selected revision (authoring-run/0da590a9-3bb3-4aa3-a005-25ff485692db - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)

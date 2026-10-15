@@ -7,6 +7,7 @@ const maxConcurrent = 3;
 const maxResponseBytes = 12 * 1024 * 1024;
 const pageNumber = /^(?:[1-9]\d{0,2}|1000)$/;
 const paging = { page: pageNumber, per_page: /^(?:[1-9]\d?|100)$/ };
+const cursor = /^[A-Za-z0-9+/_-]{1,1024}={0,2}$/;
 const listing = { ...paging, state: /^(?:all|open|closed)$/, direction: /^(?:asc|desc)$/ };
 const component = /^(?!\.{1,2}$)[a-z\d._-]{1,100}$/i;
 const ref = /^(?!.*(?:\.\.|\/\/|\/$))[a-z\d][a-z\d._/-]{0,179}$/i;
@@ -41,7 +42,12 @@ function readRoute(target: string) {
     } else if (resource === "pulls") {
       fields = { ...listing, base: ref, sort: /^(?:created|updated|popularity|long-running)$/ };
     } else if (resource === "issues") {
-      fields = { ...listing, sort: /^(?:created|updated|comments)$/ };
+      fields = {
+        ...listing,
+        after: cursor,
+        before: cursor,
+        sort: /^(?:created|updated|comments)$/,
+      };
     } else {
       fields = paging;
     }
@@ -54,6 +60,9 @@ function readRoute(target: string) {
       return;
     }
     params.set(key, value);
+  }
+  if (params.has("after") && params.has("before")) {
+    return;
   }
   params.sort();
   return {
@@ -74,26 +83,62 @@ function message(status: number, text: string, headers: OutgoingHttpHeaders = {}
 function listPage(body: Buffer, value: string, route: Route): Result {
   // GitHub can use /repositories/{numeric ID}. Publish only a local page of the
   // original query, never an absolute URL or a different provider-supplied path.
+  const matches = [...value.matchAll(/<([^>]+)>;\s*rel="(next|prev|first|last)"/g)];
+  const nextCount = (value.match(/\brel\s*=\s*(?:"[^"]*\bnext\b[^"]*"|next\b)/gi) ?? []).length;
+  if (nextCount !== matches.filter(([, , rel]) => rel === "next").length) {
+    return message(502, "Listing is incomplete: GitHub's next link cannot be safely represented.");
+  }
   const links = [];
-  for (const [, href = "", rel] of value.matchAll(/<([^>]+)>;\s*rel="(next|prev|first|last)"/g)) {
+  for (const [, href = "", rel] of matches) {
     const url = URL.parse(href);
     const resource = url?.pathname.match(/^\/repositories\/\d+\/(pulls|issues|releases)$/)?.[1];
-    if (url?.origin !== origin || (url.pathname !== route.path && resource !== route.resource)) {
-      continue;
-    }
-    const page = url.searchParams.get("page") ?? "";
-    if (!pageNumber.test(page)) {
+    const namedPath =
+      url?.pathname.startsWith("/repos/") &&
+      url.pathname.endsWith("/" + route.resource) &&
+      url.pathname.toLowerCase() === route.path.toLowerCase();
+    const pages = url?.searchParams.getAll("page") ?? [];
+    const after = url?.searchParams.getAll("after") ?? [];
+    const before = url?.searchParams.getAll("before") ?? [];
+    const validCursor =
+      after.length + before.length <= 1 &&
+      (after.length + before.length === 0 || route.resource === "issues") &&
+      [...after, ...before].every((item) => cursor.test(item));
+    if (
+      url?.origin !== origin ||
+      (!namedPath && resource !== route.resource) ||
+      pages.length !== 1 ||
+      !pageNumber.test(pages[0]!) ||
+      (rel === "next" && route.params.get("page") === "1000") ||
+      !validCursor
+    ) {
       if (rel === "next") {
         return message(
           502,
-          "Listing is incomplete: GitHub's next page is outside the supported range of 1 to 1000.",
+          "Listing is incomplete: GitHub's next page cannot be safely represented within the supported range of 1 to 1000.",
         );
       }
       continue;
     }
     const params = new URLSearchParams(route.params);
-    params.set("page", page);
-    links.push("<" + route.path + "?" + params.toString() + '>; rel="' + rel + '"');
+    params.delete("after");
+    params.delete("before");
+    params.set("page", pages[0]!);
+    if (after.length) {
+      params.set("after", after[0]!);
+    } else if (before.length) {
+      params.set("before", before[0]!);
+    }
+    const target = route.path + "?" + params.toString();
+    if (!readRoute(target)) {
+      if (rel === "next") {
+        return message(
+          502,
+          "Listing is incomplete: GitHub's next page cannot be safely represented.",
+        );
+      }
+      continue;
+    }
+    links.push("<" + target + '>; rel="' + rel + '"');
   }
   return { status: 200, body, headers: links.length ? { link: links.join(", ") } : {} };
 }
