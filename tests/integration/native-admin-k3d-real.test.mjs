@@ -880,7 +880,11 @@ test(
     const page = await browserContext.newPage();
     await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
-    await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
+    await page
+      .getByText(
+        "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
+      )
+      .waitFor();
     const popupPromise = page.waitForEvent("popup");
     await page.getByRole("link", { name: "Open admin console" }).click();
     const nativePage = await popupPromise;
