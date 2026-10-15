@@ -1143,6 +1143,8 @@ const REQUEST_RETRY_ATTEMPTS = 6;
 const REQUEST_RETRY_BASE_DELAY_MS = 50;
 const REQUEST_RETRY_MAX_DELAY_MS = 2_000;
 const REQUEST_RETRY_BUDGET_MS = 2_000;
+/** Fresh reads before a conflicting OAuth bootstrap Job delete fails its pass. */
+const OAUTH_BOOTSTRAP_DELETE_ATTEMPTS = 3;
 /** Each Kubernetes call on the runtime log path; the service bounds the whole request. */
 const RUNTIME_LOG_CALL_TIMEOUT_MS = 5_000;
 const RUNTIME_LOG_MAX_PODS = 8;
@@ -13895,24 +13897,41 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const name = this.oauthBootstrapName(revision);
     const ownership = this.pluginRuntimeOwnership(revision);
     await this.retireOAuthBootstrapDeployment(revision, namespace);
-    const job = await this.getOwned("Job", name, namespace, ownership);
-    if (job !== undefined) {
+    // A write between the read and the delete (409) or a Job already gone (404) is
+    // re-read here instead of failing the pass: after consumption, a failed final
+    // attempt has no later pass, and the seed Secret would keep the token bundle.
+    for (let attempt = 1; ; attempt += 1) {
+      const job = await this.getOwned("Job", name, namespace, ownership);
+      if (job === undefined) {
+        break;
+      }
       const clients = await this.clients(namespace.plane);
-      await this.request(
-        () =>
-          clients.batch.deleteNamespacedJob({
-            name,
-            namespace: namespace.name,
-            body: {
-              propagationPolicy: "Foreground",
-              preconditions: {
-                uid: required(job.metadata.uid, "OAuth bootstrap UID"),
-                resourceVersion: required(job.metadata.resourceVersion, "OAuth bootstrap version"),
+      try {
+        await this.request(
+          () =>
+            clients.batch.deleteNamespacedJob({
+              name,
+              namespace: namespace.name,
+              body: {
+                propagationPolicy: "Foreground",
+                preconditions: {
+                  uid: required(job.metadata.uid, "OAuth bootstrap UID"),
+                  resourceVersion: required(
+                    job.metadata.resourceVersion,
+                    "OAuth bootstrap version",
+                  ),
+                },
               },
-            },
-          }),
-        { mutating: true },
-      );
+            }),
+          { mutating: true },
+        );
+        break;
+      } catch (error) {
+        const status = numericErrorStatus(error);
+        if ((status !== 409 && status !== 404) || attempt >= OAUTH_BOOTSTRAP_DELETE_ATTEMPTS) {
+          throw error;
+        }
+      }
     }
     await this.waitForRevisionPodsToTerminate(revision, namespace, "agent", name);
     await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
