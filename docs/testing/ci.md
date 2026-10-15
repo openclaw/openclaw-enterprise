@@ -6,17 +6,26 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 
 ## Checks and gates
 
-| Check                             | When it runs                                                   | Blocks merge               | GitHub Actions                                                                                   |
-| --------------------------------- | -------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
-| CI                                | PRs, pushes to `main`, merge groups, manual                    | Yes, through `CI Required` | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
-| First Agent Smoke (job within CI) | Code/configuration PRs, pushes to `main`, merge groups, manual | No; outside `CI Required`  | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
-| QA Matrix Advisory                | Every same-repository PR except Dependabot; manual             | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)        |
-| Full Integration                  | Manual; lane-specific branch and credential requirements apply | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)   |
-| Check Native Container Images     | Manual, manual CI, or container publication preparation        | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-check.yml)    |
-| Observability Demo                | Relevant PRs and `main` pushes; merge groups; manual           | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Every `main` push; manual on `main`                            | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)         |
+| Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                   |
+| --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                   | Yes, through `CI Required` | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
+| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No; outside `CI Required`  | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
+| QA Matrix Advisory                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)        |
+| Full Integration                  | Manual                     | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)   |
+| Observability Demo                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                     | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)         |
 
-Docs-only PRs run static checks without product tests. Test-only PRs select
+### PR exceptions
+
+- **First Agent Smoke:** skips docs-only and recognized test-only PRs.
+- **QA Matrix Advisory:** skips fork and Dependabot PRs.
+- **Observability Demo:** runs only when the changed files match its workflow path filters.
+
+The table shows PR or manual entrypoints. Some workflows also run on pushes or
+merge groups; documentation deploys automatically on `main` pushes. See the
+[workflow cheat sheet](../reference/cheatsheets/github-actions.md) for those triggers.
+
+In the CI workflow, docs-only PRs run static checks without product tests. Test-only PRs select
 affected CI suites; other changes and main pushes run all ordinary CI test lanes. QA advisory and
 Full Integration are separate workflows, not prerequisites for publication.
 
