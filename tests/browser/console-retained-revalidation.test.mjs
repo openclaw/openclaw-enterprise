@@ -216,3 +216,154 @@ test("Back during an Agent refocus check keeps the held page inert until the ret
   session.release();
   await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
 });
+
+// Names the page in the content view after every DOM change, marking a held (inert) page.
+function recordShownPages() {
+  const seen = [];
+  globalThis.__shownPages = seen;
+  const record = () => {
+    const view = globalThis.document.querySelector('.content [aria-live="polite"]');
+    const startup = globalThis.document.querySelector("#app > .startup");
+    const kind = startup
+      ? "startup"
+      : !view
+        ? "no page"
+        : view.querySelector(".agent-current-summary")
+          ? "Agent"
+          : view.querySelector(".agent-table")
+            ? "Agents"
+            : view.querySelector('ul.collection[aria-label="Namespaces"]')
+              ? "Namespaces"
+              : `other: ${view.textContent.replace(/\s+/g, " ").trim().slice(0, 80)}`;
+    const state = view?.inert ? `${kind} (held)` : kind;
+    if (seen.at(-1) !== state) {
+      seen.push(state);
+    }
+  };
+  record();
+  new globalThis.MutationObserver(record).observe(globalThis.document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+}
+
+// Stops page timers, so the loading delay passes only when a test runs the clock.
+async function pauseClock(page) {
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(new Date(now + 1000));
+}
+
+const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+
+test("A first visit keeps the shown page until its first read settles, then swaps once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Single swap", { ready: true });
+  await fixture.createAgent(namespace.id, "Swap Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByRole("link", { name: "Swap Agent" }).waitFor();
+  await pauseClock(page);
+  await page.evaluate(recordShownPages);
+
+  // The list stays, inert, through admission and the Agent read; no loading state shows.
+  await page.getByRole("link", { name: "Swap Agent" }).click();
+  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages.splice(0)), [
+    "Agents",
+    "Agents (held)",
+    "Agent",
+  ]);
+
+  await page.locator(settledView).waitFor();
+  await page.evaluate(() => globalThis.__shownPages.splice(0, Infinity, "Agent"));
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(activeView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), [
+    "Agent",
+    "Agent (held)",
+    "Namespaces",
+  ]);
+});
+
+test("A first visit that outlasts the loading delay shows loading only after it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slow first visit", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Slow Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByRole("link", { name: "Slow Agent" }).waitFor();
+  await pauseClock(page);
+
+  const read = await holdRead(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`);
+  await page.getByRole("link", { name: "Slow Agent" }).click();
+  await read.requested;
+  const held = page.locator('.content [aria-live="polite"][inert]');
+  const loading = page.getByText("Reading this Agent.", { exact: true });
+  await held.getByRole("link", { name: "Slow Agent" }).waitFor();
+  await page.clock.runFor(249);
+  assert.equal(await held.count(), 1);
+  assert.equal(await loading.count(), 0);
+
+  // Past the delay, loading replaces the held page until the read settles.
+  await page.clock.runFor(1);
+  await loading.waitFor();
+  assert.equal(await held.count(), 0);
+  read.release();
+  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  assert.equal(await loading.count(), 0);
+});
+
+test("A full load whose session check outlasts the loading delay shows no navigation before it", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slow session", { ready: true });
+  await fixture.createAgent(namespace.id, "Session Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  const url = `/console/agents?namespace=${namespace.id}`;
+  await login(page, fixture, url);
+  await page.locator(settledView).getByRole("link", { name: "Session Agent" }).waitFor();
+  await pauseClock(page);
+  const session = await holdRead(t, page);
+
+  await page.reload();
+  await session.requested;
+  await page.clock.runFor(400);
+  await page.locator("#app > .startup", { hasText: "Checking session…" }).waitFor();
+  assert.equal(await page.locator(".content, nav").count(), 0);
+  session.release();
+  await page.locator(settledView).getByRole("link", { name: "Session Agent" }).waitFor();
+});
+
+test("A full load replaces the startup status once when its reads settle in time", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Single load", { ready: true });
+  await fixture.createAgent(namespace.id, "Loaded Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await page.clock.install();
+  const url = `/console/agents?namespace=${namespace.id}`;
+  await login(page, fixture, url);
+  await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
+  await pauseClock(page);
+  // Record from before the console's module runs, which adds the startup status.
+  await page.addInitScript(
+    `document.addEventListener("readystatechange", () => {
+      if (document.readyState === "interactive") (${recordShownPages})();
+    });`,
+  );
+
+  await page.reload();
+  await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), [
+    "no page",
+    "startup",
+    "Agents",
+  ]);
+});

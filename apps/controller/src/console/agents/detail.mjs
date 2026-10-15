@@ -337,6 +337,8 @@ function deploymentProgress(record) {
 }
 
 export const DEPLOYMENT_POLL_MS = 5000;
+// Longest wait for Deployment activity's first read before the sections below it show.
+export const FIRST_ACTIVITY_WAIT_MS = 1000;
 const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 
 function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
@@ -576,11 +578,22 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
   return section;
 }
 
-function createVersionDeploymentRecord(context, path, revisionId, onChange = () => {}) {
+// With shared, Deployment activity is reading this version's record, so the panel waits for
+// show() instead of reading it again; release() reads here if that read fails (finding 1417).
+function createVersionDeploymentRecord(
+  context,
+  path,
+  revisionId,
+  onChange = () => {},
+  { shared = false } = {},
+) {
   const section = element("section", { className: "agent-card version-deployment-record" });
   let status = null;
   let error = null;
   let loading = false;
+  let awaitingShared = shared;
+  // A shared read that never settles must not leave this panel loading.
+  let sharedTimer = shared ? setTimeout(() => release(), DEPLOYMENT_POLL_MS) : null;
   // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
   let generation = 0;
 
@@ -588,6 +601,8 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     if (loading || !context.isCurrent()) {
       return;
     }
+    awaitingShared = false;
+    clearTimeout(sharedTimer);
     loading = true;
     error = null;
     const started = generation;
@@ -623,6 +638,8 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     if (!context.isCurrent() || !next) {
       return;
     }
+    awaitingShared = false;
+    clearTimeout(sharedTimer);
     generation += 1;
     status = next;
     error = null;
@@ -667,9 +684,17 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     );
   }
 
+  function release() {
+    if (awaitingShared) {
+      void load();
+    }
+  }
+
   render();
-  void load();
-  return { section, show, current: () => status };
+  if (!shared) {
+    void load();
+  }
+  return { section, show, release, current: () => status };
 }
 
 function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus = () => null) {
@@ -975,6 +1000,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function showDeleting() {
     deleting = true;
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
+    view.classList.remove("agent-detail-pending");
     view.replaceChildren(header, deletion);
   }
   if (deleting) {
@@ -1084,6 +1110,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
     versionLayout,
   );
+  // Recovery or native administration can appear above the facts. Keep the Agent heading and
+  // controls in place, then reveal the overview once its first deployment and access reads settle.
+  // The bounded wait still exposes loading, refresh and the version controls on a slow read.
+  view.classList.add("agent-detail-pending");
+  let revealTimer = null;
+  let markRevealed;
+  const revealed = new Promise((resolve) => {
+    markRevealed = resolve;
+  });
+  function revealDetail() {
+    clearTimeout(revealTimer);
+    view.classList.remove("agent-detail-pending");
+    markRevealed();
+  }
+  revealTimer = setTimeout(revealDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
     const strip = tabs.getBoundingClientRect();
     const bounds = tabControls.get(selectedTab).getBoundingClientRect();
@@ -1618,6 +1659,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      // The version's record panel no longer gets this panel's reads.
+      versionRecord?.release();
       latestDeploymentStatus = null;
       latestDeploymentRecord = null;
       latestDeploymentError = false;
@@ -1632,6 +1675,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
+        void nativeAdmin.ready.then(revealDetail);
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
@@ -1658,8 +1702,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               latestDeploymentRecord = record
                 ? { revisionId: mostRecent.id, status: record }
                 : null;
-              if (record && mostRecent.id === selected) {
-                versionRecord?.show(record);
+              if (mostRecent.id === selected) {
+                // After a failed read, the version's record panel reads its record itself.
+                if (record) {
+                  versionRecord?.show(record);
+                } else {
+                  versionRecord?.release();
+                }
               }
               renderLatestDeployment();
               refreshDeployControls();
@@ -1770,8 +1819,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const executionMode = draft ? agent.executionMode : snapshot.harness.mode;
     if (!draft) {
       let diagnosticsPanel = null;
-      versionRecord = createVersionDeploymentRecord(context, path, selected, () =>
-        diagnosticsPanel?.render(),
+      versionRecord = createVersionDeploymentRecord(
+        context,
+        path,
+        selected,
+        () => diagnosticsPanel?.render(),
+        { shared: activityRevisionId === selected && !latestDeploymentError },
       );
       diagnosticsPanel = createVersionDiagnosticsPanel(context, path, selected, () =>
         versionRecord.current(),
@@ -2222,7 +2275,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       state.loading = false;
       content.style.minHeight = "";
       // Finish the overview layout before bringing this version's output into view.
-      await details;
+      await Promise.all([details, revealed]);
       if (tabContext.isCurrent() && !deleting) {
         tabControls.get("logs").focus({ preventScroll: true });
         detailPane.scrollIntoView({ block: "start" });

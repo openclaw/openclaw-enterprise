@@ -368,7 +368,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
       feature === "agents"
-        ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
+        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
           : feature === "backends"

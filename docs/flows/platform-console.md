@@ -123,10 +123,10 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` starts a request generation with `GET /api/auth/session`. First visits
-show loading. Returns and Refresh keep the shown page inert during admission and
-reads; navigation stays available. Up to 16 views, keyed by route, Namespace, and
-session owner, are retained, excluding passwords and their discovery state.
+`loadPage` starts a request generation with `GET /api/auth/session`. Loads keep the
+shown page inert until admission and reads settle; navigation stays available. Loads
+other than returns show loading after 250 ms. Up to 16 views, keyed by route, Namespace,
+and session owner, are retained, excluding passwords and discovery state.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,
@@ -135,7 +135,7 @@ interrupted-read recovery. Only JSON syntax failures become invalid-response
 errors; a failed body never causes an automatic replay.
 
 Completed views retain DOM, handlers, and draft callbacks. On return, `loadPage`
-checks GET dependencies and user identity. A match remounts the view, including expanded
+checks GET dependencies and user identity. A match remounts the view with expanded
 debug details. Changed data or the first readable Namespace for a view without a
 selection rebuilds it; Refresh always rebuilds.
 Pending or failed reads, password input, and mutations prevent reuse; read-only

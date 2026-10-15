@@ -135,9 +135,9 @@ export function renderNativeAdminAccess(context, path) {
     }
   }
 
-  void load();
   return {
     section,
+    ready: load(),
     // Rereads access once, for example after the active version or runtime state changes.
     refresh() {
       if (pending) {

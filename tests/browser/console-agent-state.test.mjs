@@ -1014,3 +1014,120 @@ test("Deployment activity appears once with its recorded status, not as an empty
   await summary.getByText("v1 · In progress").waitFor();
   assert.equal(await page.locator(".deployment-status").count(), 1);
 });
+
+test("Agent detail reads the selected version's deployment record once on load", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Single record read", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Single read Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let recordReads = 0;
+  let failFirst = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) => {
+      recordReads += 1;
+      if (failFirst && recordReads === 1) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "Try again." } }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      });
+    },
+  );
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  await login(page, fixture, url);
+  const activity = page.locator(".deployment-status");
+  const record = page.locator(".version-deployment-record");
+  await page.getByText("v1 · Completed", { exact: true }).waitFor();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  // Deployment activity and the version's record panel show the same record.
+  assert.equal(recordReads, 1);
+
+  // When the shared read fails, the version's record panel reads the record itself.
+  recordReads = 0;
+  failFirst = true;
+  await page.reload();
+  await activity.getByRole("alert").waitFor();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(recordReads, 2);
+});
+
+test("Agent detail does not move shown sections when Deployment activity first settles", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Steady detail", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Steady detail Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let releaseRecord;
+  const recordHeld = new Promise((resolve) => {
+    releaseRecord = resolve;
+  });
+  t.after(() => releaseRecord());
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    async (route) => {
+      await recordHeld;
+      await route
+        .fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+        })
+        .catch(() => {});
+    },
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Steady detail Agent" }).waitFor();
+  // A paused clock keeps the reveal waiting for the read instead of FIRST_ACTIVITY_WAIT_MS.
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
+  await page.addInitScript(() => {
+    globalThis.__layoutShifts = [];
+    new globalThis.PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (!entry.hadRecentInput) {
+          globalThis.__layoutShifts.push({
+            value: entry.value,
+            sources: entry.sources.map((source) => source.node?.className ?? source.node?.nodeName),
+          });
+        }
+      }
+    }).observe({ type: "layout-shift", buffered: true });
+  });
+  // A full load, so no recent input excuses a shift.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
+  await page.getByRole("link", { name: "← Agents", exact: true }).waitFor();
+  // The version's own reads finish while Deployment activity's first read is still held.
+  await page
+    .locator(".agent-version-heading", { hasText: "Version v1" })
+    .waitFor({ state: "attached" });
+  assert.equal(await page.locator(".agent-detail-pending").count(), 1);
+  assert.equal(await page.locator(".agent-version-layout").isVisible(), false);
+  // Paint what is shown, with its fonts. The load up to here (startup status, shell, Agent heading)
+  // must not shift either; then measure the first read settling on its own.
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const loadShifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  const loadShift = loadShifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(loadShift < 0.01, `load shift ${loadShift}: ${JSON.stringify(loadShifts)}`);
+
+  releaseRecord();
+  await page.getByText("v1 · Completed", { exact: true }).waitFor();
+  await page.locator(".agent-version-layout").waitFor();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const shifts = await page.evaluate(() => globalThis.__layoutShifts);
+  const shift = shifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
+});

@@ -146,8 +146,9 @@ p {
   color: var(--muted);
 }
 .startup {
-  margin: 14vh auto;
-  padding: 28px;
+  /* Padding, not margin: a margin collapses through #app and body, so the page jumps when it is replaced. */
+  margin: 0;
+  padding: calc(14vh + 28px) 28px;
   color: var(--muted);
   text-align: center;
 }
@@ -695,6 +696,10 @@ select:not([multiple])[size="1"] {
 }
 .agent-current-summary p:empty,
 .native-admin-access p:empty {
+  display: none;
+}
+/* Keep the heading and controls stable while the first overview reads settle. */
+.agent-detail-pending > :not(.agent-overview-toolbar) {
   display: none;
 }
 .agent-status-line {
