@@ -652,6 +652,21 @@ export const scenarios = {
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
     ],
   },
+  navigationFirstVisit: {
+    group: "Pages/Navigation",
+    name: "First visits",
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", delayMs: 150 },
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
+    ],
+    description:
+      "Opening a page that was not loaded before keeps the shown page, inactive, until access and the destination's first reads pass, then swaps once. Loading appears only after 250 ms. Simulated API; no backend proof.",
+    steps: [
+      "Wait for Agents, then open Research assistant. Its read takes 150 ms: the list stays shown, inactive, then Agent detail replaces it with no loading panel.",
+      "Return to Agents, then open Documentation assistant. Its read takes 1200 ms: the list stays shown for 250 ms, then Loading appears until Agent detail replaces it.",
+      "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
+    ],
+  },
   navigationRetained: {
     group: "Pages/Navigation",
     name: "Return to loaded pages",
