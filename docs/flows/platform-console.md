@@ -279,8 +279,8 @@ preflight.
 
 `agents/detail.mjs:renderAgentDetail` passes an `agents/list.mjs:link` to
 `deploymentFailure` for **Open vN Logs**. Client navigation selects the failed
-revision's `tab=logs`, even from the draft or a different version. After mounting
-the Logs panel and finishing the snapshot read, it focuses the Logs tab and
+revision's `tab=logs`, even from the draft or a different version. Once the
+snapshot read and the panel's first reads settle, it focuses the Logs tab and
 scrolls the panel into view if the view is still current. The panel's
 `agents/logs.mjs:renderAgentLogs` reads that revision's runtime status and output,
 or displays its access or availability error;
