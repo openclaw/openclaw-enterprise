@@ -2913,6 +2913,7 @@ function repositories(
       settleEffect: provisioningUnavailable,
       cancel: provisioningUnavailable,
       cancelByAgent: async () => undefined,
+      settleAbandonedEffect: provisioningUnavailable,
       retryByWorkId: provisioningUnavailable,
       releaseConfiguration: async () => false,
     },
