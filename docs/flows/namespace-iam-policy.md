@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-14
-last_updated_session: "fix-1322"
+updated: 2026-10-15
+last_updated_session: "authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851"
 ---
 
 # Namespace IAM Policy Flow
@@ -229,8 +229,8 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
-- 2026-10-13 15:22: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/7efed788-313c-4486-b931-770741ceeb29 - 9dabe685d3992abf1126cb37051b15b74b171478)
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)
 - 2026-09-29 16:40: Record the Installation authorization and the Role or AccessBinding changed in IAM policy audit events. (fix-5)
 - 2026-09-29 05:28: Bind selected native policy reloads to the original State transaction and reject escaped reads. (codex/01a0eb4c-5933-7752-bddc-f787e8da79e7 - 2a191c74c0079e329db130d0a81a1f0f87869bb9)
