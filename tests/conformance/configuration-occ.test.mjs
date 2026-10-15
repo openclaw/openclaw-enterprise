@@ -560,6 +560,182 @@ test("a failed Configuration update leaves an update committed after its rollbac
   );
 });
 
+test("a Configuration left one generation ahead of its record recovers on the next update", async () => {
+  const { agent, configuration, configurationDriver, controller, namespace } = await fixture();
+  const reference = { id: configuration.id, namespaceId: namespace.id };
+  const update = configurationDriver.update;
+  const read = configurationDriver.read;
+  const valuesWith = (regions) => ({
+    ...configuration.values,
+    plugins: { entries: { example: { enabled: true, regions, retryCount: 2 } } },
+  });
+  const updateInput = (regions) => ({
+    namespaceId: namespace.id,
+    configurationId: configuration.id,
+    values: valuesWith(regions),
+  });
+  const unavailable = (error) =>
+    error instanceof DependencyUnavailableError &&
+    error.message === "A Driver could not roll back a failed resource mutation.";
+
+  // The replace lands but its response is lost, and the compensation's read fails in the same
+  // outage. The stored document is left one generation ahead of the record (finding 1396).
+  configurationDriver.update = async (next) => {
+    configurationDriver.update = update;
+    await update(next);
+    configurationDriver.read = async () => {
+      configurationDriver.read = read;
+      throw new Error("synthetic Configuration outage");
+    };
+    throw new Error("synthetic Configuration update response loss");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput(["lost"])),
+    unavailable,
+  );
+  const leftover = configurationDriver.stored(reference);
+  assert.equal(leftover.generation, 2);
+  assert.deepEqual(leftover.values, valuesWith(["lost"]));
+
+  // Reads and deploys never serve the unrecorded generation.
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, configuration.id),
+    DependencyUnavailableError,
+  );
+  await assert.rejects(
+    controller.deployAgent(
+      administrator,
+      { namespaceId: namespace.id, agentId: agent.id },
+      resolveApprovedDevelopmentHarness,
+    ),
+    DependencyUnavailableError,
+  );
+
+  // A retry whose own replace is lost restores the leftover, so a later retry still recovers.
+  configurationDriver.update = async (next) => {
+    configurationDriver.update = update;
+    await update(next);
+    throw new Error("synthetic Configuration update response loss");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput(["lost-again"])),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "The selected Configuration Driver is unavailable.",
+  );
+  assert.deepEqual(configurationDriver.stored(reference), leftover);
+
+  // The retry replaces the leftover under a generation past it, never adopting its content.
+  const recovered = await controller.updateConfiguration(administrator, updateInput(["east"]));
+  assert.equal(recovered.generation, 3);
+  assert.deepEqual(recovered.values, valuesWith(["east"]));
+  assert.deepEqual(configurationDriver.stored(reference), {
+    ...configuration,
+    generation: 3,
+    values: valuesWith(["east"]),
+  });
+  assert.deepEqual(
+    await controller.getConfiguration(administrator, namespace.id, configuration.id),
+    recovered,
+  );
+
+  // Deployment after recovery snapshots the recorded generation and its content.
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  assert.equal(revision.configurationGeneration, 3);
+  assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
+});
+
+test("a Configuration whose ConfigMap a failed delete removed can still be deleted", async () => {
+  const { configurationDriver, controller } = await fixture();
+  const namespace = await controller.createNamespace(administrator, {
+    name: "Configuration recovery tenant",
+  });
+  const create = (model) =>
+    controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: { model },
+    });
+  const configuration = await create("gone");
+  const deleteConfiguration = configurationDriver.delete;
+  const recreated = [];
+  const createStored = configurationDriver.create;
+  configurationDriver.create = async (next) => {
+    recreated.push(next);
+    return createStored(next);
+  };
+
+  // The delete lands but its response is lost, and the compensation cannot inspect the backend.
+  // The record is left naming nothing (finding 1396).
+  const loseDelete = () => {
+    configurationDriver.delete = async (reference) => {
+      configurationDriver.delete = deleteConfiguration;
+      const inspectExact = configurationDriver.inspectExact;
+      configurationDriver.inspectExact = async () => {
+        configurationDriver.inspectExact = inspectExact;
+        throw new Error("synthetic Configuration outage");
+      };
+      await deleteConfiguration(reference);
+      throw new Error("synthetic Configuration delete response loss");
+    };
+  };
+  inspectExactly(configurationDriver);
+  loseDelete();
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    (error) =>
+      error instanceof DependencyUnavailableError &&
+      error.message === "A Driver could not roll back a failed resource mutation.",
+  );
+  assert.equal(configurationDriver.stored(configuration), undefined);
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, configuration.id),
+    DependencyUnavailableError,
+  );
+
+  // A Driver that cannot confirm the absence keeps refusing: an unreachable backend looks the same.
+  const inspectExact = configurationDriver.inspectExact;
+  delete configurationDriver.inspectExact;
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    DependencyUnavailableError,
+  );
+  configurationDriver.inspectExact = async () => {
+    configurationDriver.inspectExact = inspectExact;
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    DependencyUnavailableError,
+  );
+
+  // Once the Driver confirms nothing is stored, delete removes the record and restores nothing.
+  assert.deepEqual(
+    await controller.deleteConfiguration(administrator, namespace.id, configuration.id),
+    [],
+  );
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, configuration.id),
+    ScopeViolationError,
+  );
+  assert.deepEqual(recreated, []);
+
+  // A document left one generation ahead by a failed update is deleted with its record.
+  const ahead = await create("ahead");
+  recreated.length = 0;
+  await configurationDriver.update({ ...ahead, generation: 2, values: { model: "unrecorded" } });
+  await controller.deleteConfiguration(administrator, namespace.id, ahead.id);
+  assert.equal(configurationDriver.stored(ahead), undefined);
+  assert.deepEqual(recreated, []);
+
+  // With nothing left, the Namespace can be deleted.
+  await controller.deleteNamespace(administrator, namespace.id);
+});
+
 test("native Configuration documents remain bound to their exact Namespace", async () => {
   const { controller, namespace } = await fixture();
   const otherNamespace = await controller.createNamespace(administrator, {
