@@ -322,21 +322,27 @@ test(
     await fixture.startWorker();
     // Stop at the bootstrap handoff boundary: this fixture deliberately has no
     // native Codex or private Gateway route, so it cannot prove runtime activation.
-    // Past the handoff every pass fails at that boundary, and the worker's three
-    // attempts (full-jitter backoff) can fail the deployment within a second of the
-    // bootstrap's removal, before this poll sees it. Only a failure while the source
-    // is unconsumed refutes the handoff. The status is read first: a failed deployment
-    // runs no further pass, so a source still unconsumed after it stays unconsumed.
+    // Past the handoff every pass fails at that boundary (the Gateway route), and the
+    // worker's three attempts (full-jitter backoff) can fail the deployment within
+    // seconds of the bootstrap's removal, or in the handoff pass itself, before this
+    // poll sees the removal. Only a failure while the source is unconsumed refutes the
+    // handoff. The status is read first: a failed deployment runs no further pass, so
+    // a source still unconsumed after it stays unconsumed.
     const prepareFailures = () =>
       workerEvents.filter(({ event }) => event === "worker.compute-prepare-failed");
     await waitFor("Job completion and source consumption before native startup", async () => {
       assert.equal(watchError, undefined);
       const status = await fixture.request("GET", `${agentPath}/deployments/${first.id}`);
+      assert.equal(status.status, 200, JSON.stringify(status.body));
       if (
         (await sourceObject(source))?.metadata.annotations?.["openclaw.dev/oauth-phase"] !==
         "consumed"
       ) {
-        assert.notEqual(status.data.status, "failed", JSON.stringify(prepareFailures()));
+        assert.notEqual(
+          status.data.status,
+          "failed",
+          "deployment failed before the OAuth source was consumed",
+        );
         return false;
       }
       const completed = jobFor(first, "Complete");
