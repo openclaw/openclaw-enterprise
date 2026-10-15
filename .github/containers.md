@@ -33,50 +33,16 @@ before source images or the chart publish.
 
 ## Operator setup
 
-Maintainers publish by manually dispatching the workflow. GitHub requires
-[repository write access](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
-to run it; repository writers can dispatch it too. There is no second-person
-approval or approval-comment requirement. Complete these prerequisites first.
+Configure [publication settings](../docs/testing/ci.md#publication-configuration)
+and [native runners](../docs/testing/ci.md#shared-settings) before dispatching.
+That page owns environment policies, variables, secrets, and package requirements.
+Then [confirm package linkage](#confirm-package-linkage) and use the
+[marker bootstrap](#bootstrap-ghcr-packages) for missing packages.
 
-- Protect `main`, require the real `CI Required` check, and review workflow changes.
-- Provision native AMD64 and ARM64 runners for both images. The defaults are
-  `blacksmith-16vcpu-ubuntu-2404` and `blacksmith-8vcpu-ubuntu-2404-arm`; see
-  [runner overrides and minimum resources](../deploy/runtime/README.md#verify-both-native-architectures).
-- Create a dedicated `container-publish` environment with no required reviewers or
-  wait timer, administrator bypass disabled, and one deployment branch policy:
-  branch `main`. Do not reuse the integration environments.
-- Set repository or organization variable `CONTAINER_NODE_BASE_IMAGE` to the
-  approved Node 24 digest used by `scripts/ci/test-suites/images-packaging.json`
-  and the runtime Dockerfile. All three must agree. This is an explicit approval,
-  not a default.
-- Bootstrap or confirm the two **public**, pre-existing GHCR image packages. Chart
-  publication also requires the public `ghcr.io/openclaw/charts/openclaw-enterprise`
-  package. Link each selected package to the public
-  `openclaw/openclaw-enterprise` repository when GitHub records a connection, and
-  grant this repository Actions access. The Enterprise publisher requires these
-  packages to exist. Use the manual [marker bootstrap](#bootstrap-ghcr-packages)
-  for missing packages, then make any new marker packages public before publishing
-  source images or the chart.
-  Before converting an existing private package, inventory its retained versions
-  and access grants. Confirm that every retained image layer or chart is intended
-  for public distribution; a public source repository alone does not establish
-  that. [Changing package visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)
-  exposes all retained versions and cannot be reversed to private. If any retained
-  content must stay private, leave that package private and choose separate public
-  destinations before publishing. The workflow does not perform this conversion.
-- Set environment variables `GHCR_CONTROLLER_IMAGE` and `GHCR_RUNTIME_IMAGE`
-  to their full `ghcr.io/openclaw/...` names without tags or digests. They must be
-  different packages. There is no alternate destination fallback.
-
-The publishing job uses its short-lived `GITHUB_TOKEN` with `packages: write`;
-preparation has only `contents: read`, no environment or registry credentials.
-No-push preparation needs the approved base-image variable and trusted source/CI,
-not the publishing environment or package-access grants.
-Missing settings, inaccessible metadata, conflicting package linkage, or nonpublic
-visibility stop publication. GitHub may omit repository metadata; that omission
-does not require an approval comment.
-Repository-level secrets/variables alone do not
-describe effective organization/environment credentials.
+No-push preparation validates the approved base image and trusted source CI.
+Publication also checks package access, identity, and public visibility. Missing
+settings, inaccessible metadata, or conflicting linkage stop publication.
+GitHub may omit repository metadata; follow the linkage checks below.
 
 ## Confirm package linkage
 
@@ -95,11 +61,10 @@ checks package identity, public visibility, and immutable tag contents. It does
 not claim to verify omitted linkage through the API.
 
 To migrate an existing environment, first merge this manual-publication change
-and wait for its main-push CI. Then remove required reviewers and any wait timer
-from **Settings → Environments → container-publish**. Retain the environment
-variables, main-only branch policy, and disabled administrator bypass. Old runs
-execute their original workflow code; use a new recovery dispatch to publish
-retained artifacts under the updated policy.
+and wait for its main-push CI. Then apply the current
+[publication configuration](../docs/testing/ci.md#publication-configuration).
+Old runs execute their original workflow code; use a new recovery dispatch to
+publish retained artifacts under the updated policy.
 
 ## Bootstrap GHCR packages
 

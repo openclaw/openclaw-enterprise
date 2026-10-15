@@ -81,7 +81,7 @@ the [merged policy owner](https://github.com/openclaw/clawsweeper/pull/1726).
 
 Use this repository's [checked-in dispatcher](../../.github/workflows/clawsweeper-dispatch.yml) as the installation source of truth. [Upstream synchronization](https://github.com/openclaw/clawsweeper/pull/1720) is merged; follow its [GitHub App setup instructions](https://github.com/openclaw/clawsweeper/blob/main/docs/target-dispatcher.md#target-repository-dispatcher), but do not copy the upstream workflow template. Keep one dispatcher.
 
-Install the `clawsweeper` App on this repository and confirm its installation on `openclaw/clawsweeper`. Grant the [token permissions](#entry-points), then add the App private key as this repository's `CLAWSWEEPER_APP_PRIVATE_KEY` Actions secret.
+Complete the [ClawSweeper CI setup](../testing/ci.md#other-workflow-setup), including both App installations and scoped token permissions.
 
 After the first eligible issue, pull request, or command event following merge, inspect **ClawSweeper Dispatch** for admission, token creation, and successful dispatch. Check the matching ClawSweeper receiver run and final outcome. An acknowledgement alone does not prove delivery or completion.
 

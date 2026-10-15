@@ -58,9 +58,13 @@ Optional model overrides are `OCC_TEST_QA_OPENAI_MODEL` and `OCC_TEST_QA_CODEX_M
 
 ## CI, evidence, and recovery
 
-[QA Matrix Advisory](../../.github/workflows/qa-advisory.yml) runs Codex `model-ui` and `calendar` in separate Compose and Kubernetes jobs, the [full OpenShell lane](#automatic-openshell-coverage), and a separate credential-free `dev-up-k3d` job, for trusted same-repository PRs. These jobs are not required checks. Fork and Dependabot PRs need a trusted run; new pushes cancel superseded runs. `integration-qa-pr` supplies only the Codex token and Calendar configuration to trusted PR code.
+[QA Matrix Advisory](../../.github/workflows/qa-advisory.yml) runs Codex `model-ui` and `calendar` in separate Compose and Kubernetes jobs, the [full OpenShell lane](#automatic-openshell-coverage), and a separate credential-free `dev-up-k3d` job, for trusted same-repository PRs. These jobs are not required checks. Fork and Dependabot PRs need a trusted run; new pushes cancel superseded runs. Configure [advisory credentials](ci.md#integration-environments) before running trusted PR code.
 
-For the complete matrix, dispatch [Full Integration](../../.github/workflows/full-integration.yml) on `main` with `lane: qa-matrix` or `lane: all` and branch-restricted `integration-qa` credentials without per-run approval. Full Integration serializes this lane with the focused Slack lane to avoid competing consumers. The default `qa_repository_fixture` uses the configured default repository secrets. `isolated` requires `QA_ISOLATED_REPOSITORY_REGISTRY_JSON` and `QA_ISOLATED_REPOSITORY_APP_KEY` as `integration-qa` environment secrets, and `QA_ISOLATED_REPOSITORY_FULL_NAME` as an environment variable. The registry must contain exactly that lowercase `owner/repository`, which must differ from the workflow repository. The runner mints separate, repository-scoped observer tokens from the isolated GitHub App; no static observer-token secret is required. These short-lived tokens expire at GitHub. Missing or mismatched inputs fail; there is no fallback to default credentials.
+For the complete matrix, dispatch [Full Integration](../../.github/workflows/full-integration.yml)
+on `main` with `lane: qa-matrix` or `lane: all`. Use the
+[central CI configuration](ci.md#integration-environments) for environments,
+credentials, and the `qa_repository_fixture` choice. Full Integration serializes
+this lane with the focused Slack lane to avoid competing consumers.
 
 ### Read scenario outcomes and recover failures
 
@@ -76,4 +80,4 @@ Add a named stage in [`qa-matrix-real.test.mjs`](../../tests/integration/qa-matr
 
 ## Automatic OpenShell coverage
 
-The advisory `openshell` job runs the full [OpenShell lane](openshell.md) on trusted PRs, using GitHub Ubuntu with an early Landlock ABI check. It builds runtime images from the tested revision, rejects skips, and cleans up its clusters and databases. `integration-qa-pr` supplies `CODEX_ACCESS_TOKEN` and `OCC_TEST_OPENAI_MODEL`; the result artifact is `qa-advisory-openshell`. This job is outside `CI Required`.
+The advisory `openshell` job runs the full [OpenShell lane](openshell.md) on trusted PRs, using GitHub Ubuntu with an early Landlock ABI check. It builds runtime images from the tested revision, rejects skips, and cleans up its clusters and databases. Use the [advisory configuration](ci.md#integration-environments); the result artifact is `qa-advisory-openshell`. This job is outside `CI Required`.

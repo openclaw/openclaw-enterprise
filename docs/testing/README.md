@@ -111,7 +111,7 @@ only resources created by the run.
 
 - [GitHub Actions cheat sheet](../reference/cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
 - [Local, browser, and metrics tests](local.md)
-- [CI and hosted test lanes](ci.md)
+- [CI configuration and hosted test lanes](ci.md)
 - [QA matrix](qa-matrix.md)
 - [PostgreSQL](postgresql.md)
 - [Docker, images, and Helm](docker.md)

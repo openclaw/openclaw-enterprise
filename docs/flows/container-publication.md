@@ -65,12 +65,9 @@ permission or protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
-The defaults are `blacksmith-16vcpu-ubuntu-2404` and
-`blacksmith-8vcpu-ubuntu-2404-arm`; `CONTAINER_AMD64_RUNNER` and
-`CONTAINER_ARM64_RUNNER` repository variables can select other provisioned labels.
+See [shared CI settings](../testing/ci.md#shared-settings) for native runner defaults and overrides.
 Each job checks its architecture and logs CPU, memory, and available disk.
-Jobs require at least four CPUs and 12 GiB RAM; the reported runner label alone
-is not evidence of allocated capacity.
+The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
 for both native Linux architectures before runtime smoke tests.
 The standard AMD64 override requires 36 GiB free and, only below that, runs
