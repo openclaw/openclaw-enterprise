@@ -4320,6 +4320,11 @@ export const scenarios = {
     name: "Cleanup in progress",
     path: draft,
     deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1300 }],
+    steps: [
+      "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
+    ],
     description:
       "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
   },

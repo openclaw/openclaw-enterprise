@@ -137,7 +137,13 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
     .waitFor();
 });
 
-test("Agent deletion says access ended when the deleter can no longer read the Agent", async (t) => {
+test("Agent deletion says access ended when the deleter can no longer read the Agent", (t) =>
+  checkScopedDeletionEnd(t, { moveFocusDuringPoll: false }));
+
+test("A deletion status poll that ends scoped access respects focus moved during the read", (t) =>
+  checkScopedDeletionEnd(t, { moveFocusDuringPoll: true }));
+
+async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -212,12 +218,18 @@ test("Agent deletion says access ended when the deleter can no longer read the A
     `${policyPath}/access-bindings/${agentBinding.id}`,
   );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-  const denied = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}${agentPath}` && response.request().method() === "GET",
-  );
+  await page.getByRole("button", { name: "Refresh deletion status" }).focus();
+  const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
   await page.clock.runFor(DELETION_POLL_MS);
-  assert.equal((await denied).status(), 403);
+  const status = await denied.status;
+  const expectedFocus = moveFocusDuringPoll
+    ? page.getByRole("link", { name: "← Agents", exact: true })
+    : page.getByRole("heading", { name: "Delete Agent", exact: true });
+  if (moveFocusDuringPoll) {
+    await expectedFocus.focus();
+  }
+  denied.release();
+  assert.equal(status, 403);
   await page
     .getByRole("status")
     .getByText(
@@ -226,19 +238,14 @@ test("Agent deletion says access ended when the deleter can no longer read the A
     .waitFor();
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Refresh deletion status" }).count(), 0);
-  assert.equal(
-    await page
-      .getByRole("heading", { name: "Delete Agent", exact: true })
-      .evaluate((node) => node.ownerDocument.activeElement === node),
-    true,
-  );
+  assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
 
   // Polling stops: no further reads, however long the page stays open.
   const settled = reads();
   await page.clock.runFor(DELETION_POLL_MS * 3);
   assert.equal(reads(), settled);
   assert.equal((await fixture.request("GET", agentPath)).data.status, "deleting");
-});
+}
 
 test("Agent delete uncertainty requires refresh before another destructive request", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -309,6 +316,7 @@ test("An already deleting Agent permits only a confirmed manual repeat DELETE", 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
   requests.length = 0;
+  await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh deletion status");
   const open = () =>
     page.getByRole("button", { name: "Request deletion again", exact: true }).click();
   await open();
@@ -3267,32 +3275,7 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(after.data.activeRevisionId, active.revision.id);
   assert.equal(after.data.desiredRuntimeState, "stopped");
   assert.equal(after.data.configurationId, agent.configurationId);
-  // Hold the real status read so focus can move before the Console handles its response.
-  const refresh = page.getByRole("button", { name: "Refresh stop status" });
-  const agentsLink = page.getByRole("link", { name: "← Agents", exact: true });
-  for (const expectedFocus of [refresh, agentsLink]) {
-    const held = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    await page.route(
-      `${fixture.origin}${path}`,
-      async (route) => {
-        const response = await route.fetch();
-        held.resolve(response.status());
-        await release.promise;
-        await route.fulfill({ response });
-      },
-      { times: 1 },
-    );
-    await refresh.press("Enter");
-    const status = await held.promise;
-    if (expectedFocus === agentsLink) {
-      await agentsLink.focus();
-    }
-    release.resolve();
-    assert.equal(status, 200);
-    await page.getByRole("button", { name: "Refresh stop status", disabled: false }).waitFor();
-    assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
-  }
+  await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh stop status");
   // No selected version does not prove candidate/history cleanup completed.
   await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -3315,3 +3298,37 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal((await noSelectionResult).status(), 202);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
 });
+
+async function checkStatusRefreshFocus(page, url, name) {
+  const refresh = page.getByRole("button", { name, disabled: false });
+  const agentsLink = page.getByRole("link", { name: "← Agents", exact: true });
+  for (const expectedFocus of [refresh, agentsLink]) {
+    const held = await holdNextStatusResponse(page, url);
+    await refresh.press("Enter");
+    const status = await held.status;
+    if (expectedFocus === agentsLink) {
+      await agentsLink.focus();
+    }
+    held.release();
+    assert.equal(status, 200);
+    await refresh.waitFor();
+    assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
+  }
+}
+
+// Hold the real status response so focus can move before the Console handles it.
+async function holdNextStatusResponse(page, url) {
+  const held = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  await page.route(
+    url,
+    async (route) => {
+      const response = await route.fetch();
+      held.resolve(response.status());
+      await release.promise;
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
+  return { status: held.promise, release: release.resolve };
+}

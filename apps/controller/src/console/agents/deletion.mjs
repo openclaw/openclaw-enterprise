@@ -97,12 +97,19 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
       }
       return;
     }
-    // Disabling Refresh while it checks drops its focus, so remember where focus was first.
-    const focusedHere =
+    // Disabling or detaching Refresh can drop focus to body without leaving the check.
+    // A new focus outside the section relinquishes that return, even if later blurred.
+    let focusedHere =
       section.contains(document.activeElement) || document.activeElement === document.body;
+    const trackFocus = (event) => {
+      if (event.target !== document.body && !section.contains(event.target)) {
+        focusedHere = false;
+      }
+    };
     state.pending = true;
     state.error = null;
     render();
+    document.addEventListener("focusin", trackFocus, true);
     try {
       const current = await context.request(path);
       if (!context.isCurrent()) {
@@ -145,6 +152,7 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
         // Stop polling on errors; the reader can retry with Refresh deletion status.
       }
     } finally {
+      document.removeEventListener("focusin", trackFocus, true);
       if (context.isCurrent()) {
         state.pending = false;
         render();
@@ -153,8 +161,8 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
           if (focusedHere) {
             heading.focus({ preventScroll: true });
           }
-        } else if (!poll) {
-          (state.deleting || state.needsRefresh ? refresh : remove).focus();
+        } else if (!poll && focusedHere) {
+          (state.deleting || state.needsRefresh ? refresh : remove).focus({ preventScroll: true });
         }
       }
     }
