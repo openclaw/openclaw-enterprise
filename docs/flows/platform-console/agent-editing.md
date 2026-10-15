@@ -289,8 +289,8 @@ Cancelling confirmation restores its invoking button; submitted requests focus s
 
 **Refresh stop status** reads the exact Agent again. It displays desired runtime
 state and selected revision without inferring live health or completion from a
-missing revision. Permission denial stays inline; state changes reload the
-detail view. An uncertain write blocks another stop until a successful read. Deployment remains the resume operation,
+missing revision. Permission denial stays inline; state changes update panels
+in place. An uncertain write blocks another stop until a successful read. Deployment remains the resume operation,
 admitting a new revision. The [stop lifecycle](../../reference/agents/deployment.md#stop-and-resume) owns
 worker shutdown and preservation of revisions, credentials, and state.
 
