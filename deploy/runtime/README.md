@@ -30,6 +30,10 @@ an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
+The build applies `openclaw-codex-preserve-on-request.patch` because the pinned
+OpenClaw converts `on-request` to a granular policy when a plugin uses MCP
+elicitation. Codex rejects the turn if managed requirements allow only
+`on-request`. Remove the patch when OpenClaw preserves that named policy.
 The build also applies `openclaw-connect-ephemeral-expired-setup.patch`. Upstream
 `connect --ephemeral` rejects an expired setup code before it checks saved node
 credentials, so a dedicated native worker that restarts more than ten minutes
