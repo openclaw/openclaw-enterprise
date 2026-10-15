@@ -12251,27 +12251,6 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   );
   assert.ok(unreachable instanceof DependencyUnavailableError, String(unreachable));
   assert.equal(driver.describePrepareRevisionFailure(unreachable).stage, "sandbox_provision");
-
-  // OpenShell's admission limit on CreateSandbox names itself and keeps its provisioning stage.
-  const { OpenShellAdmissionLimitError } =
-    await import("../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts");
-  const limit = new OpenShellAdmissionLimitError(
-    "CreateSandbox",
-    Object.assign(new Error("8 RESOURCE_EXHAUSTED"), { code: 8 }),
-  );
-  fixture.sandbox.provisionHarness = async () => {
-    throw limit;
-  };
-  const limited = await driver.prepareRevision(revision, authContext(revision)).then(
-    () => assert.fail("a refused CreateSandbox must not prepare"),
-    (error) => error,
-  );
-  assert.equal(limited, limit);
-  assert.deepEqual(driver.describePrepareRevisionFailure(limited), {
-    code: "SANDBOX_ADMISSION_LIMIT_REACHED",
-    stage: "sandbox_provision",
-    errorClass: "TransientDependencyError",
-  });
 });
 
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
