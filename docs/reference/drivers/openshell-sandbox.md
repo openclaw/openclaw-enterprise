@@ -130,7 +130,8 @@ Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
 
-Each v0.1.3-pre.2 network policy needs a nonempty executable path. Optional
+Each v0.1.3-pre.2 network policy needs a unique name and a nonempty executable
+path. `workspace-node-enrollment` is reserved. Optional
 values are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`. The Driver rejects the old `passthrough`
 spelling; use `skip` for uninspected TLS relay.
@@ -139,8 +140,8 @@ gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Timeouts and polling
-intervals must be positive safe integers. Development sets `startupDelayMs` to
+Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
+positive `timeoutMs`. Development sets `startupDelayMs` to
 30 seconds because v0.1.3-pre.2 exposes its service before the process listens.
 
 Install the OpenShell gateway separately. Required `gateway.workspaceMode`
@@ -183,7 +184,7 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+For PAT-backed dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
 configuration before OCC validates and freezes the revision:
 
 ```json
@@ -194,7 +195,7 @@ configuration before OCC validates and freezes the revision:
         "enabled": true,
         "config": {
           "appServer": {
-            "sandbox": "danger-full-access",
+            "sandbox": "workspace-write",
             "approvalsReviewer": "user"
           }
         }
@@ -204,10 +205,10 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
-Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
-boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
-Revisions admitted before #2079 lack the reviewer; deploy those Agents again
-([notice](../../guides/deploy/breaking-changes.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
+API-key sources use `danger-full-access`, with OpenShell providing isolation.
+PAT and unresolved sources retain `workspace-write` and native managed policy.
+Both use explicit `user` review. Nested shell execution remains unverified: Codex requires
+bubblewrap user namespaces, which OpenShell blocks.
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
@@ -302,13 +303,11 @@ Compute passes the provider-fenced network profile (`provider-fenced-v1`) to the
 provider Harness template; the provider must retain it on the resulting Pod.
 It admits no Compute DNS, model, or authentication egress; OpenShell's workload
 fence governs those decisions. The policy proxy opens node connections from
-OpenShell supervisor Pods (`openshell.ai/managed-by=openshell`,
-`openshell.ai/boundary-role=supervisor`), which carry no `openclaw.dev` labels,
-so same-cluster policies grant those callers only the tenant's Agent Gateway
-Service port. The separately installed OpenShell gateway needs its own scoped
-DNS/API policies.
-Existing Sandboxes keep their template: redeploy the Agent revision to apply the
-profile. See the
+OpenShell supervisor Pods, which carry no `openclaw.dev` labels; on one cluster,
+each Agent Gateway admits only its own Sandbox's supervisor
+(`openshell.ai/sandbox-id`). The separately installed OpenShell gateway needs
+its own scoped DNS/API policies. Redeploy an existing Agent to apply the profile
+and this scoping. See the
 [network profile reference](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles).
 
 ## Qualification contract

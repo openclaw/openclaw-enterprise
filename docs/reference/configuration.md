@@ -19,7 +19,12 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry. Reviewed
+bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
+must serialize to less than 1 MiB; a save over that is refused with
+`400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
+bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
+envelope in six-byte JSON escapes; a caller without the create or update grant
+is refused before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
@@ -59,7 +64,14 @@ observability:
 ```
 
 `url` must be an absolute HTTP or HTTPS URL without embedded credentials or a
-fragment. Unknown fields fail startup. The API exposes the URL only after an
+fragment. An IPv4 host must be four decimal octets from 0 to 255 with no
+leading zeros; shorthand, hex, a single integer, a leading zero, or any `@`
+before the host stops API and worker startup with log code
+`OBSERVABILITY_URL_INVALID` until you correct the URL and restart. A tab, newline,
+or a backslash before the query is refused the same way; a backslash in the query
+stays. A DNS name is unchanged. See the
+[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
 not select an OpenTelemetry exporter or embed a dashboard. Compose development
@@ -127,13 +139,22 @@ Additional consumer kinds are reserved for future approved resources and are
 not accepted. `values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
-fields or resolving SecretRefs, except that Configuration create and update and
-Agent provisioning check each model provider's `baseUrl` and `api`, and those of
-its `models` entries: `baseUrl` must be an absolute `http` or `https` URL, and
-`api` must be a model API the pinned OpenClaw runtime supports, such as
+fields or resolving SecretRefs, except that Configuration create and update,
+Agent provisioning and Preset saves check each model provider's `baseUrl` and
+`api`, and those of its `models` entries: `baseUrl` must be an absolute `http`
+or `https` URL, and `api` must be a model API the pinned OpenClaw runtime supports, such as
 `openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
-runtime. The `400` names the field as a JSON pointer within `values`.
+runtime (a `$${VAR}` escape is no reference), and a Preset `baseUrl` or `api`
+that waits on a variable without a default is checked once filled. At save, such
+a `baseUrl` needs a literal `http` or `https` scheme, or one a variable
+completes, and each variable stands for one host, port, IPv6 address or path
+token. The `400` names the field as a JSON pointer within `values`, and says
+when the host's numeric or `0x` last label makes the URL parser refuse it as
+IPv4. They also refuse a `models` that is not a list and a `headers`
+or `request.headers` name that is not a valid HTTP field name, naming the
+setting and the header; a Preset header name that waits on such a variable
+is checked once filled, on every Compute.
 
 Create and update also refuse, with the `400` Kubernetes Compute deployment
 gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:
@@ -141,7 +162,9 @@ a non-object `agents`, `agents.defaults`, `agents.entries` or entry; any
 `agents.list` except an empty one beside an empty roster; an Agent ID OpenClaw
 rejects, or two it normalizes to one; an entry's `default`; `agents.ownership`
 other than `explicit`; more than one entry without it; or `explicit` with no
-entry. The message names the setting and the rule. A Configuration saved before
+entry. The message names the setting and the rule. Preset saves refuse them
+too; an Agent ID or `agents.ownership` that waits on a variable is checked as
+far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
 Rules that depend on the topology stay at deployment, because a Configuration

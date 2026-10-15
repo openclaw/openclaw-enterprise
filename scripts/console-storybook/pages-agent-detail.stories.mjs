@@ -6,6 +6,7 @@ export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const NewVersion = story("newVersion");
+export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");
@@ -42,6 +43,8 @@ export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
+export const DeploymentStopped = story("deploymentStopped");
+export const DeploymentSuperseded = story("deploymentSuperseded");
 export const DeploymentSucceeded = story("deploymentSucceeded");
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
@@ -63,6 +66,14 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const DeployRefusedSetting = {
+  ...story("deployRefusedSetting"),
+  name: "Deployment refused by a Configuration setting",
+};
+export const DeployAgentPrincipalDenied = {
+  ...story("deployAgentPrincipalDenied"),
+  name: "Deployment denied for the Agent's service principal",
+};
 
 export const RepositoryEditor = story("repositoryEditor");
 export const ConfigurationNavigation = story("configurationNavigation");
@@ -86,3 +97,6 @@ export const SharingPolicyChanged = story("agentSharingPolicyChanged");
 export const SharingRolesUnavailable = story("agentSharingRolesUnavailable");
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
+
+export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
+export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");

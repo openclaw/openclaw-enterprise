@@ -30,6 +30,10 @@ an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
+The build applies `openclaw-codex-preserve-on-request.patch` because the pinned
+OpenClaw converts `on-request` to a granular policy when a plugin uses MCP
+elicitation. Codex rejects the turn if managed requirements allow only
+`on-request`. Remove the patch when OpenClaw preserves that named policy.
 The build also applies `openclaw-connect-ephemeral-expired-setup.patch`. Upstream
 `connect --ephemeral` rejects an expired setup code before it checks saved node
 credentials, so a dedicated native worker that restarts more than ten minutes
@@ -39,6 +43,12 @@ the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
 The build also applies `openclaw-trusted-proxy-role.patch`. It adds paired role and policy-digest headers and explicit managed identity selectors to trusted-proxy configuration, then commits the proxy-selected role through native profile writes before WebSocket or HTTP operator admission. It retains native role enforcement, closes existing profile connections when the assignment changes, and rejects missing or mismatched assignments, undeclared identities and ambiguous profile links. The Kubernetes Driver supplies OCE's identity names; the bridge has no built-in OCE identity namespace. See [native authority and drift](../../docs/reference/agent-native-admin.md#native-authority-and-drift) for ownership and digest rules. The patch includes actual Gateway/SQLite integration cases in `server.auth.identity-scopes.test.ts` and `server.plugin-http-role-scopes.test.ts`, plus configuration validation in `zod-schema.gateway-auth.test.ts`. Remove it when upstream supports verified proxy role assignment with the same admission and role-publication guarantees.
 The source archive and patch hashes identify the resulting custom build.
+
+The Codex adapter preserves namespaced IDs with an explicit native
+provider. For a custom endpoint, OCE compiles its private Gateway model references
+to include that provider while keeping the admitted Configuration unchanged.
+See
+[native runtime selection](../../docs/reference/harness-execution.md#native-runtime-selection).
 
 Dedicated native OpenClaw requires both required worker placement
 (`cloudWorkers.requiredProfile`) and node-local inference from canonical
@@ -207,7 +217,11 @@ set -a
 set +a
 OPENCLAW_ENTERPRISE_CI_STATE=/tmp/images-runtime-startup.json \
   node --test tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-native-listener.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs
 ```

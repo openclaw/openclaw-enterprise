@@ -99,7 +99,7 @@ export function createRuntimeLogComputeDriver(options = {}) {
                   ];
             const described = {
               revisionId: binding.revision.id,
-              observedAt: "2026-09-30T12:00:00.000Z",
+              observedAt: state.observedAt ?? "2026-09-30T12:00:00.000Z",
               pods: pods.map((pod) => ({
                 role: "gateway",
                 cluster: "control",

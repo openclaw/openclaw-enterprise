@@ -83,6 +83,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 		os.Getenv("OCC_SERVICE_KEY_FILE"),
 		"Bootstrap or service-key response file",
 	)
+	// --ca-bundle= is not refused like the flags in emptyFlagValues: it clears OCC_CA_BUNDLE.
 	flags.StringVar(
 		&app.caBundle,
 		"ca-bundle",
@@ -576,13 +577,15 @@ func (app *application) credentialSourceCommand() *cobra.Command {
 		Use:   "update ID",
 		Short: "Push current or replacement Secret values to the gateway copy",
 		Args:  idArgs(credentialSourceIDArg),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
+			// An explicit empty --file was refused by refuseEmptyFlags.
+			fileSet := command.Flags().Changed("file")
 			namespace, err := app.requiredNamespace()
 			if err != nil {
 				return err
 			}
 			body := jsontext.Value("{}")
-			if updateFile != "" {
+			if fileSet {
 				body, err = readJSON(updateFile)
 				if err != nil {
 					return err
@@ -788,26 +791,43 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	var revisionLimit int
+	var revisionCursor string
 	revisions := &cobra.Command{
 		Use:   "revisions AGENT_ID",
-		Short: "List an Agent's immutable revisions (deployment IDs)",
+		Short: "List an Agent's immutable revisions (deployment IDs), newest first, one page at a time",
 		Args:  idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("limit") && (revisionLimit < 1 || revisionLimit > 100) {
+				return fmt.Errorf("--limit must be between 1 and 100")
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			result, err := client.ListAgentRevisions(namespace, args[0])
+			page, err := client.ListAgentRevisions(namespace, args[0], revisionLimit, revisionCursor)
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], result)
+			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], page.Revisions)
 			if err != nil {
 				return err
 			}
-			return app.printAgentRevisionList(rows)
+			if err := app.printAgentRevisionList(rows); err != nil {
+				return err
+			}
+			if page.NextCursor != "" {
+				limit := ""
+				if command.Flags().Changed("limit") {
+					limit = fmt.Sprintf(" --limit %d", revisionLimit)
+				}
+				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ agent revisions %s%s --cursor %s\"", args[0], limit, page.NextCursor)
+			}
+			return nil
 		},
 	}
+	revisions.Flags().IntVar(&revisionLimit, "limit", 0, "revisions per page, 1 to 100 (default 50)")
+	revisions.Flags().StringVar(&revisionCursor, "cursor", "", "continue from the cursor a previous page printed")
 	deploymentStatus := &cobra.Command{
 		Use:   "deployment-status AGENT_ID [DEPLOYMENT_ID]",
 		Short: "Show durable status for one Agent deployment, by default the latest revision",
@@ -821,11 +841,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				result, err := client.ListAgentRevisions(namespace, args[0])
-				if err != nil {
-					return err
-				}
-				if deploymentID, err = latestRevisionID(args[0], result); err != nil {
+				if deploymentID, err = latestRevisionID(client, namespace, args[0]); err != nil {
 					return err
 				}
 			}
@@ -898,11 +914,7 @@ func (app *application) agentCommand() *cobra.Command {
 // revision: whether it is the Agent's active revision and the status of the
 // deployment that created it. A revision whose deployment status the caller may
 // not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, value any) ([]any, error) {
-	revisions, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("OCC returned an invalid resource collection")
-	}
+func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, revisions []any) ([]any, error) {
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
 		return nil, err
@@ -923,7 +935,7 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
 		row["deploymentStatus"] = nil
-		if id != "" && !agentUnreadable && row["configurationReadError"] == nil {
+		if id != "" && !agentUnreadable {
 			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
 			var apiErr *occclient.APIError
 			switch {
@@ -932,6 +944,10 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 					row["deploymentStatus"] = status["status"]
 				}
 			case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden):
+			case errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable:
+				// List items are summaries, so a revision whose saved settings are unreadable
+				// shows up only here; its status read fails while the others still work.
+				noticef(notices, "notice: deployment status of revision %s is unavailable: %v", id, err)
 			default:
 				return nil, err
 			}
@@ -1105,6 +1121,9 @@ func helpWithOutputFormats(help func(*cobra.Command, []string)) func(*cobra.Comm
 }
 
 func (app *application) validateOptions(command *cobra.Command) error {
+	if err := refuseEmptyFlags(command); err != nil {
+		return err
+	}
 	formats := []string{"table", "json", "yaml"}
 	if annotated, ok := command.Annotations[outputFormatsAnnotation]; ok {
 		formats = strings.Split(annotated, ",")
@@ -1124,6 +1143,38 @@ func (app *application) validateOptions(command *cobra.Command) error {
 		return fmt.Errorf("OCC timeout must be a positive integer number of seconds")
 	}
 	app.parsedTimeout = time.Duration(seconds) * time.Second
+	return nil
+}
+
+// emptyFlagValues says what each listed flag must name. These flags read an
+// empty value as omitted, so an explicit --flag= is refused before any work
+// instead of silently taking the default or failing later with a misleading
+// error. --ca-bundle= deliberately clears OCC_CA_BUNDLE, and --namespace=
+// clears OCC_NAMESPACE (service-key create then issues an Installation-scoped
+// key; Namespace commands refuse it), so neither is listed. The other string
+// flags refuse an empty value themselves.
+var emptyFlagValues = map[string]string{
+	"file":              "a JSON document",
+	"key-output":        "a key file path",
+	"level":             "error, warn, info or debug",
+	"out":               "a key file path",
+	"pod":               "a Pod",
+	"revision":          "a revision ID",
+	"service-key-file":  "a bootstrap or service-key response file",
+	"service-principal": "a ServicePrincipal ID",
+	"source":            "gateway, agent or sandbox",
+	"url":               "the OCC endpoint URL",
+}
+
+// refuseEmptyFlags refuses an explicitly empty value for a flag in
+// emptyFlagValues, in flag-name order.
+func refuseEmptyFlags(command *cobra.Command) error {
+	for _, name := range slices.Sorted(maps.Keys(emptyFlagValues)) {
+		flag := command.Flags().Lookup(name)
+		if flag != nil && flag.Changed && flag.Value.String() == "" {
+			return fmt.Errorf("--%s must name %s", name, emptyFlagValues[name])
+		}
+	}
 	return nil
 }
 

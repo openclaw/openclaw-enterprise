@@ -13,13 +13,16 @@ const matrixLanes = [
   "images-model-probes",
   "images-runtime-startup",
   "images-runtime-startup-2",
+  "images-runtime-startup-3",
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
+  "k3d-fixture-oauth",
   "k3d-observability",
   "logging-collector",
   "repository-credentials-container",
   "repository-credentials-platform",
+  "keycloak-oidc",
 ];
 
 const fixtureLane = "runtime-image-fixture";

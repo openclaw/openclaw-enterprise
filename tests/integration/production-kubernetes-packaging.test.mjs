@@ -525,6 +525,21 @@ test(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
+    for (const cidr of [
+      "not-a-cidr",
+      "10.1.1.1/33",
+      "0.0.0.0/0",
+      "12345::/64",
+      "::ffff:999.1.2.3/64",
+    ]) {
+      await assert.rejects(
+        render({ ...execution, "executionCluster.apiCidrs[0]": cidr }),
+        /executionCluster\.apiCidrs/,
+        cidr,
+      );
+    }
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
     // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
     // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
@@ -656,6 +671,11 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
   for (const port of ["0", "010", "65536", "9.5"]) {
     await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
   }
+  // --set parses this as a float. --set-string keeps the digits, which used to pass Sprig int overflow.
+  await assert.rejects(
+    render({}, { strings: { "api.port": "99999999999999999999" } }),
+    /api\.port must be an integer TCP port/,
+  );
   const objects = await resources((await render({ "api.port": "8081" })).stdout);
   const container = objects.find(
     (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
@@ -676,6 +696,51 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
     8081,
   );
 });
+
+test(
+  "the chart refuses cluster and execution API ports NetworkPolicy cannot use",
+  tooling,
+  async () => {
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ "cluster.port": port }),
+        /cluster\.port must be an integer TCP port/,
+      );
+    }
+    const executionValues = {
+      "executionCluster.enabled": "true",
+      "executionCluster.apiKubeconfigSecretName": "execution-api",
+      "executionCluster.workerKubeconfigSecretName": "execution-worker",
+      "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+    };
+    for (const port of ["0", "010", "65536", "9.5"]) {
+      await assert.rejects(
+        render({ ...executionValues, "executionCluster.apiPort": port }),
+        /executionCluster\.apiPort must be an integer TCP port/,
+      );
+    }
+    await assert.rejects(
+      render({}, { strings: { "cluster.port": "9223372036854775808" } }),
+      /cluster\.port must be an integer TCP port/,
+    );
+    await assert.rejects(
+      render(
+        { ...executionValues },
+        { strings: { "executionCluster.apiPort": "99999999999999999999" } },
+      ),
+      /executionCluster\.apiPort must be an integer TCP port/,
+    );
+    const objects = await resources(
+      (await render({ ...executionValues, "executionCluster.apiPort": "6443" })).stdout,
+    );
+    const policy = objects.find(
+      (item) =>
+        item.kind === "NetworkPolicy" &&
+        item.metadata.name === "openclaw-enterprise-execution-api-egress",
+    );
+    assert.equal(policy.spec.egress[0].ports[0].port, 6443);
+  },
+);
 
 function routeNamespaceLabel(namespace, gatewayName) {
   return createHash("sha256").update(`${namespace}/${gatewayName}`).digest("hex").slice(0, 12);
@@ -1388,6 +1453,25 @@ test(
       ...runtimeLogRules,
     ]);
     assert.equal(hasLogRules(role(execution, "-execution-tenant-worker").rules), false);
+    // Bootstrap Jobs need worker-only creation and retirement, not mutation or TTL authority.
+    for (const workerRole of [
+      role(enabled, "-openclaw-tenant-worker"),
+      role(execution, "-execution-tenant-worker"),
+    ]) {
+      assert.deepEqual(
+        workerRole.rules.filter(({ resources = [] }) => resources.includes("jobs")),
+        [{ apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] }],
+      );
+    }
+    for (const apiRole of [
+      role(enabled, "-openclaw-tenant-api"),
+      role(execution, "-execution-tenant-api"),
+    ]) {
+      assert.equal(
+        apiRole.rules.some(({ resources = [] }) => resources.includes("jobs")),
+        false,
+      );
+    }
     const executionDisabled = await resources(
       (
         await execute(helm, [...executionArgs, "--set", "agentRuntimeLogs.enabled=false"], {
@@ -2105,13 +2189,36 @@ test(
         { "repositoryCredentials.image": `repository-credentials@sha256:${"B".repeat(64)}` },
         /immutable SHA-256/,
       ],
+      [
+        {
+          "repositoryCredentials.image": `registry.example.invalid/foo\u00a0bar@sha256:${"c".repeat(64)}`,
+        },
+        /immutable SHA-256/,
+      ],
       [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
+      [
+        { "repositoryCredentials.registryKey": "bad/key" },
+        /registryKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.serviceConfigKey": "." },
+        /serviceConfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.appKeyKey": "bad/key" },
+        /appKeyKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.publicCaKey": "..ca" },
+        /publicCaKey must be a Kubernetes Secret key/,
+      ],
       [{ "repositoryCredentials.publicCaSecretName": "repository-tls" }, /dedicated Secret/],
       [{ "repositoryCredentials.appKeySecretName": "occ-auth" }, /dedicated Secret/],
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "0.0.0.0/0" }, /explicit IPv4 CIDRs/],
       [{ "repositoryCredentials.upstreamCidrs[0]": "999.1.1.1/32" }, /invalid IPv4 address/],
+      [{ "repositoryCredentials.upstreamCidrs[0]": "192.168.001.10/32" }, /explicit IPv4 CIDRs/],
       ...[
         "external.example.com",
         "git.other-namespace.svc",
@@ -2660,6 +2767,10 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
       /api.channelDirectoryProxyUrl/,
     );
   }
+  await assert.rejects(
+    render({ "api.channelDirectoryProxyUrl": "http://0.0.0.0:3128" }),
+    /api\.channelDirectoryProxyUrl must not use host 0\.0\.0\.0, which names no proxy address/,
+  );
 });
 
 test(
@@ -2829,6 +2940,31 @@ test(
       render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
       /slackProxy\.port must be an integer TCP port/,
     );
+    await assert.rejects(
+      render({ ...slackProxyValues, "slackProxy.resources.requests.memory": "10MiB" }),
+      /slackProxy\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
+  },
+);
+
+test(
+  "gatewayRouting.remoteNodeCidrs rejects invalid and every-address ranges",
+  tooling,
+  async () => {
+    for (const override of [
+      { "gatewayRouting.remoteNodeCidrs[0]": "not-a-cidr" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "010.0.0.1/32" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "12345::/64" },
+      { "gatewayRouting.remoteNodeCidrs[0]": "::ffff:999.1.2.3/32" },
+    ]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, ...override }),
+        /gatewayRouting\.remoteNodeCidrs/,
+      );
+    }
+    for (const cidr of ["10.0.0.1/32", "0.0.0.0/0", "::/64", "::ffff:10.0.0.0/120"]) {
+      await render({ ...gatewayRoutingValues, "gatewayRouting.remoteNodeCidrs[0]": cidr });
+    }
   },
 );
 
@@ -3203,6 +3339,11 @@ test(
         /invalid IPv4 address/,
       ],
       [
+        "GitHub sign-in with a leading-zero egress octet",
+        { ...githubLoginValues, "auth.github.egressCidrs[0]": "140.82.112.08/20" },
+        /explicit IPv4 CIDRs/,
+      ],
+      [
         "GitHub sign-in with a /0 egress entry",
         { ...githubLoginValues, "auth.github.egressCidrs[0]": "0.0.0.0/0" },
         /prefixes 1 through 32/,
@@ -3455,6 +3596,71 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
   assert.equal(longest.length, 253);
 });
 
+// Findings 1065 and 1066: every Secret or ConfigMap name an operator sets, and the GatewayClass,
+// must be a Kubernetes resource name (the profile renderer's resourceNameRule), so a malformed
+// one fails at template time instead of in the cluster.
+const oidcLoginValues = {
+  "auth.oidc.enabled": "true",
+  "auth.recoveryUserId": "recovery-admin_1",
+  "auth.oidc.issuer": "https://tenant.idp.example.test/",
+  "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+  "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+  "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+};
+const executionClusterValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
+for (const [field, enable = {}] of [
+  ["installation.secretName"],
+  ["database.secretName"],
+  ["auth.secretName"],
+  ["database.caSecretName", databaseCaValues],
+  ["auth.github.secretName", githubLoginValues],
+  ["auth.google.secretName", { "auth.google.enabled": "true", "auth.recoveryUserId": "r1" }],
+  ["auth.oidc.secretName", oidcLoginValues],
+  ["backend.chatgpt.secretName", chatgptValues],
+  ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
+  ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
+  ["gatewayRouting.gatewayClassName", gatewayRoutingValues],
+  ["gatewayRouting.issuerRef.name", externalGatewayRoutingValues],
+  [
+    "gatewayRouting.caSecretName",
+    { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },
+  ],
+  ["gatewayRouting.sandbox.tlsSecretName", sandboxValues],
+  ["executionCluster.apiKubeconfigSecretName", executionClusterValues],
+  ["executionCluster.workerKubeconfigSecretName", executionClusterValues],
+  ...[
+    "registryConfigMapName",
+    "serviceConfigSecretName",
+    "appKeySecretName",
+    "tlsSecretName",
+    "publicCaSecretName",
+  ].map((key) => [`repositoryCredentials.${key}`, repositoryCredentialValues]),
+  ["logging.collector.configSecretName", productionCollectorValues],
+  ["logging.collector.envSecretName", productionCollectorValues],
+]) {
+  test(`the chart refuses a malformed ${field} with the resource name rule`, tooling, async () => {
+    const message = new RegExp(
+      `${field.replaceAll(".", "\\.")} must be a Kubernetes resource name of at most 253 characters`,
+    );
+    for (const name of ["Bad_Name", "-secret", "secret.", "a".repeat(254)]) {
+      await assert.rejects(
+        render(enable, { strings: { [field]: name } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${field}: ${name.length > 40 ? `${name.length} characters` : name}`,
+      );
+    }
+    for (const name of ["occ.custom-secret-v2", "s".repeat(253)]) {
+      const { stdout } = await render(enable, { strings: { [field]: name } });
+      assert.match(stdout, new RegExp(`\\b${name.replaceAll(".", "\\.")}\\b`), field);
+    }
+  });
+}
+
 test(
   "the chart refuses a gateway API key Secret that holds other credentials",
   tooling,
@@ -3536,6 +3742,80 @@ test(
 );
 
 test(
+  "the chart refuses log collector Secrets shared with any credential Secret",
+  tooling,
+  async () => {
+    // Finding 1054: the collector's Secrets join the dedicated-Secret table, so cert-manager
+    // cannot overwrite a collector config named like a Gateway certificate Secret.
+    const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+    const externalCa = {
+      ...externalGatewayRoutingValues,
+      "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+      "gatewayRouting.issuerRef.group": "cert-manager.io",
+      "gatewayRouting.caSecretName": "occ-private-ca",
+      "gatewayRouting.caSecretKey": "ca.crt",
+    };
+    for (const [feature, secret, role] of [
+      [{}, "occ-installation-startup", "installation.secretName"],
+      [{}, "occ-database", "database.secretName"],
+      [{}, "occ-auth", "auth.secretName"],
+      [gatewayRoutingValues, "oce-agent-gateways-tls", "gatewayRouting.tlsSecretName"],
+      [gatewayRoutingValues, gatewayRoot, "the generated Gateway root CA"],
+      [externalCa, "occ-private-ca", "gatewayRouting.caSecretName"],
+      [databaseCaValues, "occ-rds-ca", "database.caSecretName"],
+      [sandboxValues, "preview-wildcard", "gatewayRouting.sandbox.tlsSecretName"],
+      [chatgptValues, "occ-chatgpt-admin", "backend.chatgpt.secretName"],
+    ]) {
+      for (const key of ["configSecretName", "envSecretName"]) {
+        await assert.rejects(
+          render({
+            ...productionCollectorValues,
+            ...feature,
+            [`logging.collector.${key}`]: secret,
+          }),
+          ({ code, stderr }) =>
+            code !== 0 &&
+            stderr.includes(
+              `logging.collector.${key} must name a dedicated Secret; ${secret} is also ${role}`,
+            ),
+          `${key} = ${secret}`,
+        );
+      }
+    }
+    await assert.rejects(
+      render({
+        ...productionCollectorValues,
+        "logging.collector.envSecretName": "occ-otel-collector-config",
+      }),
+      /logging\.collector\.envSecretName must name a dedicated Secret; occ-otel-collector-config is also logging\.collector\.configSecretName/,
+    );
+    // A disabled feature's Secret name is free, as preflight treats the ChatGPT admin Secret.
+    await render({
+      ...productionCollectorValues,
+      "logging.collector.configSecretName": "occ-chatgpt-admin",
+    });
+  },
+);
+
+test("the chart requires installation and database Secret names", tooling, async () => {
+  // Finding 1055: an empty name rendered `secretName: ""` instead of failing at template time.
+  for (const [key, message] of [
+    ["installation.secretName", "installation startup"],
+    ["database.secretName", "database URL"],
+  ]) {
+    // `null` removes the key, which must fail the same way as an empty name.
+    for (const value of ["", "null"]) {
+      await assert.rejects(
+        render({ [key]: value }),
+        ({ code, stderr }) =>
+          code !== 0 && stderr.includes(`${key} must name the operator-created ${message} Secret`),
+        `${key}=${value}`,
+      );
+    }
+  }
+});
+
+test(
   "the chart refuses credential Secrets shared with the database CA or sandbox TLS Secret",
   tooling,
   async () => {
@@ -3592,6 +3872,85 @@ test(
   },
 );
 
+test("the chart lets the public CA settings share one trust bundle Secret", tooling, async () => {
+  // Finding 1059: each CA setting mounts only its selected key of public trust data, so one
+  // trust bundle Secret may serve all of them. Private and cert-manager Secrets stay dedicated.
+  const base = {
+    ...externalGatewayRoutingValues,
+    "gatewayRouting.issuerRef.kind": "ClusterIssuer",
+    "gatewayRouting.issuerRef.group": "cert-manager.io",
+    "gatewayRouting.caSecretName": "occ-private-ca",
+    "gatewayRouting.caSecretKey": "ca.crt",
+    ...databaseCaValues,
+    ...repositoryCredentialValues,
+  };
+  const settings = [
+    "database.caSecretName",
+    "gatewayRouting.caSecretName",
+    "repositoryCredentials.publicCaSecretName",
+  ];
+  for (const [index, first] of settings.entries()) {
+    for (const second of settings.slice(index + 1)) {
+      await render({ ...base, [first]: "occ-trust-bundle", [second]: "occ-trust-bundle" });
+    }
+  }
+  const shared = Object.fromEntries(settings.map((setting) => [setting, "occ-trust-bundle"]));
+  const objects = await resources((await render({ ...base, ...shared })).stdout);
+  const api = objects.find(
+    (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+  ).spec.template.spec;
+  assert.deepEqual(
+    api.volumes
+      .filter((volume) => volume.secret?.secretName === "occ-trust-bundle")
+      .map((volume) => [volume.name, volume.secret.items.map(({ key }) => key)])
+      .sort(),
+    [
+      ["database-ca", ["ca.pem"]],
+      ["gateway-ca", ["ca.crt"]],
+      ["repository-public-ca", ["ca.crt"]],
+    ],
+  );
+  // The bundle still may not hold a credential or a Secret cert-manager writes.
+  for (const [setting, secret, message] of [
+    ["database.caSecretName", "occ-database", "database.caSecretName / database.secretName"],
+    [
+      "repositoryCredentials.tlsSecretName",
+      "occ-trust-bundle",
+      "repositoryCredentials.tlsSecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.apiKeySecretName",
+      "occ-trust-bundle",
+      "gatewayRouting.apiKeySecretName / database.caSecretName",
+    ],
+    [
+      "gatewayRouting.tlsSecretName",
+      "occ-trust-bundle",
+      "database.caSecretName / gatewayRouting.tlsSecretName",
+    ],
+  ]) {
+    const [refused, holder] = message.split(" / ");
+    await assert.rejects(
+      render({ ...base, ...shared, [setting]: secret }),
+      ({ code, stderr }) =>
+        code !== 0 &&
+        stderr.includes(`${refused} must name a dedicated Secret; ${secret} is also ${holder}`),
+      `${setting} = ${secret}`,
+    );
+  }
+  // An external issuer creates no root CA Secret, so its generated name is free.
+  const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
+  await render({ ...base, ...githubLoginValues, "auth.github.secretName": gatewayRoot });
+  await assert.rejects(
+    render({
+      ...gatewayRoutingValues,
+      ...githubLoginValues,
+      "auth.github.secretName": gatewayRoot,
+    }),
+    /auth\.github\.secretName must name a dedicated Secret; \S+ is also the generated Gateway root CA/,
+  );
+});
+
 test(
   "the real Helm renderer rejects mutable images, broad dependencies, and shared credentials",
   tooling,
@@ -3611,12 +3970,17 @@ test(
       const gateway = objects.find((object) => object.kind === "Gateway");
       assert.equal(gateway.metadata.namespace, namespace);
     }
-    for (const [description, override] of [
+    for (const [description, override, message] of [
       ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
       ["missing Better Auth secret", { "auth.secretName": "" }],
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
       ["missing bootstrap password claim", { "bootstrap.password.claimName": "" }],
       ["nested bootstrap password file", { "bootstrap.password.fileName": "nested/password" }],
+      [
+        "oversized bootstrap password basename",
+        { "bootstrap.password.fileName": "a".repeat(256) },
+        /bootstrap\.password\.fileName must be a simple basename of at most 255 characters/,
+      ],
       ["missing bootstrap service key file", { "bootstrap.serviceKey.fileName": "" }],
       ["nested bootstrap service key file", { "bootstrap.serviceKey.fileName": "nested/key.json" }],
       [
@@ -3639,6 +4003,101 @@ test(
       [
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
+      ],
+      [
+        "overlong database CA key",
+        { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
+        /database\.caKey must be a Kubernetes Secret key/,
+      ],
+      ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
+      ["reserved application database Secret key", { "database.appUrlKey": "." }],
+      ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
+      ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
+      ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
+      ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+      [
+        "invalid installation startup Secret key",
+        { "installation.key": "bad/key" },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved installation startup Secret key",
+        { "installation.key": "." },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "bad/key",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved execution kubeconfig Secret key",
+        {
+          "executionCluster.enabled": "true",
+          "executionCluster.apiKubeconfigSecretName": "execution-api",
+          "executionCluster.workerKubeconfigSecretName": "execution-worker",
+          "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+          "executionCluster.kubeconfigKey": "..kube",
+        },
+        /executionCluster\.kubeconfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid Better Auth signing Secret key",
+        { "auth.secretKey": "bad/key" },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Better Auth signing Secret key",
+        { "auth.secretKey": "." },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Better Auth signing Secret key",
+        { "auth.secretKey": "a".repeat(254) },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid GitHub client ID Secret key",
+        { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
+        /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved GitHub client secret Secret key",
+        { ...githubLoginValues, "auth.github.clientSecretKey": "." },
+        /auth\.github\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Google client secret Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientSecretKey": "a".repeat(254),
+        },
+        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid OIDC client ID Secret key",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.clientIdKey": "bad/key",
+        },
+        /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Google client ID Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientIdKey": "..client-id",
+        },
+        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
       ],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
@@ -3671,6 +4130,31 @@ test(
       [
         "ChatGPT Backend without an admin Secret key",
         { ...chatgptValues, "backend.chatgpt.key": "" },
+      ],
+      [
+        "ChatGPT Backend with an invalid admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an invalid admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with a reserved admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "a".repeat(254) },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
@@ -3727,6 +4211,15 @@ test(
         { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
       ],
       [
+        "private Envoy Gateway with an invalid external CA Secret key",
+        {
+          ...externalGatewayRoutingValues,
+          "gatewayRouting.caSecretName": "occ-private-ca",
+          "gatewayRouting.caSecretKey": "bad/key",
+        },
+        /gatewayRouting\.caSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
         "private Envoy Gateway with leaf TLS colliding with installation Secret",
         { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-installation-startup" },
       ],
@@ -3773,10 +4266,34 @@ test(
       // Rejection comes from the actual Helm templates, not a reimplemented test validator.
       await assert.rejects(
         render(override),
-        ({ code, stderr }) => code !== 0 && stderr.length > 0,
+        ({ code, stderr }) => code !== 0 && stderr.length > 0 && (!message || message.test(stderr)),
         description,
       );
     }
+    for (const [provider, override] of [
+      ["github", { ...githubLoginValues, "auth.github.clientIdKey": ".hidden" }],
+      [
+        "oidc",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.issuer": "https://tenant.idp.example.test/",
+          "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+          "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+          "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+          "auth.oidc.clientSecretKey": "a".repeat(253),
+        },
+      ],
+    ]) {
+      assert.match(
+        (await render(override)).stdout,
+        new RegExp(`OCC_AUTH_${provider.toUpperCase()}`),
+      );
+    }
+    assert.match(
+      (await render({ ...chatgptValues, "backend.chatgpt.key": ".hidden" })).stdout,
+      /key: "\.hidden"/,
+    );
     // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other
     // spellings at pull time. The uppercase algorithm was already refused; uppercase hex
     // was not.

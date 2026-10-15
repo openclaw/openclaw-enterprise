@@ -12,11 +12,6 @@ export function betterAuthIssuer(installationId: string): string {
   return `${OCC_BETTER_AUTH_ISSUER_PREFIX}${installationId}:better-auth`;
 }
 
-// Four decimal octets, 0–255, with no leading zero. Node's URL parser reads a
-// leading zero as octal, and also accepts hex, shorthand and a single integer,
-// then URL.toString() publishes that other address.
-const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
-
 // URL parsing strips only C0 controls and spaces from the ends. A character
 // class cannot spell that range: the linter rejects a null in a regex.
 function stripUrlEdges(value: string): string {
@@ -31,23 +26,33 @@ function stripUrlEdges(value: string): string {
   return value.slice(start, end);
 }
 
-export function refuseRewrittenIpv4AuthHost(raw: string, parsed: URL): void {
+// Refuses a URL whose IPv4 host Node rewrote. Node's URL parser reads a leading zero as octal,
+// and also accepts hex, shorthand and a single integer, then URL.toString() publishes that
+// other address. isIP accepts only four decimal octets from 0 to 255 with no leading zeros,
+// so a written host equal to the parsed one is already in that form. `setting` names the
+// URL in the error (OCC_AUTH_BASE_URL, observability.url).
+export function refuseRewrittenIpv4Host(setting: string, raw: string, parsed: URL): void {
   if (isIP(parsed.hostname) !== 4) {
     return;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
-  const octets = parsed.hostname.split(".");
-  if (
-    written === parsed.hostname &&
-    strictDecimalIpv4.test(parsed.hostname) &&
-    octets.every((octet) => Number(octet) <= 255)
-  ) {
+  if (written === parsed.hostname) {
     return;
   }
   throw new Error(
-    "OCC_AUTH_BASE_URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    `${setting} IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`,
   );
+}
+
+// Node drops an empty user info (https://@host, https://:@host, https:@host) and publishes the
+// host alone, while the chart refuses any @ in auth.baseUrl. Like URL parsing, this drops tabs
+// and newlines and skips slashes or backslashes after the scheme, so any @ before the host
+// counts. `setting` names the URL in the error.
+export function refuseWrittenUserinfo(setting: string, raw: string): void {
+  if (/^[a-z][a-z\d+.-]*:[/\\]*[^/\\?#]*@/i.test(stripUrlEdges(raw).replace(/[\t\n\r]/g, ""))) {
+    throw new Error(`${setting} must not contain user info or an @ before the host.`);
+  }
 }
 
 // A bare ? or # (https://host? or https://host#) parses to an empty search or hash, but it
@@ -70,4 +75,36 @@ export function validHttpBaseURL(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+const DEVELOPMENT_LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+// The development browser origin rule in docs/reference/settings/development.md. server.mjs
+// refuses a development OCC_AUTH_BASE_URL that breaks it before startup does any other work, and
+// createFastifyApp applies it again to the development browser origin it admits.
+export const DEVELOPMENT_BROWSER_ORIGIN_RULE =
+  "loopback HTTP(S) (localhost, 127.0.0.1 or [::1]) or an HTTPS localhost subdomain, written as an origin with no path, query, fragment or user info";
+
+export function isDevelopmentBrowserOrigin(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  // URL.origin drops user info, a path (even "/"), a query, a fragment and a default port, so an
+  // exact match admits only a value already written as an origin.
+  if (parsed.origin !== value || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+    return false;
+  }
+  if (DEVELOPMENT_LOOPBACK_HOSTNAMES.has(parsed.hostname)) {
+    return true;
+  }
+  const labels = parsed.hostname.split(".");
+  return (
+    parsed.protocol === "https:" &&
+    labels.length > 1 &&
+    labels.at(-1) === "localhost" &&
+    labels.every((label) => label.length > 0)
+  );
 }

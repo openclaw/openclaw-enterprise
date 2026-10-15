@@ -5,6 +5,8 @@ export function createTestKubernetesComputeDriver(
   id,
   {
     repositoryCredentials = false,
+    // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
+    channelRuntime = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
   } = {},
@@ -39,11 +41,12 @@ export function createTestKubernetesComputeDriver(
           : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
-      ...(repositoryCredentials
+      ...(repositoryCredentials || channelRuntime
         ? {
             runtime: {
               transportSecretPrefix: "transport",
               gatewayStorageClassName: "local-path",
+              ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
             },
           }
         : {}),

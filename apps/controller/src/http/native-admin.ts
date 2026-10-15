@@ -175,6 +175,9 @@ export const nativeAdminStatusSchema = {
   },
 } as FastifySchema;
 
+/** Bounds the once-per-revision Compute-owner mismatch warnings kept in memory. */
+const MAX_LOGGED_COMPUTE_OWNER_MISMATCHES = 1024;
+
 /** Owns native-host admission, proxy sockets and their shutdown audits. */
 export function createNativeAdminAccess(options: NativeAdminOptions) {
   const {
@@ -219,6 +222,48 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
   const nativeAdminSockets = new Set<Socket>();
   const nativeAdminCloseAudits = new Set<Promise<void>>();
   let nativeAdminShuttingDown = false;
+  // Status polls, proxied requests and WebSocket lease renewals all re-check ownership, and a
+  // Compute-owner mismatch lasts until a new deployment: warn once per revision and owner pair.
+  const loggedComputeOwnerMismatches = new Set<string>();
+
+  function warnComputeOwnerMismatch(
+    revision: Readonly<AgentRevision>,
+    compute: Readonly<Pick<ComputeDriver, "id" | "implementation">>,
+  ): void {
+    const key = JSON.stringify([
+      revision.namespaceId,
+      revision.agentId,
+      revision.id,
+      compute.id,
+      compute.implementation,
+    ]);
+    if (loggedComputeOwnerMismatches.has(key)) {
+      return;
+    }
+    if (loggedComputeOwnerMismatches.size >= MAX_LOGGED_COMPUTE_OWNER_MISMATCHES) {
+      // A Set iterates in insertion order: forget the oldest pair, not every live one.
+      const [oldest] = loggedComputeOwnerMismatches;
+      if (oldest !== undefined) {
+        loggedComputeOwnerMismatches.delete(oldest);
+      }
+    }
+    loggedComputeOwnerMismatches.add(key);
+    app.log.warn(
+      {
+        event: "native_admin.compute_owner_mismatch",
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+        revisionCompute: {
+          id: revision.compute.id,
+          implementation: revision.compute.implementation,
+        },
+        selectedCompute: { id: compute.id, implementation: compute.implementation },
+      },
+      "Native admin UI is refused: the active revision was recorded under another Compute Driver. Select that Compute Driver again (same ID and implementation) to restore access; OCC does not move revisions between Compute Drivers.",
+    );
+  }
+
   function requireNativeAdminHumanSession(request: FastifyRequest, context: RequestContext) {
     const admitted = getAdmission(request);
     if (admitted?.method !== "session") {
@@ -583,6 +628,14 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     try {
       compute = controller.selectedDriver("compute");
     } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      compute.id !== revision.compute.id ||
+      compute.implementation !== revision.compute.implementation
+    ) {
+      // Callers keep their generic refusals; the log names both owners and the recovery.
+      warnComputeOwnerMismatch(revision, compute);
       throw dependencyUnavailable();
     }
     const access = compute.getAgentRuntimeAccess?.(revision, input.actorId, selection.runtimeRole);

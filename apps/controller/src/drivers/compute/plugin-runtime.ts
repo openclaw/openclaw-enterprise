@@ -4,6 +4,7 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
+import { codexApprovalPolicy } from "@openclaw-enterprise/occ";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -41,6 +42,11 @@ export interface CodexRepositoryBrokerNetworkPolicy {
   readonly domains: Readonly<Record<string, "allow" | "deny">>;
 }
 
+export interface CodexModelEndpoint {
+  readonly baseUrl: string;
+  readonly modelProvider: "openai-compatible";
+}
+
 export type PluginRuntimeSpec =
   | {
       readonly kind: "openclaw";
@@ -53,6 +59,7 @@ export type PluginRuntimeSpec =
       readonly approvalPolicy?: string | undefined;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+      readonly modelEndpoint?: CodexModelEndpoint;
     };
 
 function validateDriverMatchesRuntime(
@@ -87,6 +94,7 @@ function validateDriverMatchesRuntime(
 function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   if (!validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin approvers are invalid.");
@@ -99,6 +107,9 @@ function pluginFreeRuntimeForRevision(
       ...(revision.pluginApprovers === undefined
         ? {}
         : { pluginApprovers: revision.pluginApprovers }),
+      ...(openaiBaseUrl === undefined
+        ? {}
+        : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
     };
   }
@@ -118,10 +129,11 @@ function pluginFreeRuntimeForRevision(
 export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
+  openaiBaseUrl?: string,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy);
+    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy, openaiBaseUrl);
   }
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
@@ -139,6 +151,9 @@ export function pluginRuntimeSpecForRevision(
           selections: state.plugins,
           approvalPolicy: codexSessionApprovalPolicy(revision),
           pluginApprovers: revision.pluginApprovers,
+          ...(openaiBaseUrl === undefined
+            ? {}
+            : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
         }
       : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
@@ -146,27 +161,12 @@ export function pluginRuntimeSpecForRevision(
   return runtime;
 }
 
+// The admission rule (codexApprovalPolicy), checked again on the revision being prepared.
 function codexSessionApprovalPolicy(revision: Readonly<AgentRevision>): string | undefined {
-  let value: unknown = revision.configuration;
-  for (const key of ["plugins", "entries", "codex", "config", "appServer", "approvalPolicy"]) {
-    if (value === undefined) {
-      return undefined;
-    }
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("Codex session approval configuration is invalid.");
-    }
-    value = (value as Record<string, unknown>)[key];
-  }
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    typeof value !== "string" ||
-    !["never", "on-request", "on-failure", "untrusted"].includes(value)
-  ) {
-    throw new Error("Codex session approval policy is invalid.");
-  }
-  return value;
+  return codexApprovalPolicy(
+    revision.configuration,
+    (setting, requirement) => new Error(`Configuration setting ${setting} ${requirement}.`),
+  );
 }
 
 function codexToml(
@@ -179,9 +179,14 @@ function codexToml(
       ? CODEX_NO_PLUGIN_FEATURES_TOML
       : CODEX_SELECTED_PLUGIN_FEATURES_TOML
   }${pluginDefaults ? CODEX_PLUGIN_DEFAULTS_TOML : ""}`;
-  return approvalPolicy === undefined
-    ? plugins
-    : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`;
+  const configuration =
+    approvalPolicy === undefined
+      ? plugins
+      : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`;
+  const endpoint = runtime.modelEndpoint;
+  return endpoint === undefined
+    ? configuration
+    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n`;
 }
 
 /**
@@ -262,6 +267,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
   return {
     kind: runtime.kind,
     selections: runtime.selections,
+    ...(runtime.kind === "codex" && runtime.modelEndpoint !== undefined
+      ? { modelEndpoint: runtime.modelEndpoint }
+      : {}),
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
       ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }

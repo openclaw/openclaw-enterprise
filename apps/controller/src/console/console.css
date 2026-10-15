@@ -246,6 +246,10 @@ p {
   color: var(--danger);
   margin-top: 18px;
 }
+/* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
+.error .provisioning-stopped {
+  color: var(--text);
+}
 .shell {
   min-height: 100dvh;
   display: grid;
@@ -718,6 +722,13 @@ select:not([multiple])[size="1"] {
   border-color: var(--danger);
   background: var(--danger);
 }
+/* Superseded by a newer version or stopped by the owner: neutral, neither success nor failure
+   (findings 1353, 1375). */
+.deployment-step-superseded .deployment-step-marker,
+.deployment-step-stopped .deployment-step-marker {
+  border-color: var(--muted);
+  background: var(--muted);
+}
 .deployment-outcome {
   font-weight: 600;
 }
@@ -778,6 +789,10 @@ select:not([multiple])[size="1"] {
 .version-item small {
   color: var(--muted);
   font-size: 12px;
+}
+.version-older {
+  color: var(--muted);
+  text-align: center;
 }
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {

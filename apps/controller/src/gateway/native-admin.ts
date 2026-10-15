@@ -1,6 +1,8 @@
-import { createHash } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
+import { deriveNativeAdminHost } from "./native-admin-host.mjs";
+
+export { deriveNativeAdminHost } from "./native-admin-host.mjs";
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
@@ -26,18 +28,6 @@ export function normalizeNativeAdminDomain(domain: string | undefined): string |
     throw new Error("Native admin Agent domain must be a DNS hostname.");
   }
   return normalized;
-}
-
-export function deriveNativeAdminHost(
-  installationId: string,
-  agent: Pick<Agent, "namespaceId" | "id">,
-  domain: string,
-): string {
-  const digest = createHash("sha256")
-    .update(`${installationId}\0${agent.namespaceId}\0${agent.id}`)
-    .digest("hex")
-    .slice(0, 32);
-  return `agent-${digest}.${domain}`;
 }
 
 export function nativeAdminGatewayHttpBase(endpoint: string): string | undefined {

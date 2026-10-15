@@ -1415,7 +1415,62 @@ test("OpenShell client reads v0.1.3-pre.2 sandbox logs with nanosecond times", a
       ),
       /RFC 3339/,
     );
+    await assert.rejects(
+      client.getSandboxLogs(
+        {
+          workspace: "tenant-workspace",
+          sandbox: "sb-0123",
+          lines: 5,
+          sinceTime: "2026-02-30T11:59:00Z",
+        },
+        AbortSignal.timeout(2_000),
+      ),
+      /RFC 3339/,
+    );
     assert.equal(requests.length, 1);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+test("OpenShell client refuses a sandbox log response over its 4 MiB receive limit", async () => {
+  // OpenShell does not bound a log line, and OCC buffers the whole read before it
+  // withholds oversized lines. The receive limit is that read's memory bound.
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server({ "grpc.max_send_message_length": 16 * 1024 * 1024 });
+  server.addService(OpenShell.service, {
+    GetSandboxLogs(call, callback) {
+      // Each line carries a 1 MiB message: three fit in 4 MiB, four do not.
+      callback(null, {
+        logs: Array.from({ length: call.request.lines }, (_, index) => ({
+          sandbox_id: "sandbox-object-id",
+          level: "INFO",
+          message: `${index}`.padEnd(1024 * 1024, "x"),
+        })),
+        buffer_total: call.request.lines,
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  const read = (lines) =>
+    client.getSandboxLogs(
+      { workspace: "tenant-workspace", sandbox: "sb-0123", lines },
+      AbortSignal.timeout(10_000),
+    );
+  try {
+    const fitting = await read(3);
+    assert.equal(fitting.lines.length, 3);
+    assert.equal(fitting.lines[2].message.length, 1024 * 1024);
+    await assert.rejects(read(4), (error) => {
+      assert.equal(error.code, grpc.status.RESOURCE_EXHAUSTED);
+      return true;
+    });
   } finally {
     client.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
@@ -1613,7 +1668,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     {
       backend: {
         drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client },
+        client: { clientForNamespace: () => client, placement: () => undefined },
       },
     },
   );

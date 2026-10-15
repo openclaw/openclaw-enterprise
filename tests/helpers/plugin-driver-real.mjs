@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
 import pg from "pg";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
@@ -358,6 +360,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
         const secretRef = await compute.storeServiceAccountCredential({
           namespaceId: account.namespaceId,
           serviceAccountId: account.id,
+          credentialId: `imported-credential-${account.id}`,
           accessToken: imported.accessToken,
           workspaceId: imported.workspaceId,
         });
@@ -889,6 +892,8 @@ export function createNativePluginAssertions({
   execCodex,
   waitFor,
   proofMode = "openclaw",
+  readRuntimeLogs,
+  recordRuntimeLogs,
 }) {
   assert.ok(
     proofMode === "openclaw" || proofMode === "codex",
@@ -958,6 +963,12 @@ export function createNativePluginAssertions({
     secrets = [],
     humanReview,
   }) {
+    // Snapshot the turn's admitted identity; later fixture changes must not retarget logs.
+    const logTarget = {
+      namespaceId: agent.namespaceId,
+      agentId: agent.id,
+      revisionId: agent.revision?.id,
+    };
     const gateway = await gatewayUrl(agent);
     const password = gatewayPassword ?? gateway.gatewayPassword;
     assert.ok(password, "normal Agent turn requires a gateway password.");
@@ -1095,6 +1106,47 @@ export function createNativePluginAssertions({
         assert.ok(new RegExp(pattern).test(content), `Agent response did not include ${pattern}.`);
       }
       return content;
+    } catch (error) {
+      if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
+        // OCC authorizes and redacts each exact revision read. Apply the existing QA
+        // redactor again for fixture secrets before writing the public evidence artifact.
+        try {
+          for (const value of [password, ...secrets]) {
+            if (typeof value === "string" && value) {
+              registerQaSecret(value);
+            }
+          }
+          const sources = [];
+          for (const source of ["gateway", "agent"]) {
+            // Stay within OCC's two log reads/second per principal and Agent.
+            await delay(500);
+            try {
+              const page = await readRuntimeLogs({ ...logTarget, source });
+              const lines = page.records.map((record) => {
+                if (record.type === "line") {
+                  const { type, time, level, message, fields } = record;
+                  return JSON.stringify({ type, time, level, message, fields });
+                }
+                const { type, time, reason, count } = record;
+                return JSON.stringify({ type, time, reason, count });
+              });
+              sources.push({
+                source,
+                lines: redactedQaTail(lines.join("\n"), process.env, {
+                  lines: 80,
+                  lineChars: 900,
+                }),
+              });
+            } catch {
+              sources.push({ source, unavailable: true });
+            }
+          }
+          await recordRuntimeLogs({ ...logTarget, sources });
+        } catch {
+          // Diagnostic reads/writes must never replace the original turn failure.
+        }
+      }
+      throw error;
     } finally {
       abort.abort();
       reviewer?.stop();

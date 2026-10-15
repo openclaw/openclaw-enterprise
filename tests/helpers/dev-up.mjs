@@ -50,6 +50,8 @@ function developmentCli() {
   return cliBuild;
 }
 
+// Node stand-ins use process.getBuiltinModule, not require: they load as ESM when TMPDIR is
+// inside this repo, whose package.json sets type=module.
 async function writeExecutable(path, body) {
   await writeFile(path, body, { mode: 0o755 });
   await chmod(path, 0o755);
@@ -105,8 +107,8 @@ async function createFixture(t, options = {}) {
   await writeExecutable(
     join(bin, engine),
     `#!${nodeExecutable}
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
+const fs = process.getBuiltinModule("node:fs");
+const { spawnSync } = process.getBuiltinModule("node:child_process");
 const args = process.argv.slice(2);
 const engine = ${JSON.stringify(engine)};
 const podmanJsonConfig = ${JSON.stringify(options.podmanJsonConfig ?? false)};
@@ -339,10 +341,10 @@ exit(99, "unhandled " + engine + " compose command: " + command);
   await writeExecutable(
     join(fixtureRepository, "bin", "occ"),
     `#!${nodeExecutable}
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 if (args[0] === "dev") {
-  const { spawnSync } = require("node:child_process");
+  const { spawnSync } = process.getBuiltinModule("node:child_process");
   const result = spawnSync(${JSON.stringify(cli)}, args, { env: process.env, stdio: "inherit" });
   process.exit(result.status ?? 1);
 }
@@ -386,8 +388,13 @@ process.exit(86);
   const dockerLog = engine === "docker" ? engineLog : join(directory, "docker.log");
   const podmanLog = engine === "podman" ? engineLog : join(directory, "podman.log");
   const occLog = join(directory, "occ.log");
+  // Settings exported in the caller's shell would override the defaults the
+  // tests assert (for example OCC_DEVELOPMENT_K3S_IMAGE's +v1.35 channel).
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("OCC_DEVELOPMENT_")),
+  );
   const env = {
-    ...process.env,
+    ...inherited,
     PATH: engine === "podman" ? bin : `${bin}${delimiter}${process.env.PATH ?? ""}`,
     OPENAI_API_KEY: "",
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker",
@@ -466,8 +473,8 @@ async function prepareLifecycleCommands(fixture, scenario = "success", options =
     await writeExecutable(
       join(bin, command),
       `#!${nodeExecutable}
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
+const fs = process.getBuiltinModule("node:fs");
+const { spawnSync } = process.getBuiltinModule("node:child_process");
 const args = process.argv.slice(2);
 const command = ${JSON.stringify(command)};
 const engine = ${JSON.stringify(engine)};

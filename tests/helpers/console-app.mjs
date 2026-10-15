@@ -38,14 +38,21 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  channelRuntime = false,
   discoverHarnessModels = async () => [],
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
+    channelRuntime,
   });
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
+    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
+    // does not provision unless repository credentials ask for them.
+    ...(channelRuntime && !repositoryCredentials
+      ? { requiresAgentRuntimeCredentials: undefined }
+      : {}),
     // In-memory State has no durable provisioning queue; this fixture supports draft creation.
     agentProvisioning: undefined,
     // Catalog data is the external Compute boundary; Console/OCC/IAM routes remain real.
@@ -299,6 +306,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       options.computeDriver ??
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
+        channelRuntime: options.channelRuntime === true,
         discoverHarnessModels: options.discoverHarnessModels,
       }),
     configurationDriver:

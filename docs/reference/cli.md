@@ -6,7 +6,11 @@ installed version, run `occ --help` or add `--help` to a command.
 
 ## Global options
 
-Command-line flags override the corresponding environment variables.
+Command-line flags override the corresponding environment variables. An
+explicitly empty value, such as `--file=` or `--revision=`, is refused before
+the command does anything; omit the flag to use its default. Two exceptions
+clear their environment variable: `--ca-bundle=`, and `--namespace=`, which
+`service-key create` accepts for an Installation-scoped principal.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -82,7 +86,7 @@ input is not supported. The server validates document fields against the
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                                                                                                                                                                                                                                                            |
-| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs) with configuration generation, deployment status, and `*` on the active one.                                                                                                                                                                                                                                                               |
+| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                     |
 | `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                                                                                                                                                                                                                                                            |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
@@ -101,11 +105,11 @@ revision, not runtime health. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
 For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
-`agent get`, `agent list`, and `agent revisions` retain metadata and show
+`agent get` and `agent list` retain metadata and show
 `CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
-`configurationReadError`. Revision history leaves deployment status null for
-unreadable rows; if the Agent itself is unreadable, it skips all status reads
-and explains why on stderr. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
+`configurationReadError`. Revision history lists summaries, so it leaves
+deployment status null for an unreadable revision and names it on stderr; if
+the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
 `service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
 explicit zero is refused before output-file creation or API issuance.
@@ -151,7 +155,7 @@ checking for a newer one, and an Agent with no active revision needs
 | `--pod NAME`           | Pod to read when the source has more than one.                                                                                                                                                             |
 | `--previous`           | Read the container instance before the last restart.                                                                                                                                                       |
 | `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                                                                                                 |
-| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, up to `24h`.                                                                                                                                            |
+| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, at least `1s`, up to `24h`. Omit the flag for no time filter.                                                                                           |
 | `--follow`             | Poll every 2 seconds with the view's cursor until Ctrl-C.                                                                                                                                                  |
 | `--level LEVEL`        | Only `error`, `warn`, `info` or `debug` lines and above, filtered by OCC after `--tail` (the last N lines are read, then filtered, so fewer may print); lines of unknown level stay. Default: every level. |
 | `-o text` or `-o json` | Text lines (default) or NDJSON, one API record per line.                                                                                                                                                   |

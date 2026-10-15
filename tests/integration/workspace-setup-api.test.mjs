@@ -4,12 +4,13 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
-  const fixture = await createConsoleAppFixture(t, { state, backends: [] });
+  const fixture = await createConsoleAppFixture(t, { state, backends: [], ...options });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Workspace setup", { ready: true });
   const configuration = await fixture.createConfiguration(namespace.id);
@@ -167,5 +168,181 @@ test("workspace setup creation requires exact Namespace permission, Configuratio
       files["USER.md"],
     ),
     false,
+  );
+});
+
+test("Agent save and deployment refuse initial workspace files the Configuration's main Agent cannot read", async (t) => {
+  // Finding 1117: preparation of the first deployment refused these after the Agent saved.
+  const f = await setup(t);
+  const model = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const withAgents = (agents) => ({ agents: { ...model.agents, ...agents } });
+  const valid = await f.createConfiguration(f.namespace.id, model);
+  const files = { "USER.md": "workspace-setup-roster" };
+  const workspace =
+    "Configuration setting agents.defaults.workspace must be /home/node/.openclaw/workspace, or unset, for initial workspace files.";
+  const roster =
+    "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
+  for (const [agents, message] of [
+    [{ defaults: { ...model.agents.defaults, workspace: "/srv/elsewhere" } }, workspace],
+    // Only a dedicated Agent mounts the second managed workspace; this Agent is embedded.
+    [{ defaults: { ...model.agents.defaults, workspace: "/home/node/workspace" } }, workspace],
+    [{ ownership: "explicit", entries: { main: {}, helper: {} } }, roster],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: { kind: "agent", values: withAgents(agents) },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const configuration = stored.data;
+    const refused = await f.create("Unreadable setup", {
+      configurationId: configuration.id,
+      initialWorkspaceFiles: files,
+    });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.message, message);
+    // Without initial workspace files the same Configuration saves.
+    const plain = await f.create(`Plain ${configuration.id}`, {
+      configurationId: configuration.id,
+    });
+    assert.equal(plain.status, 201, JSON.stringify(plain.body));
+  }
+  assert.equal(
+    (await f.request("GET", f.path)).data.filter(({ name }) => name === "Unreadable setup").length,
+    0,
+  );
+
+  // A pending setup whose Configuration changes after the Agent saved still reads; its next
+  // update and its deployment are refused with the same message.
+  const key = await f.createSecret(
+    f.namespace.id,
+    "Pending setup key",
+    "workspace-setup-model-key",
+  );
+  const created = await f.create("Pending setup", {
+    configurationId: valid.id,
+    initialWorkspaceFiles: files,
+    harnessAuth: { method: "api_key", source: key.ref },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  f.grantAgentSecretOperate(created.data, key.ref);
+  await f.updateConfiguration(
+    f.namespace.id,
+    valid.id,
+    withAgents({ defaults: { ...model.agents.defaults, workspace: "/srv/elsewhere" } }),
+  );
+  const agentPath = `${f.path}/${created.data.id}`;
+  assert.equal((await f.request("GET", agentPath)).status, 200);
+  const updated = await f.request("PATCH", agentPath, { body: { configurationId: valid.id } });
+  assert.equal(updated.status, 400, JSON.stringify(updated.body));
+  assert.equal(updated.body.error.message, workspace);
+  const deployed = await f.request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.equal(deployed.body.error.message, workspace);
+  assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
+  assert.equal((await f.staged(created.data.id)).completed, false);
+});
+
+test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
+  // Finding 1144: OpenClaw normalizes Agent ids case-insensitively, as the roster rules do.
+  const f = await setup(t);
+  const model = {
+    model: "openai/gpt-4.1",
+    models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+  };
+  for (const [key, status] of [
+    ["Main", 201],
+    ["MAIN", 201],
+    ["helper", 400],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: { kind: "agent", values: { agents: { defaults: model, entries: { [key]: {} } } } },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const result = await f.create(`Roster ${key}`, {
+      configurationId: stored.data.id,
+      initialWorkspaceFiles: { "USER.md": "roster-case" },
+    });
+    assert.equal(result.status, status, `${key}: ${JSON.stringify(result.body)}`);
+  }
+  // A workspace refusal names the entry as written.
+  const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: {
+      kind: "agent",
+      values: { agents: { defaults: model, entries: { Main: { workspace: "/srv/elsewhere" } } } },
+    },
+  });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  const refused = await f.create("Roster workspace", {
+    configurationId: stored.data.id,
+    initialWorkspaceFiles: { "USER.md": "roster-case" },
+  });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.equal(
+    refused.body.error.message,
+    "Configuration setting agents.entries.Main.workspace must be /home/node/.openclaw/workspace, or unset, for initial workspace files.",
+  );
+});
+
+test("Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox", async (t) => {
+  // Finding 1144: a Sandbox Harness has no workspace initializer, and OpenShell forces the
+  // OpenClaw workspace to its mount, so the setting refusal named a path nobody wrote.
+  const sandboxDriver = {
+    id: "workspace-setup-sandbox",
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("Agent save must not provision a Harness");
+    },
+    async cleanup() {},
+    // OpenShell's own rewrite: the workspace moves to the Sandbox data mount.
+    configureAgent(configuration, harness) {
+      return OpenShellSandboxDriver.prototype.configureAgent.call(
+        { options: { kubernetes: { sandboxDataMount: { mountPath: "/sandbox/data" } } } },
+        configuration,
+        harness,
+      );
+    },
+  };
+  const f = await setup(t, { sandboxDriver });
+  const message =
+    "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.";
+  for (const [runtime, model] of [
+    ["openclaw", "openai/gpt-4.1"],
+    ["codex", "codex/gpt-5.1"],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: {
+        kind: "agent",
+        values: {
+          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        },
+      },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const refused = await f.create(`Sandboxed ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: { "USER.md": "sandboxed-setup" },
+    });
+    assert.equal(refused.status, 409, `${runtime}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.message, message);
+    // Without initial workspace files the same Agent saves.
+    const plain = await f.create(`Plain ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(plain.status, 201, `${runtime}: ${JSON.stringify(plain.body)}`);
+    assert.equal(await f.staged(plain.data.id), undefined);
+  }
+  assert.equal(
+    (await f.request("GET", f.path)).data.filter(({ name }) => name.startsWith("Sandboxed")).length,
+    0,
   );
 });

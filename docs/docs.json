@@ -459,6 +459,22 @@
                     "label": "Earlier Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
+                    "label": "Breaking Changes Before 2026-10-13"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
+                    "label": "Breaking Changes Before 2026-10-12"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-11",
+                    "label": "Breaking Changes Before 2026-10-11"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
+                    "label": "Breaking Changes Before 2026-10-10"
+                  },
+                  {
                     "page": "guides/deploy/split-layout-upgrade",
                     "label": "Split-Layout Upgrade"
                   },
@@ -497,6 +513,10 @@
                   {
                     "page": "guides/deploy/oidc-sign-in",
                     "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
                   },
                   {
                     "page": "guides/deploy/oidc-keycloak",
@@ -619,7 +639,8 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
-              "guides/deploy/production-tui"
+              "guides/deploy/production-tui",
+              "reference/settings/oidc"
             ]
           },
           {
@@ -753,6 +774,10 @@
                       {
                         "page": "reference/drivers/compute",
                         "label": "Compute"
+                      },
+                      {
+                        "page": "reference/drivers/compute-admission",
+                        "label": "Compute Admission"
                       },
                       {
                         "page": "reference/drivers/configuration",
@@ -923,6 +948,7 @@
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
+              "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/audit-ledger",
@@ -980,6 +1006,7 @@
               "testing/plugins",
               "testing/plugins-proof-notes",
               "testing/openshell",
+              "testing/openshell-coverage",
               "testing/openshell-first-agent",
               "testing/openshell-pre5-local-experiment",
               "flows/agent-repository-credentials",

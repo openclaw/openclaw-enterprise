@@ -7,7 +7,11 @@ import {
   DockerComputeDriver,
 } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
-import { ComputeGatewaySettingError } from "../../packages/occ/src/index.ts";
+import {
+  ComputeGatewaySettingError,
+  ConfigurationHarnessError,
+} from "../../packages/occ/src/index.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
   // Redirect only the socket address in an isolated child. The real Driver,
@@ -73,6 +77,164 @@ try {
   await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
     timeout: 10_000,
   });
+});
+
+test("Docker Compute rejects an unbounded API response before its request deadline", async () => {
+  const source = String.raw`
+import assert from "node:assert/strict";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+let interval;
+let versionRequests = 0;
+let streamedBytes = 0;
+const limit = 4 * 1024 * 1024;
+const server = http.createServer((request, response) => {
+  if (request.url === "/_ping") {
+    response.end("OK");
+    return;
+  }
+  if (request.url.startsWith("/images/")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+    return;
+  }
+  assert.equal(request.url, "/version");
+  versionRequests += 1;
+  if (versionRequests === 3) {
+    // Exactly at the cap, declared and sent: read whole.
+    const empty = JSON.stringify({ Version: "27.0.0", Pad: "" });
+    const body = empty.replace('"Pad":""', '"Pad":"' + "x".repeat(limit - empty.length) + '"');
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+    });
+    response.end(body);
+    return;
+  }
+  if (versionRequests === 1) {
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(4 * 1024 * 1024 + 1),
+    });
+    response.flushHeaders();
+    return;
+  }
+  response.writeHead(200, { "content-type": "application/json" });
+  const chunk = Buffer.alloc(64 * 1024, 0x20);
+  interval = setInterval(() => {
+    response.write(chunk);
+    streamedBytes += chunk.length;
+  }, 5);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const nativeRequest = http.request;
+http.request = (options, callback) =>
+  nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+syncBuiltinESMExports();
+try {
+  const { DockerComputeDriver } = await import(process.argv[1]);
+  const driver = new DockerComputeDriver({ images: { gateway: "fixture:local", agent: "fixture:local" } });
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.equal(streamedBytes, 0);
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.ok(streamedBytes > 4 * 1024 * 1024, String(streamedBytes));
+  assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
+  clearInterval(interval);
+  await driver.preflight();
+} finally {
+  clearInterval(interval);
+  http.request = nativeRequest;
+  syncBuiltinESMExports();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const driver = new URL(
+    "../../apps/controller/src/drivers/compute/docker/index.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
+    timeout: 10_000,
+  });
+});
+
+test("Docker Agent readiness handles interrupted status responses immediately", async () => {
+  // Execute the exact generated container healthcheck against a real loopback peer that
+  // sends headers and a partial body before resetting the response stream.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { readdirSync } from "node:fs";
+import http from "node:http";
+import { join } from "node:path";
+import { promisify } from "node:util";
+const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
+const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
+  entry.startsWith("ws@"),
+);
+assert.ok(wsStore);
+const wsModules = join(process.cwd(), "node_modules/.pnpm", wsStore, "node_modules");
+const server = http.createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+  response.write('{"phase":"ready",');
+  setTimeout(() => response.destroy(), 10);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_STATUS_PORT: String(server.address().port),
+        OPENCLAW_AGENT_REVISION_ID: "rev_interrupted_status",
+        APP_SERVER_TOKEN: "synthetic-token",
+        APP_SERVER_PORT: "1",
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin runtime status unavailable: ECONNRESET\n");
+      return true;
+    },
+  );
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_READY_MARKER: join(process.cwd(), ".missing-readiness-marker"),
+        OPENCLAW_RUNTIME_STATUS_PORT: String(server.address().port),
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin ready marker is missing\n");
+      return true;
+    },
+  );
+} finally {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const runtimeEntrypoints = new URL(
+    "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", source, runtimeEntrypoints.href],
+    { cwd: process.cwd(), timeout: 10_000 },
+  );
 });
 
 test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
@@ -709,7 +871,7 @@ for (const mode of ["embedded", "dedicated"]) {
             { ...revision, configuration: { ...revision.configuration, agents } },
             { workspaceSetup: setup },
           ),
-          /native main/,
+          /Configuration setting agents\.entries must hold only main, or be omitted, for initial workspace files/,
         );
         assert.equal(volumes.size, 0, "invalid roster must not create storage");
         assert.equal(creations.length, 0, "invalid roster must not create containers");
@@ -806,7 +968,7 @@ for (const mode of ["embedded", "dedicated"]) {
           },
           { workspaceSetup: setup },
         ),
-        /managed storage/,
+        /Configuration setting agents\.entries\.main\.workspace must be \/home\/node\/\.openclaw\/workspace or \/home\/node\/workspace, or unset/,
       );
     } finally {
       if (previousKey === undefined) {
@@ -817,3 +979,65 @@ for (const mode of ["embedded", "dedicated"]) {
     }
   });
 }
+
+// Docker Compute applies the workspace setup rule Kubernetes Compute shares, so Agent save,
+// provisioning and preparation name the same setting with the same text on both Drivers.
+test("Docker workspace setup refusals match Kubernetes Compute's and name the setting at save", async () => {
+  const docker = new DockerComputeDriver({
+    images: { gateway: "gateway:local", agent: "agent:local" },
+  });
+  const kubernetes = createTestKubernetesComputeDriver("docker-workspace-parity");
+  const dedicated = { id: "codex", version: "1", mode: "dedicated" };
+  const refusal = (driver, harness, configuration) => {
+    try {
+      driver.validateWorkspaceSetup(harness, configuration);
+    } catch (error) {
+      assert.ok(error instanceof ConfigurationHarnessError, String(error));
+      return error.message;
+    }
+    return undefined;
+  };
+  for (const agents of [
+    { list: [] },
+    { entries: { other: {} } },
+    { entries: { main: {}, other: {} } },
+    { entries: { main: { workspace: "/outside" } } },
+    { defaults: { workspace: "/home/node/.openclaw/workspace/nested" } },
+  ]) {
+    const message = refusal(docker, dedicated, { agents });
+    assert.match(message ?? "", /^Configuration setting agents\./, JSON.stringify(agents));
+    assert.equal(message, refusal(kubernetes, dedicated, { agents }), JSON.stringify(agents));
+  }
+  for (const agents of [
+    undefined,
+    { entries: { main: {} } },
+    { entries: { main: { workspace: "/home/node/workspace" } } },
+    { defaults: { workspace: "/home/node/.openclaw/workspace" } },
+  ]) {
+    const configuration = agents === undefined ? {} : { agents };
+    assert.equal(refusal(docker, dedicated, configuration), undefined, JSON.stringify(agents));
+    assert.equal(refusal(kubernetes, dedicated, configuration), undefined);
+  }
+  // Docker mounts one volume at both paths on every topology, and writes the files after
+  // native bootstrap, so it alone accepts the Harness path on embedded OpenClaw and refuses
+  // skipped bootstrap; both are named settings too.
+  const embedded = { id: "openclaw", version: "1", mode: "embedded" };
+  const harnessPath = { agents: { defaults: { workspace: "/home/node/workspace" } } };
+  assert.equal(refusal(docker, embedded, harnessPath), undefined);
+  assert.equal(
+    refusal(kubernetes, embedded, harnessPath),
+    "Configuration setting agents.defaults.workspace must be /home/node/.openclaw/workspace, or unset, for initial workspace files.",
+  );
+  for (const [agents, setting] of [
+    [{ defaults: { skipBootstrap: true } }, "agents.defaults.skipBootstrap"],
+    [
+      { entries: { main: { skipOptionalBootstrapFiles: true } } },
+      "agents.entries.main.skipOptionalBootstrapFiles",
+    ],
+  ]) {
+    assert.equal(
+      refusal(docker, embedded, { agents }),
+      `Configuration setting ${setting} must not be true for initial workspace files: Docker Compute writes them after native bootstrap.`,
+    );
+  }
+});

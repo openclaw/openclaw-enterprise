@@ -11,13 +11,24 @@ on:
 permissions:
   contents: read
 
+# A new PR push cancels the PR's older run. Each main push gets a group of its
+# own, so its run starts at once and is never cancelled or replaced: main runs
+# used to queue one at a time, and a push waited up to 14 min for the previous
+# run's First Agent Smoke before its lanes started. Overlapping main runs share
+# no state: image builds only restore the BuildKit cache (ci-image-cache.yml is
+# its one writer), pnpm store cache entries are immutable, and artifacts belong
+# to their run. Merge queue and manual runs keep their ref's group.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'push' && format('ci-push-{0}', github.sha) || format('ci-{0}', github.event.pull_request.number || github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CI: "1"
   NODE_VERSION: "24.16.0"
+  # CI Impact and CI Required only run the impact and aggregation scripts, so
+  # they take the runner's cached Node 24 instead of downloading NODE_VERSION
+  # (about 5 s each, on the critical path at both ends of the run).
+  GATE_NODE_VERSION: "24"
 
 jobs:
   impact:
@@ -33,9 +44,9 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - id: select
         env:
           IMPACT_ACTION: select
@@ -103,17 +114,31 @@ jobs:
       # runs lint, format, OpenAPI and docs beside the lanes).
       # Image Runtime Startup is split from Images and Packaging, which it
       # would otherwise lengthen by about five minutes. The runtime image
-      # startup tests are split in two, balanced by measured case durations;
+      # startup tests are split in three, balanced by measured case durations;
       # only part 1 runs the Codex sandbox, so only it needs the k3d tools for
-      # the seccomp profile.
+      # the seccomp profile. Part 3 runs Docker-only files from part 1: two
+      # that ran beside its startup file, and the native listener cases split
+      # from that file, whose cases run one after another and set part 1's
+      # length.
       # Runners: the k3d fixture and observability lanes use blacksmith
       # 32vcpu (8 CPUs). Its kernel enforces the NetworkPolicy proofs: with
       # K3s policy enforcement disabled, production-network-access fails
       # every deny case there. It ran these lanes about a minute faster than
-      # ubuntu-22.04 (4 CPUs). Both Image Runtime Startup lanes use 32vcpu
-      # too: their preparation is faster there, and Startup 2 runs its three
+      # ubuntu-22.04 (4 CPUs). The Image Runtime Startup lanes use 32vcpu
+      # too: their preparation is faster there, and Startup 2 runs its four
       # files at once. Image Model Probes stays on 16vcpu: its one case waits
-      # out the 110 s model probe cap at 500m on any runner. The other lanes
+      # out the 110 s model probe cap at 500m on any runner. PostgreSQL
+      # Application uses 32vcpu too: it runs up to eight of its twelve files at
+      # once, one per CPU (16vcpu caps it at four). Checks and Conformance 1
+      # uses it for the same reason: on 16vcpu it ran four files at a time,
+      # its tests took 112-192 s, and it finished last. So do Console
+      # Browser 2, Checks and Conformance 2 and Console Browser: on 16vcpu
+      # their files ran four at a time and were CPU-bound (their summed time
+      # rose and fell with the lane's; from 10-13 13:00Z files nobody changed
+      # took 20-30 % longer there while 32vcpu lanes stayed flat).
+      # Repository Credentials Platform stays on 16vcpu: on 32vcpu its image
+      # import and its long case took as long. Keycloak OIDC stays on 8vcpu,
+      # the runner it soaked on before joining CI Required. The other lanes
       # use blacksmith 16vcpu, which exposes 4 CPUs to the job (8vcpu exposes
       # 2) and rarely waits for a runner (on 10-08/09, 15 % of 8vcpu jobs
       # waited over a minute, none on 16vcpu). A label no runner serves
@@ -125,25 +150,28 @@ jobs:
           SELECT_LANES: ${{ steps.select.outputs.lanes }}
           LANE_TABLE: |
             [
-              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-1", "title": "Checks and Conformance 1", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "checks-baseline-2", "title": "Checks and Conformance 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "checks-browser", "title": "Console Browser", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "checks-browser-2", "title": "Console Browser 2", "profile": "baseline", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "postgres", "title": "PostgreSQL Migrations", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "postgres-application", "title": "PostgreSQL Application", "profile": "postgres", "timeout": 25, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "postgres-auth", "title": "PostgreSQL Authentication", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "postgres-platform", "title": "PostgreSQL Platform", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-packaging", "title": "Images and Packaging", "profile": "full", "timeout": 45, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-model-probes", "title": "Image Model Probes", "profile": "images", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup", "title": "Image Runtime Startup", "profile": "full", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "images-runtime-startup-2", "title": "Image Runtime Startup 2", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-oauth", "title": "k3d OAuth Bootstrap", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"}
+              {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"},
+              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"}
             ]
         run: |
           table=$(jq -ce 'if type == "array" and length > 0 then . else error("invalid lane table") end' <<<"$LANE_TABLE")
@@ -238,7 +266,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       - name: Set up workflow tools
@@ -264,7 +292,7 @@ jobs:
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       - uses: ./.github/actions/setup-pnpm-store-cache
@@ -297,7 +325,7 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       - uses: ./.github/actions/setup-pnpm-store-cache
@@ -336,11 +364,12 @@ jobs:
           profile: ${{ matrix.profile }}
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+          job-timeout-minutes: ${{ matrix.timeout }}
           # Static Checks runs them in this workflow.
           static-checks: "false"
       - name: Upload repository credential image identities
         if: always() && matrix.lane == 'repository-credentials-container'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-repository-credentials-images
           path: ${{ runner.temp }}/state/repository-credentials-images.json
@@ -370,28 +399,10 @@ jobs:
           profile: postgres
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: ci-results
+          job-timeout-minutes: 60
       - name: Show Docker Hub pull endpoints
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
-
-  # Real Keycloak OIDC proof in full-mode PR CI and on pushes to main.
-  # Deliberately not a CI Required dependency until it has soaked on main.
-  keycloak-oidc:
-    name: Keycloak OIDC
-    needs: impact
-    if: ${{ needs.impact.outputs.mode == 'full' }}
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/run-ci-lane
-        with:
-          lane: keycloak-oidc
-          profile: postgres
-          node-version: ${{ env.NODE_VERSION }}
-          artifact-prefix: keycloak-results
 
   # Real Local Setup install on every PR and merge, with a stand-in model
   # provider and no secrets. Deliberately not a CI Required dependency yet.
@@ -407,7 +418,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       # The runner starts with about 90 GB free; the smoke uses far less, so it
@@ -477,7 +488,7 @@ jobs:
     # CI Required, never a skipped (passing) one.
     if: always()
     steps:
-      # A push that supersedes this run waits until this run has finished
+      # A PR push that supersedes this run waits until this run has finished
       # cancelling. cancelled() is false in a job that starts after the
       # cancellation, so test the dependencies: fail at once instead of checking
       # out and verifying jobs that never finished. Later steps then skip.
@@ -492,9 +503,9 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ env.GATE_NODE_VERSION }}
       - name: Verify selected mode
         env:
           IMPACT_ACTION: verify
@@ -569,7 +580,7 @@ jobs:
           else
             node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
           fi
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
         with:
           pattern: ci-results-*

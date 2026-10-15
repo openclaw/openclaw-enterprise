@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -17,7 +17,7 @@ import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
@@ -39,7 +39,7 @@ function createRuntimeCredentialComputeDriver(options = {}) {
   const statusOf = (binding) => statusByAgent.get(keyOf(binding)) ?? emptyStatus;
 
   return createReadyComputeDriver(options.id ?? "runtime-credential-compute", {
-    implementation: "in-memory-runtime-credential-test",
+    implementation: options.implementation ?? "in-memory-runtime-credential-test",
     requiresAgentRuntimeCredentials: true,
     calls,
     setStatus(namespaceId, agentId, status) {
@@ -97,14 +97,49 @@ function createRuntimeCredentialComputeDriver(options = {}) {
   });
 }
 
-async function createFixture(t, options = {}) {
+// Namespace setup is outside these admission cases; no Kubernetes cluster is contacted.
+function createKubernetesComputeDriver() {
+  const computeDriver = createTestKubernetesComputeDriver("runtime-credential-compute");
+  computeDriver.ensureNamespace = async (namespace) => ({
+    namespaceId: namespace.id,
+    namespaceReady: true,
+  });
+  return computeDriver;
+}
+
+// Building a listening controller app and signing accounts in to it cost more than most cases,
+// so the cases share them: one app per Compute Driver implementation, with one administrator
+// session and a pool of limited principals. Cases run one at a time. Each gets a new Namespace
+// and its own Compute Driver, audit sink, OCC log lines and IAM grants: the app's Driver, sink
+// and log destination forward to the running case's, and each case starts from the
+// administrator's grants alone, so a pooled principal holds only what the case grants it. A
+// forwarding Driver keeps one identity, because OCC rechecks it on every selection, so a case
+// Driver's own id never reaches OCC.
+const running = {};
+const apps = new Map();
+const cleanup = [];
+after(() => Promise.all(cleanup.map((step) => step())));
+
+function forwarder(identity, target) {
+  return new Proxy(identity, {
+    get(pinned, key) {
+      if (Object.hasOwn(pinned, key)) {
+        return pinned[key];
+      }
+      const value = target()[key];
+      return typeof value === "function" ? value.bind(target()) : value;
+    },
+    has: (pinned, key) => Object.hasOwn(pinned, key) || key in target(),
+  });
+}
+
+async function createSharedApp(implementation) {
   const installationId = `ins_${randomUUID()}`;
   // The port is part of the auth base URL and origin, so hold it until the app binds it; a
   // released probe port can be taken by another socket while the account and app are built.
   const reservation = await reservePort();
-  t.after(reservation.release);
-  const { port } = reservation;
-  const origin = `http://127.0.0.1:${port}`;
+  cleanup.push(reservation.release);
+  const origin = `http://127.0.0.1:${reservation.port}`;
   const auth = createControllerAuth({
     installationId,
     mode: "development",
@@ -112,31 +147,42 @@ async function createFixture(t, options = {}) {
     secret: `runtime-credential-test-secret-${randomUUID()}`,
     memoryDatabase: { user: [], account: [], session: [], verification: [], apikey: [] },
   });
-  const credentials = {
-    email: `runtime-admin-${randomUUID()}@example.com`,
-    password: `runtime-password-${randomUUID()}`,
-    name: "Runtime Credential Administrator",
+  const createAccount = async (label, name, grant) => {
+    const credentials = {
+      email: `${label}-${randomUUID()}@example.com`,
+      password: `runtime-password-${randomUUID()}`,
+      name,
+    };
+    const seed = auth.principalSeed(await auth.createAccount(credentials), { grant });
+    return { seed, signIn: () => signInWithEmailPassword({ origin, ...credentials }) };
   };
-  const account = await auth.createAccount(credentials);
-  const seed = auth.principalSeed(account, { grant: "administrator" });
-  const policy = {
-    identities: [seed.principal],
-    groups: [],
-    memberships: [],
-    roles: seed.roles.map((role) => ({
-      ...role,
-      permissions: role.permissions.map((permission) => ({ ...permission })),
-    })),
-    bindings: seed.bindings.map((binding) => ({ ...binding })),
-    restrictions: [],
+  const administrator = await createAccount(
+    "runtime-admin",
+    "Runtime Credential Administrator",
+    "administrator",
+  );
+  const { seed } = administrator;
+  const policy = { groups: [], memberships: [], restrictions: [] };
+  const principals = [];
+  let principalsUsed;
+  const resetPolicy = () => {
+    principalsUsed = 0;
+    Object.assign(policy, {
+      identities: [seed.principal],
+      roles: seed.roles.map((role) => ({
+        ...role,
+        permissions: role.permissions.map((permission) => ({ ...permission })),
+      })),
+      bindings: seed.bindings.map((binding) => ({ ...binding })),
+    });
   };
-  const auditSink = options.auditSink ?? new InMemoryAuditSink();
+  resetPolicy();
+  const auditSink = forwarder({}, () => running.auditSink);
+  const platformState = new InMemoryPlatformState({ auditSink });
   const iamDriver = new NativeIAMDriver(
     { loadNativeIAMState: async () => policy },
     { id: "runtime-credential-iam" },
   );
-  const computeDriver = options.computeDriver ?? createRuntimeCredentialComputeDriver();
-  const platformState = new InMemoryPlatformState({ auditSink });
   let controller;
   const app = createFastifyApp({
     auth,
@@ -144,11 +190,28 @@ async function createFixture(t, options = {}) {
     auditSink,
     development: { enabled: true, installationId },
     publicOrigin: origin,
-    computeDriver,
+    computeDriver: forwarder(
+      { id: "runtime-credential-compute", capability: "compute", implementation },
+      () => running.computeDriver,
+    ),
     configurationDriver: createTestConfigurationDriver({ id: "runtime-credential-configuration" }),
     secretDriver: createTestSecretDriver({ id: "runtime-credential-secret" }),
     resolveHarness: resolveApprovedHarness,
-    ...(options.logger === undefined ? {} : { logger: options.logger }),
+    logger: createOccLogger({
+      component: "occ-api",
+      level: "info",
+      destination: {
+        write(chunk) {
+          running.logLines.push(
+            ...String(chunk)
+              .split("\n")
+              .filter(Boolean)
+              .map((line) => JSON.parse(line)),
+          );
+          return true;
+        },
+      },
+    }),
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
@@ -157,17 +220,29 @@ async function createFixture(t, options = {}) {
       return controller;
     },
   });
-  await app.listen({ host: "127.0.0.1", port, reusePort: reservation.reusePort });
-  t.after(() => app.close());
-  await reservation.release();
-  const adminSession = await signInWithEmailPassword({ origin, ...credentials });
-  let bootstrapped = false;
+  try {
+    await app.listen({
+      host: "127.0.0.1",
+      port: reservation.port,
+      reusePort: reservation.reusePort,
+    });
+    cleanup.push(() => app.close());
+  } finally {
+    await reservation.release();
+  }
+  const adminSession = await administrator.signIn();
 
-  async function rawRequest(method, path, { headers = {}, body } = {}) {
+  async function request(
+    method,
+    path,
+    { session = adminSession, body, origin: requestOrigin = origin } = {},
+  ) {
+    const mutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
     const response = await fetch(`${origin}${path}`, {
       method,
       headers: {
-        ...headers,
+        ...authenticatedHeaders(session),
+        ...(mutation ? { origin: requestOrigin } : {}),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -178,38 +253,15 @@ async function createFixture(t, options = {}) {
       assert.match(payload.meta?.requestId ?? "", identifier("req"));
       assert.equal(response.headers.get("cache-control"), "no-store");
     }
-    return {
-      status: response.status,
-      headers: response.headers,
-      body: payload,
-      data: payload?.data,
-    };
+    return { status: response.status, body: payload, data: payload?.data };
   }
 
-  async function request(
-    method,
-    path,
-    { session = adminSession, headers = {}, body, origin: requestOrigin = origin } = {},
-  ) {
-    const mutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-    return rawRequest(method, path, {
-      headers: {
-        ...(session === null ? {} : authenticatedHeaders(session)),
-        ...(mutation && requestOrigin !== null ? { origin: requestOrigin } : {}),
-        ...headers,
-      },
-      body,
-    });
-  }
+  const installed = await request("POST", "/installation/bootstrap", {
+    body: { name: "Runtime credential test" },
+  });
+  assert.equal(installed.status, 201);
 
   async function bootstrapAgent(values = createHarnessConfiguration("openclaw", "gpt-4.1")) {
-    if (!bootstrapped) {
-      const created = await request("POST", "/installation/bootstrap", {
-        body: { name: "Runtime credential test" },
-      });
-      assert.equal(created.status, 201);
-      bootstrapped = true;
-    }
     const namespace = await request("POST", "/namespaces", {
       body: { name: `runtime-namespace-${randomUUID().slice(0, 8)}` },
     });
@@ -254,42 +306,77 @@ async function createFixture(t, options = {}) {
       configuration: configuration.data,
       agent: agent.data,
       secret: secret.data,
+      agentPath: `/namespaces/${namespace.data.id}/agents/${agent.data.id}`,
+      credentialsPath: `/namespaces/${namespace.data.id}/agents/${agent.data.id}/runtime-credentials`,
     };
+  }
+
+  // A controller restarted on the same state with another Compute Driver, as after the
+  // Installation's Driver configuration changed. Unlike the app's, this Driver is selected
+  // directly, so its own id and implementation reach OCC.
+  function restartController(computeDriver) {
+    const restarted = new OpenClawController(controller.installation, {
+      state: platformState,
+      recordOperations: false,
+    });
+    registerAndSelectDrivers(restarted, [iamDriver, computeDriver]);
+    return restarted;
   }
 
   async function createPrincipal(label, configurePolicy) {
-    const principalCredentials = {
-      email: `${label}-${randomUUID()}@example.com`,
-      password: `runtime-password-${randomUUID()}`,
-      name: label,
-    };
-    const created = await auth.createAccount(principalCredentials);
-    const createdSeed = auth.principalSeed(created, { grant: "none" });
-    policy.identities.push(createdSeed.principal);
-    configurePolicy(createdSeed.principal);
-    return {
-      principal: createdSeed.principal,
-      session: await signInWithEmailPassword({ origin, ...principalCredentials }),
-    };
+    if (principalsUsed === principals.length) {
+      const { seed: created, signIn } = await createAccount(label, label, "none");
+      principals.push({ principal: created.principal, session: await signIn() });
+    }
+    const pooled = principals[principalsUsed++];
+    policy.identities.push(pooled.principal);
+    configurePolicy(pooled.principal);
+    return pooled;
   }
 
   return {
-    auditSink,
+    administratorId: seed.principal.id,
     bootstrapAgent,
-    computeDriver,
-    controller: () => controller,
     createPrincipal,
     origin,
     policy,
     request,
-    seed,
+    resetPolicy,
+    restartController,
   };
 }
 
-test("runtime credential API provisions transport metadata only through the selected Compute Driver", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`;
+async function createFixture({
+  computeDriver = createRuntimeCredentialComputeDriver(),
+  auditSink = new InMemoryAuditSink(),
+  logLines = [],
+} = {}) {
+  const { implementation } = computeDriver;
+  if (!apps.has(implementation)) {
+    // Building the app signs the administrator in, which audits and logs: into a sink and lines
+    // no case reads, so a case sees only its own.
+    Object.assign(running, { computeDriver, auditSink: new InMemoryAuditSink(), logLines: [] });
+    apps.set(implementation, createSharedApp(implementation));
+  }
+  const shared = await apps.get(implementation);
+  Object.assign(running, { computeDriver, auditSink, logLines });
+  shared.resetPolicy();
+  return { ...shared, auditSink, computeDriver };
+}
+
+// A 403 that reached no Compute Driver call and was audited as this authorization denial.
+function assertDenied(fixture, response, authorization) {
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error.code, "FORBIDDEN");
+  assert.equal(fixture.computeDriver.calls.length, 0);
+  const denial = fixture.auditSink.events.at(-1);
+  assert.equal(denial.kind, "authorization_denial");
+  assert.deepEqual(denial.authorization, authorization);
+}
+
+test("runtime credential API provisions transport metadata only through the selected Compute Driver", async () => {
+  const fixture = await createFixture();
+  const { agent, credentialsPath: path } = await fixture.bootstrapAgent();
 
   const initial = await fixture.request("GET", path);
   assert.equal(initial.status, 200);
@@ -323,10 +410,9 @@ test("runtime credential API provisions transport metadata only through the sele
   );
 });
 
-test("first draft deployment provisions generated credentials and later revisions reuse them", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+test("first draft deployment provisions generated credentials and later revisions reuse them", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
 
   const first = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(first.status, 202, JSON.stringify(first.body));
@@ -358,16 +444,8 @@ test("first draft deployment provisions generated credentials and later revision
   assert.equal(revisions.data.length, 2);
 });
 
-test("Kubernetes without managed runtime credentials admits a draft deployment", async (t) => {
-  const computeDriver = createTestKubernetesComputeDriver("runtime-free-kubernetes");
-  // Namespace setup is outside this admission case; no Kubernetes cluster is contacted.
-  computeDriver.ensureNamespace = async (namespace) => ({
-    namespaceId: namespace.id,
-    namespaceReady: true,
-  });
-  const fixture = await createFixture(t, {
-    computeDriver,
-  });
+test("Kubernetes without managed runtime credentials admits a draft deployment", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent } = await fixture.bootstrapAgent();
 
   const admitted = await fixture.request(
@@ -378,13 +456,9 @@ test("Kubernetes without managed runtime credentials admits a draft deployment",
   assert.equal(admitted.data.revision, 1);
 });
 
-test("Kubernetes deploy names an unsupported Harness authentication model provider", async (t) => {
-  const computeDriver = createTestKubernetesComputeDriver("unsupported-provider-kubernetes");
-  computeDriver.ensureNamespace = async (namespace) => ({
-    namespaceId: namespace.id,
-    namespaceReady: true,
-  });
-  const fixture = await createFixture(t, { computeDriver });
+test("Kubernetes deploy names an unsupported Harness authentication model provider", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
+  const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const { openai } = values.models.providers;
   values.agents.defaults = {
@@ -394,26 +468,112 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   values.models.providers = {
     zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
   };
-  const { namespace, agent } = await fixture.bootstrapAgent(values);
-
-  // The Kubernetes Driver projects api_key credentials only for providers it knows; the
-  // caller must learn that, not that the resource already exists.
-  const refused = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
+  // Driver projects only for providers it knows, makes the pair undeliverable.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
   );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const message =
+    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.";
+
+  // The caller must learn that, not that the resource already exists: deployment refuses the
+  // pair, and so does the Agent's next save (finding 1117).
+  const refused = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    refused.body.error.message,
-    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
-  );
+  assert.equal(refused.body.error.message, message);
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: stored.data.configurationId },
+  });
+  assert.equal(updated.status, 409, JSON.stringify(updated.body));
+  assert.equal(updated.body.error.message, message);
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Unsupported provider Agent",
+      configurationId: stored.data.configurationId,
+      executionMode: "embedded",
+      harnessAuth: stored.data.harnessAuth,
+    },
+  });
+  assert.equal(created.status, 409, JSON.stringify(created.body));
+  assert.equal(created.body.error.message, message);
+  // The stored Agent still reads.
+  assert.equal((await fixture.request("GET", agentPath)).status, 200);
 });
 
-test("first deployment requires Agent read and operate only when generating credentials", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
+  const { namespace, agent, configuration, secret } = await fixture.bootstrapAgent();
+  const message =
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.";
+  const agentsPath = `/namespaces/${namespace.id}/agents`;
+  const agentPath = `${agentsPath}/${agent.id}`;
+  const refused = (response) => {
+    assert.equal(response.status, 400, JSON.stringify(response.body));
+    assert.equal(response.body.error.code, "INVALID_REQUEST");
+    assert.equal(response.body.error.message, message);
+  };
+  // The method alone decides it, so Agent create and update refuse it as deployment does.
+  for (const harnessAuth of [{ method: "runtime" }, { method: "codex_pat", source: secret.ref }]) {
+    refused(
+      await fixture.request("PATCH", agentPath, {
+        body: { configurationId: configuration.id, harnessAuth },
+      }),
+    );
+    refused(
+      await fixture.request("POST", agentsPath, {
+        body: {
+          name: `Embedded ${harnessAuth.method} Agent`,
+          configurationId: configuration.id,
+          executionMode: "embedded",
+          harnessAuth,
+        },
+      }),
+    );
+  }
+  // A Configuration that selects no model is a draft, so save admits the pair. Once it selects
+  // one, deployment and the Agent's next update refuse the stored row with the same message.
+  const draft = await fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
+    body: { kind: "agent", values: {} },
+  });
+  assert.equal(draft.status, 201, JSON.stringify(draft.body));
+  const stored = await fixture.request("POST", agentsPath, {
+    body: {
+      name: "Draft runtime Agent",
+      configurationId: draft.data.id,
+      executionMode: "embedded",
+      harnessAuth: { method: "runtime" },
+    },
+  });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${draft.data.id}`,
+    { body: { values: createHarnessConfiguration("openclaw", "gpt-4.1") } },
+  );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const storedPath = `${agentsPath}/${stored.data.id}`;
+  refused(await fixture.request("POST", `${storedPath}/deploy`));
+  refused(await fixture.request("PATCH", storedPath, { body: { configurationId: draft.data.id } }));
+  assert.equal((await fixture.request("GET", storedPath)).status, 200);
+  // The fix the message names is accepted.
+  const fixed = await fixture.request("PATCH", storedPath, {
+    body: {
+      configurationId: draft.data.id,
+      harnessAuth: { method: "api_key", source: secret.ref },
+    },
+  });
+  assert.equal(fixed.status, 200, JSON.stringify(fixed.body));
+});
+
+test("first deployment requires Agent read and operate only when generating credentials", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
   const deploySessions = [];
   for (const { label, agentActions, deniedAction } of [
     { label: "without-agent-read", agentActions: [], deniedAction: "read" },
@@ -454,15 +614,14 @@ test("first deployment requires Agent read and operate only when generating cred
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 });
 
-test("failed first-deployment credential write does not admit a revision and can be retried", async (t) => {
+test("failed first-deployment credential write does not admit a revision and can be retried", async () => {
   const leakedValue = `driver-leak-${randomUUID()}`;
-  const fixture = await createFixture(t, {
+  const fixture = await createFixture({
     computeDriver: createRuntimeCredentialComputeDriver({
       provisionError: new Error(`must not leak ${leakedValue}`),
     }),
   });
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { agentPath } = await fixture.bootstrapAgent();
 
   // A remote Secret can be stored before its response is lost; retries must inspect it.
   const failed = await fixture.request("POST", `${agentPath}/deploy`);
@@ -481,10 +640,9 @@ test("failed first-deployment credential write does not admit a revision and can
   );
 });
 
-test("runtime credential POST accepts empty input when only transport provisioning is needed", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`;
+test("runtime credential POST accepts empty input when only transport provisioning is needed", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, credentialsPath: path } = await fixture.bootstrapAgent();
   fixture.computeDriver.setStatus(namespace.id, agent.id, {
     transportConfigured: false,
   });
@@ -497,10 +655,9 @@ test("runtime credential POST accepts empty input when only transport provisioni
   assert.deepEqual(fixture.computeDriver.calls.at(-1).input, {});
 });
 
-test("runtime credential POST rejects channel token bodies before driver provisioning", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`;
+test("runtime credential POST rejects channel token bodies before driver provisioning", async () => {
+  const fixture = await createFixture();
+  const { credentialsPath: path } = await fixture.bootstrapAgent();
   const appToken = `xapp-${randomUUID()}`;
 
   const rejected = await fixture.request("POST", path, {
@@ -511,10 +668,9 @@ test("runtime credential POST rejects channel token bodies before driver provisi
   assert.equal(fixture.computeDriver.calls.length, 0);
 });
 
-test("runtime credential POST keeps session CSRF and exact Agent read plus operate authorization", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`;
+test("runtime credential POST keeps session CSRF and exact Agent read plus operate authorization", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, credentialsPath: path } = await fixture.bootstrapAgent();
 
   const wrongLoopbackOrigin = fixture.origin.replace(/:\d+$/, ":1");
   const csrfRejected = await fixture.request("POST", path, {
@@ -539,16 +695,7 @@ test("runtime credential POST keeps session CSRF and exact Agent read plus opera
         permissions: { agent: [held] },
       });
     });
-    const denied = await fixture.request("POST", path, {
-      session,
-      body: {},
-    });
-    assert.equal(denied.status, 403);
-    assert.equal(denied.body.error.code, "FORBIDDEN");
-    assert.equal(fixture.computeDriver.calls.length, 0);
-    const denial = fixture.auditSink.events.at(-1);
-    assert.equal(denial.kind, "authorization_denial");
-    assert.deepEqual(denial.authorization, {
+    assertDenied(fixture, await fixture.request("POST", path, { session, body: {} }), {
       principalId: principal.id,
       action: missing,
       resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
@@ -556,10 +703,9 @@ test("runtime credential POST keeps session CSRF and exact Agent read plus opera
   }
 });
 
-test("runtime credential API rejects unsupported initial provisioning states and request shapes", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/runtime-credentials`;
+test("runtime credential API rejects unsupported initial provisioning states and request shapes", async () => {
+  const fixture = await createFixture();
+  const { agentPath, credentialsPath: path } = await fixture.bootstrapAgent();
   const invalidBodies = [
     { modelApiKey: "legacy-model-secret" },
     { modelApiKey: "valid", extra: "unsupported" },
@@ -577,10 +723,7 @@ test("runtime credential API rejects unsupported initial provisioning states and
   const generated = await fixture.request("POST", path, { body: {} });
   assert.equal(generated.status, 200);
 
-  const revision = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
+  const revision = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(revision.status, 202);
   const deployedRejected = await fixture.request("POST", path, {
     body: {},
@@ -589,17 +732,14 @@ test("runtime credential API rejects unsupported initial provisioning states and
   assert.equal(deployedRejected.body.error.code, "RESOURCE_CONFLICT");
 });
 
-test("deployment diagnostics require exact revision read and Agent operate authorization", async (t) => {
-  const fixture = await createFixture(t);
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const revision = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
+test("deployment diagnostics require exact revision read and Agent operate authorization", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
+  const revision = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(revision.status, 202);
   // Deployment provisions connection credentials; the assertions below cover diagnostics only.
   fixture.computeDriver.calls.length = 0;
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.data.id}/diagnostics`;
+  const path = `${agentPath}/deployments/${revision.data.id}/diagnostics`;
 
   const { principal, session } = await fixture.createPrincipal(
     "deployment-diagnostics-reader",
@@ -613,13 +753,7 @@ test("deployment diagnostics require exact revision read and Agent operate autho
       });
     },
   );
-  const denied = await fixture.request("POST", path, { session });
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error.code, "FORBIDDEN");
-  assert.equal(fixture.computeDriver.calls.length, 0);
-  const denial = fixture.auditSink.events.at(-1);
-  assert.equal(denial.kind, "authorization_denial");
-  assert.deepEqual(denial.authorization, {
+  assertDenied(fixture, await fixture.request("POST", path, { session }), {
     principalId: principal.id,
     action: "operate",
     resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
@@ -632,13 +766,7 @@ test("deployment diagnostics require exact revision read and Agent operate autho
     permissions: { agent: ["operate"] },
     resource: { kind: "agent", id: agent.id },
   });
-  const missingAgentRead = await fixture.request("POST", path, { session });
-  assert.equal(missingAgentRead.status, 403);
-  assert.equal(missingAgentRead.body.error.code, "FORBIDDEN");
-  assert.equal(fixture.computeDriver.calls.length, 0);
-  const readDenial = fixture.auditSink.events.at(-1);
-  assert.equal(readDenial.kind, "authorization_denial");
-  assert.deepEqual(readDenial.authorization, {
+  assertDenied(fixture, await fixture.request("POST", path, { session }), {
     principalId: principal.id,
     action: "read",
     resource: { kind: "agent", id: agent.id, namespaceId: namespace.id },
@@ -685,28 +813,21 @@ test("deployment diagnostics require exact revision read and Agent operate autho
   assert.notEqual(revisionBindingIndex, -1);
   fixture.policy.bindings.splice(revisionBindingIndex, 1);
   fixture.computeDriver.calls.length = 0;
-  const missingRevisionRead = await fixture.request("POST", path, { session });
-  assert.equal(missingRevisionRead.status, 403);
-  assert.equal(missingRevisionRead.body.error.code, "FORBIDDEN");
-  assert.equal(fixture.computeDriver.calls.length, 0);
-  const revisionDenial = fixture.auditSink.events.at(-1);
-  assert.equal(revisionDenial.kind, "authorization_denial");
-  assert.deepEqual(revisionDenial.authorization, {
+  assertDenied(fixture, await fixture.request("POST", path, { session }), {
     principalId: principal.id,
     action: "read",
     resource: { kind: "agent_revision", id: revision.data.id, namespaceId: namespace.id },
   });
 });
 
-test("runtime credential driver and audit failures stay sanitized and recoverable through GET", async (t) => {
+test("runtime credential driver and audit failures stay sanitized and recoverable through GET", async () => {
   const leakedDriverValue = `driver-leak-${randomUUID()}`;
-  const driverFailureFixture = await createFixture(t, {
+  const driverFailureFixture = await createFixture({
     computeDriver: createRuntimeCredentialComputeDriver({
       provisionError: new Error(`must not leak ${leakedDriverValue}`),
     }),
   });
-  const failedAgent = await driverFailureFixture.bootstrapAgent();
-  const failedPath = `/namespaces/${failedAgent.namespace.id}/agents/${failedAgent.agent.id}/runtime-credentials`;
+  const { credentialsPath: failedPath } = await driverFailureFixture.bootstrapAgent();
   const failed = await driverFailureFixture.request("POST", failedPath, {
     body: {},
   });
@@ -732,9 +853,8 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
     }
     await originalAppend(event);
   };
-  const auditFailureFixture = await createFixture(t, { auditSink });
-  const auditAgent = await auditFailureFixture.bootstrapAgent();
-  const auditPath = `/namespaces/${auditAgent.namespace.id}/agents/${auditAgent.agent.id}/runtime-credentials`;
+  const auditFailureFixture = await createFixture({ auditSink });
+  const { credentialsPath: auditPath } = await auditFailureFixture.bootstrapAgent();
   const auditFailed = await auditFailureFixture.request("POST", auditPath, {
     body: {},
   });
@@ -752,26 +872,11 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   });
 });
 
-test("a cluster denial of runtime credentials names the missing RoleBinding and logs the cause", async (t) => {
+test("a cluster denial of runtime credentials names the missing RoleBinding and logs the cause", async () => {
   const lines = [];
-  const logger = createOccLogger({
-    component: "occ-api",
-    level: "info",
-    destination: {
-      write(chunk) {
-        lines.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
-  });
   // The data-plane tenant-api RoleBinding is missing (D396).
-  const fixture = await createFixture(t, {
-    logger,
+  const fixture = await createFixture({
+    logLines: lines,
     computeDriver: createRuntimeCredentialComputeDriver({
       statusError: new RuntimeCredentialsForbiddenByClusterError({
         verb: "get",
@@ -782,8 +887,7 @@ test("a cluster denial of runtime credentials names the missing RoleBinding and 
       }),
     }),
   });
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { agentPath } = await fixture.bootstrapAgent();
   const expected = {
     code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
     message:
@@ -830,15 +934,19 @@ test("a cluster denial of runtime credentials names the missing RoleBinding and 
   }
 });
 
-for (const DriverError of [ResourceConflictError, ScopeViolationError]) {
-  test(`deployment diagnostics sanitize ${DriverError.name} from Drivers`, async (t) => {
-    const marker = `private-driver-detail-${randomUUID()}`;
-    const error = new DriverError(marker);
-    const fixture = await createFixture(t, {
-      computeDriver: createRuntimeCredentialComputeDriver({ diagnosticsError: error }),
+const marker = `private-driver-detail-${randomUUID()}`;
+for (const [name, diagnostics] of [
+  ...[ResourceConflictError, ScopeViolationError].map((DriverError) => [
+    `sanitize ${DriverError.name} from Drivers`,
+    { diagnosticsError: new DriverError(marker) },
+  ]),
+  ["reject a null Driver response as unavailable", { diagnosticsResult: null }],
+]) {
+  test(`deployment diagnostics ${name}`, async () => {
+    const fixture = await createFixture({
+      computeDriver: createRuntimeCredentialComputeDriver(diagnostics),
     });
-    const { namespace, agent } = await fixture.bootstrapAgent();
-    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const { agentPath } = await fixture.bootstrapAgent();
     const revision = await fixture.request("POST", `${agentPath}/deploy`);
     assert.equal(revision.status, 202);
     const result = await fixture.request(
@@ -852,29 +960,36 @@ for (const DriverError of [ResourceConflictError, ScopeViolationError]) {
   });
 }
 
-test("deployment diagnostics reject a null Driver response as unavailable", async (t) => {
-  const fixture = await createFixture(t, {
-    computeDriver: createRuntimeCredentialComputeDriver({ diagnosticsResult: null }),
-  });
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+test("deployment diagnostics refuse a Compute Driver with the deployment's id but another implementation", async () => {
+  const fixture = await createFixture();
+  const { namespace, agent, agentPath } = await fixture.bootstrapAgent();
   const revision = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(revision.status, 202);
-  const result = await fixture.request(
-    "POST",
-    `${agentPath}/deployments/${revision.data.id}/diagnostics`,
-  );
-  assert.equal(result.status, 503);
-  assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const diagnose = (computeDriver) =>
+    fixture
+      .restartController(computeDriver)
+      .diagnoseAgentDeployment(fixture.administratorId, namespace.id, agent.id, revision.data.id);
+  // The same id and implementation still diagnose after the restart.
+  const unchanged = createRuntimeCredentialComputeDriver();
+  assert.equal((await diagnose(unchanged)).revisionId, revision.data.id);
+  assert.equal(unchanged.calls.length, 1);
+  const replacement = createRuntimeCredentialComputeDriver({
+    implementation: "replacement-runtime-credential-test",
+  });
+  assert.equal(replacement.id, unchanged.id);
+  await assert.rejects(diagnose(replacement), {
+    name: "DependencyUnavailableError",
+    message: "The deployment's Compute Driver is unavailable.",
+  });
+  assert.deepEqual(replacement.calls, []);
 });
 
-test("deployment diagnostics reject invalid Driver evidence", async (t) => {
+test("deployment diagnostics reject invalid Driver evidence", async () => {
   const diagnosticOptions = { diagnosticsResult: null };
-  const fixture = await createFixture(t, {
+  const fixture = await createFixture({
     computeDriver: createRuntimeCredentialComputeDriver(diagnosticOptions),
   });
-  const { namespace, agent } = await fixture.bootstrapAgent();
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { agentPath } = await fixture.bootstrapAgent();
   const revision = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(revision.status, 202);
   const path = `${agentPath}/deployments/${revision.data.id}/diagnostics`;

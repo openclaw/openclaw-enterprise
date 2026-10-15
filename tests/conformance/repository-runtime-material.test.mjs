@@ -67,7 +67,11 @@ function workloadPod(deployment, namespace, name, ready = true) {
       uid: `${name}-uid`,
     },
     spec: structuredClone(deployment.spec.template.spec),
-    status: { phase: "Running", conditions: [{ type: "Ready", status: ready ? "True" : "False" }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.30",
+      conditions: [{ type: "Ready", status: ready ? "True" : "False" }],
+    },
   };
 }
 

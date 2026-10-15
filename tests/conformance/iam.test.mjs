@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { immutableSnapshot } from "../../packages/utils/src/index.ts";
 import {
   AuthAccountRoleInvalidError,
   AuthAccountRoleNotFoundError,
@@ -9,6 +11,7 @@ import {
   evaluateAuthorization,
   NativeIAMDriver,
   validateAuthAccountPrincipalSeed,
+  validateNativeIAMState,
 } from "../../packages/iam/src/index.ts";
 
 const identities = [
@@ -1579,4 +1582,488 @@ test("identity access coverage counts Agent administer for a delegated read_logs
   // Administer stands in for read_logs only, never for another action such as read.
   assert.equal(await covers("agent-administrator", "log-reader-without-read"), true);
   assert.equal(await covers("agent-administrator", "agent-reader"), false);
+});
+
+// The Driver's decisions before it indexed policies: linear scans over a validated state,
+// as on main at 9f620fe48. The seeded differential below holds the indexed Driver to it.
+const reference = (() => {
+  const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
+  const optionalNonempty = (value) => value === undefined || nonempty(value);
+  const valid = (state) => {
+    try {
+      validateNativeIAMState(structuredClone(state));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const sorted = (values) => [...new Set(values)].sort();
+  const evidence = (input = {}) => ({
+    ...(input.identityId === undefined ? {} : { identityId: input.identityId }),
+    groupIds: sorted(input.groupIds ?? []),
+    bindingIds: sorted(input.bindingIds ?? []),
+    roleIds: sorted(input.roleIds ?? []),
+    restrictionIds: sorted(input.restrictionIds ?? []),
+  });
+  const decision = (allowed, reason, value = evidence()) => ({
+    allowed,
+    reason,
+    driverId: "occ-native-iam",
+    evidence: value,
+  });
+  const validRequest = (request) =>
+    typeof request === "object" &&
+    request !== null &&
+    typeof request.resource === "object" &&
+    request.resource !== null &&
+    !Object.hasOwn(request, "installationId") &&
+    !Object.hasOwn(request.resource, "installationId") &&
+    nonempty(request.principalId) &&
+    nonempty(request.resource.id) &&
+    optionalNonempty(request.resource.namespaceId) &&
+    (!["configuration", "preset", "service_account", "secret", "credential_source"].includes(
+      request.resource.kind,
+    ) ||
+      nonempty(request.resource.namespaceId)) &&
+    PERMISSION_ACTIONS.includes(request.action) &&
+    RESOURCE_KINDS.includes(request.resource.kind);
+
+  function authorize(state, request) {
+    if (!valid(state)) {
+      return decision(false, "The native IAM policy is invalid.");
+    }
+    if (!validRequest(request)) {
+      return decision(false, "The exact authorization request is invalid.");
+    }
+    const matches = state.identities.filter((identity) => identity.id === request.principalId);
+    if (matches.length !== 1) {
+      return decision(
+        false,
+        matches.length === 0
+          ? "The identity is not explicitly provisioned for the singleton Installation."
+          : "The provisioned identity is ambiguous.",
+      );
+    }
+    const [identity] = matches;
+    const { resource } = request;
+    if (identity.namespaceId !== undefined && identity.namespaceId !== resource.namespaceId) {
+      return decision(
+        false,
+        "The identity cannot access another namespace.",
+        evidence({ identityId: identity.id }),
+      );
+    }
+    const groupIds = new Set(
+      identity.kind !== "principal"
+        ? []
+        : state.memberships
+            .filter(
+              (membership) =>
+                membership.principalId === identity.id &&
+                (membership.namespaceId === undefined ||
+                  membership.namespaceId === resource.namespaceId),
+            )
+            .map((membership) => membership.groupId),
+    );
+    const bindingIds = [];
+    const roleIds = [];
+    const grantingGroupIds = [];
+    for (const binding of state.bindings) {
+      const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+      if (
+        !(
+          (binding.subjectKind === "identity" && binding.subjectId === identity.id) ||
+          (binding.subjectKind === "group" && groupIds.has(binding.subjectId))
+        ) ||
+        (binding.namespaceId !== undefined && binding.namespaceId !== resource.namespaceId) ||
+        (binding.resourceKind !== undefined &&
+          (binding.resourceKind !== resource.kind || binding.resourceId !== resource.id)) ||
+        role === undefined ||
+        (role.namespaceId !== undefined && role.namespaceId !== resource.namespaceId) ||
+        !role.permissions.some(
+          (permission) =>
+            permission.action === request.action && permission.resourceKind === resource.kind,
+        )
+      ) {
+        continue;
+      }
+      bindingIds.push(binding.id);
+      roleIds.push(role.id);
+      if (binding.subjectKind === "group") {
+        grantingGroupIds.push(binding.subjectId);
+      }
+    }
+    const restrictionIds = state.restrictions
+      .filter(
+        (restriction) =>
+          (restriction.namespaceId === undefined ||
+            restriction.namespaceId === resource.namespaceId) &&
+          restriction.action === request.action &&
+          restriction.resourceKind === resource.kind &&
+          (restriction.resourceId === undefined || restriction.resourceId === resource.id),
+      )
+      .map((restriction) => restriction.id);
+    const found = evidence({
+      identityId: identity.id,
+      groupIds: grantingGroupIds,
+      bindingIds,
+      roleIds,
+      restrictionIds,
+    });
+    if (bindingIds.length === 0) {
+      return decision(
+        false,
+        "No explicit scoped binding grants the exact action and resource.",
+        found,
+      );
+    }
+    if (restrictionIds.length > 0) {
+      return decision(
+        false,
+        "An applicable Restriction denies the exact action and resource.",
+        found,
+      );
+    }
+    return decision(
+      true,
+      "An explicit scoped binding grants the exact action and resource.",
+      found,
+    );
+  }
+
+  function lookupIdentity(state, input) {
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      Object.hasOwn(input, "installationId") ||
+      (input.servicePrincipalId === undefined
+        ? !nonempty(input.issuer) || !nonempty(input.subject)
+        : !nonempty(input.servicePrincipalId) ||
+          input.issuer !== undefined ||
+          input.subject !== undefined) ||
+      !optionalNonempty(input.namespaceId) ||
+      !valid(state)
+    ) {
+      return undefined;
+    }
+    const matches = state.identities.filter(
+      (identity) =>
+        (identity.namespaceId === undefined || identity.namespaceId === input.namespaceId) &&
+        (input.servicePrincipalId !== undefined
+          ? identity.kind === "service_principal" && identity.id === input.servicePrincipalId
+          : "issuer" in identity &&
+            "subject" in identity &&
+            identity.issuer === input.issuer &&
+            identity.subject === input.subject),
+    );
+    return matches.length === 1 ? { ...matches[0] } : undefined;
+  }
+
+  function grants(state, identity) {
+    const subjects = [{}];
+    if (identity.kind === "principal") {
+      for (const membership of state.memberships) {
+        if (membership.principalId === identity.id) {
+          subjects.push({ groupId: membership.groupId, namespaceId: membership.namespaceId });
+        }
+      }
+    }
+    const result = [];
+    for (const subject of subjects) {
+      for (const binding of state.bindings) {
+        const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+        const matches =
+          subject.groupId === undefined
+            ? binding.subjectKind === "identity" && binding.subjectId === identity.id
+            : binding.subjectKind === "group" && binding.subjectId === subject.groupId;
+        const namespaces = new Set(
+          [
+            identity.namespaceId,
+            subject.namespaceId,
+            binding.namespaceId,
+            role?.namespaceId,
+          ].filter((namespaceId) => namespaceId !== undefined),
+        );
+        if (!matches || role === undefined || namespaces.size > 1) {
+          continue;
+        }
+        result.push({
+          namespaceId: [...namespaces][0],
+          resourceKind: binding.resourceKind,
+          resourceId: binding.resourceId,
+          permissions: role.permissions.filter(
+            (permission) =>
+              binding.resourceKind === undefined ||
+              permission.resourceKind === binding.resourceKind,
+          ),
+        });
+      }
+    }
+    return result;
+  }
+
+  function coversIdentityAccess(state, request) {
+    if (
+      typeof request !== "object" ||
+      request === null ||
+      !nonempty(request.principalId) ||
+      !nonempty(request.targetIdentityId) ||
+      !valid(state)
+    ) {
+      return false;
+    }
+    const exact = (id) => {
+      const matches = state.identities.filter((identity) => identity.id === id);
+      return matches.length === 1 ? matches[0] : undefined;
+    };
+    const holder = exact(request.principalId);
+    const target = exact(request.targetIdentityId);
+    if (holder === undefined || target === undefined) {
+      return false;
+    }
+    const held = grants(state, holder);
+    return grants(state, target).every((grant) =>
+      grant.permissions.every((permission) => {
+        const actions =
+          permission.resourceKind === "agent" && permission.action === "read_logs"
+            ? ["read_logs", "administer"]
+            : [permission.action];
+        return held.some(
+          (holderGrant) =>
+            (holderGrant.namespaceId === undefined ||
+              holderGrant.namespaceId === grant.namespaceId) &&
+            (holderGrant.resourceKind === undefined ||
+              (holderGrant.resourceKind === grant.resourceKind &&
+                holderGrant.resourceId === grant.resourceId)) &&
+            holderGrant.permissions.some(
+              (candidate) =>
+                actions.includes(candidate.action) &&
+                candidate.resourceKind === permission.resourceKind,
+            ),
+        );
+      }),
+    );
+  }
+
+  return { authorize, lookupIdentity, coversIdentityAccess };
+})();
+
+/** Seeded random policies (mostly valid, some corrupt) and requests against them. */
+function randomPolicies(seed) {
+  let a = seed >>> 0;
+  const random = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const chance = (p) => random() < p;
+  const int = (low, high) => low + Math.floor(random() * (high - low + 1));
+  const pick = (values) => values[Math.floor(random() * values.length)];
+  const namespaces = ["ns-a", "ns-b", "ns-c"];
+  const issuers = ["https://one.example.com", "https://two.example.com"];
+  const resourceIds = ["agt-0", "agt-1", "sec-0", "cfg-0", "preset-0", "ins-0", ...namespaces];
+  const scope = (p = 0.5) => (chance(p) ? {} : { namespaceId: pick(namespaces) });
+
+  function policy(size) {
+    const corrupt = chance(0.15);
+    const bad = (p) => corrupt && chance(p);
+    const identities = [];
+    for (let k = 0, n = int(1, 3 * size); k < n; k += 1) {
+      identities.push({
+        kind: "principal",
+        id: bad(0.05) && k > 0 ? "principal-0" : `principal-${k}`,
+        issuer: pick(issuers),
+        subject: bad(0.1) ? "subject-0" : `subject-${k}`,
+      });
+    }
+    for (let k = 0, n = int(0, 3 * size); k < n; k += 1) {
+      const agentOwned = chance(0.5);
+      identities.push({
+        kind: bad(0.03) ? "robot" : "service_principal",
+        id: `service-${k}`,
+        ...(agentOwned && !bad(0.1) ? { namespaceId: pick(namespaces) } : scope()),
+        ...(agentOwned ? { agentId: bad(0.1) ? "agt-0" : `agt-${k}` } : {}),
+      });
+    }
+    const groups = [];
+    for (let k = 0, n = int(0, size); k < n; k += 1) {
+      groups.push({ id: `group-${k}`, ...scope(), name: bad(0.05) ? "" : "group" });
+    }
+    const principals = identities.filter((identity) => identity.kind === "principal");
+    const memberships = [];
+    const memberKeys = new Set();
+    for (let k = 0, n = groups.length ? int(0, 3 * size) : 0; k < n; k += 1) {
+      const group = pick(groups);
+      const principal = bad(0.1) ? pick(identities) : pick(principals);
+      const key = `${group.id}/${principal.id}`;
+      if (memberKeys.has(key) && !bad(0.3)) {
+        continue;
+      }
+      memberKeys.add(key);
+      memberships.push({
+        ...(bad(0.1) ? scope() : group.namespaceId ? { namespaceId: group.namespaceId } : {}),
+        groupId: group.id,
+        principalId: principal.id,
+      });
+    }
+    const roles = [];
+    for (let k = 0, n = int(1, Math.max(2, size)); k < n; k += 1) {
+      const permissions = [];
+      const keys = new Set();
+      for (let p = 0, m = int(1, 8); p < m; p += 1) {
+        const permission = { action: pick(PERMISSION_ACTIONS), resourceKind: pick(RESOURCE_KINDS) };
+        const key = `${permission.action}/${permission.resourceKind}`;
+        if (keys.has(key) && !bad(0.3)) {
+          continue;
+        }
+        keys.add(key);
+        permissions.push(permission);
+      }
+      roles.push({ id: `role-${k}`, ...scope(0.6), permissions });
+    }
+    const subjects = [
+      ...identities.map((identity) => ["identity", identity]),
+      ...groups.map((group) => ["group", group]),
+    ];
+    const bindings = [];
+    for (let k = 0, n = int(1, 4 * size); k < n; k += 1) {
+      const [subjectKind, subject] = pick(subjects);
+      const compatible = roles.filter(
+        (role) =>
+          role.namespaceId === undefined ||
+          role.namespaceId === subject.namespaceId ||
+          (subjectKind === "identity" && subject.namespaceId === undefined),
+      );
+      const role = bad(0.1) || compatible.length === 0 ? pick(roles) : pick(compatible);
+      let namespaceId =
+        subjectKind === "group"
+          ? subject.namespaceId
+          : (subject.namespaceId ?? role.namespaceId ?? scope().namespaceId);
+      if (bad(0.1)) {
+        namespaceId = scope().namespaceId;
+      }
+      let resourceKind = chance(0.5) ? pick(RESOURCE_KINDS) : undefined;
+      if (
+        !bad(0.3) &&
+        namespaceId === undefined &&
+        ["configuration", "preset", "service_account"].includes(resourceKind)
+      ) {
+        resourceKind = "secret";
+      }
+      let resourceId = resourceKind === undefined ? undefined : pick(resourceIds);
+      if (resourceKind === "namespace" && namespaceId !== undefined) {
+        resourceId = namespaceId;
+      }
+      bindings.push({
+        id: `binding-${k}`,
+        ...(namespaceId === undefined ? {} : { namespaceId }),
+        subjectKind,
+        subjectId: bad(0.03) ? "missing" : subject.id,
+        roleId: bad(0.03) ? "missing" : role.id,
+        ...(resourceKind === undefined ? {} : { resourceKind }),
+        ...(resourceId === undefined || bad(0.05) ? {} : { resourceId }),
+      });
+    }
+    const restrictions = [];
+    for (let k = 0, n = chance(0.6) ? 0 : int(1, size); k < n; k += 1) {
+      const resourceKind = pick(RESOURCE_KINDS);
+      restrictions.push({
+        id: `restriction-${k}`,
+        ...(resourceKind === "installation" || resourceKind === "namespace" ? {} : scope(0.6)),
+        action: pick(PERMISSION_ACTIONS),
+        resourceKind,
+        ...(chance(0.5) ? {} : { resourceId: pick(resourceIds) }),
+        effect: bad(0.05) ? "allow" : "deny",
+      });
+    }
+    return { identities, groups, memberships, roles, bindings, restrictions };
+  }
+
+  function call(state) {
+    const ids = [...state.identities.map((identity) => identity.id), "unknown", ""];
+    const roll = random();
+    if (roll < 0.15) {
+      const external = pick(state.identities.filter((identity) => "issuer" in identity));
+      return [
+        "lookupIdentity",
+        chance(0.5)
+          ? {
+              issuer: chance(0.9) ? external.issuer : pick(issuers),
+              subject: external.subject,
+              ...scope(),
+            }
+          : { servicePrincipalId: pick(ids) || "unknown", ...scope() },
+      ];
+    }
+    if (roll < 0.25) {
+      return ["coversIdentityAccess", { principalId: pick(ids), targetIdentityId: pick(ids) }];
+    }
+    const request = {
+      principalId: pick(ids),
+      action: pick(PERMISSION_ACTIONS),
+      resource: { kind: pick(RESOURCE_KINDS), id: pick(resourceIds), ...scope(0.3) },
+    };
+    // Half the requests aim at what a binding grants, so allows and near misses are common.
+    const binding = pick(state.bindings);
+    if (chance(0.5)) {
+      const role = state.roles.find((candidate) => candidate.id === binding.roleId);
+      const members = state.memberships.filter(
+        (membership) => membership.groupId === binding.subjectId,
+      );
+      request.principalId =
+        binding.subjectKind === "identity"
+          ? binding.subjectId
+          : (pick(members)?.principalId ?? request.principalId);
+      const permission = role === undefined ? undefined : pick(role.permissions);
+      if (permission !== undefined) {
+        request.action = permission.action;
+        request.resource.kind = binding.resourceKind ?? permission.resourceKind;
+      }
+      request.resource.id = binding.resourceId ?? request.resource.id;
+      if (binding.namespaceId !== undefined) {
+        request.resource.namespaceId = binding.namespaceId;
+      }
+    }
+    if (chance(0.01)) {
+      request.installationId = "ins-0";
+    }
+    return ["authorize", request];
+  }
+
+  return { policy, call, pick };
+}
+
+test("the indexed native IAM Driver decides exactly as a linear scan of the policy", async () => {
+  const random = randomPolicies(1322);
+  let decisions = 0;
+  let allowed = 0;
+  for (let round = 0; round < 400; round += 1) {
+    const state = random.policy(random.pick([1, 2, 3, 5, 12]));
+    // Mutable states are validated and indexed on every call; an immutable snapshot (one per
+    // PostgreSQL unit of work) is validated and indexed once for all of its decisions.
+    const snapshot = immutableSnapshot(state);
+    const drivers = [
+      new NativeIAMDriver({ loadNativeIAMState: async () => state }),
+      new NativeIAMDriver({ loadNativeIAMState: async () => snapshot }),
+    ];
+    for (let call = 0; call < 40; call += 1) {
+      const [method, input] = random.call(state);
+      const expected = reference[method](state, input);
+      for (const driver of drivers) {
+        assert.deepStrictEqual(
+          await driver[method](input),
+          expected,
+          `${method} ${JSON.stringify(input)} on ${JSON.stringify(state)}`,
+        );
+      }
+      if (method === "authorize") {
+        decisions += 1;
+        allowed += expected.allowed ? 1 : 0;
+      }
+    }
+  }
+  // The corpus must exercise both outcomes, not only denials.
+  assert.ok(decisions > 10_000 && allowed > decisions / 20, `${allowed} of ${decisions} allowed`);
 });

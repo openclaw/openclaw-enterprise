@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import {
   cpSync,
   existsSync,
@@ -134,14 +135,23 @@ function render(
   input,
   directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
   root = repository,
+  dnsServer,
 ) {
   const inputPath = join(directory, "input.json");
   writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
+  const dnsPreload = join(directory, "dns-preload.mjs");
+  if (dnsServer !== undefined) {
+    writeFileSync(
+      dnsPreload,
+      `import dns from "node:dns/promises"; dns.setServers([${JSON.stringify(dnsServer)}]);\n`,
+    );
+  }
   let summary;
   try {
     summary = execFileSync(
       process.execPath,
       [
+        ...(dnsServer === undefined ? [] : ["--import", dnsPreload]),
         "scripts/render-installation-profile.mjs",
         "--profile",
         profile,
@@ -164,6 +174,71 @@ function render(
     installation: readFileSync(join(directory, "installation.yaml"), "utf8"),
     preflight: JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8")),
   };
+}
+
+async function startDnsFixture(t, records) {
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-dns-"));
+  const queriesPath = join(directory, "queries.txt");
+  writeFileSync(queriesPath, "");
+  // The CLI is synchronous in these tests; a separate process must answer its
+  // real DNS queries while the test runner is blocked waiting for rendering.
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `
+        import { createSocket } from "node:dgram";
+        import { appendFileSync } from "node:fs";
+        const socket = createSocket("udp4");
+        socket.on("message", (query, peer) => {
+          let end = 12;
+          const labels = [];
+          while (query[end] !== 0) {
+            const length = query[end++];
+            labels.push(query.subarray(end, end + length).toString());
+            end += length;
+          }
+          const hostname = labels.join(".");
+          appendFileSync(${JSON.stringify(queriesPath)}, hostname + "\\n");
+          const records = ${JSON.stringify(records)};
+          const addresses = records[hostname];
+          const header = Buffer.alloc(12);
+          query.copy(header, 0, 0, 2);
+          header.writeUInt16BE(addresses ? 0x8180 : 0x8183, 2);
+          header.writeUInt16BE(1, 4);
+          header.writeUInt16BE(addresses?.length ?? 0, 6);
+          const answers = (addresses ?? []).map((address) => {
+            const answer = Buffer.from([0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 0, 0, 0, 0]);
+            Buffer.from(address.split(".").map(Number)).copy(answer, 12);
+            return answer;
+          });
+          socket.send(Buffer.concat([header, query.subarray(12, end + 5), ...answers]), peer.port, peer.address);
+        });
+        socket.bind(0, "127.0.0.1", () => process.send(socket.address().port));
+        process.on("disconnect", () => socket.close());
+      `,
+    ],
+    { stdio: ["ignore", "ignore", "inherit", "ipc"] },
+  );
+  t.after(async () => {
+    try {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit", { signal: AbortSignal.timeout(5000) });
+        child.kill("SIGKILL");
+        await exited;
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  const [port] = await Promise.race([
+    once(child, "message", { signal: AbortSignal.timeout(5000) }),
+    once(child, "exit").then(() => {
+      throw new Error("DNS fixture exited before listening");
+    }),
+  ]);
+  return { directory, queriesPath, server: `127.0.0.1:${port}` };
 }
 
 function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
@@ -318,6 +393,8 @@ test("preflight rejects noncanonical SHA-256 image digests", (t) => {
       for (const invalid of [
         image.replace(/(?<=:)[a-f0-9]{64}$/, (digest) => digest.toUpperCase()),
         image.replace("@sha256:", "@SHA256:"),
+        // A 65th hex digit is not a SHA-256 digest.
+        `${image}0`,
       ]) {
         // A failed rerender must revoke the previously successful artifacts.
         assert.equal(render(profile, input, directory).preflight.ok, true);
@@ -472,27 +549,122 @@ test("failed rerenders remove stale deployable artifacts from a reused directory
   }
 });
 
-test("both profiles preserve provider ranges and public Slack egress", { skip: helmSkip }, () => {
-  for (const profile of ["openclaw", "codex"]) {
-    // Provider ranges must survive rendering; individual DNS answers are not stable.
-    const input = profile === "codex" ? codexInput() : baseInput();
-    input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
-    const output = render(profile, input);
-    const manifests = helmTemplate(output);
-    assert.match(manifests, /repository-credentials/);
-    assert.match(manifests, /cidr: "140\.82\.112\.0\/20"/);
-    assert.match(manifests, /cidr: "192\.30\.252\.0\/22"/);
-    const slackPolicy = manifests
-      .split(/\n---\n/)
-      .find(
-        (document) =>
-          document.includes("kind: NetworkPolicy") &&
-          document.includes("name: openclaw-enterprise-slack-proxy"),
+test(
+  "profiles preserve provider ranges and configure hosted discovery egress",
+  { skip: helmSkip },
+  async (t) => {
+    const dns = await startDnsFixture(t, {
+      "auth.openai.com": ["198.51.100.20", "192.0.2.40"],
+      "chatgpt.com": ["192.0.2.40"],
+    });
+    for (const profile of ["openclaw", "codex"]) {
+      // Provider ranges must survive rendering; individual DNS answers are not stable.
+      const input = profile === "codex" ? codexInput() : baseInput();
+      input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
+      const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
+      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const output = render(profile, input, directory, repository, dns.server);
+      const manifests = helmTemplate(output);
+      assert.match(manifests, /repository-credentials/);
+      assert.match(manifests, /cidr: "140\.82\.112\.0\/20"/);
+      assert.match(manifests, /cidr: "192\.30\.252\.0\/22"/);
+      const slackPolicy = manifests
+        .split(/\n---\n/)
+        .find(
+          (document) =>
+            document.includes("kind: NetworkPolicy") &&
+            document.includes("name: openclaw-enterprise-slack-proxy"),
+        );
+      assert.ok(slackPolicy);
+      assert.match(slackPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
+      assert.doesNotMatch(output.values, /slackProxyUpstreamCidrs/);
+      assert.deepEqual(
+        loadYaml(output.values).api.modelDiscoveryCidrs,
+        profile === "codex" ? ["192.0.2.20/32"] : [],
       );
-    assert.ok(slackPolicy);
-    assert.match(slackPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
-    assert.doesNotMatch(output.values, /slackProxyUpstreamCidrs/);
-  }
+    }
+
+    // Explicit [] leaves networking to an external FQDN policy. Neither explicit
+    // form may need working DNS or silently grant additional destinations.
+    const external = render(
+      "codex",
+      codexInput({ codex: { modelDiscoveryCidrs: [] } }),
+      dns.directory,
+      repository,
+      dns.server,
+    );
+    assert.deepEqual(loadYaml(external.values).api.modelDiscoveryCidrs, []);
+    assert.doesNotMatch(
+      helmTemplate(external),
+      /name: openclaw-enterprise-api-model-discovery-egress/,
+    );
+    assert.equal(readFileSync(dns.queriesPath, "utf8"), "");
+
+    const discovered = render(
+      "codex",
+      codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
+      dns.directory,
+      repository,
+      dns.server,
+    );
+    const cidrs = ["192.0.2.40/32", "198.51.100.20/32"];
+    assert.deepEqual(loadYaml(discovered.values).api.modelDiscoveryCidrs, cidrs);
+    const queriedHosts = readFileSync(dns.queriesPath, "utf8").trim().split("\n").sort();
+    assert.deepEqual(queriedHosts, ["auth.openai.com", "chatgpt.com"]);
+    t.diagnostic(`Hosted discovery DNS queries: ${queriedHosts.join(", ")}`);
+    const documents = helmTemplate(discovered)
+      .split(/\n---\n/)
+      .map((document) => JSON.parse(JSON.stringify(loadYaml(document))));
+    const policy = documents.find(
+      (document) => document.metadata?.name === "openclaw-enterprise-api-model-discovery-egress",
+    );
+    assert.ok(policy, "omitted hosted discovery CIDRs must create the API HTTPS policy");
+    assert.deepEqual(policy.spec.podSelector.matchLabels, {
+      "app.kubernetes.io/name": "openclaw-enterprise",
+      "app.kubernetes.io/instance": "oce",
+      "app.kubernetes.io/component": "api",
+    });
+    assert.deepEqual(policy.spec.policyTypes, ["Egress"]);
+    assert.deepEqual(policy.spec.egress, [
+      {
+        to: cidrs.map((cidr) => ({ ipBlock: { cidr } })),
+        ports: [{ protocol: "TCP", port: 443 }],
+      },
+    ]);
+    const deny = documents.find(
+      (document) => document.metadata?.name === "openclaw-enterprise-default-deny",
+    );
+    assert.deepEqual(deny.spec.policyTypes, ["Ingress", "Egress"]);
+    assert.equal(deny.spec.egress, undefined);
+  },
+);
+
+test("hosted discovery DNS failures revoke stale deployment artifacts", async (t) => {
+  const dns = await startDnsFixture(t, { "auth.openai.com": ["192.0.2.40"] });
+  // Explicit policy input stays usable with an unavailable hosted DNS name.
+  assert.equal(
+    render("codex", codexInput(), dns.directory, repository, dns.server).preflight.ok,
+    true,
+  );
+  const error = renderError(() =>
+    render(
+      "codex",
+      codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
+      dns.directory,
+      repository,
+      dns.server,
+    ),
+  );
+  const preflight = JSON.parse(readFileSync(join(dns.directory, "preflight.json"), "utf8"));
+  assert.equal(preflight.ok, false);
+  assert.ok(preflight.errors.join("\n").includes("IPv4 addresses for chatgpt.com."));
+  assert.match(preflight.errors.join("\n"), /modelDiscoveryCidrs/);
+  assert.match(preflight.errors.join("\n"), /retry|re-?render|supply|set|provide|configure/i);
+  assert.equal(existsSync(join(dns.directory, "values.yaml")), false);
+  assert.equal(existsSync(join(dns.directory, "installation.yaml")), false);
+  assert.deepEqual(preflight.outputs, { preflight: join(dns.directory, "preflight.json") });
+  assert.equal(error.status, 1);
+  t.diagnostic(preflight.errors.join("\n"));
 });
 
 test(
@@ -774,7 +946,7 @@ test(
     const error = renderError(() => helmTemplate(accepted, [override]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
-      /logging\.collector Secrets must be dedicated and cannot reuse the gateway API key Secret/,
+      /logging\.collector\.configSecretName must name a dedicated Secret; occ-otel-collector-config is also gatewayRouting\.apiKeySecretName/,
     );
     assertFieldRefusals(
       "codex",
@@ -857,6 +1029,23 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
+    name: "profiles refuse ChatGPT admin Secret references Kubernetes refuses",
+    profile: "codex",
+    input: managedCodexInput,
+    cases: [
+      [
+        "codex.managedServiceAccounts.adminSecretName",
+        ["Bad_Name", "-chatgpt-admin", "c".repeat(254)],
+        "must be a Kubernetes resource name of at most 253 characters",
+      ],
+      [
+        "codex.managedServiceAccounts.adminSecretKey",
+        ["bad/key", ".", "..admin-key", "a".repeat(254)],
+        "must be a Kubernetes Secret key of at most 253 characters",
+      ],
+    ],
+  },
+  {
     name: "preflight refuses ChatGPT admin and repository Secrets that hold other credentials",
     profile: "codex",
     input: () => managedCodexInput({ repository: repositoryConfiguration() }),
@@ -895,9 +1084,11 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
       };
       return input;
     },
+    // Finding 1054: the database CA Secret counts too, as in the chart's table.
     cases: [
       "controlPlane.gatewayApiKeySecretName",
       "controlPlane.github.secretName",
+      "controlPlane.databaseCa.secretName",
       "codex.managedServiceAccounts.adminSecretName",
       ...repositorySecretKeys.map((key) => `repository.${key}`),
     ].map((field) => [
@@ -980,6 +1171,16 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         ["https://otel.example.invalid"],
         "is not supported by installation profiles.",
       ],
+      // Profiles leave the chart's default Collector image (a values file may override it, and the
+      // chart checks it); this pins that preflight takes no image field.
+      [
+        "controlPlane.loggingCollector.image",
+        [
+          `docker.io/otel/opentelemetry-collector-contrib@sha256:${"d".repeat(64)}`,
+          `docker.io/Otel/opentelemetry-collector-contrib@sha256:${"d".repeat(64)}`,
+        ],
+        "is not supported by installation profiles.",
+      ],
       [
         "controlPlane.loggingCollector.enabled",
         [false],
@@ -1020,6 +1221,16 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
+    name: "preflight refuses database CA Secret names that Kubernetes refuses",
+    cases: [
+      [
+        "controlPlane.databaseCa.secretName",
+        ["Bad_Name", "-db-ca", "d".repeat(254)],
+        "must be a Kubernetes resource name",
+      ],
+    ],
+  },
+  {
     name: "preflight rejects a repository serviceName the chart refuses",
     profile: "codex",
     input: () => codexInput({ repository: repositoryConfiguration() }),
@@ -1029,6 +1240,24 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
         ["1git", "git.openclaw-system.svc", "a".repeat(64), "Git"],
         "must be a Kubernetes Service DNS-1035 label of at most 63 characters",
       ],
+    ],
+  },
+  {
+    name: "preflight rejects repository resource names Kubernetes refuses",
+    profile: "codex",
+    input: () => codexInput({ repository: repositoryConfiguration() }),
+    cases: [
+      ...[
+        "registryConfigMapName",
+        "serviceConfigSecretName",
+        "appKeySecretName",
+        "tlsSecretName",
+        "publicCaSecretName",
+      ].map((field) => [
+        `repository.${field}`,
+        ["Bad_Name", "bad name", `-${field.toLowerCase()}`, "a".repeat(254)],
+        "must be a Kubernetes resource name of at most 253 characters",
+      ]),
     ],
   },
   {
@@ -1342,6 +1571,132 @@ test("preflight rejects inputs that Helm would reject", () => {
   );
 });
 
+test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte", () => {
+  const asciiEncoded = (authBaseUrl) =>
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl,
+        agentNativeAdminDomain: "agents.example.com",
+        sharedCookieDomain: "example.com",
+      },
+    });
+  const asciiRefusal =
+    "controlPlane.authBaseUrl host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
+  for (const authBaseUrl of ["https://ex%61mple.com", "https://example.com%2e"]) {
+    const error = renderError(() => render("codex", asciiEncoded(authBaseUrl)));
+    assert.equal(error.status, 1);
+    assert.match(error.profileRendererOutput, new RegExp(escapeRegExp(asciiRefusal)));
+    assert.doesNotMatch(
+      error.profileRendererOutput,
+      /must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info/,
+    );
+    assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
+    const preflight = JSON.parse(
+      readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+    );
+    assert.equal(preflight.ok, false);
+    assert.deepEqual(
+      preflight.errors.filter((message) => message.includes("authBaseUrl")),
+      [asciiRefusal],
+    );
+  }
+
+  // A % that decodes to an IPv4 address stays on ipv4HostKept's existing origin refusal.
+  const rewrittenIpv4 = renderError(() =>
+    render(
+      "codex",
+      codexInput({
+        controlPlane: {
+          ...baseInput().controlPlane,
+          authBaseUrl: "https://192%2e168.1.1",
+        },
+      }),
+    ),
+  );
+  assert.match(
+    rewrittenIpv4.profileRendererOutput,
+    /controlPlane\.authBaseUrl must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info\./,
+  );
+  assert.doesNotMatch(rewrittenIpv4.profileRendererOutput, /percent-encode an ASCII byte/);
+
+  const nonAscii = render(
+    "openclaw",
+    externalSignInInput({
+      trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
+      authBaseUrl: "https://ex%C3%A4.com",
+    }),
+  );
+  assert.equal(nonAscii.summary.ok, true, nonAscii.preflight.errors.join("\n"));
+  assert.match(nonAscii.values, /baseUrl: "https:\/\/ex%C3%A4\.com"/);
+  if (!helmSkip) {
+    helmTemplate(nonAscii);
+  }
+});
+
+// Node accepts both and writes a deployable file; the chart then refuses it.
+test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", () => {
+  const refusals = [
+    [
+      "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.",
+      ["https://[::ffff:192.0.2.1]", "https://[::FFFF:c000:201]:8443", "https://[::ffff:0:0]"],
+    ],
+    [
+      "host must not percent-encode a space or invisible character; the chart refuses it in the decoded host.",
+      [
+        "https://ex%C2%ADample.com",
+        "https://ex%E2%80%8Bample.com:8443",
+        "https://ex%ef%bb%bfample.com",
+      ],
+    ],
+  ];
+  for (const [refusal, urls] of refusals) {
+    for (const authBaseUrl of urls) {
+      const error = renderError(() => render("openclaw", externalSignInInput({ authBaseUrl })));
+      assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
+      const preflight = JSON.parse(
+        readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+      );
+      assert.deepEqual(
+        preflight.errors.filter((message) => message.includes("authBaseUrl")),
+        [`controlPlane.authBaseUrl ${refusal}`],
+        authBaseUrl,
+      );
+    }
+  }
+  for (const authBaseUrl of ["https://[::192.0.2.1]", "https://[::ffff:1:2:3]:8443"]) {
+    const output = render("openclaw", externalSignInInput({ authBaseUrl }));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+  }
+});
+
+// The chart lowercases the header before its checks and before OCC_AUTH_CLIENT_IP_HEADER.
+test("trusted proxy client address headers render lowercase", () => {
+  const trustedProxy = (preset, clientAddressHeader) =>
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        trustedProxy: { preset, cidrs: ["10.42.0.0/16"], clientAddressHeader },
+      },
+    });
+  for (const [preset, header] of [
+    ["generic", "X-Real-IP"],
+    ["ingress-nginx", "X-Forwarded-For"],
+  ]) {
+    const output = render("openclaw", trustedProxy(preset, header));
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.equal(
+      loadYaml(output.values).api.trustedProxy.clientAddressHeader,
+      header.toLowerCase(),
+    );
+  }
+  assertPreflightFailure(
+    "openclaw",
+    trustedProxy("generic", "Cookie"),
+    /controlPlane\.trustedProxy\.clientAddressHeader cannot be cookie;/,
+  );
+});
+
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
 test("native admin domains render lowercase for the chart", () => {
   const output = render(
@@ -1387,6 +1742,29 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   });
   assert.equal(snapshot.observability.url, url);
 
+  const genericObservabilityUrl =
+    /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/;
+  const rewrittenIpv4ObservabilityUrl =
+    /controlPlane\.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
+  const assertObservabilityPreflight = (observabilityUrl, expected, absent) => {
+    const failure = renderError(() =>
+      render(
+        "openclaw",
+        baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl } }),
+      ),
+    );
+    assert.match(failure.profileRendererOutput, expected);
+    assert.doesNotMatch(failure.profileRendererOutput, absent);
+    const directory = failure.profileRendererDirectory;
+    assert.equal(existsSync(join(directory, "preflight.json")), true);
+    assert.equal(existsSync(join(directory, "values.yaml")), false);
+    assert.equal(existsSync(join(directory, "installation.yaml")), false);
+    const preflight = JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8"));
+    assert.equal(preflight.ok, false);
+    const errors = preflight.errors.join("\n");
+    assert.match(errors, expected);
+    assert.doesNotMatch(errors, absent);
+  };
   for (const invalid of [
     "javascript:alert(1)",
     syntheticCredentialUrl({
@@ -1396,13 +1774,63 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     }),
     "https://grafana.example.internal/#fragment",
     "grafana.example.internal",
+    "ftp://grafana.example.internal/d/occ-observability",
+    // Either credential alone is refused too.
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    syntheticCredentialUrl({ username: "", password: "pass", host: "grafana.example.internal" }),
+    // So is an empty user info, which Node drops: any @ before the host, with or without the
+    // slashes, and before an IPv4 host too.
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
   ]) {
-    assertPreflightFailure(
-      "openclaw",
-      baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl: invalid } }),
-      /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/,
-    );
+    assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
   }
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://127.1",
+    "http://0177.0.0.1",
+  ]) {
+    assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
+  }
+  const rewrittenHostChars =
+    /controlPlane\.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./;
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    assertObservabilityPreflight(raw, rewrittenHostChars, genericObservabilityUrl);
+  }
+  const queryBackslash = render(
+    "openclaw",
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        observabilityUrl: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+      },
+    }),
+  );
+  assert.equal(queryBackslash.summary.ok, true);
+
+  // URL parsing trims C0 controls and spaces and lowercases the scheme, so this is the
+  // written address 192.0.2.10. Preflight and the startup parser must both accept it.
+  const spaced = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...baseInput().controlPlane, observabilityUrl: " HTTP://192.0.2.10 " },
+    }),
+  );
+  assert.equal(spaced.summary.ok, true);
+  const spacedSnapshot = await loadStartupConfigurationSnapshot({
+    mode: "production",
+    environment: { OCC_CONFIG_PATH: join(spaced.directory, "installation.yaml") },
+  });
+  assert.equal(spacedSnapshot.observability.url, "http://192.0.2.10/");
 });
 
 function externalSignInInput(signIn = {}) {
@@ -1625,6 +2053,10 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
     github.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: .*external sign-in starts have no per-client limit/,
   );
+  assert.match(
+    github.preflight.warnings.join("\n"),
+    /trustedProxy is not set: .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
+  );
   assert.doesNotMatch(github.values, /trustedProxy:/);
   const password = render("openclaw", baseInput());
   assert.equal(password.summary.ok, true);
@@ -1632,6 +2064,37 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
     password.preflight.warnings.join("\n"),
     /controlPlane\.trustedProxy is not set: failed password sign-ins are limited per email only/,
   );
+  assert.match(
+    password.preflight.warnings.join("\n"),
+    /trustedProxy is not set: failed password .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
+  );
+});
+
+test("preflight rejects external sign-in Secret names Kubernetes refuses", () => {
+  const oidc = {
+    issuer: "https://tenant.idp.example.test/",
+    authorizationUrl: "https://tenant.idp.example.test/authorize",
+    tokenUrl: "https://tenant.idp.example.test/oauth/token",
+    jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+  };
+  for (const [provider, signIn] of [
+    ["github", { github: { secretName: "Bad_Name" } }],
+    ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
+    ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      externalSignInInput(signIn),
+      new RegExp(`controlPlane\\.${provider}\\.secretName must be a Kubernetes resource name`),
+    );
+  }
+  for (const signIn of [
+    { github: { secretName: "github.login-v2" } },
+    { github: undefined, google: { secretName: "google.login-v2" } },
+    { github: undefined, oidc: { ...oidc, secretName: "oidc.login-v2" } },
+  ]) {
+    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
+  }
 });
 
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
@@ -1682,6 +2145,38 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     externalSignInInput({ github: { clientSecret: "inline" } }),
     /controlPlane.github.clientSecret is not supported/,
   );
+  for (const [provider, key, value] of [
+    ["github", "clientIdKey", "bad/key"],
+    ["github", "clientSecretKey", "."],
+    ["google", "clientSecretKey", "a".repeat(254)],
+    ["google", "clientIdKey", "..client-id"],
+    ["oidc", "clientIdKey", "bad/key"],
+    ["oidc", "clientSecretKey", "..client-secret"],
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({
+        github: undefined,
+        [provider]:
+          provider === "oidc"
+            ? {
+                issuer: "https://tenant.idp.example.test/",
+                authorizationUrl: "https://tenant.idp.example.test/authorize",
+                tokenUrl: "https://tenant.idp.example.test/oauth/token",
+                jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+                [key]: value,
+              }
+            : { [key]: value },
+      }),
+      new RegExp(`controlPlane\\.${provider}\\.${key} must be a Kubernetes Secret key`),
+    );
+  }
+  for (const signIn of [
+    { github: { clientIdKey: ".hidden" } },
+    { github: undefined, google: { clientSecretKey: "a".repeat(253) } },
+  ]) {
+    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
+  }
   const oidc = {
     issuer: "https://tenant.idp.example.test/",
     authorizationUrl: "https://tenant.idp.example.test/authorize",
@@ -1810,6 +2305,36 @@ test("preflight rejects CIDR prefixes with a leading zero", () => {
   assert.match(accepted.installation, /192\.0\.2\.12\/8/);
 });
 
+// Compute refuses a source range that covers every address (scopedCidr) in the same words;
+// a status proxy source wider than one address only warns there and here (bughunt F2).
+test("preflight refuses source CIDRs that cover every address and warns about wide status sources", () => {
+  const controlPlane = baseInput().controlPlane;
+  for (const key of ["gatewayTrustedProxyCidrs", "pluginStatusProxySourceCidrs"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...controlPlane, [key]: ["192.0.2.12/32", "0.0.0.0/0"] } }),
+      new RegExp(`controlPlane\\.${key}\\[1\\] cannot cover every address\\.`),
+    );
+  }
+  const wide = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, pluginStatusProxySourceCidrs: ["10.42.0.0/16"] },
+    }),
+  );
+  assert.match(
+    wide.preflight.warnings.join("\n"),
+    /controlPlane\.pluginStatusProxySourceCidrs\[0\] covers more than one address/,
+  );
+  const exact = render("openclaw", baseInput());
+  assert.doesNotMatch(exact.preflight.warnings.join("\n"), /covers more than one address/);
+  const widerTrust = render(
+    "openclaw",
+    baseInput({ controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["10.42.0.0/16"] } }),
+  );
+  assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
+});
+
 test("preflight rejects channel proxy URLs with an invalid octet or port", () => {
   const message = /must be an HTTP\(S\) literal IPv4 endpoint with an explicit port/;
   assertPreflightFailure(
@@ -1822,6 +2347,16 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
   );
+  // Compute and the API's Slack directory refuse an unspecified proxy host, which names no proxy.
+  for (const field of ["runtimeProxyUrl", "directoryProxyUrl"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ channels: { [field]: "http://0.0.0.0:3128" } }),
+      new RegExp(
+        `channels\\.${field} must not use host 0\\.0\\.0\\.0, which names no proxy address\\.`,
+      ),
+    );
+  }
   const accepted = render(
     "openclaw",
     baseInput({
@@ -1972,11 +2507,15 @@ test("profiles refuse database CA keys the chart refuses", () => {
   const omitted = render("openclaw", withCa(undefined));
   assert.equal(omitted.summary.ok, true, omitted.preflight.errors.join("\n"));
   assert.match(omitted.values, /caKey: ca.pem/);
-  for (const key of [".", "..", "ca/pem", "ca pem"]) {
+  const maxKey = "a".repeat(253);
+  const acceptedMax = render("openclaw", withCa(maxKey));
+  assert.equal(acceptedMax.summary.ok, true, acceptedMax.preflight.errors.join("\n"));
+  assert.match(acceptedMax.values, new RegExp(`caKey: ${maxKey}`));
+  for (const key of [".", "..", "..ca.pem", "ca/pem", "ca pem", "a".repeat(254)]) {
     assertPreflightFailure(
       "openclaw",
       withCa(key),
-      /controlPlane.databaseCa.key must be a simple basename/,
+      /controlPlane\.databaseCa\.key must be a Kubernetes Secret key of at most 253 characters/,
     );
   }
 });
@@ -2111,6 +2650,30 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
   assert.doesNotThrow(() => admit({ ...routing, gatewayNamespace: namespace, envoyNamespace }));
 });
 
+test("profiles refuse gateway storage class names the compute driver refuses", () => {
+  const runtime = baseInput().runtime;
+  for (const gatewayStorageClassName of [
+    "Bad_Class",
+    "bad class",
+    "-local-path",
+    "a".repeat(254),
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
+      /runtime\.gatewayStorageClassName must be a Kubernetes resource name of at most 253 characters/,
+    );
+  }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    const output = render(
+      "openclaw",
+      baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
+    );
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.ok(output.installation.includes(`gatewayStorageClassName: ${gatewayStorageClassName}`));
+  }
+});
+
 test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
   const message =
     /runtime\.codexSeccompProfile must be a relative localhost profile path without traversal or unconfined mode/;
@@ -2129,6 +2692,88 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
   const installation = loadYaml(accepted.installation);
   KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
+});
+
+test("the codex profile carries a Codex model endpoint under Compute startup's rule", () => {
+  const field = "runtime.codexModelBaseUrl";
+  assertFieldRefusals(
+    "openclaw",
+    baseInput(),
+    field,
+    ["https://models.example.com/v1"],
+    "is only consumed by the codex profile",
+  );
+  const accepted = render(
+    "codex",
+    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+  );
+  const compute = loadYaml(accepted.installation).drivers.compute.configuration;
+  // Written as Compute normalizes it, and accepted by Compute startup.
+  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  const backslashScheme = render(
+    "codex",
+    codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
+  );
+  assert.equal(
+    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
+    "https://192.0.2.1/v1",
+  );
+  KubernetesComputeDriver.validateConfiguration(compute);
+  assert.equal(
+    loadYaml(render("codex", codexInput()).installation).drivers.compute.configuration.runtime
+      .codexModelBaseUrl,
+    undefined,
+  );
+  // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
+  const general =
+    "requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.";
+  for (const [value, message] of [
+    ["", "must be a nonempty string."],
+    [7, "must be a nonempty string."],
+    ["https://models.example.com/v1 ", "must not contain spaces or control characters."],
+    ["https://models.example.com/\tv1", "must not contain spaces or control characters."],
+    [
+      "https:models.example.com/v1",
+      "must start with https:// (the // after the scheme is missing).",
+    ],
+    ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
+    [
+      "https://user:pass@models.example.com/v1",
+      "must not contain user info or an @ before the host.",
+    ],
+    ["http://models.example.com/v1", general],
+    ["https://models.example.com/v2", general],
+    ["https://models.example.com/v1/responses", general],
+    ["https://*.example.com/v1", general],
+    ["https://models.example.com:0/v1", general],
+    ["https://models.example.com/v1?key=1", general],
+    ["https://models.example.com/v1#v1", general],
+    [
+      "https://192.168.1/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    [
+      "https://2130706433/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    [
+      "https://127.1/v1",
+      "IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    ],
+    // A spelling refusal comes first, whatever host the parser would read.
+    ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
+  ]) {
+    assertFieldRefusals("codex", codexInput(), field, [value], message);
+    assert.throws(
+      () =>
+        KubernetesComputeDriver.validateConfiguration({
+          ...compute,
+          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+        }),
+      undefined,
+      JSON.stringify(value),
+    );
+  }
 });
 
 test("profile transport Secret prefixes agree with controller startup admission", async (t) => {

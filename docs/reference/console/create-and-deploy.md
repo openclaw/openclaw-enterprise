@@ -74,8 +74,10 @@ still block initial workspace files and Secret-backed environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   After provisioning, Console opens Agent details while deployment continues.
-   Follow startup and failures with **Deployment activity → Refresh deployment**.
+   Provisioning stays pending until the first deployment activates or fails.
+   Success opens Agent details. Failure links to the same Agent and revision;
+   correct its cause and deploy again through **Deployment activity**. If the
+   first deployment was stopped, no repair is needed before deploying again.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -160,6 +162,10 @@ one, such as a deleted Secret; **Create Agent** then submits a new request. Save
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+
+A failed or stopped first deployment, or a Stop before it
+(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
+retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.
@@ -287,6 +293,11 @@ generation, association, authentication, or plugin selections changed since
 the draft loaded, refresh. These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.
+
+A refused deployment creates no revision. The console shows the API's reason when
+it names one, such as a Configuration setting Compute cannot serve or a grant the
+Agent's service principal lacks. Your own denial and unexplained conflicts keep
+the console's guidance.
 
 If a deployment response is lost, inspect **Versions** before retrying; the
 console does not repeat an uncertain request. **Deployment activity** follows

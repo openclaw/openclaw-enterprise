@@ -15,12 +15,17 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
+  RevisionHarnessDescriptor,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
+  HARNESS_WORKSPACE,
+  MANAGED_WORKSPACE,
+  requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
-  workspaceSetupMainAgent,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
@@ -130,6 +135,7 @@ const HARNESS_VERSION_LABEL = "org.openclaw.enterprise.harness-version";
 const VERSION_LABEL = "org.openclaw.enterprise.version";
 const SOCKET_PATH = "/var/run/docker.sock";
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_DOCKER_API_RESPONSE_BYTES = 4 * 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 120_000;
 const GATEWAY_PORT = 8080;
 const AGENT_TRANSPORT_PORT = 18_790;
@@ -323,6 +329,50 @@ function validTopology(revision: AgentRevision): boolean {
   );
 }
 
+type SettingError = (setting: string, requirement: string) => Error;
+
+// Agent save and provisioning name the setting the caller must fix; preparation names it too,
+// where the message reaches only diagnostics.
+const callerSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+const preparationSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationFailure(configurationSettingMessage(setting, requirement));
+
+// Docker mounts one workspace volume at both paths, for every Harness topology.
+const DOCKER_SETUP_WORKSPACES = [MANAGED_WORKSPACE, HARNESS_WORKSPACE] as const;
+
+/**
+ * The workspace initial files are written to. The roster and workspace path follow the rule
+ * every Compute Driver shares; Docker's initializer also needs native bootstrap, which seeds
+ * the workspace the setup documents complete.
+ */
+function dockerSetupWorkspace(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): string {
+  const workspace = requireWorkspaceSetupConfiguration(
+    configuration,
+    DOCKER_SETUP_WORKSPACES,
+    createError,
+  );
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const main = workspaceSetupMainEntry(configuration);
+  for (const [parent, agent] of [
+    ["agents.defaults", defaults],
+    [main?.setting ?? "agents.entries.main", main?.agent],
+  ] as const) {
+    for (const option of ["skipBootstrap", "skipOptionalBootstrapFiles"]) {
+      if (agent?.[option] === true) {
+        throw createError(
+          `${parent}.${option}`,
+          "must not be true for initial workspace files: Docker Compute writes them after native bootstrap",
+        );
+      }
+    }
+  }
+  return workspace;
+}
+
 function optionalEnvironment(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
@@ -476,6 +526,15 @@ export class DockerComputeDriver implements ComputeDriver {
     validatePlaintextNativeGateway(configuration);
     validateRoutableNativeListener(configuration);
     validateCodexApprovalPolicySetting(configuration);
+  }
+
+  // Agent create and update apply preparation's workspace rule, with its message. (OCC
+  // provisioning and deployment refuse Docker's Harness authentication first.)
+  validateWorkspaceSetup(
+    _harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    dockerSetupWorkspace(configuration, callerSettingError);
   }
 
   validateHarnessAuth(): never {
@@ -729,25 +788,7 @@ export class DockerComputeDriver implements ComputeDriver {
   }
 
   private workspaceDirectory(revision: Readonly<AgentRevision>): string {
-    const agents = asRecord(revision.configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const main = workspaceSetupMainAgent(revision.configuration);
-    if (main === undefined) {
-      throw new ConfigurationFailure("Workspace setup requires only the native main Agent.");
-    }
-    const workspace = main?.workspace ?? defaults?.workspace ?? "/home/node/.openclaw/workspace";
-    if (
-      (workspace !== "/home/node/.openclaw/workspace" && workspace !== "/home/node/workspace") ||
-      defaults?.skipBootstrap === true ||
-      defaults?.skipOptionalBootstrapFiles === true ||
-      main?.skipBootstrap === true ||
-      main?.skipOptionalBootstrapFiles === true
-    ) {
-      throw new ConfigurationFailure(
-        "Workspace setup requires native bootstrap in exact-Agent managed storage.",
-      );
-    }
-    return workspace;
+    return dockerSetupWorkspace(revision.configuration, preparationSettingError);
   }
 
   private async initializeWorkspace(
@@ -1409,10 +1450,25 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             },
             (response) => {
               const chunks: Buffer[] = [];
+              let responseBytes = 0;
               response.once("error", reject);
-              response.on("data", (chunk: Buffer | string) =>
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-              );
+              const contentLength = response.headers["content-length"];
+              if (
+                typeof contentLength === "string" &&
+                Number(contentLength) > MAX_DOCKER_API_RESPONSE_BYTES
+              ) {
+                response.destroy(new Error("Docker API response is too large."));
+                return;
+              }
+              response.on("data", (chunk: Buffer | string) => {
+                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                responseBytes += buffer.length;
+                if (responseBytes > MAX_DOCKER_API_RESPONSE_BYTES) {
+                  response.destroy(new Error("Docker API response is too large."));
+                  return;
+                }
+                chunks.push(buffer);
+              });
               response.on("end", () => {
                 const status = response.statusCode ?? 0;
                 const text = Buffer.concat(chunks).toString("utf8");

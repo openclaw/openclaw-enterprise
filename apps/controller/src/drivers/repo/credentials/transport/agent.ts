@@ -80,7 +80,7 @@ export function createAgentHandler(
     request.once("aborted", cancel);
     response.once("close", onResponseClose);
     let exchange: ExchangeRef | undefined;
-    const deadline = clock.schedule(limits.exchangeMs, cancel);
+    const deadline = clock.schedule(limits.maxExchangeMs, cancel);
     try {
       const reserved = service.reserve(bearer, parsed.head, abort.signal);
       if ("kind" in reserved) {

@@ -22,6 +22,56 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
+// The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
+// the caller can act on, so views keep their own guidance instead of showing them.
+export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
+export const GENERIC_CONFLICT = "The requested platform resource already exists.";
+
+// The API records these deployment endings as failed, but nothing went wrong with the version,
+// so the console shows a neutral outcome instead. A newer version took over before this one
+// became current (finding 1353; the record never names the newer version, so neither does the
+// console), or the owner stopped the Agent while this version was deploying (finding 1375).
+// REPOSITORY_REVISION_STOPPED stays a failure: it can also mean the Namespace is not ready.
+const NEUTRAL_DEPLOYMENT_OUTCOMES = new Map([
+  ["REVISION_SUPERSEDED", "superseded"],
+  ["REPOSITORY_REVISION_SUPERSEDED", "superseded"],
+  ["REVISION_STOPPED", "stopped"],
+]);
+
+// "superseded" or "stopped" for a neutral ending, otherwise null.
+export function neutralDeploymentOutcome(status) {
+  return status?.status === "failed"
+    ? (NEUTRAL_DEPLOYMENT_OUTCOMES.get(status.error?.code) ?? null)
+    : null;
+}
+
+// The recorded outcome to show: the API's status, except that a neutral ending is not a failure.
+export function deploymentOutcome(status) {
+  return neutralDeploymentOutcome(status) ?? status.status;
+}
+
+export const NEUTRAL_DEPLOYMENT_NOTES = {
+  superseded: "Superseded by a newer version",
+  stopped: "Stopped before it finished",
+};
+
+// Revisions list newest first, one page at a time (finding 1323). A page can be empty when
+// its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
+async function latestReadableRevision(context, path) {
+  let cursor = null;
+  do {
+    const page = await context.request(
+      cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
+      { includeMeta: true },
+    );
+    if (page.data.length > 0) {
+      return page.data[0];
+    }
+    cursor = page.meta?.nextCursor ?? null;
+  } while (cursor);
+  return null;
+}
+
 export function message(error, mutation = false) {
   if (error.code === "SAVED_CONFIGURATION_UNREADABLE") {
     const field = {
@@ -87,6 +137,7 @@ export function renderAgentList(context) {
   search.value = context.drafts.get("agent-search") ?? "";
   context.drafts.track("agent-search", () => search.value || undefined);
   const rows = element("div");
+  const deployments = new Map();
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
@@ -121,14 +172,75 @@ export function renderAgentList(context) {
         element(
           "tr",
           {},
-          ...["Agent", "Execution mode", "Current version", "Created"].map((label) =>
-            element("th", { scope: "col" }, label),
+          ...["Agent", "Execution mode", "Current version", "Latest deployment", "Created"].map(
+            (label) => element("th", { scope: "col" }, label),
           ),
         ),
       ),
     );
     const body = element("tbody");
     for (const item of matches) {
+      const deployment = element("td", {}, "Reading deployment…");
+      if (!deployments.has(item.id)) {
+        deployments.set(
+          item.id,
+          latestReadableRevision(
+            context,
+            `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
+          ).then(async (latest) => {
+            if (!latest) {
+              return null;
+            }
+            const status = await context.request(
+              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
+            );
+            return { revision: latest, status };
+          }),
+        );
+      }
+      void deployments
+        .get(item.id)
+        .then((result) => {
+          if (!context.isCurrent()) {
+            return;
+          }
+          if (result === null) {
+            deployment.textContent = "No visible deployments";
+            return;
+          }
+          deployment.replaceChildren(
+            link(
+              `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
+              `agents/${item.id}?revision=${result.revision.id}`,
+              context,
+            ),
+          );
+          const neutral = neutralDeploymentOutcome(result.status);
+          if (neutral) {
+            deployment.append(
+              element(
+                "span",
+                { className: "resource-id" },
+                `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.`,
+              ),
+            );
+          } else if (result.status.status === "failed") {
+            deployment.append(
+              element(
+                "span",
+                { className: "resource-id" },
+                result.status.error?.message ?? "Deployment failed.",
+              ),
+            );
+          }
+          deployment.append(
+            element("span", { className: "resource-id" }, "Serving health unverified"),
+          );
+        })
+        .catch((error) => {
+          deployment.textContent =
+            error.status === 403 ? "Deployment access denied" : "Deployment unavailable";
+        });
       body.append(
         element(
           "tr",
@@ -155,6 +267,7 @@ export function renderAgentList(context) {
                 )
               : "No current version",
           ),
+          deployment,
           element("td", {}, displayDate(item.createdAt)),
         ),
       );

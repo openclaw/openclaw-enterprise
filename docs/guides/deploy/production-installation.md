@@ -154,9 +154,11 @@ or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
 
 ### Advanced: copy manual YAML examples
 
-Use this branch only when deliberately skipping profiles; it refuses to overwrite
-existing configuration YAML. The manual example selects the curated Codex PluginDriver catalog,
-unlike the `codex` profile's default hosted PAT-backed discovery.
+Without profiles, this branch refuses overwrites and selects curated discovery;
+Codex profiles use hosted discovery.
+
+Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
+the startup Secret alone grants none.
 
 ```bash
 (
@@ -506,7 +508,8 @@ Activation is one-way: the database refuses older images' sessions and
 4. Run `helm upgrade` with the compatible image. The api Deployment uses
    `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
    and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through restricted access, verify password recovery, new session admission,
+5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, new session admission,
    the expected Namespaces and existing Agent detail, and rejected stale sessions.
    Reopen ingress only after these checks, retaining one serving controller.
 

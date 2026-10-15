@@ -10,6 +10,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ADMINISTRATOR_RUNTIME_ROLE } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy } from "@openclaw-enterprise/utils";
+import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
 export const RUNTIME_ROLE_HEADER = "x-occ-role";
 export const RUNTIME_ROLE_POLICY_HEADER = "x-occ-role-policy";
@@ -139,6 +140,7 @@ export function humanRuntimeAccess(
     runtimeRole === ADMINISTRATOR_RUNTIME_ROLE;
   if (
     auth?.mode !== "trusted-proxy" ||
+    unsupportedNativeGatewayAuthFields(auth).length !== 0 ||
     proxy?.userHeader !== "x-occ-identity" ||
     (sharedAdministrator
       ? !Array.isArray(proxy.allowUsers) || !proxy.allowUsers.includes(RUNTIME_SERVICE_IDENTITY)

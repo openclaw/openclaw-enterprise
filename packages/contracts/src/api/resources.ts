@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
 import {
   AgentId,
@@ -1069,10 +1070,44 @@ export const AgentRevisionReadResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// A list item names a revision without its saved settings, so a page stays a few hundred bytes
+// per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
+// the ones clients use to tell revisions apart; the database checks their shape on insert.
+export const AgentRevisionSummarySchema = Type.Pick(
+  AgentRevisionSchema,
+  [
+    "id",
+    "namespaceId",
+    "agentId",
+    "revision",
+    "backendId",
+    "configurationId",
+    "configurationGeneration",
+    "harness",
+    "createdAt",
+  ],
+  {
+    description:
+      "Revision summary without saved settings. Read the exact revision for its configuration, or for configurationReadError when the saved settings are unreadable.",
+  },
+);
+
 export const AgentRevisionListResponse = Type.Object(
   {
-    data: Type.Array(AgentRevisionReadSchema, { description: agentRevisionReadDescription }),
-    meta: Meta,
+    data: Type.Array(AgentRevisionSummarySchema, {
+      maxItems: 100,
+      description: "Readable revisions, newest first.",
+    }),
+    meta: Type.Object(
+      {
+        ...Meta.properties,
+        nextCursor: Type.Union([Type.String({ maxLength: 32 }), Type.Null()], {
+          description:
+            "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -1088,6 +1123,24 @@ export const AgentDeploymentStatusSchema = Type.Object(
       Type.Literal("succeeded"),
       Type.Literal("failed"),
     ]),
+    cleanup: Type.Union(
+      [
+        Type.Null(),
+        Type.Object(
+          {
+            status: Type.Union(
+              ["queued", "running", "succeeded", "failed"].map((status) => Type.Literal(status)),
+            ),
+            nextAttemptAt: Type.Union([Timestamp, Type.Null()]),
+          },
+          { additionalProperties: false },
+        ),
+      ],
+      {
+        description:
+          "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed.",
+      },
+    ),
     progress: Type.Union(
       [
         Type.Null(),
@@ -1132,6 +1185,10 @@ export const AgentDeploymentStatusSchema = Type.Object(
             message: Type.String({ minLength: 1 }),
             data: Type.Optional(
               Type.Union([
+                Type.Object(
+                  { preparation: ComputePreparationFailureEvidenceSchema },
+                  { additionalProperties: false },
+                ),
                 Type.Object(
                   {
                     timeoutMs: Type.Integer({ minimum: 1 }),
@@ -1420,7 +1477,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
               },
               { additionalProperties: false },
             ),
-            { maxItems: 16 },
+            { maxItems: 256 },
           ),
           available: Type.Boolean(),
           unavailableCode: Type.Optional(Type.Literal("NO_POD")),
@@ -1541,6 +1598,7 @@ export type ServiceAccountWire = Type.Static<typeof ServiceAccountSchema>;
 export type BackendSummaryWire = Type.Static<typeof BackendSummarySchema>;
 export type AgentReadWire = Type.Static<typeof AgentReadSchema>;
 export type AgentRevisionReadWire = Type.Static<typeof AgentRevisionReadSchema>;
+export type AgentRevisionSummaryWire = Type.Static<typeof AgentRevisionSummarySchema>;
 export type AgentReadResponse = Type.Static<typeof AgentReadResponse>;
 export type AgentRevisionReadResponse = Type.Static<typeof AgentRevisionReadResponse>;
 export type AgentWire = Type.Static<typeof AgentSchema>;
@@ -1613,10 +1671,17 @@ export const PresetResponse = Type.Object(
   { data: PresetSchema, meta: Meta },
   { additionalProperties: false },
 );
+// A list item names a Preset without its template (up to 1 MiB); read the exact Preset for it.
+export const PresetSummarySchema = Type.Pick(
+  PresetSchema,
+  ["id", "namespaceId", "name", "createdAt"],
+  { description: "Preset summary without its template. Read the exact Preset for the template." },
+);
 export const PresetListResponse = Type.Object(
-  { data: Type.Array(PresetSchema), meta: Meta },
+  { data: Type.Array(PresetSummarySchema), meta: Meta },
   { additionalProperties: false },
 );
 export type PresetWire = Type.Static<typeof PresetSchema>;
+export type PresetSummaryWire = Type.Static<typeof PresetSummarySchema>;
 export type PresetResponse = Type.Static<typeof PresetResponse>;
 export type PresetListResponse = Type.Static<typeof PresetListResponse>;

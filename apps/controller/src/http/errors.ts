@@ -10,7 +10,9 @@ import {
   ChannelDirectoryError,
   ChannelCredentialError,
   ConfigurationHarnessError,
+  ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
+  CredentialSourceConfigError,
   CredentialSourceDriverError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
@@ -109,7 +111,9 @@ function cappedPointer(segments: readonly string[]): string {
     }
     if (path === "") {
       path = "/";
-      for (const piece of segment.match(/~[01]|[^]/gu) ?? []) {
+      // At most 511 characters of the first segment fit, so only its first 1,024 are split
+      // into pieces: a multi-megabyte key costs no more than a short one (finding 1131).
+      for (const piece of segment.slice(0, 1024).match(/~[01]|[^]/gu) ?? []) {
         if (path.length + piece.length > 512) {
           break;
         }
@@ -719,6 +723,11 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof IAMRoleInUseError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);
   }
+  if (error instanceof CredentialSourceConfigError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/config/${error.field}`, code: "INVALID_VALUE" },
+    ]);
+  }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
@@ -775,6 +784,10 @@ export function requestFailure(error: unknown): RequestFailure {
     // The message names only the field; other Configuration validation stays generic.
     // The field's path includes a submitted provider name, so it is capped like other
     // messages that name submitted object keys.
+    return failure(400, "INVALID_REQUEST", capped(error.message));
+  }
+  if (error instanceof ConfigurationSizeError) {
+    // The message names the Driver's limit and what to change, never the content.
     return failure(400, "INVALID_REQUEST", capped(error.message));
   }
   if (error instanceof ConfigurationValidationError) {

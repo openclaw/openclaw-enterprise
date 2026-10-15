@@ -163,10 +163,21 @@ export function createLoginFixture({
   };
 }
 
-export async function expectDenied(response) {
+export async function expectDenied(response, code = undefined) {
   assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { message: "Authentication was not accepted." });
+  assert.deepEqual(
+    await response.json(),
+    code === undefined
+      ? { message: "Authentication was not accepted." }
+      : { message: "Authentication was not accepted.", code },
+  );
   assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
+}
+
+// A provider failure carries its code, which the controller turns into the Console's outage
+// advice; it is resolved before any identity, so it reveals nothing about accounts.
+export function expectProviderUnavailable(response) {
+  return expectDenied(response, "PROVIDER_UNAVAILABLE");
 }
 
 export function cookiePairs(response) {
@@ -251,7 +262,7 @@ export async function testOversizedProviderBodies(t, { endpoints, serve, provide
             response.write(declared ? "x" : "x".repeat(64 * 1024 + 1));
           });
           const started = performance.now();
-          await expectDenied(await fixture.callback());
+          await expectProviderUnavailable(await fixture.callback());
           assert.ok(performance.now() - started < 2_000);
           await until(() => closed);
           assert.deepEqual(fixture.subjects, []);

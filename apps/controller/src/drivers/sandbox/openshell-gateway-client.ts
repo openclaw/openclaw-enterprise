@@ -11,7 +11,7 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -630,13 +630,26 @@ function profileDiagnosticsFailure(response: RecordValue, operation: string): vo
 }
 
 const MAX_SANDBOX_LOG_LINES = 2000;
+/**
+ * The largest response message the client accepts, after decompression: the grpc-js
+ * default, pinned because it is what bounds `GetSandboxLogs`. OpenShell does not limit
+ * a log line's length, so a read (up to 2000 lines; OCC asks for at most 1000) is
+ * buffered whole before OCC withholds oversized lines. A larger response fails the
+ * read with `RESOURCE_EXHAUSTED` instead of being cut.
+ * grpc-js has no per-call limit, and every other RPC already had this one.
+ */
+const MAX_RECEIVE_MESSAGE_BYTES = 4 * 1024 * 1024;
 
 /** RFC 3339 with up to nanosecond precision to a protobuf Timestamp. */
 function timestampMessage(value: string): { seconds: string; nanos: number } {
   const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value);
   const seconds = match === null ? Number.NaN : Date.parse(`${match[1]}Z`);
-  if (match === null || Number.isNaN(seconds)) {
-    throw new OpenShellGatewayFailure("OpenShell log since time must be an RFC 3339 UTC time.");
+  if (
+    match === null ||
+    Number.isNaN(seconds) ||
+    new Date(seconds).toISOString().slice(0, 19) !== match[1]
+  ) {
+    throw new OpenShellGatewayFailure("OpenShell timestamp must be an RFC 3339 UTC time.");
   }
   return {
     seconds: String(Math.floor(seconds / 1000)),
@@ -713,6 +726,11 @@ function normalizeEndpoint(endpoint: string): {
   readonly secure: boolean;
 } {
   const value = nonempty(endpoint, "OpenShell gateway endpoint");
+  if (gatewayEndpointRewritesIpv4(value)) {
+    throw new OpenShellGatewayFailure(
+      "OpenShell gateway endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
   if (!value.includes("://")) {
     return { target: value, secure: false };
   }
@@ -1897,7 +1915,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     }
     return {
       grpc,
-      client: new OpenShell(endpoint.target, credentials) as unknown as OpenShellGrpcClient,
+      client: new OpenShell(endpoint.target, credentials, {
+        "grpc.max_receive_message_length": MAX_RECEIVE_MESSAGE_BYTES,
+      }) as unknown as OpenShellGrpcClient,
     };
   }
 }

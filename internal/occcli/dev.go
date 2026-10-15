@@ -17,8 +17,9 @@ import (
 
 func developmentCommand() *cobra.Command {
 	command := commandGroup("dev", "Start or stop a local development stack from a source checkout")
-	// Development commands do not use the remote resource client's flags.
-	command.PersistentPreRunE = func(_ *cobra.Command, _ []string) error { return nil }
+	// Development commands do not use the remote resource client's flags, but
+	// an explicit empty --key-output must not fall back to the dev-owned path.
+	command.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error { return refuseEmptyFlags(cmd) }
 	for _, action := range []struct{ name, description string }{
 		{"up", "Start the selected development Compute Driver"},
 		{"down", "Stop the selected development stack"},
@@ -47,6 +48,9 @@ func developmentCommand() *cobra.Command {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
 				case "", "docker":
+					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
+						return err
+					}
 					// Reuse the established Docker startup flow. Its Kubernetes
 					// dispatch cannot recur because this branch selects Docker.
 					arguments := []string{filepath.Join(repository, "scripts", "dev-up")}

@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   access,
+  appendFile,
   chmod,
   mkdir,
   mkdtemp,
@@ -16,8 +17,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createRequire } from "node:module";
-import { createServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -131,29 +132,80 @@ function runtimeAccountName(namespace, agentId, prefix) {
   return `${prefix.slice(0, 19)}-${digest(`${namespace.id}:${agentId}`).slice(0, 12)}`;
 }
 
-async function freePortRange() {
+// The fixture owns its gateway port range for its whole life. Reserving free ports,
+// releasing them, and letting each fake gateway bind its port later raced every other
+// local process, including outgoing connections that take ephemeral ports (finding 1160).
+// Instead each port answers as the gateway of the one live unit configured for it, and
+// otherwise resets the connection, which the helper treats like a closed port.
+async function gatewayPortRange(t, units, state) {
+  const portLine = (gatewayPort) => `Environment=OPENCLAW_GATEWAY_PORT=${gatewayPort}`;
+  async function served(gatewayPort) {
+    let live = 0;
+    for (const name of await readdir(units)) {
+      const unit = await readFile(join(units, name), "utf8").catch(() => "");
+      if (!unit.split("\n").includes(portLine(gatewayPort))) {
+        continue;
+      }
+      const pid = Number(await readFile(join(state, `${name}.pid`), "utf8").catch(() => ""));
+      try {
+        // Same liveness rule as the fixture systemctl: kill -0 on the unit's pid.
+        if (Number.isSafeInteger(pid) && pid > 0 && process.kill(pid, 0)) {
+          live++;
+        }
+      } catch {
+        // ESRCH: the unit's process has exited.
+      }
+    }
+    // Two live units on one port would have failed to bind on a real host. The fixture
+    // systemctl already refuses to start the second; this check is a backstop.
+    return live === 1;
+  }
   // Reserve adjacent loopback ports together so the lowest-free-port assertion is meaningful.
   for (let attempt = 0; attempt < 100; attempt++) {
     const servers = [];
     try {
       let start;
       for (let offset = 0; offset < 3; offset++) {
-        const server = createServer();
+        let gatewayPort;
+        const server = createHttpServer(async (request, response) => {
+          try {
+            if (!(await served(gatewayPort))) {
+              request.socket.destroy();
+              return;
+            }
+            const readyz = request.method === "GET" && request.url === "/readyz";
+            // Log a fixed line, never request data: the tests assert only readiness probes arrive.
+            await appendFile(
+              join(state, "readyz.log"),
+              `${readyz ? "GET /readyz" : "unexpected"}\n`,
+            );
+            response.writeHead(readyz ? 200 : 404);
+            response.end();
+          } catch {
+            request.socket.destroy();
+          }
+        });
         servers.push(server);
         await new Promise((resolve, reject) => {
           server.once("error", reject);
           server.listen(offset === 0 ? 0 : start + offset, "127.0.0.1", resolve);
         });
-        start ??= server.address().port;
+        gatewayPort = server.address().port;
+        start ??= gatewayPort;
       }
+      t.after(() => Promise.all(servers.map(closeServer)));
       return { start, end: start + 2 };
     } catch {
       // Another local process can hold the adjacent port; try a different ephemeral range.
-    } finally {
-      await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+      await Promise.all(servers.map(closeServer));
     }
   }
   throw new Error("Could not reserve a loopback port range.");
+}
+
+function closeServer(server) {
+  server.closeAllConnections();
+  return new Promise((resolve) => server.close(resolve));
 }
 
 async function fixture(t, selection = {}) {
@@ -178,7 +230,7 @@ async function fixture(t, selection = {}) {
     writeFile(configured.ssh.identityFile, "fixture"),
     writeFile(configured.ssh.knownHostsFile, "fixture"),
   ]);
-  configured.network.gatewayPortRange = await freePortRange();
+  configured.network.gatewayPortRange = await gatewayPortRange(t, units, state);
   const children = [];
   const calls = [];
   const executor = {
@@ -224,7 +276,7 @@ async function fixture(t, selection = {}) {
   };
   const driver = createSshComputeDriver(configured, { executor, ...selection });
   t.after(async () => {
-    // Detached readiness listeners survive helper exit, as systemd services would.
+    // Detached unit processes survive helper exit, as systemd services would.
     for (const name of await readdir(state)) {
       if (!name.endsWith(".pid")) {
         continue;
@@ -638,6 +690,7 @@ WantedBy=multi-user.target
   await writeFile(join(dir, "state", "retained-after-stop"), "persistent");
   await f.driver.stopRevision(rev);
   await f.driver.stopRevision(rev);
+  await missing(join(f.state, `${f.unit(rev)}.pid`));
   await missing(join(dir, "current"));
   await missing(join(dir, "served.json"));
   assert.equal((await stat(f.revisionDir(rev))).isDirectory(), true);
@@ -780,6 +833,8 @@ test("SSH Agent deletion frees the Agent's host port, unit, account, and state",
   await assert.rejects(f.driver.deleteAgentRuntimeCredentials(binding), /SSH host operation/);
   await missing(dir);
   await f.driver.deleteAgentRuntimeCredentials(binding);
+  // The gateway process is stopped, not just its unit file removed, so its port is free.
+  await missing(join(f.state, `${f.unit(deleted)}.pid`));
   await missing(join(f.units, f.unit(deleted)));
   await missing(join(f.root, "accounts", `${runtimeUser}.json`));
   await missing(join(f.state, "accounts", "users", runtimeUser));
@@ -896,13 +951,16 @@ test("SSH revisions fail closed on unbound identities, unsupported topology, san
   await assert.rejects(f.driver.prepareRevision(rev), /bound Namespace and Agent/);
   await f.driver.ensureNamespace(tenant);
   bind(f.driver, rev);
-  for (const harnessAuth of [
-    undefined,
-    { method: "api_key" },
-    { method: "chatgpt_service_account" },
-    { method: "runtime", source: {} },
-  ]) {
+  for (const harnessAuth of [undefined, { method: "runtime", source: {} }]) {
     await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), /operator-managed/);
+  }
+  // Another method is an Agent setting the caller can change: OCC answers 400 with this message.
+  for (const harnessAuth of [{ method: "api_key" }, { method: "chatgpt_service_account" }]) {
+    await assert.rejects(f.driver.prepareRevision({ ...rev, harnessAuth }), {
+      name: "ConfigurationHarnessError",
+      message:
+        "Agent setting harnessAuth.method must be runtime for embedded OpenClaw on SSH Compute: change harnessAuth.",
+    });
   }
   for (const harness of [
     { id: "codex", mode: "dedicated" },
@@ -1232,10 +1290,11 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
   const bin = join(f.base, "bin");
   await mkdir(bin);
   // Transport-only stand-in records argv and runs the unchanged stdin program with Node.
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   const ssh = join(bin, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nconst fs = require('node:fs');\nconst { spawn } = require('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
   );
   await chmod(ssh, 0o755);
   const previousPath = process.env.PATH;

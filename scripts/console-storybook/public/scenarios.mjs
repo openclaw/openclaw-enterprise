@@ -565,6 +565,16 @@ export const scenarios = {
     description:
       "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
+  recoveryOnlyProviderUnavailable: {
+    group: "Pages/Sign in",
+    name: "Recovery-only provider outage",
+    path: "/console/?authError=github&authReason=provider-unavailable",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -786,6 +796,24 @@ export const scenarios = {
     name: "Loading",
     rules: [{ path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents", hold: true }],
     description: "The collection read remains pending until the real 15-second client timeout.",
+  },
+  agentsInterruptedResponse: {
+    group: "Pages/Agents",
+    name: "Interrupted response",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        bodyError: true,
+        once: true,
+      },
+    ],
+    description:
+      "A collection response body fails after its headers arrive. Retry reloads the list.",
+    gap: "This preview simulates a stream failure; the socket tests verify real HTTP interruption.",
+    workflow: [
+      "Check that Request interrupted appears with Retry instead of an empty Agent collection.",
+      "Select Retry. The populated Agent list returns without changing Namespace or saved resources.",
+    ],
   },
   backends: {
     group: "Pages/Backends",
@@ -1476,29 +1504,55 @@ export const scenarios = {
   },
   createDeploymentPending: {
     group: "Pages/Create Agent",
-    name: "Created Agent with pending deployment",
+    name: "Initial deployment pending",
     path: create,
     actions: readyForm,
-    provisionedDeploymentStatus: "queued",
+    provisionedDeploymentStatus: "running",
     description:
-      "Creation opens Agent details after provisioning completes, while the first deployment remains queued.",
+      "Creation stays on the original provisioning request while its first deployment is running.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect Deployment activity: the recorded status remains queued, and no version is selected.",
-      "Click Refresh deployment. The simulated deployment stays queued; the create form does not reopen.",
+      "Click Create Agent and confirm provisioning remains in progress.",
+      "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
-    name: "Created Agent with failed deployment",
+    name: "Initial deployment failed",
     path: create,
     actions: readyForm,
     provisionedDeploymentStatus: "failed",
     description:
-      "A first-deployment failure appears on Agent details after successful provisioning, without trapping creation on the form.",
+      "The original provisioning request reports its first-deployment failure and links to the existing Agent and revision.",
     steps: [
-      "Click Create Agent and wait for Agent details to open.",
-      "Inspect the failed Deployment activity and its reconciliation error.",
+      "Click Create Agent and wait for the credential initialization failure.",
+      "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
+    ],
+  },
+  createProvisioningStopped: {
+    group: "Pages/Create Agent",
+    name: "Stopped before the first deployment",
+    path: create,
+    actions: readyForm,
+    provisioningCancelledByStop: true,
+    description:
+      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent.",
+    steps: [
+      "Click Create Agent and wait for the cancelled provisioning.",
+      "Confirm the page says Provisioning stopped, asks for no new Agent, and links the kept Agent.",
+    ],
+  },
+  createDeploymentStopped: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment stopped",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentStopped: true,
+    description:
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair.",
+    steps: [
+      "Click Create Agent and wait for the stopped first deployment.",
+      "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",
     ],
   },
   createUnsupportedProvisioning: {
@@ -1608,6 +1662,44 @@ export const scenarios = {
     actions: createWorkspaceFields,
     description:
       "The creation form seeds AGENTS.md, SOUL.md, IDENTITY.md, and USER.md before the Agent's first deployment. Clearing a field creates an empty file.",
+  },
+  createPresetMultiline: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset strings",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+    ],
+    description:
+      "String variables accept multiple lines. An untouched CRLF default retains its original value; editing uses the browser's LF text.",
+  },
+  createPresetMultilineApplied: {
+    group: "Pages/Create Agent",
+    name: "Multiline Preset applied",
+    path: create,
+    presetVariables: {
+      notes: {
+        type: "string",
+        default: "# Notes\r\n- First instruction\r\n- Second instruction\r\n",
+      },
+    },
+    presetWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Multiline preset example" },
+      click("Use Preset"),
+      { selector: ".launch-advanced summary", click: true },
+    ],
+    description:
+      "Use Preset preserves the line structure in the editable workspace copy. Workspace textareas follow the existing LF submission contract; no Agent is created by this story.",
   },
   createDedicatedOpenclaw: {
     group: "Pages/Create Agent",
@@ -1788,6 +1880,36 @@ export const scenarios = {
     })),
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
+  },
+  createRepositoriesLocaleSearch: {
+    group: "Pages/Create Agent",
+    name: "Locale-stable repository search",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "ibm" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "IBM-platform",
+        displayName: "acme/platform",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "acme/handbook",
+        allowedProfiles: ["git-read"],
+      },
+      ...["api", "docs", "infrastructure", "mobile"].map((name) => ({
+        repositoryRef: name,
+        displayName: `acme/${name}`,
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      })),
+    ],
+    description:
+      "Search matching uses stable casing, so ibm finds the approved IBM-platform reference even when its display name does not contain the query.",
+    steps: [
+      "Confirm that searching for ibm leaves acme/platform visible.",
+      "Select acme/platform and confirm IBM-platform appears as the selected repository reference.",
+    ],
+    gap: "Simulated UI proof only; this preview does not verify GitHub App access or repository credential delivery.",
   },
   createRepositoriesCustom: {
     group: "Pages/Create Agent",
@@ -2433,6 +2555,21 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  longVersionHistory: {
+    group: "Pages/Agent detail",
+    name: "Long version history",
+    path: draft,
+    deployed: true,
+    revisionHistory: 8,
+    revisionPageSize: 3,
+    description:
+      "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
+    steps: [
+      "Check that v8, v7, and v6 are listed with Show older versions below them.",
+      "Select Show older versions until v1 is listed and the button is gone.",
+    ],
+    gap: "The fixture uses three versions per page; the API default is 50.",
+  },
   draftAutomaticCredentials: {
     group: "Pages/Agent detail",
     name: "First deployment creates credentials",
@@ -2894,6 +3031,77 @@ export const scenarios = {
     description:
       "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
+  agentsDeploymentFailed: {
+    group: "Pages/Agents",
+    name: "Latest deployment failed",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    description:
+      "The list shows the newest visible failure beside the current version, without asserting serving health.",
+    steps: [
+      "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
+    ],
+  },
+  deploymentBootstrapCleanup: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap failure with cleanup pending",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    cleanupStatus: "queued",
+    cleanupCompletes: true,
+    description:
+      "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
+    steps: [
+      "Read the failing oauth-bootstrap exit status beside the successful init container.",
+      "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
+    ],
+  },
+  agentsDeploymentDenied: {
+    group: "Pages/Agents",
+    name: "Latest deployment access denied",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 403,
+    description:
+      "Agent identity and current pointer remain visible while deployment access is denied.",
+  },
+  agentsDeploymentLoading: {
+    group: "Pages/Agents",
+    name: "Latest deployment loading",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadDelay: 6000,
+    description:
+      "Deployment reads show loading beside the current pointer, then show the visible result.",
+  },
+  agentsDeploymentError: {
+    group: "Pages/Agents",
+    name: "Latest deployment unavailable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    latestDeploymentReadStatus: 503,
+    description:
+      "An interrupted deployment read leaves the Agent and current pointer visible without guessing an outcome.",
+  },
+  runtimeBootstrapContainers: {
+    group: "Pages/Agent detail",
+    name: "Bootstrap container status and logs",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    bootstrapFailure: true,
+    bootstrapRuntime: true,
+    description:
+      "The Pod card names both containers; the writer's exit 1 is visible beside the init container's exit 0.",
+    steps: [
+      "Switch Pod / container from oauth-bootstrap to prepare-oauth-home and read its initialization output.",
+      "Switch back to oauth-bootstrap to inspect the failed writer.",
+    ],
+  },
   deploymentFailed: {
     group: "Pages/Agent detail",
     name: "New version failed",
@@ -2937,7 +3145,7 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     description:
-      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
+      "v7 failed its startup model check; the recorded error states the next step, the record names the runtime's classified cause (the provider rejected the model or request format), and Open Configuration links the draft.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -2948,6 +3156,29 @@ export const scenarios = {
     candidateSelected: true,
     description:
       "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
+  },
+  deploymentStopped: {
+    group: "Pages/Agent detail",
+    name: "Deployment stopped by the owner",
+    path: candidateVersion,
+    deployed: true,
+    stopped: true,
+    candidateDeploymentStatus: "failed",
+    candidateStopped: true,
+    description:
+      "The owner stopped the Agent while v7 was deploying. Latest visible deployment reads v7 · Stopped with neutral stages, no failure banner, and a deploy-again next step.",
+    gap: "The stopped record is simulated UI evidence; it does not verify a live deployment.",
+  },
+  deploymentSuperseded: {
+    group: "Pages/Agent detail",
+    name: "Deployment superseded by a newer version",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSuperseded: true,
+    description:
+      "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
+    gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
   },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
@@ -3204,6 +3435,42 @@ export const scenarios = {
     ],
     actions: [click("Deploy new version")],
     description: "A rejected deployment reports failure and re-enables the action.",
+  },
+  deployRefusedSetting: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused by a Configuration setting",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Configuration setting gateway.bind must listen on all interfaces to serve routed traffic: use lan or omit the setting.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
+  },
+  deployAgentPrincipalDenied: {
+    group: "Pages/Agent detail",
+    name: "Deployment denied for the Agent's service principal",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        status: 403,
+        code: "FORBIDDEN",
+        message:
+          "The Agent service principal service-agent-agt_00000000-0000-4000-8000-000000000001 is not authorized to operate secret sec_00000000-0000-4000-8000-000000000001. Grant that principal operate on the secret, then deploy again.",
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "A denial for the Agent's own service principal names the principal and the grant to add. A caller's own denial keeps the console's guidance.",
   },
   revisionDeployDenied: {
     group: "Pages/Agent detail",
@@ -4176,6 +4443,28 @@ export const scenarios = {
     description:
       "An uncertain write blocks retry until Reload lets the reader inspect current content.",
   },
+  workspaceMissingReadback: {
+    group: "Components/Workspace",
+    name: "Missing file after uncertain create",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
+  },
   deletionConfirm: {
     group: "Components/Deletion",
     name: "Confirmation",
@@ -4190,7 +4479,36 @@ export const scenarios = {
     path: draft,
     deleting: true,
     description:
-      "Pending cleanup removes editing and deployment controls. Refresh deletion status checks completion.",
+      "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
+  },
+  deletionRetryConfirm: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup confirmation",
+    path: draft,
+    deleting: true,
+    actions: [click("Request deletion again")],
+    description:
+      "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
+  },
+  deletionRetryUnknown: {
+    group: "Components/Deletion",
+    name: "Repeat cleanup outcome unknown",
+    path: draft,
+    deleting: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 503,
+        once: true,
+      },
+    ],
+    actions: [
+      click("Request deletion again"),
+      { selector: ".agent-delete-dialog button.danger", click: "Request deletion again" },
+    ],
+    description:
+      "An uncertain repeat request remains disabled until Refresh reads the already deleting Agent successfully. No write is automatically retried.",
   },
   deletionDenied: {
     group: "Components/Deletion",
@@ -4523,7 +4841,47 @@ export const scenarios = {
     deployed: true,
     stopped: true,
     description:
-      "The requested state is stopped. Deployment resumes the Agent; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+  },
+  stopRepeatConfirm: {
+    group: "Components/Stop Agent",
+    name: "Repeat confirmation",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    actions: [click("Request Stop again")],
+    description:
+      "An explicit repeated Stop uses the same confirmation and preserves the selected version. Cancel or Escape returns keyboard focus to Request Stop again.",
+  },
+  stopNoSelection: {
+    group: "Components/Stop Agent",
+    name: "No selected version",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    stopNoSelection: true,
+    description:
+      "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
+  },
+  stopNeverDeployed: {
+    group: "Components/Stop Agent",
+    name: "Never deployed",
+    path: draft,
+    description:
+      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
+  },
+  stopRepeatUnknown: {
+    group: "Components/Stop Agent",
+    name: "Repeated Stop outcome unknown",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [
+      click("Request Stop again"),
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
   },
   stopDenied: {
     group: "Components/Stop Agent",
@@ -4555,6 +4913,7 @@ export const scenarios = {
     steps: [
       "Open Stop Agent and review the confirmation copy.",
       "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Create new version and Deploy new version to request running again.",
     ],
     gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
@@ -4569,7 +4928,7 @@ export const scenarios = {
     steps: [
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page enters Deletion in progress and removes edit/deploy controls.",
+      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
       "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
     ],
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",

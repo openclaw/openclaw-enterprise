@@ -24,8 +24,33 @@ jobs:
         run: |
           echo "trusted=$TRUSTED" >> "$GITHUB_OUTPUT"
           if [[ "$TRUSTED" != true ]]; then
-            echo 'QA scenarios did not run: this PR requires an approved trusted run with model credentials.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'QA advisory jobs did not run: this PR requires a trusted run. The model and Calendar jobs also require model credentials.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  local-installation:
+    name: QA advisory (local installation)
+    needs: eligibility
+    if: needs.eligibility.outputs.trusted == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CI: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: dev-up-k3d
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory-local-installation
+          job-timeout-minutes: 180
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
 
   qa:
     name: QA advisory (${{ matrix.installation }})
@@ -40,6 +65,9 @@ jobs:
         installation: [compose, kubernetes]
     env:
       CI: "1"
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
       OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
       OCC_TEST_QA_PRESET: Codex
       OCC_TEST_QA_SCENARIOS: model-ui,calendar
@@ -51,7 +79,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24.16.0"
       - name: Materialize selected QA credentials
@@ -64,12 +92,13 @@ jobs:
           profile: full
           node-version: "24.16.0"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
+          job-timeout-minutes: 120
       - name: Summarize selected scenarios
         if: always()
         run: node scripts/ci/qa-matrix-summary.mjs
       - name: Retain QA outcomes
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: qa-advisory-${{ matrix.installation }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/qa-matrix-evidence/*.json
@@ -78,3 +107,42 @@ jobs:
       - name: Remove workflow credential inputs
         if: always()
         run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
+
+  openshell:
+    name: QA advisory (OpenShell)
+    needs: eligibility
+    if: needs.eligibility.outputs.trusted == 'true'
+    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+    steps:
+      - name: Verify Landlock support
+        run: |
+          python3 - <<'PYTHON'
+          import ctypes
+          import os
+          import platform
+
+          assert platform.machine() == "x86_64", "This probe requires the x86_64 runner."
+          # x86_64 __NR_landlock_create_ruleset, LANDLOCK_CREATE_RULESET_VERSION.
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, 0, 0, 1)
+          if abi < 3:
+              raise SystemExit(f"OpenShell requires Landlock ABI >=3; got {abi}, errno={ctypes.get_errno()}")
+          print(f"Kernel {os.uname().release}: Landlock ABI {abi}")
+          PYTHON
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: openshell
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory
+          job-timeout-minutes: 120

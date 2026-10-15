@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-10-05
+updated: 2026-10-11
 last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
@@ -163,9 +163,8 @@ When Compute requires stopped predecessors, a newer admission supersedes older
 active maintenance before Compute effects, even after candidate failure.
 Recovery uses a new revision.
 
-Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
-completes without shutdown. An absent active pointer does not prove candidates
-have no runtime resources, so stop still checks the captured revision history.
+Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
+completes without shutdown.
 
 Agent-deletion work requires the Agent to remain `deleting` and stopped, then
 rechecks the original actor's exact-Agent `delete`. It loads every owned revision
@@ -186,25 +185,26 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` performs
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 it loads earlier snapshots, including failed candidates, closes their credential
-sessions, and calls `stopRevision` under the claim heartbeat before preparing the
-candidate; a release failure prevents preparation. The per-Agent queue
-serializes work, and the dispatch guard keeps maintenance from recreating a
-predecessor.
+sessions, and stops them before preparing the candidate; a release failure
+prevents preparation. Their drains yield like a stopped Agent's
+(`PREDECESSOR_STOP_YIELDED`); failing, superseded or stopped work first finishes that stop. The
+dispatch guard keeps maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable revision; the
 [plugin startup warnings contract](../reference/drivers/compute.md#plugin-startup-warnings)
 defines when warnings permit deployment.
 
-Agent-stop dispatch captures and validates the Agent's revisions owned by the
-current Compute. It stops the active revision first, then the rest, including
-terminal candidates and predecessors whose retirement failed. Historical
-revisions pinned to another Compute are excluded; an active revision pinned
-elsewhere fails closed. Before each shutdown, the worker rechecks the Agent
-owner and stopped desired state; later admissions are not added to this cleanup
-set. Partial failure retries
-the idempotent shutdowns without clearing the active pointer or deleting retained
-workspace data.
+Agent-stop dispatch captures and validates the Agent's revisions on the current
+Compute. It stops the active revision first, then the rest, even without an
+active pointer, including terminal candidates and predecessors whose retirement
+failed. Other Computes' revisions are excluded, but an active one fails closed.
+Before each shutdown, the worker rechecks the Agent owner and stopped desired state;
+later admissions are not added. Partial failure retries idempotent shutdowns,
+keeping the active pointer and retained workspace data. Before the convergence
+deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
+work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
+A drain ignores yielded stops; other waits, only stopped Agents'.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -234,9 +234,9 @@ Compute owns infrastructure and Sandbox dispatch. See the
 and [Docker execution flow](docker-compose-development.md).
 
 When `prepareRevision` rejects, the worker asks Compute for an optional bounded
-failure description. Kubernetes names the reconciliation stage and maps only
-reviewed classifications, status codes, and messages. The worker emits
-`worker.compute-prepare-failed`, then preserves the original retry behavior.
+failure description (Kubernetes names the stage and maps only reviewed
+classifications, status codes, and messages), emits
+`worker.compute-prepare-failed`, and keeps the original retry behavior.
 
 ### 6. Persist the result and finish revision activation
 
@@ -288,7 +288,7 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
 Pending convergence refunds the attempt and requeues unready revisions on the
-age-based cadence in
+cadence in
 [pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
 others with backoff. Compute's `pendingReason` selects the pending code.
 `PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome and
@@ -297,19 +297,22 @@ attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
-Before publishing a permanent refusal of an inactive candidate that is exclusive,
-or prepared while its Agent has no active revision (not a held runtime failure,
-the deadline or exhausted retries), `ControllerWorker.stopRefusedCandidate`
-stops it under the claim heartbeat, so a rejected deployment never serves. Kubernetes deletes
-its Harness before the Gateway drains; Pod waits yield to due work (`withYieldingComputeStop`).
+Before publishing a permanent refusal (not a held runtime failure, the deadline
+or exhausted retries), `ControllerWorker.stopRefusedCandidate` stops, under the
+claim heartbeat, an inactive candidate that is exclusive or was prepared with no
+active revision, so a rejected deployment never serves. Kubernetes
+deletes the Harness before awaiting Gateway Pods; Pod waits yield to due work
+(`withYieldingComputeStop`).
+
 An unfinished stop publishes nothing: the work defers as
-`REFUSED_CANDIDATE_STOP_PENDING` past the attempt budget, deadline, in-lease shutdowns and,
-once recorded, lost claims until the stop succeeds, after the readiness cadence, doubled per
-failed (not `stopYielded`) stop in evidence, up to 5 minutes
-but at least four times the stop's duration. Each deferral records the refusal
-(`repeatEvidence`) for deployment status and `worker.completed`. Later passes
-retry only that stop, and errors keep waiting, unless superseded or an authorization or
-backend refusal lifted (past the deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
+`REFUSED_CANDIDATE_STOP_PENDING` until the stop succeeds, past the attempt
+budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
+recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
+evidence, up to 5 minutes, but is at least four times the stop's duration.
+Each deferral records the refusal (`repeatEvidence`) for deployment status and
+`worker.completed`. Later passes retry only that stop, and errors keep waiting,
+unless superseded or an authorization or backend refusal lifted (past the
+deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 
 `ControllerWorker.processRepositoryCleanup` defers every incomplete pass at the
 Driver interval, including closing sessions and failed runtime retirement,
@@ -347,19 +350,19 @@ active and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
-A Namespace pass that observes the same pending state this worker last audited
-(for example, a Kubernetes namespace still terminating) writes no new lifecycle
-audit or `reconcile` row; a changed pending state or the terminal pass does.
+A Namespace pass that observes the same pending state this worker last audited,
+such as a terminating namespace, writes no new lifecycle audit or `reconcile` row;
+a changed pending state or the terminal pass does.
 Lease loss reports `worker.error` `CLAIM_LOST` instead of stale lifecycle state.
 On `SIGTERM` or `SIGINT`, shutdown removes readiness, aborts in-flight work,
 waits for the loop, closes PostgreSQL, and emits `worker.stopped`.
 
 Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence for expired claims and exhausted queued work, so final-attempt crashes
-cannot strand provisioning. A deployment whose last claim expires after it
-published its revision gets one more attempt (`ACTIVE_REVISION_RECOVERY`); a
-failed retry keeps the active runtime.
+evidence, so final-attempt crashes cannot strand provisioning. At the limit, one more attempt
+goes to a deployment that published its revision (`ACTIVE_REVISION_RECOVERY`;
+a failed retry keeps the active runtime) or whose predecessor stop yielded
+(`PREDECESSOR_STOP_RECOVERY`).
 
 ## Debugging and Verification
 
@@ -377,14 +380,19 @@ failed retry keeps the active runtime.
   `SANDBOX_ADMISSION_LIMIT_REACHED` logs `dependency` and `cause` (`unreachable`,
   `timeout` or `unavailable`); other failures log their error class in `cause` and,
   for HTTP errors, `status`.
-- `worker.compute-prepare-failed` identifies the failed Driver stage without
-  serializing the raw exception. Correlate it by `workId` or `revisionId` with
-  the following `worker.completed` retry.
+- `worker.compute-prepare-failed` names the failed Driver stage without the raw
+  exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),
+  [credential-sources](../../tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
-  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs) and
-  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
-  require PostgreSQL; none proves real model execution.
+  [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
+  [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
+  [yielded-redeploy](../../tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs),
+  [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs),
+  [stop](../../tests/integration/postgres-worker-agent-revision-stop.test.mjs) and
+  [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs)
+  require PostgreSQL; none proves model execution.
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback on the authenticated route after changing IAM Drivers.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) verifies
@@ -411,6 +419,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-10 16:40: Retry a stored refusal's stop first. (fix-1033-1034)
+- 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

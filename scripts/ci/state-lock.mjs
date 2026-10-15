@@ -2,7 +2,7 @@
 //
 // prepareFile and cleanupResourceIds read the lane state, run commands, and write the
 // whole state back. The runner queues them in its own process, but a test may call
-// prepareFile itself (a template database per file, a copy per test). Without a lock
+// prepareFile itself (a copy of its file's prepared database per test). Without a lock
 // shared by both processes, one side's write can drop the other side's resource.
 //
 // The lock is `<state>.lock`, created atomically with link(2), holding the owner's pid
@@ -75,8 +75,12 @@ async function removeAbandonedLock(path, content) {
       // Another waiter removed the abandoned lock and a live process took a new one.
       // link(2) never replaces a file. If a third process took the lock in this gap,
       // two holders now overlap: fail here rather than let them both write the state.
-      // It needs a dead holder and three live contenders; a lane has two (the runner
-      // and one test process).
+      // It needs a holder that died with the lock (in practice a test killed by its
+      // timeout) and three live contenders. The runner and each test process that calls
+      // prepareFile contend, so a lane has up to fileConcurrency + 1 (PostgreSQL
+      // Application: nine, the runner and eight of the nine revision files that call it, as
+      // eight files run at once). The likely result is this error on a run that is already
+      // failing.
       await link(aside, path).catch((error) => {
         if (error.code === "EEXIST") {
           throw new Error(`Displaced a live CI state lock ${path} and could not restore it.`);

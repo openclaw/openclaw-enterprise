@@ -109,9 +109,12 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
+  // The API names the Agent's own principal and the grant it lacks; the console shows that.
   await page
     .getByRole("alert")
-    .filter({ hasText: /Deployment denied.*selected Secrets/ })
+    .filter({
+      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+    })
     .waitFor();
   assert.equal(await deploy.isEnabled(), true);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
@@ -150,7 +153,8 @@ test("draft Agent offers deployment without a generated-credential step", async 
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  // The draft enables Slack, which deployment admits only with an Installation channel runtime.
+  const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent redeployment", { ready: true });
   const agent = await fixture.createAgent(
@@ -238,14 +242,24 @@ test("active Agent can deploy the current saved draft as a new version", async (
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.equal(revisions.status, 200);
-  assert.equal(revisions.data.length, 2);
-  assert.equal(revisions.data[0].id, first.revision.id);
-  assert.equal(revisions.data[0].configurationGeneration, 1);
-  assert.deepEqual(revisions.data[0].configuration, first.revision.configuration);
-  assert.equal(revisions.data[1].id, deployed.id);
-  assert.equal(revisions.data[1].configurationGeneration, currentDraft.generation);
+  // Revision summaries list newest first; each saved Configuration is on its exact read.
+  assert.deepEqual(
+    revisions.data.map(({ id, configurationGeneration }) => [id, configurationGeneration]),
+    [
+      [deployed.id, currentDraft.generation],
+      [first.revision.id, 1],
+    ],
+  );
+  const savedConfiguration = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.configuration;
+  assert.deepEqual(await savedConfiguration(first.revision.id), first.revision.configuration);
   assert.equal(
-    revisions.data[1].configuration.plugins.entries.knowledge.config.marker,
+    (await savedConfiguration(deployed.id)).plugins.entries.knowledge.config.marker,
     "current-draft",
   );
 });

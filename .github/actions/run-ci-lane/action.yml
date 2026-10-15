@@ -20,10 +20,30 @@ inputs:
       separate job).
     required: false
     default: "true"
+  job-timeout-minutes:
+    description: >-
+      The calling job's timeout-minutes. The runner stops every test file five minutes
+      before it (counted from this action's start), so a hung file is recorded with the
+      tests it was running instead of the job being cancelled with no results.
+    required: true
 runs:
   using: composite
   steps:
-    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+    # First, so the deadline counts the lane's setup too. Steps before the action (checkout,
+    # mirror and credential setup) are not counted, so the margin after the deadline is a
+    # little under five minutes: enough to stop the file, clean up and write the results.
+    - id: deadline
+      name: Set lane deadline
+      shell: bash
+      env:
+        JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+      run: |
+        if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
+          echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
+          exit 1
+        fi
+        printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
     - id: pnpm-store
@@ -53,7 +73,7 @@ runs:
         sudo apt-get -o Acquire::Retries=3 install --no-install-recommends -y skopeo
         skopeo --version | grep -Fx 'skopeo version 1.13.3'
     - name: Enable Kubernetes bridge packet filtering
-      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || inputs.lane == 'openshell' || startsWith(inputs.lane, 'k3d-fixture-') || startsWith(inputs.lane, 'k3d-observability')
       shell: bash
       run: |
         # k3d nodes share the runner kernel; K3s cannot load absent host modules.
@@ -70,11 +90,11 @@ runs:
         path: ${{ steps.pnpm-store.outputs.store-path }}
         key: ${{ steps.pnpm-store.outputs.store-cache-primary-key }}
     - name: Install browser dependencies
-      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'gateway-routing' || inputs.lane == 'k3d-observability-demo' || inputs.lane == 'postgres-auth' || inputs.lane == 'keycloak-oidc'
       shell: bash
       run: bash scripts/ci/setup-tools.sh browser
     - name: Set up Go toolchain
-      if: inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'qa-matrix' || startsWith(inputs.lane, 'checks-baseline-') || inputs.lane == 'postgres-platform' || inputs.lane == 'docker-model' || inputs.lane == 'production-tui' || inputs.lane == 'openshell'
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
@@ -119,7 +139,7 @@ runs:
       shell: bash
       run: pnpm build
     - name: Build Go CLI for development installation proof
-      if: inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
+      if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
     - name: Prepare hosted platform disk capacity
@@ -130,7 +150,7 @@ runs:
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'repository-credentials-platform'
+      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -145,22 +165,32 @@ runs:
     - name: Prepare lane
       shell: bash
       env:
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"
     - name: Install trusted browser certificate tooling
-      if: inputs.lane == 'qa-matrix'
+      if: inputs.lane == 'qa-matrix' || inputs.lane == 'dev-up-k3d'
       shell: bash
       run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libnss3-tools
     - name: Run lane
       shell: bash
       env:
-        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
+        # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
+        # is left before the lane deadline.
+        CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
+        CI_RUNNER_TEST_TIMEOUT_MS: ${{ (startsWith(inputs.lane, 'checks-baseline-') || startsWith(inputs.lane, 'checks-browser')) && '300000' || inputs.lane == 'dev-up-k3d' && '9000000' || inputs.lane == 'qa-matrix' && '14400000' || (inputs.lane == 'k3d-model' || inputs.lane == 'openshell') && '5400000' || '' }}
         # Browser tests write screenshots and failure.json (console, network
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+        # One V8 code cache per job, shared by the lane's host Node processes
+        # (test files and the controllers and helpers they start with the job
+        # env). Node keeps entries under a directory tagged with its version,
+        # arch and uid, checks each against the source's hash and writes them
+        # atomically, so concurrent files share it. No test forwards it into a
+        # container.
+        NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
       run: |
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
@@ -185,7 +215,7 @@ runs:
       shell: bash
       run: node scripts/ci/export-image-reconciliation.mjs "$RUNNER_TEMP/state/${{ inputs.lane }}.json" "$RUNNER_TEMP/image-reconciliation"
     - name: Retain image cleanup reconciliation
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'images-packaging' && steps.image_reconciliation.outcome == 'success'
       with:
         name: image-reconciliation-${{ github.run_id }}-${{ github.run_attempt }}
@@ -194,7 +224,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain runtime image fixture receipt
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'runtime-image-fixture'
       with:
         name: runtime-image-fixture-receipt-${{ github.run_id }}-${{ github.run_attempt }}
@@ -202,7 +232,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Upload cluster diagnostics
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Setup failures, failed files' details and every k3d file's Agent
       # namespace activity; a lane with none writes no report. One per attempt,
       # so a passing rerun cannot replace a failed attempt's report.
@@ -214,7 +244,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload memory samples
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always() && inputs.lane == 'k3d-fixture-configuration'
       continue-on-error: true
       with:
@@ -223,7 +253,7 @@ runs:
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload browser failure diagnostics
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # Screenshots and console/network logs for failed browser tests;
       # passing runs write nothing.
       if: failure() && startsWith(inputs.lane, 'checks-browser')
@@ -233,7 +263,7 @@ runs:
         overwrite: true
         if-no-files-found: ignore
         retention-days: 3
-    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       if: always()
       with:
         name: ${{ inputs.artifact-prefix }}-${{ inputs.lane }}
@@ -243,7 +273,7 @@ runs:
         if-no-files-found: error
         retention-days: 7
     - name: Retain this attempt's results
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       # The aggregated artifact above is replaced by a rerun; this copy keeps a
       # failed attempt's cases. The name must not match `<prefix>-*` patterns.
       if: always()

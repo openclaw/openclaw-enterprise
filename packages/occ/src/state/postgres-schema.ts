@@ -1158,6 +1158,13 @@ export const controllerWork = occSchema.table(
         AND (
           (
             ${table.state} = 'failed_permanent'
+            AND ${table.reasonCode} IN ('HARNESS_CREDENTIAL_BOOTSTRAP_FAILED', 'HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT')
+            AND (${table.resultData} - 'preparation') = '{}'::jsonb
+            AND occ.compute_preparation_failure_is_valid(${table.resultData}->'preparation')
+          )
+          OR
+          (
+            ${table.state} = 'failed_permanent'
             AND ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
             AND ${table.resultData} ? 'timeoutMs'
             AND (${table.resultData} - 'timeoutMs' - 'runtimeFailure') = '{}'::jsonb
@@ -1328,8 +1335,8 @@ export const agentProvisioningWork = occSchema.table(
       sql`${table.status} <> 'succeeded' OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL)`,
     ),
     check(
-      "agent_provisioning_failed_before_handoff",
-      sql`${table.status} NOT IN ('failed', 'cancelled') OR ${table.revisionId} IS NULL`,
+      "agent_provisioning_admitted_revision_status_valid",
+      sql`${table.revisionId} IS NULL OR ${table.status} IN ('running', 'succeeded', 'failed')`,
     ),
   ],
 );

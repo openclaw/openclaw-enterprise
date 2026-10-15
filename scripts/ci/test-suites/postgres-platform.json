@@ -23,6 +23,7 @@
     "tests/integration/postgres-repository-sessions.test.mjs",
     "tests/integration/postgres-secret-state.test.mjs",
     "tests/integration/postgres-service-account-deletion.test.mjs",
+    "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
     "tests/integration/postgres-presets.test.mjs",
     "tests/integration/postgres-workspace-setup.test.mjs",
     "tests/integration/postgres-connection-auth.test.mjs",
@@ -39,7 +40,9 @@
         "the real pg client retains the Azure token callback and verified TLS after URL parsing",
         "workload authentication rejects password fallback and unverified TLS",
         "an idle pooled client error is logged instead of crashing the process",
-        "the pool survives PostgreSQL terminating an idle backend"
+        "the pool survives PostgreSQL terminating an idle backend",
+        "verify-full checks the server certificate against an IP database host",
+        "the IP host identity check leaves other connection configurations unchanged"
       ]
     },
     {
@@ -106,7 +109,9 @@
         "PostgreSQL native IAM rolls back policy mutations when transaction audit fails",
         "PostgreSQL native IAM authorizes Namespace-local service identities without Agent ownership",
         "PostgreSQL native IAM creates exact AgentRevision bindings with limited app privileges",
-        "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets"
+        "PostgreSQL native IAM rejects foreign subjects, broad grants, and absent targets",
+        "native IAM reads the policy once per unit of work and never across units",
+        "listing 2000 Agents reads the policy once for the whole list"
       ]
     },
     {
@@ -132,17 +137,34 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-service-account-issuance-recovery.test.mjs",
+      "expectedTests": [
+        "an issuance that never committed is reclaimed by the next issuance under the account lock",
+        "deleting an account after an issuance that never committed revokes its credential and removes its Secret",
+        "a reclaim whose PostgreSQL session ends during the Secret read leaves a later issuance intact"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-provisioning.test.mjs",
       "expectedTests": [
         "provisioning API queues one job with existing Secret references and replays only the exact same request",
+        "provisioning status judges claim liveness by the database clock, not the controller clock",
         "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
         "api_key provisioning grants existing Secret access and hands off one revision",
         "codex_pat provisioning grants existing Secret access and hands off one revision",
+        "initial provisioning settles when a stop interrupts its first deployment",
         "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
         "a provisioning failure takes the Namespace lock before its claimed work row",
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
+        "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
+        "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",
+        "Stop before admission cancels provisioning while a worker holds its claim, and a Deploy right after waits for the write",
+        "Delete after the first deployment's admission waits for provisioning to finish, then removes it",
+        "a provisioning handoff that takes the Namespace lock before Stop admits its deployment, which Stop then ends",
+        "Stop that takes the Namespace lock before a waiting provisioning handoff rolls the whole handoff back",
+        "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan"
       ]

@@ -31,12 +31,33 @@ OpenShell retains its separately pinned image. Mutable overrides fail before
 resource creation. Clean up a failed run's owned resources with
 `node scripts/ci/cleanup.mjs --state <private-state-file>` before reusing its state path.
 
-`k3d cluster create` times out after five minutes (hosted runners take under a
-minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
-it). The timeout stops k3d's whole process group. Preparation then writes the
-lane's cluster diagnostics, deletes the partial cluster and retries once; a second
-timeout fails preparation and leaves the cluster to lane cleanup. The node Ready wait
-starts only after every owned node has registered (up to two minutes).
+CI clusters have one server and no k3d load balancer (`--no-lb`): server-0
+publishes the API port itself. The k3d fixture, Image Runtime Startup,
+Repository Credentials Platform and Production Observability lanes also start
+K3s without Traefik, ServiceLB and metrics-server, which their tests don't use.
+Lanes that set up gateway routing keep Traefik, because K3s installs the Gateway
+API CRDs with it; routing preparation refuses a cluster created without it.
+
+`k3d cluster create` times out after two minutes, and its retry after five
+(hosted runners take under a minute, node image pull included;
+`OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` sets both). The timeout stops k3d's whole
+process group. A preparation command still running 5 seconds after its
+timeout's SIGTERM gets SIGKILL, and 5 seconds later preparation stops waiting
+for output that escaped descendants hold open
+(`OPENCLAW_CI_COMMAND_KILL_GRACE_MS` overrides both). Preparation then writes the
+lane's cluster diagnostics (10 seconds per command;
+`OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS` overrides it), deletes the partial
+cluster and retries once; a second timeout fails preparation and leaves the
+cluster to lane cleanup. The node Ready wait starts only after every owned node
+has registered (up to two minutes).
+
+k3d's own progress lines reach the job log as they arrive, so the log shows the
+step a slow or hung create was in. A timed-out create's diagnostics also keep that
+output and each node's process list. k3d's node entrypoint keeps a server
+running after K3s exits, so a server whose log ends in `connection refused` API
+retries while k3d still waits on it means K3s exited.
+Node log excerpts replace those retries with one line per target and outcome,
+with first and last times, so K3s's last lines stay visible.
 
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;
@@ -59,13 +80,14 @@ cleanup removes the owned cluster and partial imports.
 
 ## Reuse an image the engine already holds
 
-Hosted image lanes that only restore the BuildKit cache first resolve each image
+Hosted image lanes restore the BuildKit cache and first resolve each image
 from it without its layers (`reuseEngineImage` in `scripts/ci/prepare.mjs`). If
 the runner's Docker engine already holds that image ID, as hosted runners often
 do from their shared image cache, preparation tags it instead of downloading
 and loading every layer (about 20 s for the runtime image). The ID is the
-digest of a config that names each layer's content digest. Any other result,
-or a lane that exports the cache, builds and loads as before.
+digest of a config that names each layer's content digest. Any other result
+builds and loads as before, and so does main's cache workflow, which needs every
+step for its export.
 
 The shared image cache keeps images a job leaves tagged, and lane cleanup
 removes every owned tag. So main's never-cancelled cache workflow also tags its
@@ -74,3 +96,11 @@ and logs it as `runtime-image-kept`; compare that ID with the lanes'
 `runtime-image-reuse` lines. Cleanup does not own that name, nothing pushes it,
 and the cache evicts images unused for 8 days. Without it, the cache keeps
 whichever older image a job happened to leave behind.
+
+That workflow builds and loads each image first, then exports its cache in a
+second build that reuses those steps (`--output type=cacheonly`). The export
+has 20 minutes (`OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` overrides it): a
+change to the OpenClaw layers uploads them all again, which took 9-14 min. A
+failed or stalled export only logs a warning and a `<role>-cache-export` line:
+the image is kept, and lanes restore the previous cache, which is slower but
+still correct.

@@ -227,6 +227,7 @@ for (const phase of ["admission", "gateway key"]) {
     };
     const revision = {
       id: "rev_a",
+      compute: { id: "compute_test", implementation: "native-admin-reset-test" },
       configuration: {
         gateway: {
           auth: {
@@ -268,6 +269,8 @@ for (const phase of ["admission", "gateway key"]) {
           },
           selectedDriver() {
             return {
+              id: "compute_test",
+              implementation: "native-admin-reset-test",
               getAgentRuntimeAccess: () => ({
                 endpoint: `wss://127.0.0.1:${gateway.address().port}/`,
                 headers: {},

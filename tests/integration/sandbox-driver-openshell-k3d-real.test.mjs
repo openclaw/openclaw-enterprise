@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import dns from "node:dns";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
-import { connect } from "node:net";
+import { connect, isIP, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -38,6 +38,7 @@ import {
 import { availablePort } from "../helpers/available-port.mjs";
 import {
   defaultKeycloakImage,
+  issueServingCertificate,
   keycloakServiceClient,
   keycloakUserClient,
   startKeycloak,
@@ -66,6 +67,24 @@ const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).r
   /^(?:openai|codex)\//,
   "",
 );
+const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
+const modelCredentialVariable =
+  process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" || openShellModelBaseUrl !== undefined
+    ? "OPENAI_API_KEY"
+    : "CODEX_ACCESS_TOKEN";
+const modelCredential = process.env[modelCredentialVariable];
+const modelSourceType = modelCredentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
+const modelSecretField =
+  modelCredentialVariable === "CODEX_ACCESS_TOKEN" ? "access_token" : "api_key";
+// The model source's endpoint, which bounds where OpenShell inserts the model key.
+const modelBaseUrl = (
+  openShellModelBaseUrl ??
+  (modelSourceType === "codex-pat"
+    ? "https://chatgpt.com/backend-api/codex"
+    : "https://api.openai.com/v1")
+).replace(/\/$/u, "");
+const modelEndpoint = new URL(modelBaseUrl);
+const modelPort = Number(modelEndpoint.port || 443);
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -80,11 +99,12 @@ const selected =
     openShellHelmPath,
     openShellHelmChart,
     openShellWorkspaceHelmChart,
+    openShellModelBaseUrl,
   ].some(Boolean);
 const requiresOpenShellK3d = {
   skip: selected
     ? false
-    : "Set OCC_TEST_OPENSHELL_K3D_REAL=1 with explicit k3d, PostgreSQL, OpenShell, real image, and OPENAI_API_KEY prerequisites.",
+    : "Set OCC_TEST_OPENSHELL_K3D_REAL=1 with explicit k3d, PostgreSQL, OpenShell, real image, and model credential prerequisites.",
 };
 const installationName = "OpenClaw OpenShell SandboxDriver integration";
 const authSecret = "openshell-sandbox-driver-auth-secret-32";
@@ -136,6 +156,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexSandbox: modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
 });
 const {
   kubectl,
@@ -158,6 +179,41 @@ const {
   requestCodexTurnFromGatewayPod,
   startGatewayPortForward,
 } = fixture;
+
+/**
+ * The Kubernetes API server's Pod proxy source, which Compute admits to each workload's private
+ * status port for deployment diagnostics and startup evidence. The lane runs one k3s server,
+ * whose API server reaches a local Pod over the cni0 bridge, so the source is that bridge's
+ * address, as `occ dev up` derives it. A configured lane value takes precedence.
+ */
+async function apiServerPodProxySourceCidrs() {
+  const configured = (process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS ?? "")
+    .split(",")
+    .map((cidr) => cidr.trim())
+    .filter(Boolean);
+  if (configured.length > 0) {
+    return configured;
+  }
+  const nodes = JSON.parse(await kubectl("get", "nodes", "-o", "json")).items;
+  assert.equal(nodes.length, 1, "the OpenShell lane must run on one k3s server");
+  const [network] = String(nodes[0].spec?.podCIDR ?? "").split("/");
+  assert.ok(isIPv4(network), "the k3s server must have an IPv4 Pod CIDR");
+  // Any Pod address on the node routes through the bridge; skip the network and bridge
+  // addresses, which the kernel reports as local.
+  const octets = network.split(".").map(Number);
+  octets[3] += 2;
+  const { stdout } = await executeFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+    "exec",
+    nodes[0].metadata.name,
+    "ip",
+    "route",
+    "get",
+    octets.join("."),
+  ]);
+  const source = /\bdev\s+cni0\b.*\bsrc\s+(\S+)/u.exec(stdout)?.[1];
+  assert.ok(isIPv4(source ?? ""), "the API server must reach local Pods over the cni0 bridge");
+  return [`${source}/32`];
+}
 
 async function createScopedController(context, identifier, platformNamespace, kubeconfig) {
   const suffix = hash(identifier);
@@ -219,7 +275,14 @@ async function createScopedController(context, identifier, platformNamespace, ku
             ],
             verbs: ["get", "list", "create", "patch", "delete"],
           },
-          { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] },
+          // As the chart's tenant worker role: a Pod annotation syncs a running Gateway's
+          // workspace node at once, and its private status port answers through the Pod proxy.
+          { apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch", "patch"] },
+          { apiGroups: [""], resources: ["pods/proxy"], verbs: ["get"] },
+          // The API's Compute Driver also runs as this identity, so it takes the runtime log
+          // reads that the chart grants the API through its tenant API role.
+          { apiGroups: [""], resources: ["pods/log"], verbs: ["get"] },
+          { apiGroups: [""], resources: ["events"], verbs: ["get", "list"] },
           {
             apiGroups: [""],
             resources: ["persistentvolumeclaims"],
@@ -1071,9 +1134,11 @@ function bridgeRequirements(context, claimName, subPath) {
   // Secret. The Sandbox receives the model source's attachment first, then one for each
   // other source the revision still holds; a withdrawn one is never re-attached.
   assert.equal(
-    context.requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    context.requirements.environment.some(({ name }) =>
+      ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name),
+    ),
     false,
-    "Compute must not project OPENAI_API_KEY when a credential source authenticates the Harness.",
+    "Compute must not project model credentials when a credential source authenticates the Harness.",
   );
   const attached = context.requirements.credentialAttachments.map(({ sourceId }) => sourceId);
   assert.equal(attached[0], context.revision.harnessAuth.sourceId);
@@ -1283,9 +1348,16 @@ async function assertModelKeyIsPlaceholderOnly(namespace, pod, modelKey) {
     '  for (const variable of environ.split("\\0")) {',
     '    const separator = variable.indexOf("=");',
     "    if (separator > 0 && digest(variable.slice(separator + 1)) === keyDigest) leaked = true;",
-    '    if (variable.startsWith("OPENAI_API_KEY=")) values.push(variable.slice(15));',
+    `    if (variable.startsWith(${JSON.stringify(modelCredentialVariable + "=")})) values.push(variable.slice(${modelCredentialVariable.length + 1}));`,
     "  }",
     "}",
+    ...(modelSourceType === "codex-pat"
+      ? [
+          'const auth = JSON.parse(fs.readFileSync("/sandbox/.openclaw-runtime/home/.codex/auth.json", "utf8"));',
+          'if (digest(auth.personal_access_token ?? "") === keyDigest) leaked = true;',
+          'values.push(auth.personal_access_token ?? "");',
+        ]
+      : []),
     "process.stdout.write(JSON.stringify({",
     "  leaked,",
     "  count: values.length,",
@@ -1309,7 +1381,11 @@ async function assertModelKeyIsPlaceholderOnly(namespace, pod, modelKey) {
   );
   assert.equal(observed.leaked, false, "no Harness process environment may hold the model key.");
   assert.ok(observed.count > 0, "the Harness must receive the OpenShell credential placeholder.");
-  assert.equal(observed.placeholders, true, "OPENAI_API_KEY must be an OpenShell placeholder.");
+  assert.equal(
+    observed.placeholders,
+    true,
+    "The model credential must be an OpenShell placeholder.",
+  );
 }
 
 async function assertBridgedServicePrincipalToken(namespace, pod, expected) {
@@ -1356,7 +1432,7 @@ async function assertBridgedServicePrincipalToken(namespace, pod, expected) {
 function bridgedHarnessContainer(pod) {
   const container = pod.spec.containers.find(({ name }) => name === "agent");
   assert.ok(container, "the provider-owned Pod must contain the OpenShell Agent container.");
-  for (const name of ["APP_SERVER_TOKEN", "OPENAI_API_KEY"]) {
+  for (const name of ["APP_SERVER_TOKEN", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
     assert.equal(
       (container.env ?? []).some((entry) => entry.name === name),
       false,
@@ -1458,6 +1534,15 @@ function createIntegrationSandboxDriverFactory(
       id: definition.id,
       drivers: definition.drivers,
       client: {
+        placement(namespaceName) {
+          if (namespaceName === undefined) {
+            return undefined;
+          }
+          // Match the real per-Namespace Helm release, preserving the Backend's host checks.
+          return new OpenShellGateway({
+            serviceName: `openshell-${hash(namespaceName, 10)}`,
+          }).placement(namespaceName);
+        },
         clientForNamespace(namespaceName) {
           const state = gatewayState.get(namespaceName);
           assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
@@ -1506,11 +1591,17 @@ function createIntegrationSandboxDriverFactory(
     );
   }
 
-  async function endpointForNamespace(context, { sandboxServiceAccountName } = {}) {
+  async function endpointForNamespace(context, { sandboxServiceAccountName, exact = false } = {}) {
     const namespaceName = context.namespace.name;
     throwOpenShellAbortReason(context.signal);
     const prior = gatewayState.get(namespaceName);
     if (prior !== undefined && prior.sandboxServiceAccountName === sandboxServiceAccountName) {
+      return prior.endpoint;
+    }
+    // The gateway applies its one configured ServiceAccount to every Sandbox it creates. Once
+    // it runs an Agent's, a later Agent without a requested workload identity shares it, as on
+    // a deployed gateway; reinstalling would restart the gateway under the running Sandboxes.
+    if (!exact && prior?.sandboxServiceAccountName !== undefined) {
       return prior.endpoint;
     }
 
@@ -1546,8 +1637,11 @@ function createIntegrationSandboxDriverFactory(
       if (ownedState !== undefined) {
         await stopGatewayForward(namespaceName, ownedState);
       }
-      context.signal.removeEventListener("abort", stopOwnedForward);
       throw error;
+    } finally {
+      // Once established, the shared management connection belongs to this fixture.
+      // Worker restarts cancel an operation, but the API still needs the same gateway.
+      context.signal.removeEventListener("abort", stopOwnedForward);
     }
   }
 
@@ -1658,6 +1752,7 @@ function createIntegrationSandboxDriverFactory(
             // identity Compute renders no identity, but the Agent ServiceAccount still exists.
             const endpoint = await endpointForNamespace(context, {
               sandboxServiceAccountName: agentSandboxServiceAccount(context),
+              exact: context.requirements.workloadIdentity !== undefined,
             });
             // The production Codex proof hands the real Driver exactly what Compute rendered;
             // unsupported shapes fail closed before OpenShell creates provider resources.
@@ -1688,6 +1783,7 @@ function createIntegrationSandboxDriverFactory(
           const requirements = bridgeRequirements(context, claimName, subPath);
           const endpoint = await endpointForNamespace(context, {
             sandboxServiceAccountName: context.requirements.workloadIdentity.serviceAccountName,
+            exact: true,
           });
           const provisioning = { ...context, requirements };
           return await delegate(
@@ -1724,6 +1820,7 @@ function createIntegrationSandboxDriverFactory(
             async harnessEndpoint(context) {
               const endpoint = await endpointForNamespace(context, {
                 sandboxServiceAccountName: agentSandboxServiceAccount(context),
+                exact: context.requirements.workloadIdentity !== undefined,
               });
               return await delegate(
                 context.requirements,
@@ -1736,6 +1833,7 @@ function createIntegrationSandboxDriverFactory(
             async harnessStatus(context) {
               const endpoint = await endpointForNamespace(context, {
                 sandboxServiceAccountName: agentSandboxServiceAccount(context),
+                exact: context.requirements.workloadIdentity !== undefined,
               });
               return await delegate(
                 context.requirements,
@@ -1743,6 +1841,16 @@ function createIntegrationSandboxDriverFactory(
                 endpoint,
                 context,
               ).harnessStatus(context);
+            },
+            // Compute admits the workspace-node connection only from the revision's
+            // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
+            async workspaceNodePeerLabels(context) {
+              const endpoint = existingEndpointForNamespace(context);
+              return await delegate(
+                undefined,
+                context.namespace.name,
+                endpoint,
+              ).workspaceNodePeerLabels(context);
             },
           }),
       async cleanup(context) {
@@ -1944,6 +2052,12 @@ async function prepareProductionInstallation(
     openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
+  // The Codex scenario runs a second Agent beside the first. Each Agent holds about 7 GiB of
+  // limits: its 4 GiB Gateway, its Harness and the 1 GiB OpenShell supervisor. A rolling
+  // replacement of a Gateway briefly holds another 4 GiB.
+  configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "20Gi";
+  configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
+    await apiServerPodProxySourceCidrs();
   if (harnessId === "openclaw") {
     // scripts/k3d builds this runtime from an OpenClaw source with native worker support.
     configuration.runtime = { nativeWorkerSupport: "custom-image" };
@@ -1987,6 +2101,9 @@ async function prepareProductionInstallation(
   // delivered OAuth2 token is proved genuine without the token reaching test output.
   const tokenEcho =
     harnessId === "codex" ? await startTokenEcho(context, keycloak?.jwks) : undefined;
+  // An HTTPS upstream signed by a CA nothing trusts. A tool source bound to it, and later the
+  // model route, must refuse it before a request or credential reaches it.
+  const untrustedTls = harnessId === "codex" ? await startUntrustedTlsObserver(context) : undefined;
   if (tokenEcho !== undefined) {
     configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
     // The refresh role must belong to the gateway's Backend, whose provider records it refreshes.
@@ -2255,21 +2372,22 @@ async function prepareProductionInstallation(
   );
   const modelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name: `openshell-model-${randomUUID()}`,
-    value: process.env.OPENAI_API_KEY,
+    value: modelCredential,
   });
   assert.equal(modelSecret.status, 201, JSON.stringify(modelSecret.error));
-  assert.equal(JSON.stringify(modelSecret).includes(process.env.OPENAI_API_KEY), false);
+  assert.equal(JSON.stringify(modelSecret).includes(modelCredential), false);
   // Registration copies the Secret value into the Namespace's OpenShell gateway through the
   // regular API. The Secret stays the source of record; the Harness never receives it.
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
-    type: "openai",
-    secrets: { api_key: modelSecret.data.ref },
+    type: modelSourceType,
+    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    secrets: { [modelSecretField]: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
   assert.equal(modelSource.data.state, "ready");
   assert.deepEqual(modelSource.data.status, { state: "ready" });
-  assert.equal(JSON.stringify(modelSource).includes(process.env.OPENAI_API_KEY), false);
+  assert.equal(JSON.stringify(modelSource).includes(modelCredential), false);
   const observedSource = await request(
     "GET",
     `/namespaces/${namespaceId}/credential-sources/${modelSource.data.id}`,
@@ -2284,6 +2402,19 @@ async function prepareProductionInstallation(
           await registerToolSource(request, namespaceId, tokenEcho, "TOOL_A_TOKEN", "/echo-a"),
           await registerToolSource(request, namespaceId, tokenEcho, "TOOL_B_TOKEN", "/echo-b"),
         ];
+  const untrustedTlsSource =
+    untrustedTls === undefined
+      ? undefined
+      : {
+          ...(await registerToolSource(
+            request,
+            namespaceId,
+            untrustedTls,
+            "TOOL_TLS_TOKEN",
+            "/untrusted",
+          )),
+          url: `https://${untrustedTls.host}/untrusted`,
+        };
   const refreshSources =
     keycloak === undefined
       ? undefined
@@ -2311,6 +2442,7 @@ async function prepareProductionInstallation(
     credentialSources: [
       { sourceId: modelSource.data.id },
       ...(toolSources ?? []).map(({ id }) => ({ sourceId: id })),
+      ...(untrustedTlsSource === undefined ? [] : [{ sourceId: untrustedTlsSource.id }]),
       ...(refreshSources?.bound ?? []).map(({ id }) => ({ sourceId: id })),
     ],
   });
@@ -2342,7 +2474,11 @@ async function prepareProductionInstallation(
     resourceId: modelSource.data.id,
   });
   assert.equal(sourceBinding.status, 201, JSON.stringify(sourceBinding.error));
-  for (const toolSource of [...(toolSources ?? []), ...(refreshSources?.bound ?? [])]) {
+  for (const toolSource of [
+    ...(toolSources ?? []),
+    ...(untrustedTlsSource === undefined ? [] : [untrustedTlsSource]),
+    ...(refreshSources?.bound ?? []),
+  ]) {
     const toolBinding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
       subjectKind: "identity",
       subjectId: agent.data.servicePrincipalId,
@@ -2363,8 +2499,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      "danger-full-access",
-      "OCC must freeze OpenShell-selected Codex revisions with the inner sandbox disabled.",
+      modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
+      "OCC must select Codex isolation from the admitted source login mode.",
     );
   } else {
     assert.equal(
@@ -2497,8 +2633,8 @@ async function prepareProductionInstallation(
   process.stderr.write(
     "OpenShell integration: approved mounts and privileges verified; checking secret exposure.\n",
   );
-  await assertNoSecretBytes(placement, [process.env.OPENAI_API_KEY, transport.appServerToken]);
-  await assertModelKeyIsPlaceholderOnly(placement, harnessPod, process.env.OPENAI_API_KEY);
+  await assertNoSecretBytes(placement, [modelCredential, transport.appServerToken]);
+  await assertModelKeyIsPlaceholderOnly(placement, harnessPod, modelCredential);
   process.stderr.write(
     "OpenShell integration: secret exposure checks passed; verifying gateway routing.\n",
   );
@@ -2541,14 +2677,26 @@ async function prepareProductionInstallation(
     gatewayPod: gatewayPods[0],
     harnessServiceUrl: createSandboxDriver.harnessServiceUrls.get(deployed.data.id),
     appServerToken: transport.appServerToken,
+    modelSecretId: modelSecret.data.id,
+    sourceRoleId: sourceRole.data.id,
     controllerUrl,
     credentials: adminCredentials,
     ...(toolSources === undefined ? {} : { toolSources }),
+    ...(untrustedTls === undefined ? {} : { untrustedTls, untrustedTlsSource }),
     ...(refreshSources === undefined ? {} : { refreshSources, keycloak }),
     gatewayClient: () => createSandboxDriver.gatewayClientForNamespace(placement),
     observerPool,
     pauseWorker,
     resumeWorker: startWorker,
+    provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
+    diagnoseAgentRevision: (agentId, revisionId) =>
+      writeWorkerCompletionDiagnostics({
+        pool: observerPool,
+        events,
+        namespaceId,
+        agentId,
+        revisionId,
+      }),
     diagnoseRevision: (revisionId) =>
       writeWorkerCompletionDiagnostics({
         pool: observerPool,
@@ -2599,6 +2747,7 @@ async function startTokenEcho(context, issuerJwks) {
     "    path: request.url,",
     '    digest: createHash("sha256").update(authorization).digest("hex"),',
     '    placeholder: authorization.includes("openshell:resolve:"),',
+    "    length: authorization.length,",
     "    jwt: jwt(authorization),",
     "  }));",
     '}).listen(8080, "0.0.0.0");',
@@ -2641,13 +2790,111 @@ async function startTokenEcho(context, issuerJwks) {
   return { host: `token-echo.${namespace}.svc.cluster.local`, port: 8080 };
 }
 
+const untrustedCaName = "OCE untrusted upstream CA";
+
+/**
+ * Starts an HTTPS service whose certificate chains only to a fresh private CA that nothing in
+ * the cluster trusts. The certificate also names the model host and the service listens on the
+ * model port, so the model route can be pointed at it through cluster DNS. The service logs one
+ * JSON line per TLS failure, completed handshake, or request, with the TLS server name and no
+ * header values, so a route that refuses the upstream shows a failed handshake and no request.
+ */
+async function startUntrustedTlsObserver(context) {
+  const namespace = `oce-untrusted-tls-${hash(randomUUID())}`;
+  const host = `untrusted-tls.${namespace}.svc.cluster.local`;
+  await kubectl("create", "namespace", namespace);
+  context.after(() =>
+    kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "openshell-untrusted-tls-"));
+  let certificate;
+  let key;
+  try {
+    await issueServingCertificate(directory, host, {
+      alternateHosts: [modelEndpoint.hostname],
+      caName: untrustedCaName,
+    });
+    certificate = await readFile(join(directory, "tls.crt"), "utf8");
+    key = await readFile(join(directory, "tls.key"), "utf8");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  const program = [
+    'const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");',
+    'const server = require("node:https").createServer(',
+    "  { cert: process.env.OBSERVER_CERT, key: process.env.OBSERVER_KEY },",
+    "  (request, response) => {",
+    "    emit({",
+    '      event: "request",',
+    "      path: request.url,",
+    "      authorization: request.headers.authorization !== undefined,",
+    "    });",
+    "    response.statusCode = 204;",
+    "    response.end();",
+    "  },",
+    ");",
+    'server.on("tlsClientError", (error, socket) =>',
+    '  emit({ event: "tls-error", servername: socket.servername ?? null, code: error.code ?? null }));',
+    'server.on("secureConnection", (socket) =>',
+    '  emit({ event: "tls-established", servername: socket.servername ?? null }));',
+    'server.listen(8443, "0.0.0.0");',
+  ].join("\n");
+  await kubectl(
+    "run",
+    "untrusted-tls",
+    "--namespace",
+    namespace,
+    `--image=${gatewayImage}`,
+    "--image-pull-policy=IfNotPresent",
+    "--restart=Never",
+    "--labels=app=untrusted-tls",
+    "--port=8443",
+    `--env=OBSERVER_CERT=${certificate}`,
+    `--env=OBSERVER_KEY=${key}`,
+    "--command",
+    "--",
+    "node",
+    "-e",
+    program,
+  );
+  await kubectl(
+    "create",
+    "service",
+    "clusterip",
+    "untrusted-tls",
+    "--namespace",
+    namespace,
+    "--tcp=443:8443",
+    ...(modelPort === 443 ? [] : [`--tcp=${modelPort}:8443`]),
+  );
+  await kubectl(
+    "wait",
+    "--namespace",
+    namespace,
+    "--for=condition=Ready",
+    "pod/untrusted-tls",
+    "--timeout=180s",
+  );
+  const service = await resource("service", "untrusted-tls", namespace);
+  return {
+    host,
+    port: 443,
+    address: service.spec.clusterIP,
+    events: async () =>
+      (await kubectl("logs", "pod/untrusted-tls", "--namespace", namespace))
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line)),
+  };
+}
+
 // A redeploy rolls the Agent Gateway Deployment, so later turns use the Pod running now.
-async function currentGatewayPod(topology) {
+async function currentGatewayPod(topology, agentId = topology.agent.id) {
   return await waitFor("one running Agent Gateway Pod", async () => {
     const pods = (await resources("pods", topology.gatewayPlacement)).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
-        pod.metadata.labels?.["openclaw.dev/agent"] === topology.agent.id &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === agentId &&
         pod.metadata.deletionTimestamp === undefined &&
         pod.status?.phase === "Running",
     );
@@ -2884,7 +3131,7 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
   };
   const clientSecret = await secret(keycloak.clientSecret);
   // OpenShell refuses a token endpoint without TLS, so OCC refuses one before any gateway call,
-  // with the not-found response it gives every invalid catalog field.
+  // naming the invalid field.
   const plain = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-oauth-plain-${randomUUID()}`,
     type: "oauth2-client-credentials",
@@ -2896,7 +3143,8 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
     },
     secrets: { client_secret: clientSecret },
   });
-  assert.equal(plain.status, 404, JSON.stringify(plain.error ?? plain.data));
+  assert.equal(plain.status, 400, JSON.stringify(plain.error ?? plain.data));
+  assert.equal(plain.error.details?.[0]?.path, "/config/token_url", JSON.stringify(plain.error));
   return {
     bound: [
       await register(
@@ -3110,11 +3358,125 @@ async function assertRefreshCredentialSources(topology) {
   );
 }
 
+/** Reports why another Agent's revision did not activate, before the fixture removes it. */
+async function diagnoseAdditionalAgent(topology, agentId, revisionId, deploymentPath) {
+  const secrets = failureSecrets([
+    process.env,
+    Object.fromEntries(
+      (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
+    ),
+  ]);
+  const write = (label, value) =>
+    process.stderr.write(
+      `OpenShell second Agent ${label}: ${redactLogLine(JSON.stringify(value), secrets, 4000)}\n`,
+    );
+  await topology.diagnoseAgentRevision(agentId, revisionId);
+  const failure = topology.provisioningFailure(revisionId);
+  if (failure !== undefined) {
+    write("provisioning failure", failure.message);
+  }
+  const status = await topology.request("GET", deploymentPath).catch((error) => error);
+  write("deployment", status?.data ?? status?.error ?? String(status));
+  for (const namespace of new Set([topology.placement, topology.gatewayPlacement])) {
+    const pods = await resources("pods", namespace).catch(() => []);
+    for (const pod of pods.filter(
+      ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === agentId,
+    )) {
+      write(`Pod ${pod.metadata.name}`, {
+        phase: pod.status?.phase,
+        conditions: pod.status?.conditions?.map(({ type, status: value, reason }) => ({
+          type,
+          value,
+          reason,
+        })),
+        containers: pod.status?.containerStatuses?.map(({ name, ready, restartCount, state }) => ({
+          name,
+          ready,
+          restartCount,
+          state,
+        })),
+      });
+    }
+    const events = await resources("events", namespace).catch(() => []);
+    write(
+      `${namespace} warning events`,
+      events
+        .filter(({ type }) => type === "Warning")
+        .slice(-15)
+        .map(({ involvedObject, reason, message }) => ({
+          object: involvedObject?.name,
+          reason,
+          message,
+        })),
+    );
+  }
+}
+
+/**
+ * Deploys another dedicated Codex Agent in the same Namespace through the regular API, with
+ * the first Agent's configuration, the given model source and the given tool sources. Its
+ * principal receives `operate` on exactly those sources, as the first Agent's does.
+ */
+async function deployAdditionalCredentialAgent(topology, modelSourceId, toolSources) {
+  const { request, namespaceId } = topology;
+  assert.equal(typeof topology.agent.configurationId, "string");
+  const agent = await request("POST", `/namespaces/${namespaceId}/agents`, {
+    name: `openshell-second-${randomUUID()}`,
+    configurationId: topology.agent.configurationId,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+    credentialSources: [
+      { sourceId: modelSourceId },
+      ...toolSources.map(({ id }) => ({ sourceId: id })),
+    ],
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.error));
+  const agentPath = `/namespaces/${namespaceId}/agents/${agent.data.id}`;
+  const runtimeCredentials = await request("POST", `${agentPath}/runtime-credentials`, {});
+  assert.equal(runtimeCredentials.status, 200, JSON.stringify(runtimeCredentials.error));
+  for (const sourceId of [modelSourceId, ...toolSources.map(({ id }) => id)]) {
+    const binding = await request("POST", `/namespaces/${namespaceId}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: agent.data.servicePrincipalId,
+      roleId: topology.sourceRoleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+    assert.equal(binding.status, 201, JSON.stringify(binding.error));
+  }
+  const deployed = await request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  const deploymentPath = `${agentPath}/deployments/${deployed.data.id}`;
+  try {
+    await waitFor(
+      `second Agent revision ${deployed.data.id} activation`,
+      async () => {
+        const observed = await request("GET", agentPath);
+        assert.equal(observed.status, 200, JSON.stringify(observed.error));
+        if (observed.data.activeRevisionId === deployed.data.id) {
+          return true;
+        }
+        const status = await request("GET", deploymentPath);
+        assert.equal(status.status, 200, JSON.stringify(status.error));
+        assert.notEqual(status.data.status, "failed", JSON.stringify(status.data));
+        return undefined;
+      },
+      300_000,
+    );
+  } catch (error) {
+    await diagnoseAdditionalAgent(topology, agent.data.id, deployed.data.id, deploymentPath);
+    throw error;
+  }
+  await waitForProviderHarnessPod(topology.placement, deployed.data);
+  return { agent: agent.data, revision: deployed.data, path: agentPath };
+}
+
 /**
  * The running Codex Harness calls the echo service with each tool placeholder. OpenShell
  * substitutes a token only at its own source's endpoint. The phase then proves, through the
  * real worker, Compute and OpenShell gateway, that:
  * - a withdrawal is executed only on its own requester's authority, even on a shared claim;
+ * - withdrawing a source from one Agent leaves another Agent's attachment of it in place;
  * - an Agent that loses a source grant after admission never has the revision provisioned;
  * - admission refuses a redeploy without the grant.
  * The model source keeps working throughout.
@@ -3130,11 +3492,11 @@ async function assertNonModelCredentialSource(topology) {
   await waitForProviderHarnessPod(topology.placement, revision);
   // The dedicated Harness holds only the app-server token's digest, so each turn goes through the
   // Agent Gateway.
-  const call = async () => {
+  const call = async (callerId = agentId) => {
     const nonce = `OCC-OPENSHELL-TOOL-${randomUUID()}`;
     const result = await requestCodexTurnFromGatewayPod({
       namespace: topology.gatewayPlacement,
-      gatewayPod: await currentGatewayPod(topology),
+      gatewayPod: await currentGatewayPod(topology, callerId),
       providerModel,
       prompt:
         `Use the shell exec tool. Run each numbered command in a separate exec tool ` +
@@ -3187,6 +3549,44 @@ async function assertNonModelCredentialSource(topology) {
   assert.equal(before.placeholder, "openshell");
   assert.equal(before.a, toolA.digest, "OpenShell must substitute tool A's token");
   assert.equal(before.b, toolB.digest, "OpenShell must substitute tool B's token");
+
+  // A second Agent authenticates with its own model source and attaches tool A only. OpenShell
+  // gives it tool A's token, and tool B's endpoint receives no token from it, because only
+  // attached sources are substituted.
+  const secondModelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
+    name: `openshell-model-second-${randomUUID()}`,
+    value: modelCredential,
+  });
+  assert.equal(secondModelSecret.status, 201, JSON.stringify(secondModelSecret.error));
+  const secondModel = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+    name: `openshell-openai-second-${randomUUID()}`,
+    type: modelSourceType,
+    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    secrets: { [modelSecretField]: secondModelSecret.data.ref },
+  });
+  assert.equal(secondModel.status, 201, JSON.stringify(secondModel.error));
+  const second = await deployAdditionalCredentialAgent(topology, secondModel.data.id, [toolA]);
+  // Each model source's provider names a profile of its own; no profile is shared by name.
+  const gateway = topology.gatewayClient();
+  const signal = () => AbortSignal.timeout(10_000);
+  const firstModelId = topology.agent.harnessAuth.sourceId;
+  const ownProfile = async (sourceId) => {
+    const name = openShellProviderName(sourceId);
+    const provider = await gateway.getProvider(topology.placement, name, signal());
+    const profile = await gateway.getProviderProfile(topology.placement, name, signal());
+    return provider?.type === name && profile?.id === name;
+  };
+  assert.equal(await ownProfile(firstModelId), true, "the first model source owns its profile");
+  assert.equal(await ownProfile(secondModel.data.id), true, "the second owns its profile");
+  assert.equal(
+    await gateway.getProviderProfile(topology.placement, "oce-openai", signal()),
+    undefined,
+    "model sources must not share a profile",
+  );
+  const secondBefore = await call(second.agent.id);
+  assert.equal(secondBefore.placeholder, "openshell");
+  assert.equal(secondBefore.a, toolA.digest, "the second Agent must receive tool A's token");
+  assert.notEqual(secondBefore.b, toolB.digest, "an unattached source must not be delivered");
 
   // Two requesters withdraw different sources from the running revision, sharing one worker
   // claim. The second, operator B, held the actor's grants when the withdrawal was recorded
@@ -3251,6 +3651,90 @@ async function assertNonModelCredentialSource(topology) {
   assert.equal(after.b, toolB.digest, "a denied withdrawal must not detach its source");
   const unchanged = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(unchanged.data.activeRevisionId, revision.id, "withdrawal must not redeploy");
+  // The withdrawal detaches tool A from the first Agent's Sandbox only. The provider and the
+  // second Agent's attachment stay, so its running Harness still receives the token.
+  const secondAfter = await call(second.agent.id);
+  assert.equal(
+    secondAfter.a,
+    toolA.digest,
+    "another Agent's withdrawal must not detach the source from this Agent",
+  );
+  const secondWithdrawal = await request(
+    "GET",
+    `${second.path}/credential-sources/${toolA.id}/withdrawal`,
+  );
+  assert.equal(secondWithdrawal.status, 404, JSON.stringify(secondWithdrawal.data));
+  // Whether each echo endpoint received the source's real token; digests compared, never shown.
+  const delivered = (observedCall) => ({
+    toolA: observedCall.a === toolA.digest,
+    toolB: observedCall.b === toolB.digest,
+  });
+  process.stderr.write(
+    `OpenShell integration: tool token delivery ${JSON.stringify({
+      firstAgent: { beforeWithdrawal: delivered(before), afterWithdrawal: delivered(after) },
+      secondAgent: {
+        beforeWithdrawal: delivered(secondBefore),
+        afterWithdrawal: delivered(secondAfter),
+      },
+      withdrawals: { firstAgentToolA: revokedA.state, secondAgentToolA: "none" },
+    })}.\n`,
+  );
+
+  // Stop and delete the second Agent through OCC so the later phases run with one Harness.
+  const stopped = await request("POST", `${second.path}/stop`);
+  assert.equal(stopped.status, 202, JSON.stringify(stopped.error));
+  await waitFor(
+    "the worker to remove the stopped second Agent's Sandbox",
+    async () => {
+      const sandboxes = await resources("sandboxes.agents.x-k8s.io", topology.placement);
+      return sandboxes.some(
+        (sandbox) => sandbox.metadata.labels?.["openclaw.dev/revision"] === second.revision.id,
+      )
+        ? undefined
+        : true;
+    },
+    180_000,
+  );
+  const deletedAgent = await request("DELETE", second.path);
+  assert.equal(deletedAgent.status, 202, JSON.stringify(deletedAgent.error));
+  // Deletion waits for the Agent's removal and the source's registration fence, so retry.
+  await waitFor(
+    "the second model source's deletion",
+    async () => {
+      const deleted = await request(
+        "DELETE",
+        `/namespaces/${namespaceId}/credential-sources/${secondModel.data.id}`,
+      );
+      if (deleted.status === 204) {
+        return true;
+      }
+      assert.ok([409, 503].includes(deleted.status), JSON.stringify(deleted.error));
+      return undefined;
+    },
+    180_000,
+  );
+  // The removed source's profile went with it; the first model source keeps its own, and the
+  // first Agent's model turns still complete through it.
+  const removedProfile = await gateway.getProviderProfile(
+    topology.placement,
+    openShellProviderName(secondModel.data.id),
+    signal(),
+  );
+  assert.equal(removedProfile, undefined, "a removed source's profile must be deleted");
+  assert.equal(
+    await ownProfile(firstModelId),
+    true,
+    "the remaining model source keeps its profile",
+  );
+  await call();
+  process.stderr.write(
+    `OpenShell integration: model source profiles ${JSON.stringify({
+      perSource: true,
+      sharedProfile: false,
+      removedWithSource: true,
+      remainingSourceModelTurn: true,
+    })}.\n`,
+  );
 
   // Admission accepts a redeploy, then the Agent principal loses its grant on tool B before
   // the worker dispatches it. The worker must refuse before Compute provisions anything, so
@@ -3308,6 +3792,209 @@ async function assertNonModelCredentialSource(topology) {
   );
 }
 
+// Bounds the Harness file stream; the workspace holds session files, not bulk data.
+const HARNESS_FILE_STREAM_MAX_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Streams every regular file under the given Harness paths out of the Pod. The scan runs in
+ * the test, so nothing derived from a credential enters the Pod. Each file is framed by a
+ * JSON line with its path and size.
+ */
+async function readHarnessFiles(namespace, pod, roots) {
+  const script = [
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    "const walk = (entry) => {",
+    "  let stat;",
+    "  try { stat = fs.lstatSync(entry); } catch { return; }",
+    "  if (stat.isDirectory()) {",
+    "    for (const child of fs.readdirSync(entry)) walk(path.join(entry, child));",
+    "  } else if (stat.isFile()) {",
+    "    let content;",
+    "    try { content = fs.readFileSync(entry); } catch { return; }",
+    '    process.stdout.write(JSON.stringify({ path: entry, size: content.length }) + "\\n");',
+    "    process.stdout.write(content);",
+    "  }",
+    "};",
+    "for (const root of JSON.parse(process.argv[1])) walk(root);",
+  ].join("\n");
+  const { stdout } = await executeFile(
+    "kubectl",
+    [
+      "--kubeconfig",
+      kubeconfigPath,
+      "--context",
+      kubernetesContext,
+      "exec",
+      pod.metadata.name,
+      "--namespace",
+      namespace,
+      "--container",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      script,
+      JSON.stringify(roots),
+    ],
+    { encoding: "buffer", maxBuffer: HARNESS_FILE_STREAM_MAX_BYTES },
+  );
+  const files = [];
+  for (let offset = 0; offset < stdout.length;) {
+    const end = stdout.indexOf(0x0a, offset);
+    assert.ok(end > offset, "the Harness file stream must frame every file");
+    const { path, size } = JSON.parse(stdout.subarray(offset, end).toString("utf8"));
+    files.push({ path, content: stdout.subarray(end + 1, end + 1 + size) });
+    offset = end + 1 + size;
+  }
+  return files;
+}
+
+/**
+ * After the model and tool turns, checks the Agent-visible material and the operator-facing
+ * records for the upstream credentials and the OpenShell placeholders:
+ * - no Pod of the Agent mounts or references the source's stored OCC Secret;
+ * - the Pod specs, the Agent- and revision-owned Secrets and the workspace files hold no
+ *   upstream credential; the stored OCC Secrets are excluded, since they hold it by design;
+ * - deployment diagnostics, runtime status, runtime logs and audit events hold neither an
+ *   upstream credential nor a placeholder, which is itself a usable capability.
+ */
+async function assertAgentVisibleMaterialExcludesCredentials(topology) {
+  const { request, namespaceId, placement, gatewayPlacement, observerPool } = topology;
+  const agentId = topology.agent.id;
+  const credentials = [
+    modelCredential,
+    ...(topology.toolSources ?? []).map(({ token }) => token),
+    ...(topology.untrustedTlsSource === undefined ? [] : [topology.untrustedTlsSource.token]),
+    ...(topology.keycloak === undefined ? [] : [topology.keycloak.clientSecret]),
+  ];
+  const placeholderPrefix = "openshell:resolve:";
+  const holdsCredential = (text) => credentials.some((credential) => text.includes(credential));
+  const namespaces = [...new Set([placement, gatewayPlacement])];
+  const listed = async (kind) =>
+    (await Promise.all(namespaces.map((namespace) => resources(kind, namespace)))).flat();
+
+  // The stored OCC Secret holds the model key by design; no Pod of the Agent may mount it,
+  // take an environment value from it, or name it at all.
+  const secrets = await listed("secrets");
+  const stored = secrets.filter(({ metadata }) => metadata.labels?.["openclaw.dev/secret"]);
+  const modelSecret = stored.filter(
+    ({ metadata }) => metadata.labels["openclaw.dev/secret"] === topology.modelSecretId,
+  );
+  assert.equal(modelSecret.length, 1, "the model source's stored OCC Secret must be found");
+  const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const revisionId = current.data.activeRevisionId;
+  const harnessPod = await waitForProviderHarnessPod(placement, { id: revisionId, agentId });
+  const agentPods = (await listed("pods")).filter(
+    ({ metadata }) => metadata.labels?.["openclaw.dev/agent"] === agentId,
+  );
+  assert.ok(
+    agentPods.some(({ metadata }) => metadata.uid === harnessPod.metadata.uid),
+    "the scan must include the running Harness Pod",
+  );
+  for (const pod of agentPods) {
+    const spec = JSON.stringify(pod.spec);
+    for (const { metadata } of stored) {
+      assert.equal(
+        spec.includes(metadata.name),
+        false,
+        `Pod ${pod.metadata.name} must not mount or reference a stored OCC Secret`,
+      );
+    }
+    assert.equal(holdsCredential(JSON.stringify(pod)), false, "no Pod may hold a credential");
+  }
+
+  // Every other Secret in the Agent's namespaces, including the Agent-owned transport Secret
+  // and revision-owned Secrets, must hold no upstream credential. Helm release records are
+  // OpenShell's installation, compressed, and owned by no Agent.
+  const transportName = `openclaw-agent-transport-${hash(agentId)}`;
+  const scanned = secrets.filter(
+    ({ metadata }) =>
+      metadata.labels?.["openclaw.dev/secret"] === undefined && metadata.labels?.owner !== "helm",
+  );
+  assert.ok(
+    scanned.some(({ metadata }) => metadata.name === transportName),
+    "the scan must include the Agent's transport Secret",
+  );
+  for (const secret of scanned) {
+    const decoded = Object.values(secret.data ?? {})
+      .map((value) => Buffer.from(value, "base64").toString("utf8"))
+      .join("\n");
+    assert.equal(
+      holdsCredential(decoded) || holdsCredential(JSON.stringify(secret.metadata)),
+      false,
+      `Secret ${secret.metadata.name} must not hold an upstream credential`,
+    );
+  }
+
+  // The turns above wrote Codex sessions to the workspace PVC; the PVC holds no credential.
+  const container = harnessPod.spec.containers.find(({ name }) => name === "agent");
+  const claims = new Set(
+    (harnessPod.spec.volumes ?? [])
+      .filter(({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName)
+      .map(({ name }) => name),
+  );
+  const roots = (container.volumeMounts ?? [])
+    .filter(({ name }) => claims.has(name))
+    .map(({ mountPath }) => mountPath);
+  assert.ok(roots.length > 0, "the Harness must mount its workspace PVC");
+  const files = await readHarnessFiles(placement, harnessPod, roots);
+  assert.ok(files.length > 0, "the workspace must hold the Harness's session files");
+  // Only file paths are reported, never content.
+  assert.deepEqual(
+    files
+      .filter(({ content }) => credentials.some((credential) => content.includes(credential)))
+      .map(({ path }) => path),
+    [],
+    "no workspace file may hold an upstream credential",
+  );
+
+  // Operator-facing diagnostics and logs of the active revision.
+  const revisionPath = `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
+  const diagnostics = await request("POST", `${revisionPath}/diagnostics`);
+  assert.equal(diagnostics.status, 200, JSON.stringify(diagnostics.error));
+  const runtime = await request("GET", `${revisionPath}/runtime`);
+  assert.equal(runtime.status, 200, JSON.stringify(runtime.error));
+  const observed = [
+    ["deployment diagnostics", diagnostics],
+    ["runtime status", runtime],
+  ];
+  const sources = runtime.data.sources.filter(({ available }) => available);
+  assert.ok(sources.length > 0, "the revision must have a readable log source");
+  for (const { id } of sources) {
+    const logs = await request("GET", `${revisionPath}/runtime/logs?source=${id}&tailLines=1000`);
+    assert.equal(logs.status, 200, JSON.stringify(logs.error));
+    observed.push([`${id} runtime logs`, logs]);
+  }
+  // Audit evidence for the whole Namespace, including registration, update and withdrawal.
+  const audit = await observerPool.query(
+    "SELECT row_to_json(event)::text AS event FROM occ.audit_events event WHERE namespace_id = $1",
+    [namespaceId],
+  );
+  assert.ok(audit.rowCount > 0, "the Namespace must have audit evidence");
+  observed.push(["audit events", audit.rows.map(({ event }) => event)]);
+  for (const [label, value] of observed) {
+    const text = JSON.stringify(value);
+    assert.equal(holdsCredential(text), false, `${label} must not hold an upstream credential`);
+    assert.equal(text.includes(placeholderPrefix), false, `${label} must not hold a placeholder`);
+  }
+  // Counts only, for the run record.
+  process.stderr.write(
+    `OpenShell integration: credential absence scanned ${JSON.stringify({
+      credentials: credentials.length,
+      pods: agentPods.length,
+      storedSecretsExcluded: stored.length,
+      secrets: scanned.length,
+      workspaceFiles: files.length,
+      workspaceBytes: files.reduce((total, { content }) => total + content.length, 0),
+      logSources: sources.map(({ id }) => id),
+      auditEvents: audit.rowCount,
+      matches: 0,
+    })}.\n`,
+  );
+}
+
 /**
  * Updates the source through the API, then withdraws it from the running Agent. After the
  * worker records `revoked`, a completed turn from the same running Codex app server must
@@ -3354,17 +4041,17 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.deepEqual(resynced.data.status, { state: "ready" });
   const replacement = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name: `openshell-model-replacement-${randomUUID()}`,
-    value: process.env.OPENAI_API_KEY,
+    value: modelCredential,
   });
   assert.equal(replacement.status, 201, JSON.stringify(replacement.error));
   const replaced = await request(
     "PATCH",
     `/namespaces/${namespaceId}/credential-sources/${sourceId}`,
-    { secrets: { api_key: replacement.data.ref } },
+    { secrets: { [modelSecretField]: replacement.data.ref } },
   );
   assert.equal(replaced.status, 200, JSON.stringify(replaced.error));
-  assert.deepEqual(replaced.data.secrets, { api_key: replacement.data.ref });
-  assert.equal(JSON.stringify(replaced).includes(process.env.OPENAI_API_KEY), false);
+  assert.deepEqual(replaced.data.secrets, { [modelSecretField]: replacement.data.ref });
+  assert.equal(JSON.stringify(replaced).includes(modelCredential), false);
 
   // The API records the withdrawal; only the worker's confirmed detach makes it revoked.
   const withdrawalPath = `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${sourceId}`;
@@ -3402,7 +4089,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
     observation = JSON.stringify(result);
   }
   assert.equal(
-    String(observation).includes(process.env.OPENAI_API_KEY),
+    String(observation).includes(modelCredential),
     false,
     "a revoked turn must not expose the model key",
   );
@@ -3422,7 +4109,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
 }
 
 async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
-  const redactions = [process.env.OPENAI_API_KEY, gatewayPassword, topology.appServerToken].filter(
+  const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
     (secret) => typeof secret === "string" && secret.length > 0,
   );
   const sections = [];
@@ -3517,7 +4204,7 @@ async function requestNativeOpenClawTurns(context, topology) {
       );
     }
     const body = await response.text();
-    assert.equal(body.includes(process.env.OPENAI_API_KEY), false);
+    assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
       response.status === 200
@@ -3640,6 +4327,12 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const approvedRead = `head -c 1 ${approvedPath} > /dev/null`;
   const readonlyPath = approvedPath;
   const escapedPath = `${providerWorkspace}/../${nonce}-escape.txt`;
+  // Use native Codex, which is allowed to reach this host, so the refusal proves
+  // path enforcement rather than curl's separate binary restriction. A fresh home
+  // references the same opaque auth file without reusing cached cloud configuration.
+  const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
+  const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -3652,8 +4345,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(3) touch ${readonlyPath}; ` +
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
-      `(6) curl -fsSI --max-time 10 https://acme.com. ` +
+      `(6) curl -fsSI --max-time 10 https://acme.com; ` +
+      (modelSourceType === "codex-pat" ? `(7) ${deniedConfigCommand}. ` : "") +
       `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
+      (modelSourceType === "codex-pat" ? "Command 7 must also fail. " : "") +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -3667,6 +4362,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   const deniedCommand = completedCommands.find(({ command }) =>
     String(command).includes("acme.com"),
+  );
+  const deniedConfigRequest = completedCommands.find(({ command }) =>
+    String(command).includes(deniedBackend),
   );
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
@@ -3696,6 +4394,36 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
+  if (modelSourceType === "codex-pat") {
+    assert.ok(
+      deniedConfigRequest,
+      "the real Codex binary must attempt the unapproved backend path.",
+    );
+    assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
+    // must record its L7 denial of this exact native-Codex request.
+    await waitFor(
+      "OpenShell denial of an unrelated Codex backend path",
+      async () => {
+        const logs = await kubectl(
+          "logs",
+          topology.harnessPod.metadata.name,
+          "--namespace",
+          topology.placement,
+          "--all-containers=true",
+          "--tail=500",
+        );
+        return logs
+          .split("\n")
+          .some(
+            (line) =>
+              line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
+              line.includes("not permitted by policy"),
+          );
+      },
+      30_000,
+    );
+  }
   assert.match(result.assistant, new RegExp(nonce));
   assert.match(result.assistant, /WORKSPACE_WRITABLE/);
   assert.match(result.assistant, /APPROVED_PATH_READABLE/);
@@ -3703,6 +4431,434 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.match(result.assistant, /ESCAPE_DENIED/);
   assert.match(result.assistant, /OPENCLAW_ALLOWED/);
   assert.match(result.assistant, /ACME_DENIED/);
+}
+
+/**
+ * Proves the credentialed route from inside the Sandbox and records what the network allowed.
+ * The probes run as one script that Codex executes, so each curl is a Sandbox process behind
+ * OpenShell's proxy and holds only placeholders. The test writes the script into the shared
+ * workspace, so the model never composes a credentialed command, and the script prints no
+ * header or body, because OpenShell refuses a model request whose body carries a placeholder.
+ */
+async function assertCredentialRouteEnforcement(topology) {
+  const { untrustedTls, untrustedTlsSource, toolSources } = topology;
+  const [toolA] = toolSources;
+  const nonce = `openshell-route-${randomUUID()}`;
+  const { address: publicAddress } = await dns.promises.lookup("www.openclaw.org", { family: 4 });
+  const script = [
+    "#!/bin/bash",
+    `body=/tmp/${nonce}.json`,
+    // Read the same opaque placeholder the Harness uses; never copy the upstream credential.
+    ...(modelSourceType === "codex-pat"
+      ? [
+          `model=$(node -e 'const fs=require("node:fs"); const path=require("node:path"); process.stdout.write(JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME,"auth.json"),"utf8")).personal_access_token)')`,
+        ]
+      : [
+          'model=$(for p in /proc/[0-9]*; do tr "\\0" "\\n" < "$p/environ" 2>/dev/null |',
+          "  sed -n 's/^OPENAI_API_KEY=//p'; done | head -1)",
+        ]),
+    'printf "PLACEHOLDER_FOUND=%s\\n" "$([ -n "$model" ] && echo yes || echo no)"',
+    `printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$${modelCredentialVariable}" ] && echo yes || echo no)"`,
+    // Prints NAME_EXIT and NAME_OUT for one probe; stderr is dropped.
+    'probe() { local name=$1; shift; local out; out=$("$@" 2>/dev/null); local code=$?;',
+    '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
+    // The model placeholder sent to a tool host that curl may reach.
+    `probe FOREIGN curl -sS -o "$body" -w '%{http_code}' --max-time 20 ` +
+      `-H "Authorization: Bearer $model" ${toolA.url}`,
+    `printf 'FOREIGN_PLACEHOLDER=%s\\n' "$(grep -o '"placeholder":[a-z]*' "$body" ` +
+      `2>/dev/null | cut -d: -f2)"`,
+    `printf 'FOREIGN_LENGTH=%s\\n' "$(grep -o '"length":[0-9]*' "$body" 2>/dev/null | cut -d: -f2)"`,
+    // OpenShell names the reason when it refuses a credential for the wrong endpoint.
+    `printf 'FOREIGN_REFUSAL=%s\\n' "$(grep -o 'credential_endpoint_mismatch' "$body" ` +
+      `2>/dev/null | head -1)"`,
+    // Probe an authenticated source endpoint from a child command. PAT identity validation
+    // avoids requiring native Codex's per-workspace request headers; its model turn runs above.
+    `probe MODEL curl -sS -o /dev/null -w '%{http_code},%{http_connect}' --max-time 60 ` +
+      `-H "Authorization: Bearer $model" ` +
+      (modelSourceType === "codex-pat"
+        ? "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
+        : `-H 'Content-Type: application/json' ` +
+          `-d '${JSON.stringify({ model: providerModel, input: "Reply with OK.", max_output_tokens: 16 })}' ` +
+          `${modelBaseUrl}/responses`),
+    // Direct connections that skip the proxy, by name and by address.
+    // OpenShell may intercept these transparently, so a host the policy allows can still answer;
+    // a host it denies must not.
+    `probe BYPASS_ALLOWED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+      `https://www.openclaw.org`,
+    `probe BYPASS_DENIED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+      `https://acme.com`,
+    `probe BYPASS_ADDRESS curl --noproxy '*' -sSk -o /dev/null -w '%{http_code}' --max-time 10 ` +
+      `https://${publicAddress}`,
+    `probe DNS sh -c 'getent hosts www.openclaw.org > /dev/null'`,
+    // A tool source whose upstream presents a certificate from an untrusted CA.
+    `verbose=$(curl -sv -o /dev/null --max-time 20 ` +
+      `-H "Authorization: Bearer $${untrustedTlsSource.environmentName}" ` +
+      `${untrustedTlsSource.url} 2>&1); printf 'TLS_EXIT=%s\\n' "$?"`,
+    `printf 'TLS_ISSUER=%s\\n' "$(printf '%s\\n' "$verbose" | sed -n 's/^\\*  *issuer: *//p' | head -1)"`,
+    `printf 'TLS_HTTP=%s\\n' "$(printf '%s\\n' "$verbose" | ` +
+      `sed -n 's/^< HTTP\\/[^ ]* \\([0-9]*\\).*/\\1/p' | head -1)"`,
+    "",
+  ].join("\n");
+  const scriptPath = `/sandbox/enterprise/${nonce}.sh`;
+  await kubectl(
+    "exec",
+    topology.harnessPod.metadata.name,
+    "--namespace",
+    topology.placement,
+    "--container",
+    "agent",
+    "--",
+    "sh",
+    "-c",
+    `printf '%s' '${Buffer.from(script).toString("base64")}' | base64 -d > ${scriptPath} && ` +
+      `chmod 0644 ${scriptPath}`,
+  );
+  const tlsEventsBefore = (await untrustedTls.events()).length;
+  const result = await requestCodexTurnFromGatewayPod({
+    namespace: topology.gatewayPlacement,
+    gatewayPod: await currentGatewayPod(topology),
+    providerModel,
+    prompt:
+      `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
+      `Then reply with exactly ${nonce}.`,
+  });
+  assert.equal(JSON.stringify(result).includes(modelCredential), false);
+  assert.equal(JSON.stringify(result).includes(untrustedTlsSource.token), false);
+  assert.match(result.assistant, new RegExp(nonce));
+  const run = result.items
+    .filter(({ method }) => method === "item/completed")
+    .map(({ params }) => params?.item)
+    .find((item) => item?.type === "commandExecution" && String(item.command).includes(scriptPath));
+  assert.ok(run, "the Harness must run the route probe script");
+  const output = String(run.aggregatedOutput ?? "");
+  const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
+  const exitCode = (name) => {
+    const code = value(`${name}_EXIT`);
+    return code === null ? null : Number(code);
+  };
+  // Pod-level NetworkPolicy governs connections made outside the Sandbox's network namespace,
+  // such as the supervisor's. The provider-fenced profile grants the Pod no public egress.
+  const podNetwork = JSON.parse(
+    await kubectl(
+      "exec",
+      topology.harnessPod.metadata.name,
+      "--namespace",
+      topology.placement,
+      "--container",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      [
+        'const net = require("node:net");',
+        "const tcp = (host) => new Promise((resolve) => {",
+        "  const socket = net.connect({ host, port: 443, timeout: 5000 });",
+        '  socket.once("connect", () => { socket.destroy(); resolve("connected"); });',
+        '  socket.once("timeout", () => { socket.destroy(); resolve("timeout"); });',
+        '  socket.once("error", (error) => resolve(error.code ?? "error"));',
+        "});",
+        "(async () => {",
+        `  const address = await tcp(${JSON.stringify(publicAddress)});`,
+        "  process.stdout.write(JSON.stringify({ address }));",
+        "})();",
+      ].join("\n"),
+    ),
+  );
+  const tlsEvents = (await untrustedTls.events()).slice(tlsEventsBefore);
+  const issuer = value("TLS_ISSUER");
+  const [modelStatus, modelConnectStatus] = (value("MODEL_OUT") ?? "").split(",");
+  // Classify what the foreign host received by the echo's placeholder flag and header length,
+  // so a substituted model key is recognized without hashing or printing it. Only OpenShell's
+  // own endpoint-mismatch refusal counts as refused: a transport failure or another error could
+  // follow a forwarded credential, so it proves nothing and fails the check.
+  const foreignReceived = (() => {
+    const length = Number(value("FOREIGN_LENGTH"));
+    const status = value("FOREIGN_OUT");
+    if (status === "403" && value("FOREIGN_REFUSAL") === "credential_endpoint_mismatch") {
+      return "refused";
+    }
+    if (status !== "200") {
+      return `unverified-${status}`;
+    }
+    if (value("FOREIGN_PLACEHOLDER") === "true") {
+      return "placeholder";
+    }
+    if (length === 0) {
+      return "empty";
+    }
+    if (length === `Bearer ${modelCredential}`.length) {
+      return "model-key-length";
+    }
+    return length === `Bearer ${toolA.token}`.length ? "tool-token-length" : "other";
+  })();
+  const observed = {
+    modelPlaceholder: {
+      inheritedByCommand: value("PLACEHOLDER_INHERITED") === "yes",
+      readableFromHarness: value("PLACEHOLDER_FOUND") === "yes",
+    },
+    foreignDestination: {
+      httpStatus: value("FOREIGN_OUT"),
+      received: foreignReceived,
+    },
+    modelHostFromCurl: {
+      httpStatus: modelStatus || null,
+      connectStatus: modelConnectStatus || null,
+      exitCode: exitCode("MODEL"),
+    },
+    proxyBypass: {
+      allowedHostExitCode: exitCode("BYPASS_ALLOWED"),
+      deniedHostExitCode: exitCode("BYPASS_DENIED"),
+      addressExitCode: exitCode("BYPASS_ADDRESS"),
+      sandboxDns: exitCode("DNS") === 0 ? "resolved" : "failed",
+    },
+    untrustedUpstream: {
+      httpStatus: value("TLS_HTTP") || null,
+      exitCode: exitCode("TLS"),
+      harnessSawProxyIssuer: Boolean(issuer) && !issuer.includes(untrustedCaName),
+      // Counted only for the tool source's host, so the failures belong to this request.
+      tlsFailures: tlsEvents.filter(
+        ({ event, servername }) => event === "tls-error" && servername === untrustedTls.host,
+      ).length,
+      handshakes: tlsEvents.filter(({ event }) => event === "tls-established").length,
+      requests: tlsEvents.filter(({ event }) => event === "request").length,
+    },
+    podNetwork,
+  };
+  process.stderr.write(`OpenShell integration: credential route ${JSON.stringify(observed)}.\n`);
+  // The model placeholder is bound only to the model endpoint. Sent anywhere else it must be refused,
+  // dropped, or arrive as the placeholder; any other value means a credential was substituted.
+  assert.ok(
+    ["refused", "placeholder", "empty"].includes(observed.foreignDestination.received),
+    "OpenShell must not substitute the model placeholder for a foreign destination.",
+  );
+  // OpenShell matches a profile's binaries against every ancestor of the calling process, so a
+  // command Codex runs is admitted as Codex. A child that reads the Harness placeholder can
+  // authenticate at the source's allowed endpoint; the foreign destination must remain refused.
+  // TODO(tool isolation): once Agent tools run in their own Sandbox, outside Codex's process
+  // tree, require this request to be refused and update the Credential Gateway reference.
+  assert.equal(
+    observed.modelPlaceholder.readableFromHarness,
+    true,
+    "a command must be able to read the Harness model placeholder for this check.",
+  );
+  assert.equal(
+    observed.modelHostFromCurl.httpStatus,
+    "200",
+    "a command Codex runs must authenticate at the allowed source endpoint.",
+  );
+  // Skipping the proxy settings gains nothing: a denied host and a bare address stay unreachable.
+  // The allowed host still answers, so the run has an outbound path and these failures are the
+  // policy's, not a missing network.
+  assert.equal(
+    observed.proxyBypass.allowedHostExitCode,
+    0,
+    "a host the policy allows must stay reachable for the denied checks to mean anything.",
+  );
+  assert.notEqual(
+    observed.proxyBypass.deniedHostExitCode,
+    0,
+    "the Sandbox must not reach a denied host by skipping its proxy.",
+  );
+  assert.notEqual(
+    observed.proxyBypass.addressExitCode,
+    0,
+    "the Sandbox must not reach a public address directly.",
+  );
+  // The provider-fenced Pod has no public egress of its own outside the Sandbox.
+  assert.notEqual(podNetwork.address, "connected", "the Harness Pod must not reach the Internet.");
+  // The Harness talks TLS to OpenShell's proxy, which verifies the upstream itself: an upstream
+  // signed by an untrusted CA fails its handshake and never receives the request or the token.
+  assert.equal(
+    observed.untrustedUpstream.harnessSawProxyIssuer,
+    true,
+    "the Harness must see the Sandbox proxy's certificate, not the upstream's.",
+  );
+  assert.notEqual(
+    observed.untrustedUpstream.httpStatus,
+    "204",
+    "a request to an untrusted upstream must not succeed.",
+  );
+  assert.ok(
+    observed.untrustedUpstream.tlsFailures > 0,
+    "OpenShell must attempt and refuse the untrusted upstream's handshake.",
+  );
+  assert.equal(observed.untrustedUpstream.handshakes, 0, "no upstream handshake may complete.");
+  assert.equal(observed.untrustedUpstream.requests, 0, "no request may reach the upstream.");
+}
+
+const untrustedModelDnsFile = "oce-untrusted-model.server";
+
+/**
+ * Points cluster DNS for the model host at `address`, or restores it when `address` is undefined,
+ * and waits until cluster DNS answers accordingly. The Agent Gateway Pod uses cluster DNS
+ * directly; the Harness Pod resolves only through the Sandbox's policy resolver. k3s CoreDNS
+ * imports *.server files from the optional coredns-custom ConfigMap.
+ */
+async function setModelProviderDns(topology, address) {
+  const directory = await mkdtemp(join(tmpdir(), "openshell-model-dns-"));
+  try {
+    if (address === undefined) {
+      await kubectl(
+        "delete",
+        "configmap",
+        "coredns-custom",
+        "--namespace",
+        "kube-system",
+        "--ignore-not-found=true",
+      );
+    } else {
+      const path = join(directory, "coredns-custom.json");
+      await writeFile(
+        path,
+        JSON.stringify({
+          apiVersion: "v1",
+          kind: "ConfigMap",
+          metadata: { name: "coredns-custom", namespace: "kube-system" },
+          data: {
+            // A short TTL keeps a cached override from outliving the check.
+            [untrustedModelDnsFile]: [
+              `${modelEndpoint.hostname}:53 {`,
+              "    hosts {",
+              `        ${address} ${modelEndpoint.hostname}`,
+              "        ttl 5",
+              "    }",
+              "}",
+              "",
+            ].join("\n"),
+          },
+        }),
+        { mode: 0o600 },
+      );
+      await kubectl("create", "-f", path);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+  await kubectl("rollout", "restart", "deployment/coredns", "--namespace", "kube-system");
+  await kubectl(
+    "rollout",
+    "status",
+    "deployment/coredns",
+    "--namespace",
+    "kube-system",
+    "--timeout=120s",
+  );
+  const lookup = [
+    `require("node:dns").promises.lookup(${JSON.stringify(modelEndpoint.hostname)}, { family: 4 }).then(`,
+    "  ({ address }) => process.stdout.write(address),",
+    '  () => process.stdout.write(""));',
+  ].join("\n");
+  await waitFor(
+    `${modelEndpoint.hostname} to resolve ${address === undefined ? "publicly" : "to the observer"}`,
+    async () => {
+      const resolvers = (await resources("pods", "kube-system")).filter(
+        (pod) =>
+          pod.metadata.labels?.["k8s-app"] === "kube-dns" &&
+          pod.metadata.deletionTimestamp === undefined,
+      );
+      if (resolvers.length !== 1) {
+        return undefined;
+      }
+      const resolved = await kubectl(
+        "exec",
+        await currentGatewayPod(topology),
+        "--namespace",
+        topology.gatewayPlacement,
+        "--",
+        "node",
+        "-e",
+        lookup,
+      ).catch(() => "");
+      if (address === undefined) {
+        return resolved !== "" && resolved !== topology.untrustedTls.address ? true : undefined;
+      }
+      return resolved === address ? true : undefined;
+    },
+    180_000,
+  );
+}
+
+/**
+ * Serves the model host from an upstream signed by a CA nothing trusts. The model profile allows
+ * the provider's exact host even at a cluster address, so OpenShell connects, and must refuse
+ * the certificate before Codex's request, and the key OpenShell would insert, leaves the proxy.
+ * It runs on a freshly replaced Harness, which holds no connection to the real provider.
+ */
+async function assertModelRouteRefusesUntrustedUpstream(topology) {
+  // Cluster DNS cannot redirect an endpoint selected by address; report the gap instead.
+  if (isIP(modelEndpoint.hostname) !== 0) {
+    process.stderr.write(
+      "OpenShell integration: untrusted model upstream not tested; the model endpoint is an address.\n",
+    );
+    return;
+  }
+  const { request, namespaceId, untrustedTls } = topology;
+  const agentId = topology.agent.id;
+  const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  await waitForProviderHarnessPod(topology.placement, {
+    id: current.data.activeRevisionId,
+    agentId,
+  });
+  assert.equal(
+    await fixture.maybeResource("configmap", "coredns-custom", "kube-system"),
+    undefined,
+    "the disposable cluster must not carry a CoreDNS override before this check.",
+  );
+  const eventsBefore = (await untrustedTls.events()).length;
+  let rejected = false;
+  let observation;
+  let failure;
+  try {
+    await setModelProviderDns(topology, untrustedTls.address);
+    const nonce = `OCC-OPENSHELL-UNTRUSTED-${randomUUID()}`;
+    try {
+      observation = JSON.stringify(
+        await requestCodexTurnFromGatewayPod({
+          namespace: topology.gatewayPlacement,
+          gatewayPod: await currentGatewayPod(topology),
+          providerModel,
+          prompt: `Reply with exactly ${nonce}.`,
+        }),
+      );
+    } catch (error) {
+      rejected = true;
+      observation = error instanceof Error ? error.message : String(error);
+    }
+  } catch (error) {
+    failure = error;
+  }
+  // Restore DNS before any assertion; keep the first error if both steps fail.
+  try {
+    await setModelProviderDns(topology, undefined);
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    throw failure;
+  }
+  const events = (await untrustedTls.events()).slice(eventsBefore);
+  const observed = {
+    turnRejected: rejected,
+    // Counted only for the model host, so the failures belong to the model route.
+    tlsFailures: events.filter(
+      ({ event, servername }) => event === "tls-error" && servername === modelEndpoint.hostname,
+    ).length,
+    handshakes: events.filter(({ event }) => event === "tls-established").length,
+    requests: events.filter(({ event }) => event === "request").length,
+  };
+  process.stderr.write(
+    `OpenShell integration: untrusted model upstream ${JSON.stringify(observed)}.\n`,
+  );
+  assert.equal(
+    String(observation).includes(modelCredential),
+    false,
+    "a refused model route must not expose the model key",
+  );
+  assert.equal(rejected, true, "a model turn must not complete through an untrusted upstream.");
+  assert.ok(observed.tlsFailures > 0, "OpenShell must attempt and refuse the upstream handshake.");
+  assert.equal(observed.handshakes, 0, "no upstream handshake may complete.");
+  assert.equal(observed.requests, 0, "no model request, or key, may reach the upstream.");
 }
 
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {
@@ -3850,16 +5006,10 @@ async function assertEmbeddedOpenShellFailsClosed(topology) {
     credentialSources: [{ sourceId: topology.agent.harnessAuth.sourceId }],
     harnessAuth: topology.agent.harnessAuth,
   });
-  assert.equal(agent.status, 201, JSON.stringify(agent.error));
-  const deployed = await topology.request(
-    "POST",
-    `/namespaces/${topology.namespaceId}/agents/${agent.data.id}/deploy`,
-  );
-  assert.equal(
-    deployed.status,
-    404,
-    "OpenShell-selected installations must reject embedded Agents before provisioning.",
-  );
+  // OpenShell-selected installations refuse an embedded Agent when it is saved, so nothing
+  // can be deployed or provisioned for it.
+  assert.equal(agent.status, 400, JSON.stringify(agent.data ?? agent.error));
+  assert.match(agent.error.message, /supports only dedicated Harness execution/u);
 }
 
 async function observeExposedCodexAuthenticationBoundary(serviceUrl, appServerToken) {
@@ -3907,7 +5057,7 @@ test(
   "OpenShell enforces provider delivery and authenticated Codex exposure",
   {
     ...requiresOpenShellK3d,
-    ...(demoStatePath === undefined ? { timeout: 1_500_000 } : {}),
+    ...(demoStatePath === undefined ? { timeout: 1_800_000 } : {}),
   },
   async (context) => {
     if (demoStatePath !== undefined) {
@@ -3997,17 +5147,25 @@ test(
         prompt: `Reply with exactly ${nonce}.`,
       });
       assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(process.env.OPENAI_API_KEY), false);
+      assert.equal(JSON.stringify(modelTurn).includes(modelCredential), false);
       process.stderr.write(
         "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
       process.stderr.write(
-        "OpenShell integration: tool filesystem and egress verified; testing Pod-absent replacement and cleanup.\n",
+        "OpenShell integration: tool filesystem and egress verified; testing the credential route.\n",
+      );
+      await assertCredentialRouteEnforcement(topology);
+      process.stderr.write(
+        "OpenShell integration: credential route verified; testing Pod-absent replacement and cleanup.\n",
       );
       await assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology);
       process.stderr.write(
-        "OpenShell integration: replacement verified; testing OAuth2 refresh credential sources.\n",
+        "OpenShell integration: replacement verified; testing an untrusted model upstream.\n",
+      );
+      await assertModelRouteRefusesUntrustedUpstream(topology);
+      process.stderr.write(
+        "OpenShell integration: untrusted model upstream refused; testing OAuth2 refresh credential sources.\n",
       );
       await assertRefreshCredentialSources(topology);
       process.stderr.write(
@@ -4015,7 +5173,11 @@ test(
       );
       await assertNonModelCredentialSource(topology);
       process.stderr.write(
-        "OpenShell integration: non-model source verified; testing credential source update and live withdrawal.\n",
+        "OpenShell integration: non-model source verified; checking Agent-visible material, diagnostics and audit.\n",
+      );
+      await assertAgentVisibleMaterialExcludesCredentials(topology);
+      process.stderr.write(
+        "OpenShell integration: credential absence verified; testing credential source update and live withdrawal.\n",
       );
       await assertCredentialSourceUpdateAndLiveWithdrawal(topology);
       process.stderr.write(

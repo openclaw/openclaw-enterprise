@@ -121,6 +121,14 @@ ends it.
 Sign-in takes `{"email": "...", "password": "..."}`. The session arrives only
 through `Set-Cookie`.
 
+Sign-in rejects NUL or unpaired-surrogate emails with `400 INVALID_REQUEST`
+before account or known-device State reads. Both profiles retain denial audits
+and budget accounting, including recovery-only and counted `503` audit failures.
+Limited attempts remain `429`; passwords are unchanged. Stored U+FFFD email is
+unsupported: password-only returns `400 FORBIDDEN` without a session. Guarded
+credential checks can create a session and cookie, but HTTP session inspection
+returns `500 INTERNAL_ERROR`, not usable-session proof.
+
 In both profiles, after 10 failed sign-ins per minute per email, or 20
 per client address with [`api.trustedProxy`](settings/production.md#github-sign-in-and-trusted-proxies),
 attempts wait 1–8 s and return `429` with `Retry-After`, whether or not the email
@@ -137,21 +145,17 @@ the auth secret; `untracked` events have no key and no hash. The email and
 address are never logged. The bundled Collector
 exports the event and lane, not the hash.
 
-Every password sign-in whose password is checked attempts an
-`authentication.login` audit: success names the account's Principal and `userId`;
-a wrong password or unknown email is `denied` with `INVALID_CREDENTIALS` and no
-account. Audit writes fail closed: a success whose audit cannot be written
-returns `503` without issuing a session cookie. A server-side session may
-persist if its creation or cleanup cannot be confirmed. In both profiles, a wrong
-password whose denial cannot be written counts as a credential failure against
-any tracked sign-in budgets. The ordinary response is `503`; the slow lane may
-instead return `429`. An untracked or already-exhausted lane is paced without
-necessarily adding a new tracked failure entry. If the audit write cannot be
-confirmed, its persistence outcome may be unknown. A `429` is also unaudited when admission
-refuses the attempt before the password is checked;
-`authentication.sign-in-limited` reports the limited lane.
-An administrator's attempt in the slow lane is still checked, so a wrong password
-there returns `429` and is audited as `denied` when the write succeeds.
+Password checks attempt an `authentication.login` audit: success names the
+account's Principal and `userId`; wrong passwords and unknown emails produce
+`denied`/`INVALID_CREDENTIALS` without account identity. Audit writes fail closed.
+Failed success audits return `503` without a cookie; uncertain session creation
+or cleanup may leave a server-side session. Failed denial audits still count
+against tracked budgets, returning `503` or, in the slow lane, `429`. Untracked
+or exhausted lanes are paced without necessarily adding failure entries.
+Unconfirmed audit writes have unknown persistence outcomes. Admission `429`s
+before password checking are unaudited and reported by
+`authentication.sign-in-limited`. Slow-lane administrator checks remain audited;
+wrong passwords return `429`.
 
 ### Known devices
 

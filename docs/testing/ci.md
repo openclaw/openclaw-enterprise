@@ -23,17 +23,22 @@ The non-required [First Agent smoke](first-agent-smoke.md) installs Local Setup 
 
 Stop observation defaults to 17 minutes; explicit deadlines and 40-minute job limits apply.
 
-The non-required [`keycloak-oidc` lane](keycloak.md) runs in full-mode PR CI and on main. It belongs to the `full` suite group.
+The [`keycloak-oidc` lane](keycloak.md) checks OIDC sign-in against a real Keycloak. It is a `ci` lane and runs on `blacksmith-8vcpu-ubuntu-2404`.
 
-Full CI has twenty required lanes. `checks-baseline-1` and `checks-baseline-2` split the baseline conformance and local integration files by measured file durations. Only part 1 runs the type and Go CLI checks and installs the docs site its docs tests need; part 2 builds the workspace output its tests read. Register new baseline files in either part, keeping job times close. Lanes with `fileConcurrency` run `parallelFiles` up to that many at once, longest first; other files, including `serialFiles`, run alone first. `checks-browser` and `checks-browser-2` split browser tests likewise, plus some baseline files (only part 1 installs the docs site); `postgres-auth` owns sign-in, session and account authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs the CPU-contention model probe without a cluster; `images-runtime-startup` and `images-runtime-startup-2` each build the runtime image and run startup smoke files apart from packaging (part 2 also the other model probes); `runtime-image-startup.test.mjs`, `runtime-image-startup-probe.test.mjs`, `runtime-image-gateway-peer.test.mjs` and `runtime-image-native-worker.test.mjs` are split by measured case durations and share `tests/helpers/runtime-image-startup.mjs`.
+Full CI has twenty-two required lanes. `checks-baseline-1` and `checks-baseline-2` split the baseline conformance and local integration files by measured file durations. Only part 1 runs the type and Go CLI checks and installs the docs site its docs tests need; part 2 builds the workspace output its tests read. Register new baseline files in either part, keeping job times close. Lanes with `fileConcurrency` run `parallelFiles` up to that many at once, longest first; other files, including `serialFiles`, run alone first. `checks-browser` and `checks-browser-2` split browser tests likewise, plus some baseline files (only part 1 installs the docs site); `postgres-auth` owns sign-in, session and account authentication tests and its own PostgreSQL server; `images-model-probes` builds only the runtime image and runs the CPU-contention model probe without a cluster; `images-runtime-startup`, `-2` and `-3` each build the runtime image and run startup smoke files apart from packaging (part 2 also the other model probes); their files are split by measured durations and share `tests/helpers/runtime-image-startup.mjs`.
 
-Hosted image builds use separate controller/runtime caches. Packaging exports on main pushes; model probes, runtime startup and the repository credential platform restore. A never-cancelled main [cache workflow](../../.github/workflows/ci-image-cache.yml) also exports; pull requests only read main's cache. The platform lane loads its cached runtime image into the Docker engine and derives its fixture from it with the default builder. Transfers time out after one minute, export failures are ignored, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.
+Hosted image builds use separate controller/runtime caches. Packaging, model probes, runtime startup and the repository credential platform only restore. Only a never-cancelled main [cache workflow](../../.github/workflows/ci-image-cache.yml) exports, so pull requests read main's newest cache. The platform lane loads its cached runtime image into the Docker engine and derives its fixture from it with the default builder. Restores time out after one minute, and builds load locally. Cache credentials stay in preparation. Local builds remain unchanged.
 
 Compare per-file `wallDurationMs`, preparation `[ci-timing]` phases and Actions timestamps for slow setup or tests. [k3d image preparation](ci-k3d-images.md) covers how images reach the cluster nodes.
 
-`static-checks` runs `pnpm docs:check` and the [dependency policy](repository-boundaries.md). Pages above 1,500 visible words require review; above 2,500 fail except the approved [API reference](../reference/api.md) and `AGENTS.md` files. The generated API, site build, navigation, and links must pass. The [specification check](../contributing/specifications.md#status-and-review) also validates non-archived RFC metadata and spec link targets. Run `pnpm docs:check-length` for word counts alone.
+`static-checks` runs [dependency policy](repository-boundaries.md) and
+`pnpm docs:check`: word limits, generated API, site navigation/links and
+[spec metadata/links](../contributing/specifications.md#status-and-review).
+Pages above 1,500 visible words need review; above 2,500 fail, except the approved
+[API reference](../reference/api.md) and `AGENTS.md`. `pnpm docs:check-length`
+checks word counts alone.
 
-CI Impact and Suite Audit start independently. Full mode runs the nineteen-lane matrix and `runtime-image-fixture`; `CI Required` requires their outcomes and same-source artifacts. Kubernetes fixture, observability and runtime image startup lanes use `blacksmith-32vcpu-ubuntu-2404` (8 CPUs), whose kernel enforces the NetworkPolicy checks; `runtime-image-fixture` and `CI Required` use `ubuntu-22.04`. Each lane-table row in `ci.yml` names its runner. Other lanes, Static Checks and the audit use `blacksmith-16vcpu-ubuntu-2404`: 4 CPUs (8vcpu exposes 2), and its jobs rarely wait for a runner.
+CI Impact and Suite Audit start independently. Full mode runs the twenty-two-lane matrix and `runtime-image-fixture`; `CI Required` requires their outcomes and same-source artifacts. Runtime image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs; Kubernetes fixture and observability lanes for its NetworkPolicy-enforcing kernel. `runtime-image-fixture` and `CI Required` use `ubuntu-22.04`; `ci.yml` names each lane's runner. Other lanes except `keycloak-oidc`, Static Checks and the audit use `blacksmith-16vcpu-ubuntu-2404` (4 CPUs; 8vcpu exposes 2).
 
 In every mode, `static-checks` verifies checkout identity and runs the workspace, lint, format, OpenAPI and docs checks beside the lanes. The docs check covers word limits, site links and navigation, but not outgoing links in root or `specs/` Markdown. Docs mode (a verified documentation-only PR merge tree) runs no product tests. `CI Required` verifies the mode and requires successful impact, audit and static checks, with docs mode's test jobs skipped. Missing, failed, cancelled or unexpectedly skipped selected jobs fail. Docs mode does not run the test-result aggregator or require test artifacts.
 
@@ -54,12 +59,12 @@ runtime startup lane derives the reviewed Codex seccomp profile in an owned k3d
 cluster and requires `OCC_TEST_CODEX_SECCOMP_PROFILE`; the second runs no Codex
 sandbox, so it needs no cluster.
 
-Full Integration uses the immutable event commit. Lanes require `main` except
-`k3d-model` and `openshell`, which accept exact protected-environment branch
-rules. The main-only `provider-account` lane needs no per-run approval; other
-credentialed environments require approval. `helper-timeout` and standalone
-`logging-collector` have no environment gate. Missing inputs fail, and a targeted
-run proves only its selected lane.
+Full Integration uses immutable event commits. Lanes require `main` except
+`k3d-model`/`openshell` with exact protected-environment branch rules, and explicit
+credential-free `dev-up-k3d`. Maintainers dispatch credentialed lanes without
+a separate environment approval. `helper-timeout` and standalone
+`logging-collector` have no environment gate. Missing inputs fail; targeted runs
+prove only their selected lane.
 
 The `postgres` lane owns migration compatibility; `postgres-application` owns the
 revision-worker, IAM barrier, metrics and auth-maintain tests; `postgres-auth` owns sign-in,
@@ -68,9 +73,9 @@ bootstrap, wire-up, platform-state, restart and password sign-in limit tests and
 remaining PostgreSQL files. Each has a disposable PostgreSQL server. The split
 follows measured file durations, so add a new file to `postgres-platform` or
 `postgres-auth`, keeping the job times close.
-Kubernetes fixture files run in `k3d-fixture-configuration`,
-`k3d-fixture-state`, and `k3d-fixture-plugins`, each with independent cluster,
-database, image, and cleanup state. Each lane runs its audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
+Kubernetes fixture lanes `k3d-fixture-configuration`, `k3d-fixture-state`,
+`k3d-fixture-plugins`, and `k3d-fixture-oauth` each have independent cluster,
+database, image, and cleanup state; the first three run audited `parallelFiles` two at a time. The audit requires one owner per file; Full Integration aggregates its selected `full` group or targeted lane.
 
 The `repository-credentials-container` lane builds
 `.build/repository-credentials/{service,client}` with Dockerfiles under
@@ -114,17 +119,16 @@ redacts environment values and secret shapes in lines and event messages, and
 adds the record to the same report under `containerLogs`. The platform recovery
 test follows its fixture gateway, which logs its drain, across Agent stop.
 
-The job log and results keep 600 characters of a failure message. In every lane,
-the runner adds each failed file's whole messages and stacks (16 KiB each, 20
-cases) and its last 400 stdout, stderr and diagnostic lines to the same report
-under `failures`, for the first 8 failed files (`omittedFailureFiles` counts the rest). They get the failure-message
-redaction, and lines naming a credential are dropped whole. Test output reaches an
-artifact only here; a runtime-minted value without a known shape is not redacted,
-so tests must not print secrets. Each record has a `reason`. A file stopped at the
-runner timeout gets `timeout`, its elapsed time, the running tests and the output tail
-so far (a long tail can lose its oldest lines; `omittedLines` counts them). A
-preparation failure gets `prepare` with the redacted error message, which can quote a
-command's output, and stack.
+Job logs and results retain 600 characters per failure message. In every lane,
+the diagnostics report's `failures` includes each failed file's messages and
+stacks (16 KiB each, 20 cases), plus its last 400 stdout, stderr and diagnostic
+lines. It retains eight files; `omittedFailureFiles` counts the rest. Messages
+receive failure redaction; lines naming credentials are dropped. This is the
+only test-output artifact path. Tests must not print secrets: runtime-minted
+values without known shapes are not redacted. Each record has a `reason`.
+Timeouts include elapsed time, running tests and the output tail, with dropped
+lines counted by `omittedLines`. Preparation failures use `prepare` and retain
+the redacted message, which may quote command output, and stack.
 
 The `k3d-model`, `gateway-routing`, `slack`, `openshell`, and `k3d-otel` lanes prepare the controller image and workspace routing for dedicated Harness node enrollment. Supply an immutable Node 24 `NODE_BASE_IMAGE`; gateway-routing, Slack and OpenShell CI use the repository variable `CONTAINER_NODE_BASE_IMAGE`. Preparation supplies the imported controller digest and private routing CA paths; Slack still requires approved runtime images and credentials.
 
@@ -150,29 +154,50 @@ for proof boundaries and live gaps.
 
 Each lane runs whole test files. The runner validates Node case results and required names; skips, TODOs, missing results, zero cases, failures and cleanup errors fail the selected lane. The aggregate checks required job and lane results at the same source commit without repeating case validation. Ordinary `pull_request` jobs may save pnpm-store caches within the PR merge-ref scope; protected jobs use the approved event commit and do not promote PR build artifacts.
 
-Prepare infrastructure only on a disposable host or through reviewed CI helpers.
-Each run owns its Compose project, databases, cluster and temp files. CI writes
-private cleanup state under `RUNNER_TEMP` and uploads sanitized results and
-bootstrap diagnostics; hosted-runner state disappears after the job.
-The images-packaging lane attempts to retain sanitized cleanup records for its
-prepared controller and runtime tags, but not the separate runtime-images test tag.
-A planned record does not prove an image exists; export or upload failure or
-runner loss can prevent retention. Missing state or an empty inventory does not
-prove cleanup; a tag name is metadata, not authentication or deletion authority.
-Results include source commit, case outcomes, cleanup status and available image
-digests by role, excluding private registry names and prepared environment values.
-Local failures can retain cleanup state while the host and state path exist. On
-Docker Desktop or similar VM-backed hosts, run one Kubernetes lane at a time when
-measured disk or network pressure has caused instability; the GitHub matrix remains
-parallel. Model/service tests require the approved credentials and spend policy in
-the [implementation specification](../../specs/plans/19-github-actions-test-coverage/index.md).
+Prepare infrastructure on disposable hosts or through reviewed CI helpers.
+Each run owns its Compose project, databases, cluster and temporary files.
+CI keeps private cleanup state under `RUNNER_TEMP`, which disappears after the
+hosted job, and uploads sanitized results and bootstrap diagnostics.
+The images-packaging lane attempts to retain sanitized records for its prepared
+controller/runtime tags, excluding the separate runtime-images test tag. Planned
+records do not prove creation; export, upload or runner failure can prevent
+retention. Missing state and empty inventories do not prove cleanup; tag names
+confer no authentication or deletion authority. Results include source commit,
+case outcomes, cleanup status and available image digests by role, excluding
+private registry names and prepared environment values.
 
-See the [execution flow](../flows/github-actions-testing.md) for entrypoints, result accounting, cleanup and failures. Use the [suite-specific guides](README.md#integration-tests) to reproduce runs locally.
+Local failures can retain cleanup state while that host and path exist. After
+measured disk/network pressure on Docker Desktop or similar VM-backed hosts,
+run Kubernetes lanes individually; the GitHub matrix remains parallel.
+Model/service tests require approved credentials and the
+[spend policy](../../specs/plans/19-github-actions-test-coverage/index.md).
+See the [execution flow](../flows/github-actions-testing.md) for accounting and
+cleanup, [suite guides](README.md#integration-tests) for reproduction, and
+[browser diagnostics](local.md#browser-failure-diagnostics) for failed UI tests.
 
-Failed browser tests upload
-[diagnostics](local.md#browser-failure-diagnostics).
+Retries replace their lane's result artifact; other lanes keep theirs.
+`attempt-<run attempt>-<artifact-prefix>-<lane>` preserves each attempt's results,
+and its job log keeps redacted failed-case messages. The
+`k3d-fixture-configuration` lane logs minute memory summaries and uploads
+`memory-<artifact-prefix>-<lane>-attempt-<run attempt>`; see the
+[execution flow](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
+Full-mode reruns require every selected lane and aggregate to pass.
 
-A retry replaces its lane result artifact; other lanes keep theirs. Each attempt's results also remain as `attempt-<run attempt>-<artifact-prefix>-<lane>`, and each failed case's redacted message is in that attempt's job log. The `k3d-fixture-configuration` lane also logs a memory summary about once a minute and uploads its memory samples as `memory-<artifact-prefix>-<lane>-attempt-<run attempt>`; see the [execution flow](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result). Full-mode reruns require every selected lane and aggregate to pass.
+### Cleanup command deadlines
+
+A cleanup timeout fails the lane, retains failed resources in private state,
+and permits subsequent cleanup. Inspect failures and state before retrying on
+the same host.
+
+| Variable                                 | Default                 | Scope                                                                                                      |
+| ---------------------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS` | `300000` (five minutes) | Each cleanup container-engine or k3d command. Database drops use the smaller of this value and 60 seconds. |
+| `OPENCLAW_CI_COMMAND_KILL_GRACE_MS`      | `5000` (five seconds)   | Maximum grace between TERM and KILL, then for pipe closure. Also used by preparation.                      |
+
+Scope overrides per invocation; invalid values use defaults. Deadlines include
+pipe drain. POSIX groups remain owned through caller cancellation or exit.
+See [termination and ownership](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
+Bounded waiting does not prove external resource deletion.
 
 ### Select immutable images for local preparation
 
@@ -183,7 +208,8 @@ See [k3d image preparation](ci-k3d-images.md#select-immutable-images-for-local-p
 The [CI workflow](../../.github/workflows/ci.yml) runs on pull requests, pushes to `main`, merge groups, and manual dispatch.
 [Full Integration](../../.github/workflows/full-integration.yml) runs only by
 manual dispatch, using the requested lane or `all`, not on pushes or merges. The
-`k3d-model` and `openshell` branch exceptions below do not enable other lanes outside `main`.
+`k3d-model` and `openshell` retain the protected branch exceptions below.
+Credential-free [`dev-up-k3d`](README.md#run-the-hosted-local-installation-lane) also accepts reviewed branches.
 `provider-account` remains manual because its configured admin credential cannot
 authenticate from the hosted runner.
 
@@ -192,19 +218,18 @@ authenticate from the hosted runner.
 ### Run protected model tests before merge
 
 An administrator adds the exact branch to `integration-model` for `k3d-model` or
-`integration-openshell` for `openshell`, retaining `main`, required reviewers,
-and self-review prevention. Wildcards fail preflight. Credentials become
-available only after approval.
+`integration-openshell` for `openshell`, retaining `main` and no required reviewers.
+Wildcards fail preflight. The exact branch grant permits credentialed execution.
 
 ```sh
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=k3d-model
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=openshell
 ```
 
-The reviewer inspects the commit before approval. Jobs check out immutable
-`github.sha`; moving the branch does not change the run. The dispatcher cannot
-self-approve. Remove the branch rule after proof completes.
-Other lanes, including `all` and `provider-account`, remain main-only. The
+The maintainer inspects the commit before dispatch. Jobs check out immutable
+`github.sha`; moving the branch does not change the run. No separate approval
+is needed. Remove the branch rule after proof completes.
+Other credentialed lanes, `all`, and `provider-account` remain main-only. The
 `k3d-model` lane runs real Kubernetes topology tests, including embedded
 invalid-credential cutover and recovery. The `openshell` lane runs the
 first-Agent proof with both Compose and Kubernetes control planes. Each proof
@@ -213,7 +238,7 @@ replacement after external changes. Ordinary fixture CI does not run these tests
 
 ### Integration tests outside automatic CI
 
-The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI and Calendar checks outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
+The [advisory QA workflow](qa-matrix.md#ci-evidence-and-recovery) runs Codex model/UI, Calendar, OpenShell, and the credential-free `dev-up-k3d` installation lane outside `CI Required`. [Other integration coverage](ci-manual-integration.md) requires manual dispatch or CLI execution.
 
 #### Manual Full Integration lanes
 

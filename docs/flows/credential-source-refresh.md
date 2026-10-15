@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-10-08"
-last_updated_session: claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY
+updated: "2026-10-14"
+last_updated_session: fix-1366
 ---
 
 # Credential source refresh Flow
@@ -60,6 +60,40 @@ the first transaction, so a missing selection fails before any gateway call.
 The API reads the Secret values, commits the record as `registering`, and calls
 the gateway's `registerSource` with config only: a refresh type's Secret values
 are issuer material, so only the refresh Driver receives them.
+
+The gateway posts the issuer material to `token_url` from its own network
+position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
+address in any spelling, a `localhost` or `localdomain` name, or a single-label
+name (the shapes of the gateway Pod's `/etc/hosts` aliases), before any Secret
+read. Building the profile refuses a stored one, or a stored port `0`, too, so
+attaching such a source fails. A `hostAliases` entry on the gateway Pod (the
+OpenShell chart's `server.hostGatewayIP`) stays reachable by its name; that is
+the deployer's choice.
+
+The check also refuses names that reach the gateway Pod itself, which egress
+NetworkPolicy does not police (finding 1356):
+
+- A Pod DNS name (`10-42-0-5.idp.pod.cluster.local`) in any namespace: CoreDNS's
+  default `pods insecure` answers it with the written address. CoreDNS ignores
+  one or two leading labels before it, so any `pod` label after the second is
+  refused, whatever the cluster domain (finding 1359).
+- When the OpenShell Backend names the gateway's namespace
+  (`apps/controller/src/backends/openshell.ts:placement`), any name in that
+  namespace's `svc` or `pod` zone, whatever the cluster domain, and the shorter
+  names the gateway Pod's DNS search list completes into it: `<x>.<namespace>`, `<x>.<y>.<namespace>`, and
+  any name of up to three labels ending in the gateway Service or `<service>-*`. CoreDNS reads the leading
+  labels as an endpoint (`<pod>.<service>-peer`, the StatefulSet Pod's own name) or a port and protocol
+  (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
+  `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
+  namespace at save. A bare `serviceName` runs in each tenant namespace, so only
+  registration and attach know it; registration's profile check refuses the
+  name before any gateway write. An IP address, node address, two-label
+  `<service>.<namespace>` or other `endpoint` host names no namespace, and only
+  Pod names are refused.
+
+Issuers in other namespaces keep their Service names. OCC stores `token_url` as
+the controller's URL parser serializes it (`new URL(token_url).href`), so the
+gateway parses the spelling that was checked.
 
 `apps/controller/src/drivers/credential-gateway/openshell.ts:registerSource`
 imports a per-source OpenShell profile whose `access_token` credential declares
@@ -153,6 +187,7 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 
 ## Changelog
 
+- 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366 - bc85338f2)
 - 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)

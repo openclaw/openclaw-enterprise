@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-10"
-last_updated_session: "authoring-run/pr1903-peerlabels-sync"
+updated: "2026-10-13"
+last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
 ---
 
 # Production Startup Flow
@@ -10,8 +10,8 @@ last_updated_session: "authoring-run/pr1903-peerlabels-sync"
 
 Prepare a fresh protected bootstrap PVC; install Helm with approved images,
 PostgreSQL/authentication credentials, trusted Installation YAML and network
-policies. Wait for private API/worker readiness, then authenticate `/installation`
-with the retrieved service key. Tenant deployment/model-backed TUI proof remains separate.
+policies. Wait for private API/worker readiness; authenticate `/installation`
+with the service key. Tenant deployment/model-backed TUI proof remains separate.
 
 Commands: [deployment guide](../guides/deploy.md).
 
@@ -45,9 +45,9 @@ graph TD
         O -->|Yes| G["Apply migrations, bootstrap administrators and write protected key output"]
         G --> H["Start private API Deployment"]
         G --> I["Start independent worker Deployment"]
-        I --> O{"Repository credentials enabled?"}
-        O -->|Yes| P["Sidecar copies protected inputs and starts private control"]
-        P --> Q["Sidecar probe gates worker Pod readiness"]
+        I --> R{"Repository credentials enabled?"}
+        R -->|Yes| S["Sidecar copies protected inputs and starts private control"]
+        S --> Q["Sidecar probe gates worker Pod readiness"]
         H --> L["Run Kubernetes Compute preflight"]
         I --> L
         L --> M{"Kubernetes older than 1.35?"}
@@ -112,18 +112,18 @@ installs initialization isolation before the Job. It and later workload policies
 grant configured DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` refuses
-fractional routing ports and custom hostnames Compute rejects. `database.port`
-must be decimal 1–65535 without leading zeros. Empty hostnames retain Service DNS
-for Gateway listeners and Certificate SANs.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`,
+`cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
+Empty hostnames retain Service DNS for Gateway listeners and Certificate SANs.
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
-The initialization hook retains the full release name and limits its suffix to
-63 characters. Both containers mount `database.caSecretName` read-only when
-configured. Migration uses the migrator credential; bootstrap uses the
-lower-privilege application credential, Better Auth settings, administrator
-email, Installation name and protected output paths.
+The hook keeps the release name and bounds its suffix to 63 characters. Both
+containers optionally mount the CA. Helm validates distinct application and
+migration Secret keys against Kubernetes syntax before use. `installation.key`
+and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
+not `.` or a `..` prefix.
+Bootstrap receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -132,8 +132,7 @@ dedicated role and canonical receipt/catalog state, and holds one advisory lock
 on the connection used by Drizzle's normal transaction. It accepts fresh
 databases, canonical history through migration 0023, or the completed history
 through 0025. Unsupported or mixed development histories fail before migration
-DDL, preventing bootstrap from running. Development and production share this preflight; see [migration history and recovery](../reference/settings/operations.md#migration-history)
-for the read-only check and developer-selected recreation procedure.
+DDL, preventing bootstrap from running. See [migration history and recovery](../reference/settings/operations.md#migration-history).
 
 `scripts/bootstrap-installation.mjs:authBaseURL` checks an HTTP(S) origin before
 database access. Production requires HTTPS except for HTTP loopback verification
@@ -155,6 +154,12 @@ the Job. Helm failure does not imply database-hook rollback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
+With [OIDC CA settings](../reference/settings/oidc.md), the API init container
+`deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs` validates and combines
+IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
+`deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
+database TLS not pinned to the database CA.
+
 After initialization, separate API/worker Deployments start. Before readiness,
 the API validates production listener settings, Better Auth, database access,
 trusted Installation YAML, selected Drivers, Backend membership and Kubernetes
@@ -165,15 +170,13 @@ second of listening.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM` the API stops accepting connections and finishes admitted requests.
-Their responses carry `Connection: close` (a streamed one closes its connection
-when it ends), so the process exits without waiting out the 72-second keep-alive.
-The single `Recreate` replica keeps the default 30-second termination grace and
-no `preStop` hook, since no peer takes its traffic; a request still running after
-30 seconds is cut off. The API logs `shutdown.started` with the `signal`, then
-`shutdown.completed` with `durationMs` once every close hook has finished; a
-failed close logs `shutdown.failed` and exits `1`. A log ending at
-`shutdown.started` means the grace period cut the drain off.
+On `SIGTERM`, the API stops accepting connections and finishes admitted requests
+with `Connection: close`, avoiding the 72-second keep-alive wait. Its single
+`Recreate` replica has no peer or `preStop` hook; the default 30-second grace
+cuts off requests still running. Logs report `shutdown.started` with `signal`,
+then `shutdown.completed` with `durationMs`. A failed close logs `shutdown.failed`
+and exits `1`; a log ending at `shutdown.started` indicates the grace cut off
+the drain.
 
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
@@ -282,11 +285,11 @@ until tenant deployment/TUI procedures run.
 - `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`:
   startup continues, but upgrade to Kubernetes 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE` means the Compute preflight got no answer from
-  the Kubernetes API server named by `host` and `port`. Check that
-  `cluster.cidrs` still lists that address; a restarted cluster can move it.
-- Code `PRESET_FILE_INVALID`: a bad `presets.files` list or file (missing,
-  unreadable, malformed, invalid, duplicate).
+  `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
+  the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+- Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
+- Code `GATEWAY_STORAGE_CLASS_INVALID`: correct `runtime.gatewayStorageClassName`
+  to a Kubernetes DNS-subdomain resource name before restarting.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
@@ -296,8 +299,7 @@ until tenant deployment/TUI procedures run.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
-  chart; it does not prove a live install, key retrieval, tenant runtime, or
-  model turn.
+  chart; it does not prove deployment or model execution.
 
 ## Related docs
 
@@ -316,6 +318,9 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-13: Trace OIDC CA assembly and the database trust preload.
+- 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)
 
 - 2026-10-10 08:22: Retain Namespace and bootstrap guidance with peer-map validation. (authoring-run/3cecc2d2-5f5c-4ce3-9901-928542c3d370 - ac237c12f504fd8f49a5e66c05a8d3865b13444e)
 

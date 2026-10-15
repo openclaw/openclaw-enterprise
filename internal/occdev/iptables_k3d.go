@@ -166,11 +166,7 @@ func hostKernelValue(name string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// legacyNATFailureHint names the unconfirmed nat table when k3d fails, since
-// the rollback removes the node log that would show it.
-func (r *runner) legacyNATFailureHint() string {
-	if !r.legacyNATUnconfirmed {
-		return ""
-	}
-	return fmt.Sprintf(". Startup could not confirm that the host loaded %s: if the node could not initialize the iptables nat table, run `%s` on the host and start again. %s", legacyNATModule, legacyNATRemedy, legacyNATTroubleshooting)
-}
+// legacyNATFailureHint is the k3d failure hint for the nat table. The
+// rollback removes the node log that would show kube-proxy's error, so the
+// hint is conditional.
+const legacyNATFailureHint = "If the node could not initialize the legacy iptables nat table (" + legacyNATModule + "), run `" + legacyNATRemedy + "` on the host and start again. " + legacyNATTroubleshooting
