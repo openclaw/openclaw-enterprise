@@ -13,7 +13,9 @@
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
     "tests/browser/console-agent-plugin-approvers.test.mjs",
-    "tests/browser/docs-compute-matrix.test.mjs"
+    "tests/browser/docs-compute-matrix.test.mjs",
+    "tests/browser/console-startup.test.mjs",
+    "tests/browser/console-agent-logs-layout.test.mjs"
   ],
   "files": [
     {
@@ -45,6 +47,12 @@
     },
     {
       "path": "tests/integration/repository-credentials-client-config.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-startup.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-logs-layout.test.mjs"
     }
   ]
 }
