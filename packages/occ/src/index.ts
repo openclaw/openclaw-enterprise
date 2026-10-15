@@ -256,7 +256,9 @@ import {
   provisioningEffectReceipt as readProvisioningEffectReceipt,
   provisioningPendingEffect,
   settleProvisioningEffect as buildProvisioningEffectSettlement,
-  withoutProvisioningEffect,
+  unrecordedProvisioningConfiguration,
+  withUnrecordedProvisioningConfiguration,
+  withoutUnrecordedProvisioningConfiguration,
   type ProvisioningEffectReceipt,
   type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
@@ -2695,6 +2697,13 @@ export class OpenClawController {
         completedPhase: record.completedPhase,
         status: "running",
       });
+      if (await this.deleteMarkedProvisioningConfiguration(record, runEffect)) {
+        record = await this.checkpointAgentProvisioning(claim, {
+          completedPhase: record.completedPhase,
+          status: "running",
+          progress: withoutUnrecordedProvisioningConfiguration(record.progress),
+        });
+      }
       if (this.provisioningBefore(record, "configuration")) {
         record = await this.processAgentProvisioningConfiguration(claim, record, runEffect);
       }
@@ -2823,23 +2832,49 @@ export class OpenClawController {
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
-      const unrecorded = await this.mutate(async (state) => {
+      // A refusal deletes the Configuration it wrote but never recorded. The job first forgets
+      // the write and marks it for deletion, under its claim, so neither a retry nor a crash can
+      // trust a receipt for a deleted document; the refusal then drops the mark only once the
+      // delete has succeeded. A delete that fails, or never runs, leaves the mark for the next
+      // attempt, which deletes the document before it writes another (finding 1399).
+      const unrecorded =
+        disposition === "permanent"
+          ? await this.mutate(async (state) => {
+              const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
+              if (current === undefined) {
+                throw new WorkClaimLostError();
+              }
+              const unrecorded = await this.unrecordedProvisioningConfiguration(state, current);
+              if (unrecorded !== undefined) {
+                await this.commitProvisioningCheckpoint(state, claim, {
+                  completedPhase: current.completedPhase,
+                  status: "running",
+                  progress: withUnrecordedProvisioningConfiguration(
+                    current.progress,
+                    unrecorded.id,
+                  ),
+                });
+              }
+              return unrecorded;
+            })
+          : undefined;
+      const orphanedConfigurationId =
+        unrecorded === undefined
+          ? undefined
+          : await this.deleteUnrecordedProvisioningConfiguration(unrecorded);
+      await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
           throw new WorkClaimLostError();
         }
-        const unrecorded =
-          disposition === "permanent"
-            ? await this.unrecordedProvisioningConfiguration(state, current)
-            : undefined;
         record = await state.provisioning.recordFailure(
           claim,
           {
             completedPhase: current.completedPhase,
             progress: {
-              ...(unrecorded === undefined
-                ? current.progress
-                : withoutProvisioningEffect(current.progress)),
+              ...(unrecorded !== undefined && orphanedConfigurationId === undefined
+                ? withoutUnrecordedProvisioningConfiguration(current.progress)
+                : current.progress),
               error: { code, message },
             },
           },
@@ -2872,12 +2907,7 @@ export class OpenClawController {
             : {}),
           details: { workId: current.workId, phase: current.completedPhase, code },
         });
-        return unrecorded;
       });
-      const orphanedConfigurationId =
-        unrecorded === undefined
-          ? undefined
-          : await this.deleteUnrecordedProvisioningConfiguration(unrecorded);
       return Object.freeze({
         outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
@@ -9138,8 +9168,9 @@ export class OpenClawController {
 
   /**
    * Deletes the Configuration a refused job wrote but never recorded, through the Driver call
-   * Configuration deletion uses, once the failure that forgets it has committed. A failed
-   * delete keeps the refusal as it is and returns the ID for the operator log.
+   * Configuration deletion uses, once the checkpoint that forgets and marks it has committed. A
+   * failed delete keeps the refusal as it is, leaves the mark for the next attempt, and returns
+   * the ID for the operator log.
    */
   private async deleteUnrecordedProvisioningConfiguration(
     reference: Readonly<{ id: string; namespaceId: string }>,
@@ -9150,6 +9181,51 @@ export class OpenClawController {
     } catch {
       return reference.id;
     }
+  }
+
+  /**
+   * Deletes the Configuration an earlier refusal of this job marked but did not finish deleting:
+   * its delete failed, or the worker stopped first (finding 1399). It runs after this attempt's
+   * first fence and before it writes another Configuration, so the mark is never dropped with
+   * the document still stored. Nothing references the document: the job forgot it with the
+   * mark, and its ID is unique to the job. A document already gone (an applied delete whose
+   * response was lost) only drops the mark; a failed delete fails the attempt and keeps the
+   * mark. A record with the ID, or a Configuration Driver the accepted plan no longer names,
+   * leaves the document alone. Returns whether the mark can be dropped.
+   */
+  private async deleteMarkedProvisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<boolean> {
+    const configurationId = unrecordedProvisioningConfiguration(record.progress);
+    if (
+      configurationId === undefined ||
+      !this.selections.has("configuration") ||
+      asRecord(record.plan.drivers)?.configuration !== this.configurationDriver().id
+    ) {
+      return false;
+    }
+    const recorded = await this.read((state) =>
+      state.configurations.findConfiguration(record.namespaceId, configurationId),
+    );
+    if (recorded !== undefined) {
+      return true;
+    }
+    const driver = this.configurationDriver();
+    if (driver.inspectExact === undefined) {
+      throw new DependencyUnavailableError(
+        "The Configuration Driver does not support exact provisioning recovery.",
+      );
+    }
+    const configuration = this.provisioningConfiguration(record, configurationId);
+    await runEffect(async () => {
+      if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
+        await this.driverOperation(() =>
+          driver.delete({ id: configurationId, namespaceId: record.namespaceId }),
+        );
+      }
+    });
+    return true;
   }
 
   /** The Configuration that provisioning writes through the Configuration Driver. */

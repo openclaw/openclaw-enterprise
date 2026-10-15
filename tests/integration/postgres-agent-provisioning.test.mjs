@@ -2086,14 +2086,22 @@ test(
     await waitFor("the refused provisioning to delete the Configuration it wrote", async () =>
       configurationDriver.stored(rejectedConfiguration) === undefined ? true : undefined,
     );
+    // The delete succeeded, so nothing stays marked for a later attempt to delete either.
     const rejectedRecord = await fixture.pool.query(
       `SELECT completed_phase, configuration_id, progress ? 'pendingEffect' AS pending,
-              progress ? 'effectReceipt' AS receipt
+              progress ? 'effectReceipt' AS receipt,
+              progress ? 'unrecordedConfigurationId' AS marked
        FROM occ.agent_provisioning_work WHERE work_id = $1`,
       [duplicate.data.provisioning.workId],
     );
     assert.deepEqual(rejectedRecord.rows, [
-      { completed_phase: "admitted", configuration_id: null, pending: false, receipt: false },
+      {
+        completed_phase: "admitted",
+        configuration_id: null,
+        pending: false,
+        receipt: false,
+        marked: false,
+      },
     ]);
 
     // Once the name is free, a retry writes a new Configuration instead of trusting a receipt
@@ -2801,10 +2809,11 @@ test(
 );
 
 test(
-  "a refusal whose Configuration delete fails stays a refusal and names the orphaned Configuration",
-  { ...requiresPostgres, timeout: 60_000 },
+  "a refusal whose Configuration delete fails names the orphaned Configuration, and its retry deletes it",
+  { ...requiresPostgres, timeout: 90_000 },
   async (context) => {
     const computeDriver = createRuntimeComputeDriver();
+    const validateAgentProvisioning = computeDriver.validateAgentProvisioning;
     const configurationDriver = createProvisioningConfigurationDriver({
       id: "configuration-provisioning-delete-outage",
     });
@@ -2813,17 +2822,26 @@ test(
     configurationDriver.createExact = async (configuration) => {
       const stored = await createExact(configuration);
       created.push(configuration.id);
-      // The write lands, then the Compute Driver starts refusing the stored plan, so the
-      // fence of the transaction that would record the Configuration rejects the work.
-      const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
-        repositoryCredentials: true,
-      });
-      computeDriver.validateAgentProvisioning = (input) =>
-        unrouted.validateAgentProvisioning(input);
+      if (created.length === 1) {
+        // The first write lands, then the Compute Driver starts refusing the stored plan, so
+        // the fence of the transaction that would record the Configuration rejects the work.
+        const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+          repositoryCredentials: true,
+        });
+        computeDriver.validateAgentProvisioning = (input) =>
+          unrouted.validateAgentProvisioning(input);
+      }
       return stored;
     };
-    configurationDriver.delete = async () => {
-      throw new Error("synthetic Configuration delete outage");
+    const deleteConfiguration = configurationDriver.delete;
+    const deleted = [];
+    let deleteOutage = true;
+    configurationDriver.delete = async (reference) => {
+      if (deleteOutage) {
+        throw new Error("synthetic Configuration delete outage");
+      }
+      deleted.push(reference.id);
+      return deleteConfiguration(reference);
     };
     const completed = [];
     const fixture = await createFixture(context, {
@@ -2852,6 +2870,8 @@ test(
 
     // The failed delete changes neither the refusal nor the job: the job still forgets the
     // write, so a retry never trusts it, and the operator log names the document left behind.
+    // The job also keeps it marked for deletion, so the leftover is not only a log line
+    // (finding 1399).
     assert.equal(created.length, 1);
     assert.deepEqual(
       completed
@@ -2875,10 +2895,9 @@ test(
     assert.equal(failed.progress.error?.code, "PROVISIONING_REJECTED");
     assert.equal(failed.progress.pendingEffect, undefined);
     assert.equal(failed.progress.effectReceipt, undefined);
-    assert.notEqual(
-      configurationDriver.stored({ namespaceId: namespace.id, id: created[0] }),
-      undefined,
-    );
+    assert.equal(failed.progress.unrecordedConfigurationId, created[0]);
+    const orphaned = { namespaceId: namespace.id, id: created[0] };
+    assert.notEqual(configurationDriver.stored(orphaned), undefined);
     const work = await fixture.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [workId],
@@ -2886,6 +2905,31 @@ test(
     assert.deepEqual(work.rows, [
       { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 1 },
     ]);
+
+    // Once the Driver can delete again and the plan is accepted again, the retry deletes the
+    // marked Configuration before it writes a new one, and provisioning completes.
+    deleteOutage = false;
+    computeDriver.validateAgentProvisioning = validateAgentProvisioning;
+    const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retried.status, 202, JSON.stringify(retried.body));
+    await fixture.startWorker();
+    const succeeded = await waitFor("the retried provisioning to succeed", async () => {
+      const observed = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+      return observed.data.status === "succeeded" ? observed.data : undefined;
+    });
+    fixture.cancelProvisioningAtTeardown(namespace.id, succeeded.agentId);
+    assert.deepEqual(deleted, [created[0]]);
+    assert.equal(configurationDriver.stored(orphaned), undefined);
+    assert.equal(created.length, 2);
+    assert.equal(succeeded.configurationId, created[1]);
+    assert.notEqual(
+      configurationDriver.stored({ namespaceId: namespace.id, id: succeeded.configurationId }),
+      undefined,
+    );
+    const retriedRow = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.equal(retriedRow.progress.unrecordedConfigurationId, undefined);
   },
 );
 
