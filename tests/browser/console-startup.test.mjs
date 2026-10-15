@@ -66,3 +66,38 @@ test("the console shell paints a neutral status before any script runs and keeps
   }
 });
 
+
+// The web font is fetched alongside the stylesheet, so it is ready before the console's first
+// view renders instead of arriving 1.6-2 s after first paint and reflowing text (finding 1448).
+test("the console web font is ready before the entry script runs, fetched once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const fonts = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith(".woff2")) {
+      fonts.push(request.url());
+    }
+  });
+  const script = await holdRequests(t, page, "**/console/console.mjs");
+  const stylesheet = await holdRequests(t, page, "**/console/console.css");
+  const fontLoaded = page.waitForResponse("**/console/fonts/instrument-sans-latin.woff2");
+  await page.goto(`${fixture.origin}/console/agents`, { waitUntil: "commit" });
+  await script.requested;
+  // The font arrives while the stylesheet that declares it is still held.
+  await stylesheet.requested;
+  assert.equal((await fontLoaded).status(), 200);
+  stylesheet.release();
+  await page.waitForFunction(
+    () =>
+      globalThis.document.fonts.check('14px "Instrument Sans"') &&
+      [...globalThis.document.fonts].some(
+        (face) => face.family.replaceAll('"', "") === "Instrument Sans" && face.status === "loaded",
+      ),
+    null,
+    { timeout: 5_000 },
+  );
+  script.release();
+  await page.getByLabel("Username").waitFor();
+  assert.deepEqual(fonts, [`${fixture.origin}/console/fonts/instrument-sans-latin.woff2`]);
+});
