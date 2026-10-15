@@ -6,12 +6,12 @@ Run Agent plugin tests for API, Driver, persistence, and runtime behavior from t
 
 ## Local and integration suites
 
-| Coverage                 | Command                                                                                                                                                                                   |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API and contracts        | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                                              |
-| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                                                   |
-| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                                            |
-| Persistence and recovery | `node --test --test-concurrency=1 tests/integration/postgres-restart-recovery.test.mjs tests/integration/postgres-worker-agent-revision.test.mjs` after [PostgreSQL setup](postgresql.md) |
+| Coverage                 | Command                                                                                                                                                                          |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API and contracts        | `pnpm test:conformance` and `node --test tests/integration/occ-api.test.mjs`                                                                                                     |
+| Driver and startup       | `node --test tests/conformance/plugin-driver.test.mjs tests/integration/plugin-driver-startup.test.mjs`                                                                          |
+| Compute boundaries       | `node --test tests/conformance/plugin-compute.test.mjs tests/conformance/ssh-compute.test.mjs`                                                                                   |
+| Persistence and recovery | Run the prepared `postgres-application` and `postgres-platform` lanes using the [PostgreSQL procedure](postgresql.md#revision-worker-tests); each lane needs its own state file. |
 
 The discovery fixture uses simulated provider responses. These checks do not prove a live provider or native runtime.
 

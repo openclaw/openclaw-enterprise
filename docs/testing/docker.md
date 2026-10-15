@@ -87,7 +87,8 @@ or GitHub permissions. It skips without the selector.
 ## Images and Helm
 
 Image and Helm checks require Node 24+, installed dependencies, and Docker
-unless stated otherwise. They use local images and make no model calls.
+unless stated otherwise. Use locally built images or pull the immutable published
+images selected below. These checks make no model calls.
 
 ### Check published images
 

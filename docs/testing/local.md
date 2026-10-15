@@ -107,10 +107,12 @@ replace an unmanaged hook and preserves `core.hooksPath`.
 
 Start the [Compose quickstart](../guides/quickstart.md) first. This overlay
 recreates the API and worker, so allow existing work to finish. Use the same
-Compose project and `.env`:
+Compose project and `.env`. Run this block in Bash (start `bash` first if your
+shell is zsh):
 
-```sh
+```bash
 read -rs -p 'Development Grafana password: ' OCC_METRICS_GRAFANA_PASSWORD
+printf '\n'
 export OCC_METRICS_GRAFANA_PASSWORD
 docker compose -f compose.yaml -f compose.metrics.yaml up -d --build
 ```

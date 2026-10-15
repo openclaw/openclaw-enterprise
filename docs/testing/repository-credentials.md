@@ -140,16 +140,13 @@ and volumes before retrying cleanup.
 
 ## Controller and broker image compatibility probe
 
-Use only a disposable broker with synthetic registry, TLS, App material, and an
-isolated receipt fixture. Run the controller image's
-`/app/apps/controller/src/drivers/repo/github/credentials/admission-probe.mjs`
-as `node <entrypoint> <control-socket> <mode> <admission-id>` for `recover` and
-`reserve`, using a distinct 13-digit Unix millisecond timestamp and lowercase
-UUIDv4 joined by a hyphen for each ID. An independent fixture must match each
-request and input, return HTTP 200 with `{"kind":"missing"}` for recovery, and
-return HTTP 503 without reservation for reserve. Require both matching observations and
-probe outcomes (`missing` and `unavailable`). An unavailable result alone can
-mean the broker is unreachable. This proves the wire exchange, not disposal.
+Run the `image-pair-qualification` lane using the
+[image-pair procedure](docker.md#repository-image-pair-qualification). It stages
+current and incompatible older controller and broker images against disposable
+fixtures, checks the admission protocol, and rejects incompatible pairs. It does
+not prove credential disposal or a live Agent workflow. See the
+[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
 

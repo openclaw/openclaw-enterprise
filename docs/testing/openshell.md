@@ -143,8 +143,3 @@ directory when finished.
   environments, or complete process arguments.
 - An inactive direct Agent Service is expected for the provider-owned endpoint;
   inspect the OpenShell-advertised route instead.
-
-The September 2026 pre.5 experiment used a test-only bridge and proved a
-loopback model turn. Its Service-routed WebSocket reset, so it did not prove
-Gateway-to-Agent routing or production support. The current contract is in the
-[Sandbox Driver reference](../reference/drivers/openshell-sandbox.md).

@@ -181,8 +181,18 @@ credentials and an in-process production API with PostgreSQL.
 
 ### Verified Keycloak flows
 
-The lane checks sign-in, key rotation, rejection and sign-out. A skipped or
-missing case fails the lane.
+The [six cases](../../tests/integration/keycloak-oidc-sign-in.test.mjs) check:
+
+| Case                               | Evidence                                                                                                                                                                    |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discovery and signing keys         | Configured endpoints match discovery; the published RS256 key has at least 2,048 bits.                                                                                      |
+| Sign-in with `client_secret_post`  | An attached user receives an OCE session through the real browser and callback.                                                                                             |
+| Sign-in with `client_secret_basic` | The same flow succeeds with HTTP Basic client authentication at the token endpoint.                                                                                         |
+| Signing-key rotation               | A new key signs the next successful sign-in without a controller restart.                                                                                                   |
+| Unattached user                    | Sign-in is rejected and audited; no OCE user or session is created.                                                                                                         |
+| Sign-out and user disablement      | OCE sign-out ends its session; the surviving Keycloak session permits sign-in again. Disabling the user blocks the next sign-in but leaves the existing OCE session active. |
+
+A skipped or missing case fails the lane.
 
 ### Run the Keycloak lane
 
