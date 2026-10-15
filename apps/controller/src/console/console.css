@@ -151,6 +151,14 @@ p {
   padding: calc(14vh + 28px) 28px;
   color: var(--muted);
   text-align: center;
+  /* A load that settles within the loading delay never flashes its status (finding 1444). */
+  animation: startup-delay 250ms;
+}
+@keyframes startup-delay {
+  from,
+  to {
+    visibility: hidden;
+  }
 }
 .auth {
   background: var(--surface);

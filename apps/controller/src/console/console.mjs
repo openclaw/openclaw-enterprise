@@ -885,12 +885,18 @@ function showLogin(message = "", destination = null) {
 }
 
 function showCheckingSession() {
+  const shown = app.firstElementChild?.classList.contains("startup") ? app.firstElementChild : null;
   // Destination recovery can continue in another loadPage without restarting this status.
-  if (app.firstElementChild?.classList.contains("startup")) {
+  if (shown?.dataset.session !== undefined) {
     return;
   }
-  const status = element("p", { className: "startup", role: "status" });
-  app.replaceChildren(status);
+  // The shell's static status (index.html) paints before any script, so a slow link never
+  // shows a blank page. Take it over in place: the status never blanks or moves (finding 1444).
+  const status = shown ?? element("p", { className: "startup", role: "status" });
+  status.dataset.session = "";
+  if (!shown) {
+    app.replaceChildren(status);
+  }
   // Delay the announcement, never the session check or the view that replaces it.
   setTimeout(() => {
     if (status.isConnected) {

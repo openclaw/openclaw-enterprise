@@ -15,7 +15,8 @@
     <script type="module" src="/console/console.mjs"></script>
   </head>
   <body>
-    <div id="app"></div>
+    <!-- Painted before any script runs; the console takes this status over in place. -->
+    <div id="app"><p class="startup" role="status">Loading OpenClaw Enterprise…</p></div>
     <noscript>This console requires JavaScript to sign in and read resources.</noscript>
   </body>
 </html>
