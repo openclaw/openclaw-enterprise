@@ -186,13 +186,13 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Selector   | Presets         | Checks                                                            | Runs on PRs |
-| ---------- | --------------- | ----------------------------------------------------------------- | ----------- |
-| `model-ui` | OpenClaw, Codex | Real model turn and native browser response.                      | Codex only  |
-| `git-full` | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. | No          |
-| `git-read` | Codex           | Reject read-only push and dispose credentials.                    | No          |
-| `calendar` | Codex           | Successful Calendar read, approvals and tool restrictions.        | Yes         |
-| `slack`    | Codex           | Threaded reply and new root message.                              | No          |
+| Scenario   | Runs on PRs | Presets         | Checks                                                            |
+| ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
+| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
+| `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
+| `git-read` | No          | Codex           | Reject read-only push and dispose credentials.                    |
+| `calendar` | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.        |
+| `slack`    | No          | Codex           | Threaded reply and new root message.                              |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
