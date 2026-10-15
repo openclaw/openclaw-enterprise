@@ -474,6 +474,7 @@ function retainMountedView() {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
+    selection: app.querySelector("#namespace-selector option:checked")?.textContent ?? null,
     scrollY: window.scrollY,
   });
   while (retainedViews.size > 16) {
@@ -497,6 +498,13 @@ function restoreRetainedView(current) {
   if (retained.scope) {
     app.querySelector(".content .scope").textContent = retained.scope;
   }
+  // The pending selector hides its choices, but it keeps naming the selection the retained
+  // view was read in (the view shows that Namespace anyway) instead of flashing "Checking
+  // access…" on every return or refocus.
+  const pendingSelection = app.querySelector("#namespace-selector option");
+  if (retained.selection && pendingSelection) {
+    pendingSelection.textContent = retained.selection;
+  }
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
   shell.retained = retained;
@@ -506,13 +514,9 @@ function restoreRetainedView(current) {
     shell.diagnostics.inert = true;
   }
   shell.view.setAttribute("aria-busy", "true");
+  // Inert blocks the retained controls until admission succeeds without restyling them as
+  // disabled, so an unchanged view does not dim and brighten again on every return.
   shell.view.setAttribute("inert", "");
-  shell.blockedControls = [
-    ...shell.view.querySelectorAll("button, input, select, textarea"),
-  ].filter((control) => !control.disabled);
-  for (const control of shell.blockedControls) {
-    control.disabled = true;
-  }
   mountedRouteKey = key;
   const active = lifetime.capture();
   requestAnimationFrame(() => {
@@ -1055,9 +1059,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         }
         navigateAgentTab = retainedState.tabNavigation;
         mountedAgent = retainedState.agent;
-        for (const control of shell.blockedControls) {
-          control.disabled = false;
-        }
         shell.view.removeAttribute("inert");
         if (shell.diagnostics) {
           shell.diagnostics.inert = false;
