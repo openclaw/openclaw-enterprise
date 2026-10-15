@@ -721,9 +721,12 @@ test(
         0,
         "An externally changed Configuration must block key replacement",
       );
+      // Control UI pins generation 2 and refuses drift before the content comparison.
       assert.match(
         `${refused.stdout}\n${refused.stderr}`,
-        /Configuration was changed outside this helper/,
+        selectedControlUi
+          ? /Configuration generation changed outside this helper/
+          : /Configuration was changed outside this helper/,
       );
       assert.equal(
         refused.containedForbiddenOutput,

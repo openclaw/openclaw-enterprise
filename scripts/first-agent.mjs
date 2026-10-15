@@ -654,7 +654,8 @@ function assertManagedConfiguration(configuration, record, expected) {
 function assertManagedRevision(revision, record, expected) {
   const frozen = structuredClone(expected);
   if (record.sandboxDriver === "openshell" && record.harness === "codex") {
-    frozen.values.plugins.entries.codex.config.appServer.sandbox = "workspace-write";
+    frozen.values.plugins.entries.codex.config.appServer.sandbox =
+      record.authMethod === "api_key" ? "danger-full-access" : "workspace-write";
     frozen.values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
   }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};

@@ -1059,10 +1059,46 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let failedCommands = 0;
+      let approvalRequests = 0;
+      const sandboxSignals = new Set();
+
+      function rememberFailureSignals(message) {
+        if (message.id !== undefined && message.method === "item/commandExecution/requestApproval") {
+          approvalRequests += 1;
+        }
+        const item = message.params?.item;
+        if (message.method === "item/completed" && item?.type === "commandExecution" && Number.isSafeInteger(item.exitCode) && item.exitCode !== 0) {
+          failedCommands += 1;
+        }
+        // Retain only fixed labels from command output, never prompts, commands or payloads.
+        let output;
+        if (item?.type === "commandExecution") {
+          output = item.aggregatedOutput;
+        } else if (message.method === "item/commandExecution/outputDelta") {
+          output = message.params?.delta;
+        }
+        if (typeof output !== "string") {
+          return;
+        }
+        for (const [pattern, label] of [
+          [/bubblewrap|bwrap/i, "bubblewrap"],
+          [/user namespace|new namespace|unshare|CLONE_NEWUSER/i, "namespace"],
+          [/operation not permitted|permission denied/i, "permission_denied"],
+          [/filesystem-restricted execution requires bubblewrap/i, "restricted_requires_bubblewrap"],
+        ]) {
+          if (pattern.test(output.slice(0, 16384))) {
+            sandboxSignals.add(label);
+          }
+        }
+      }
 
       function fail(error) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
+        process.stderr.write("\nNative execution summary: " + JSON.stringify({
+          failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+        }));
         process.exit(1);
       }
 
@@ -1110,6 +1146,7 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         const message = JSON.parse(String(data));
+        rememberFailureSignals(message);
         items.push(message);
         if (message.id !== undefined) {
           const entry = pending.get(message.id);
