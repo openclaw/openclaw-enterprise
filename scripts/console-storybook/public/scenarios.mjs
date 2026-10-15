@@ -3120,6 +3120,25 @@ export const scenarios = {
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
   },
+  deploymentActivityLoading: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity loading",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        prefix:
+          "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/",
+        delayMs: 4000,
+      },
+    ],
+    description:
+      "The newest version's deployment status read is slow. Deployment activity keeps its loading placeholder until the status arrives, then shows it in one step.",
+    steps: [
+      "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
+    ],
+  },
   deploymentUnavailable: {
     group: "Pages/Agent detail",
     name: "Deployment activity unavailable",
