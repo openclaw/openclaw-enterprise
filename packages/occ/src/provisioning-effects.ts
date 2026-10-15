@@ -154,7 +154,7 @@ export function settleProvisioningEffect(
   });
 }
 
-/** The job's progress without its external effect, once the job deletes what that effect wrote. */
+/** The job's progress without its external effect, for a failure that deletes what it wrote. */
 export function withoutProvisioningEffect(
   progress: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {

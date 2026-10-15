@@ -9135,9 +9135,9 @@ export class OpenClawController {
   }
 
   /**
-   * Deletes the Configuration a refused job wrote but never recorded, after the failure that
-   * forgets it committed, as Configuration deletion deletes it. A failed delete keeps the
-   * refusal as it is and returns the ID for the operator log.
+   * Deletes the Configuration a refused job wrote but never recorded, through the Driver call
+   * Configuration deletion uses, once the failure that forgets it has committed. A failed
+   * delete keeps the refusal as it is and returns the ID for the operator log.
    */
   private async deleteUnrecordedProvisioningConfiguration(
     reference: Readonly<{ id: string; namespaceId: string }>,

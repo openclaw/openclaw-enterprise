@@ -2078,14 +2078,13 @@ test(
 
     // The worker wrote the duplicate's Configuration before the Agent insert refused it and
     // rolled back its record. The refusal deletes that unrecorded document (in Kubernetes, a
-    // ConfigMap no Configuration answers for; finding 1395) and the job forgets it.
+    // ConfigMap no Configuration answers for; finding 1395) and the job forgets it. The delete
+    // follows the committed failure, so wait for it rather than racing the worker.
     assert.equal(written.length, 2);
     assert.equal(written[0], created.configurationId);
     const rejectedConfiguration = { namespaceId: namespace.id, id: written[1] };
-    assert.equal(
-      configurationDriver.stored(rejectedConfiguration),
-      undefined,
-      "a refused provisioning must not leave the Configuration it wrote",
+    await waitFor("the refused provisioning to delete the Configuration it wrote", async () =>
+      configurationDriver.stored(rejectedConfiguration) === undefined ? true : undefined,
     );
     const rejectedRecord = await fixture.pool.query(
       `SELECT completed_phase, configuration_id, progress ? 'pendingEffect' AS pending,
@@ -2797,6 +2796,95 @@ test(
     );
     assert.deepEqual(work.rows, [
       { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 2 },
+    ]);
+  },
+);
+
+test(
+  "a refusal whose Configuration delete fails stays a refusal and names the orphaned Configuration",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-delete-outage",
+    });
+    const createExact = configurationDriver.createExact;
+    const created = [];
+    configurationDriver.createExact = async (configuration) => {
+      const stored = await createExact(configuration);
+      created.push(configuration.id);
+      // The write lands, then the Compute Driver starts refusing the stored plan, so the
+      // fence of the transaction that would record the Configuration rejects the work.
+      const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+        repositoryCredentials: true,
+      });
+      computeDriver.validateAgentProvisioning = (input) =>
+        unrouted.validateAgentProvisioning(input);
+      return stored;
+    };
+    configurationDriver.delete = async () => {
+      throw new Error("synthetic Configuration delete outage");
+    };
+    const completed = [];
+    const fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const workId = admitted.data.provisioning.workId;
+
+    await fixture.startWorker();
+    await waitFor("the refused provisioning to report its outcome", async () =>
+      completed.some((event) => event.workId === workId) ? true : undefined,
+    );
+    await fixture.stopWorker();
+
+    // The failed delete changes neither the refusal nor the job: the job still forgets the
+    // write, so a retry never trusts it, and the operator log names the document left behind.
+    assert.equal(created.length, 1);
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ outcome, code, orphanedConfigurationId }) => ({
+          outcome,
+          code,
+          orphanedConfigurationId,
+        })),
+      [
+        {
+          outcome: "permanent",
+          code: "PROVISIONING_REJECTED",
+          orphanedConfigurationId: created[0],
+        },
+      ],
+    );
+    const failed = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.completed_phase, "admitted");
+    assert.equal(failed.progress.error?.code, "PROVISIONING_REJECTED");
+    assert.equal(failed.progress.pendingEffect, undefined);
+    assert.equal(failed.progress.effectReceipt, undefined);
+    assert.notEqual(
+      configurationDriver.stored({ namespaceId: namespace.id, id: created[0] }),
+      undefined,
+    );
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [
+      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 1 },
     ]);
   },
 );
