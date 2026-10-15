@@ -2,20 +2,24 @@
 
 ## Overview
 
-Configure GitHub Actions variables, secrets, environments, and local runner overrides. Use this page to run integration lanes and inspect their results; the [workflow cheat sheet](../reference/cheatsheets/github-actions.md) lists triggers and blocking failures.
+Configure GitHub Actions variables, secrets, environments, and setting overrides. Use this page to run integration lanes and inspect their results; the [workflow cheat sheet](../reference/cheatsheets/github-actions.md) lists triggers and blocking failures.
 
-## Checks and gates
+<a id="checks-and-gates"></a>
+
+## Tests
 
 | Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                                     |
 | --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | CI                                | Every PR                   | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [Every PR](#pr-exceptions) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases) | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [Every PR](#special-cases) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
 | Full Integration                  | Manual                     | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#pr-exceptions) | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Observability Demo                | [Every PR](#special-cases) | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
 | Publish private documentation     | Manual                     | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
-### PR exceptions
+<a id="pr-exceptions"></a>
+
+### Special Cases
 
 - **First Agent Smoke:** skips docs-only and recognized test-only PRs.
 - **QA Matrix Advisory:** skips fork and Dependabot PRs.
@@ -23,19 +27,18 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 
 Docs-only PRs run static checks in CI; recognized test-only PRs select affected
 lanes. Other changes run all ordinary lanes. `CI Required` currently blocks
-merge on `main`. Advisory/Full Integration results do not gate publication;
-see [publication settings](#publication-configuration). These workflows do not
-gate each Agent/platform deployment.
+merge on `main`. These workflows do not gate each Agent/platform deployment.
 
-## CI configuration
+<a id="ci-configuration"></a>
+
+## Configuration
 
 Set Actions variables/secrets under **Settings → Secrets and variables → Actions**
 or the named **Settings → Environments** entry. Keep provider credentials in
 their environments. GitHub supplies workflow/cache tokens automatically.
-Manual dispatch inputs are per-run values; use commands below or the
-[publication runbooks](../reference/cheatsheets/github-actions.md#details).
+Manual dispatch inputs are per-run values; use the commands below.
 
-### Shared settings
+### Shared Settings
 
 Public repositories need no `CODEQL_ENABLED` setting. For private repositories,
 set that repository variable to `true` only after approved, licensed Code Security
@@ -46,7 +49,9 @@ need no provider secrets. Runner labels, tool pins, triggers, timeouts, and job
 permissions are set in the [workflow files](../../.github/workflows);
 [test lane definitions](../../scripts/ci/test-suites.json) own required inputs.
 
-### Integration environments
+<a id="integration-environments"></a>
+
+### Environments
 
 Create only environments needed by selected lanes. Full Integration preflight
 requires no required reviewers. Its environments allow protected branches or a
@@ -95,26 +100,12 @@ Isolated runs mint short-lived observer tokens from the App; no static observer
 token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 `REPOSITORY_UPSTREAM_CIDRS_JSON`. Missing or mismatched inputs fail without fallback.
 
-### Publication configuration
-
-See [Release configuration](../release/configuration.md) for publication
-permissions, registry destinations, credentials, and native build settings.
-
-### Other workflow setup
-
-- **ClawSweeper:** install its App on this repository and `openclaw/clawsweeper`;
-  set repository secret `CLAWSWEEPER_APP_PRIVATE_KEY`. Dispatch tokens need
-  contents write on ClawSweeper; acknowledgement tokens need issues write and
-  pull-request read here. Follow [dispatch verification](../flows/clawsweeper-dispatch.md#setup-and-first-run-verification).
-- **Documentation:** select GitHub Actions as the Pages source and use
-  environment `github-pages`. The job grants `pages: write` and `id-token: write`;
-  no deploy secret or Cloudflare credential is needed. Domain, privacy, and
-  verification remain in [documentation hosting](../contributing/documentation-hosting.md).
-
 <a id="cleanup-command-deadlines"></a>
 <a id="select-immutable-images-for-local-preparation"></a>
 
-### Local runner overrides
+<a id="local-runner-overrides"></a>
+
+### Setting Overrides
 
 These process environment variables are optional. Keep the same directory for
 First Agent `images` and `run`; changing it does not isolate fixed-name containers.
@@ -138,7 +129,9 @@ verifies imported image references on every node and fails on import timeout.
 
 <a id="github-actions"></a>
 
-## Tests in each workflow
+<a id="tests-in-each-workflow"></a>
+
+## Test Scenarios
 
 Manifests list test files, selectors, prerequisites, and any expected-case checks.
 [The suite index](../../scripts/ci/test-suites.json) defines lane groups. Workflows
@@ -168,8 +161,24 @@ verified, CI runs every ordinary lane.
 CI Impact selects coverage; Suite Audit checks ownership; Static Checks runs
 workspace, lint, format, OpenAPI and docs checks. Affected Packages reports impact;
 CI Required aggregates results. Manual Native Container Verification calls the
-[native image checks](#native-images-and-demo). The [CI flow](../flows/github-actions-testing.md)
+[native image workflow](../../.github/workflows/container-check.yml). The [CI flow](../flows/github-actions-testing.md)
 explains these jobs; the PR-controlled workflow is not independent trusted enforcement.
+
+#### First Agent Smoke
+
+On a disposable Linux host with Docker, k3d, kubectl, Helm, Go and enforcing
+NetworkPolicies:
+
+```sh
+go build -trimpath -o bin/occ ./cmd/occ
+node scripts/ci/first-agent-smoke.mjs images
+node scripts/ci/first-agent-smoke.mjs run
+```
+
+Use the [directory override](#setting-overrides) if needed. Remove the
+script's fixed-name containers/network and run `occ dev down` with its printed
+state directory. Job summaries include timings and failure diagnostics;
+see [DNS recovery](../guides/deploy/local-kubernetes-development.md#resolve-node-dns-failures).
 
 ### QA Matrix Advisory
 
@@ -199,36 +208,9 @@ selected results. QA waits for Slack to finish, including after Slack failure.
 | k3d OTEL; Helper Timeout                                    | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                               | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)                                                                          |
 | Shipped Installation QA Matrix                              | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                                                                                        |
 
-### Native images and demo
+#### Run a protected integration lane
 
-- **Check Native Container Images:** `Prepare controller/runtime (amd64/arm64)`
-  builds and smoke-tests exact native OCI exports. [Image guide](docker.md#images-and-helm);
-  no manifest: [smoke implementation and runtime file list](../../scripts/ci/container-release.mjs).
-- **Observability Demo:** `Demo Observability Smoke` checks the chart, metrics/log
-  ingestion and rendered dashboards. [Suite guide](local.md#kubernetes-observability-acceptance);
-  [manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
-- **Publish private documentation:** `deploy` builds docs/search and publishes
-  Pages. [Hosting guide](../contributing/documentation-hosting.md); no product-test manifest.
-
-## First Agent smoke
-
-On a disposable Linux host with Docker, k3d, kubectl, Helm, Go and enforcing
-NetworkPolicies:
-
-```sh
-go build -trimpath -o bin/occ ./cmd/occ
-node scripts/ci/first-agent-smoke.mjs images
-node scripts/ci/first-agent-smoke.mjs run
-```
-
-Use the [directory override](#local-runner-overrides) if needed. Remove the
-script's fixed-name containers/network and run `occ dev down` with its printed
-state directory. Job summaries include timings and failure diagnostics;
-see [DNS recovery](../guides/deploy/local-kubernetes-development.md#resolve-node-dns-failures).
-
-## Run a protected integration lane
-
-Configure [integration environments](#integration-environments), inspect the
+Configure [integration environments](#environments), inspect the
 commit, then dispatch the selected lane or `all` on `main`:
 
 ```sh
@@ -238,7 +220,7 @@ gh workflow run full-integration.yml --ref main -f lane=all
 Branch exceptions are listed above. `qa_repository_fixture` applies to both
 `qa-matrix` and `all`; QA and focused Slack share a serial execution path.
 
-### Run the hosted local installation lane
+#### Run the hosted local installation lane
 
 ```sh
 gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
@@ -248,7 +230,13 @@ Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skip
 The 180-minute job budget includes setup/cleanup. Advisory results use
 `qa-advisory-local-installation-dev-up-k3d`; OpenShell uses `qa-advisory-openshell`.
 
-## No GitHub workflow entrypoint
+### Observability Demo
+
+`Demo Observability Smoke` checks the chart, metrics/log ingestion and rendered
+dashboards. See the [suite guide](local.md#kubernetes-observability-acceptance)
+and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
+
+### No GitHub workflow entrypoint
 
 These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 
@@ -257,7 +245,7 @@ These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
 
-## QA matrix
+### QA matrix
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
@@ -269,7 +257,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
   --test tests/integration/qa-matrix-real.test.mjs
 ```
 
-### Scenarios
+#### Scenarios
 
 | Selector   | Presets         | Checks                                                            |
 | ---------- | --------------- | ----------------------------------------------------------------- |
@@ -290,13 +278,13 @@ the broker; Linear is excluded. `OCC_TEST_QA_CONCURRENCY=1..4` selects workers
 (default `2`); installations and Slack run sequentially. Each gateway can use
 4 GiB beyond shared services.
 
-### Local inputs
+#### Local inputs
 
 Prepare [Kubernetes](kubernetes.md) and [Compose](../guides/deploy/local-compose-kubernetes.md):
 workspace dependencies, Docker, k3d, kubectl, Helm, Go, OpenSSL, Chromium/Playwright,
 and `certutil`. Store selected inputs in a private environment file. Credential
 files must be regular files without group/other permissions. Hosted settings
-are under [integration environments](#integration-environments).
+are under [integration environments](#environments).
 
 | Scenario/preset           | Inputs                                                                                                                                                                                 |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -320,10 +308,10 @@ only verified run-owned refs.
 `OCC_TEST_QA_ARTIFACTS` selects private results; otherwise the runner prints its
 temporary path. Set `OCC_TEST_QA_CONTROLLER_IMAGE` and `OCC_TEST_QA_RUNTIME_IMAGE`
 together to reuse immutable builds; `OCC_TEST_QA_REPOSITORY_IMAGE` selects the
-broker. Model defaults are [above](#integration-environments); the [manifest](../../scripts/ci/test-suites/qa-matrix.json)
+broker. Model defaults are [above](#environments); the [manifest](../../scripts/ci/test-suites/qa-matrix.json)
 lists overrides.
 
-### Outcomes and recovery
+#### Outcomes and recovery
 
 `matrix.json` records completed stages as `passed`, `failed`, or `blocked`.
 Inspect selections, runner failures and cleanup: absent, filtered or interrupted
@@ -343,7 +331,7 @@ the manifest and workflow. Workers own Agents/cleanup; keep dependent steps
 sequential and installation-wide changes outside workers. Preserve failure,
 security and disposal assertions.
 
-## Results and cleanup
+### Results and cleanup
 
 Selected lanes reject missing/skipped/TODO cases, failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
