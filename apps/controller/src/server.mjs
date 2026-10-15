@@ -339,6 +339,7 @@ async function start() {
     }
     if (
       typeof drivers.computeDriver.storeServiceAccountCredential !== "function" ||
+      typeof drivers.computeDriver.findServiceAccountCredential !== "function" ||
       typeof drivers.computeDriver.deleteServiceAccountCredential !== "function"
     ) {
       throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");

@@ -2,7 +2,7 @@
 
 Create your own Agent in the Kubernetes installation from [Local setup](quickstart.md),
 deploy it, and get a real response from an OpenAI model. You choose the Agent
-name and supply your own OpenAI API key. The Agent stays in your installation
+name and supply an OpenAI API key or, for dedicated Codex with OpenShell, a personal access token. The Agent stays in your installation
 after the command exits.
 
 ## Before you start
@@ -25,6 +25,12 @@ after the command exits.
   fails. The command prompts for the key without echoing it only when neither
   is set. An exported key is used as is, so clear a stale one with
   `env -u OPENAI_API_KEY` to be prompted instead.
+
+For dedicated Codex with OpenShell, a personal access token (including a service-account token)
+can replace the API key. Supply `CODEX_ACCESS_TOKEN` through your secret manager
+or set `CODEX_ACCESS_TOKEN_FILE` to its private file. Select one credential input;
+do not also set an API-key input. The helper records the authentication method
+for later reuse and credential replacement.
 
 The walkthrough runs from the repository root on your own development
 installation. If you followed [Kubernetes Setup](kubernetes-setup.md) on an
@@ -79,8 +85,8 @@ If Local setup selected OpenShell, add `--harness codex`:
 node scripts/first-agent.mjs my-agent --harness codex --prompt 'What is 2 + 2?'
 ```
 
-That path stores the key in the same platform Secret, registers an OpenAI
-CredentialSource, and grants the Agent access to the source—not the Secret. It
+That path stores the credential in a platform Secret and registers an `openai`
+API-key source or a `codex-pat` token source. It grants the Agent access to the source—not the Secret. It
 uses OpenShell's experimental provider-file and bearer-passthrough APIs, so it
 is a development workflow rather than production qualification. Reuse the same
 `--harness` selection with that Agent name.

@@ -372,6 +372,20 @@
       "when": 1787000000053,
       "tag": "0053_compute_preparation_failure_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1787000000054,
+      "tag": "0054_credential_source_pat",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1787000000055,
+      "tag": "0055_compute_revision_admission",
+      "breakpoints": true
     }
   ]
 }

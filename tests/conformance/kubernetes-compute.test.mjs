@@ -50,6 +50,7 @@ import {
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  ResourceConflictError,
   ResourceStateConflictError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -3400,6 +3401,13 @@ test("a failed Namespace ensure reports a fixed or cleaned, bounded reason", asy
       "permanent",
       "A Namespace preparation request failed with HTTP status 422.",
     ],
+    // A malformed request, an expired controller token and a missing grant fail at once too:
+    // retrying cannot change the answer until an operator acts.
+    ...[400, 401, 403].map((statusCode) => [
+      Object.assign(new Error("refused"), { statusCode }),
+      "permanent",
+      `A Namespace preparation request failed with HTTP status ${statusCode}.`,
+    ]),
   ]) {
     assert.deepEqual(
       await ensure(async () => {
@@ -5532,9 +5540,10 @@ test("account-owned Kubernetes Secrets reject invalid or foreign credentials bef
     .slice(0, 32)}`;
 
   for (const invalid of [
-    { namespaceId: "", serviceAccountId, accessToken: "token" },
-    { namespaceId: tenant.id, serviceAccountId: "", accessToken: "token" },
-    { namespaceId: tenant.id, serviceAccountId, accessToken: "" },
+    { namespaceId: "", serviceAccountId, credentialId: "cred", accessToken: "token" },
+    { namespaceId: tenant.id, serviceAccountId: "", credentialId: "cred", accessToken: "token" },
+    { namespaceId: tenant.id, serviceAccountId, credentialId: "", accessToken: "token" },
+    { namespaceId: tenant.id, serviceAccountId, credentialId: "cred", accessToken: "" },
   ]) {
     // Incomplete account credentials cannot trigger Kubernetes requests or Secret mutations.
     await assert.rejects(driver.storeServiceAccountCredential(invalid), /must be explicitly/i);
@@ -5652,7 +5661,12 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
 
 test("a ServiceAccount credential Secret create that applied but answered an error removes only its own Secret", async (t) => {
   const serviceAccountId = "sa_00000000-0000-4000-8000-000000000001";
-  const input = { namespaceId: tenant.id, serviceAccountId, accessToken: "at-request-fixture" };
+  const input = {
+    namespaceId: tenant.id,
+    serviceAccountId,
+    credentialId: "cred-request-fixture",
+    accessToken: "at-request-fixture",
+  };
   const secretName = `service-account-${createHash("sha256")
     .update(serviceAccountId)
     .digest("hex")
@@ -5901,17 +5915,16 @@ async function serviceAccountSecretFixture(deleteStatus) {
   return { driver, objects, key, deletes, serviceAccountId, secretName, storedToken };
 }
 
-test("a failed issuance's Secret rollback after the lock is released keeps a later issuance's Secret", async () => {
+/**
+ * The real ChatGPT ServiceAccount Driver over the fixture's Kubernetes Compute Driver, with an
+ * in-memory provider and binding row. Each `request()` is one OCC request: its compensations
+ * are collected and run the way OCC runs them after a ROLLBACK, newest first, or never, when
+ * the process crashes or its COMMIT outcome is unknown.
+ */
+async function chatgptIssuanceFixture() {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");
-  const {
-    driver: compute,
-    objects,
-    key,
-    deletes,
-    serviceAccountId,
-    storedToken,
-  } = await serviceAccountSecretFixture();
+  const secrets = await serviceAccountSecretFixture();
   const workspaceId = "ws-service-account-fixture";
   const binding = {
     backendId: "openai",
@@ -5921,6 +5934,7 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
     workspaceId,
   };
   const revoked = [];
+  const deletedAccounts = [];
   let issued = 0;
   const client = {
     workspaceId,
@@ -5928,8 +5942,12 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
       issued += 1;
       return { id: `cred-${issued}`, accessToken: `at-request-fixture-${issued}` };
     },
-    async deleteCredential({ credentialId }) {
+    async deleteCredential({ accountId, credentialId }) {
+      assert.equal(accountId, binding.externalAccountId);
       revoked.push(credentialId);
+    },
+    async deleteServiceAccount(accountId) {
+      deletedAccounts.push(accountId);
     },
   };
   const state = {
@@ -5941,7 +5959,6 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
       return { rows: [], rowCount: 1 };
     },
   };
-  // One request: its compensations are collected and run the way OCC runs them, newest first.
   const request = () => {
     const rollbacks = [];
     const controller = {
@@ -5952,7 +5969,7 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
       { id: "openai", drivers: { service_account: "chatgpt-service-accounts" }, client },
       controller,
       state,
-      compute,
+      secrets.driver,
     );
     const rollBack = async () => {
       for (const rollback of rollbacks.reverse()) {
@@ -5961,23 +5978,40 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
     };
     return { driver, rollBack };
   };
-  const account = { id: serviceAccountId, namespaceId: tenant.id, name: "raced" };
+  // An issuance whose Driver call stored its token Secret, after which the process crashed
+  // (or its COMMIT failed with an unknown outcome): the binding update never committed and
+  // none of its compensations ran, so its provider credential and Secret stay behind.
+  const crashedIssuance = async (account) => {
+    await request().driver.createCredential(account);
+    binding.externalCredentialId = null;
+  };
+  const account = { id: secrets.serviceAccountId, namespaceId: tenant.id, name: "issued" };
+  return {
+    ...secrets,
+    account,
+    binding,
+    crashedIssuance,
+    deletedAccounts,
+    request,
+    revoked,
+    state,
+  };
+}
+
+test("a failed issuance's Secret rollback after the lock is released keeps a later issuance's Secret", async () => {
+  const { account, binding, deletes, objects, key, request, revoked, storedToken } =
+    await chatgptIssuanceFixture();
 
   // Request A stores its Secret, then its transaction fails after the Driver call. ROLLBACK
   // releases the account row lock before A's compensations run (finding 944).
   const failed = request();
   await failed.driver.createCredential(account);
   binding.externalCredentialId = null;
+  const leftover = structuredClone(objects.get(key).metadata);
 
-  // In that window request B is told the leftover Secret blocks it (#1883's transient 409); an
-  // operator deletes it as the message says, and B's retry stores its own Secret.
-  const blocked = request();
-  await assert.rejects(
-    blocked.driver.createCredential(account),
-    ServiceAccountCredentialSecretExistsError,
-  );
-  await blocked.rollBack();
-  objects.delete(key);
+  // In that window request B holds the lock and finds A's Secret: OCC records no credential,
+  // so B revokes the credential the Secret records and removes exactly that Secret (finding
+  // 1397; it used to answer a 409 an operator had to clear), then stores its own.
   const retry = request();
   assert.deepEqual(await retry.driver.createCredential(account), {
     kind: "access_token",
@@ -5988,10 +6022,139 @@ test("a failed issuance's Secret rollback after the lock is released keeps a lat
   // A's compensation then finds B's Secret under the same name: it must keep it, so B's
   // recorded credential still has its Secret.
   await failed.rollBack();
-  assert.equal(storedToken(), "at-request-fixture-3");
-  assert.equal(binding.externalCredentialId, "cred-3");
-  assert.deepEqual(deletes, []);
-  assert.deepEqual(revoked, ["cred-2", "cred-1"]);
+  assert.equal(storedToken(), "at-request-fixture-2");
+  assert.equal(binding.externalCredentialId, "cred-2");
+  assert.deepEqual(deletes, [{ uid: leftover.uid, resourceVersion: leftover.resourceVersion }]);
+  assert.deepEqual(revoked, ["cred-1", "cred-1"]);
+});
+
+test("an issuance that never committed leaves nothing a re-issue or the account delete keeps", async (t) => {
+  await t.test(
+    "the token Secret names its provider credential in metadata that holds no token",
+    async () => {
+      const { account, crashedIssuance, objects, key } = await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      const { annotations } = objects.get(key).metadata;
+      assert.equal(annotations["openclaw.dev/provider-credential-id"], "cred-1");
+      assert.equal(JSON.stringify(annotations).includes("at-request-fixture"), false);
+    },
+  );
+
+  await t.test("a re-issue revokes the leftover credential and replaces its Secret", async () => {
+    const { account, binding, crashedIssuance, request, revoked, storedToken } =
+      await chatgptIssuanceFixture();
+    await crashedIssuance(account);
+
+    // Before finding 1397 every re-issue stopped at the leftover Secret's 409 until an
+    // operator deleted it, and the crashed issuance's credential stayed live at the provider.
+    await request().driver.createCredential(account);
+    assert.deepEqual(revoked, ["cred-1"]);
+    assert.equal(storedToken(), "at-request-fixture-2");
+    assert.equal(binding.externalCredentialId, "cred-2");
+  });
+
+  await t.test(
+    "deleting the account revokes the leftover credential and removes its Secret",
+    async () => {
+      const { account, crashedIssuance, deletedAccounts, objects, key, request, revoked } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+
+      // OCC records no credential, so the delete used to skip the Secret, which then outlived
+      // the account (and, in an adopted namespace, the OCC Namespace) holding a live token.
+      await request().driver.delete(account);
+      assert.deepEqual(revoked, ["cred-1"]);
+      assert.equal(objects.has(key), false);
+      assert.deepEqual(deletedAccounts, ["acct-fixture"]);
+    },
+  );
+
+  await t.test(
+    "a reclaim whose lock was lost while reading the Secret touches nothing a later issuance committed",
+    async () => {
+      const { account, binding, crashedIssuance, driver, objects, key, request, revoked } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      // The request's PostgreSQL session ends during the Kubernetes read, releasing the account
+      // lock; another issuance records the Secret it now holds before the read returns. The
+      // binding reread after the read sees that record, so nothing is revoked or deleted.
+      const { core } = await driver.apiClients;
+      const read = core.readNamespacedSecret;
+      core.readNamespacedSecret = async (request) => {
+        const result = await read(request);
+        binding.externalCredentialId = "cred-1";
+        return result;
+      };
+      await assert.rejects(
+        request().driver.createCredential(account),
+        (error) =>
+          error instanceof ResourceConflictError &&
+          error.message === "The service account credential changed during cleanup.",
+      );
+      assert.deepEqual(revoked, []);
+      assert.equal(objects.has(key), true);
+    },
+  );
+
+  await t.test(
+    "a reclaim whose session ended while reading the Secret fails without touching it",
+    async () => {
+      const { account, crashedIssuance, driver, objects, key, request, revoked, state } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      // The PostgreSQL session ends during the Kubernetes read, so the binding reread on the
+      // transaction's connection fails: no proof the lock still holds, so nothing is revoked.
+      const lost = new DependencyUnavailableError("The database session ended.");
+      const { core } = await driver.apiClients;
+      const read = core.readNamespacedSecret;
+      core.readNamespacedSecret = async (request) => {
+        const result = await read(request);
+        state.queryInTransaction = async () => {
+          throw lost;
+        };
+        return result;
+      };
+      await assert.rejects(request().driver.createCredential(account), (error) => error === lost);
+      assert.deepEqual(revoked, []);
+      assert.equal(objects.has(key), true);
+    },
+  );
+
+  for (const [label, recorded] of [
+    ["names no credential", undefined],
+    // Anyone with Secret write can edit the annotation. `..` as a provider path segment would
+    // resolve to the provider account itself, so it must never reach a revocation.
+    ["names a path segment instead of a credential", ".."],
+  ]) {
+    await t.test(`a leftover that ${label} blocks issuance and goes with the account`, async () => {
+      const { account, crashedIssuance, objects, key, request, revoked, storedToken } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      const { annotations } = objects.get(key).metadata;
+      if (recorded === undefined) {
+        delete annotations["openclaw.dev/provider-credential-id"];
+      } else {
+        annotations["openclaw.dev/provider-credential-id"] = recorded;
+      }
+
+      // Nothing proves which provider credential is the leftover's, so issuance answers the
+      // 409 that names the Secret for an operator before issuing or revoking anything.
+      const blocked = request();
+      await assert.rejects(
+        blocked.driver.createCredential(account),
+        ServiceAccountCredentialSecretExistsError,
+      );
+      await blocked.rollBack();
+      assert.deepEqual(revoked, []);
+      assert.equal(storedToken(), "at-request-fixture-1");
+
+      // Deleting the account removes the Secret anyway, without a revocation it cannot name:
+      // the provider account goes with it.
+      await request().driver.delete(account);
+      assert.equal(objects.has(key), false);
+      assert.deepEqual(revoked, []);
+    });
+  }
 });
 
 test("a ServiceAccount credential rollback deletes only the Secret holding its own token", async (t) => {
@@ -6005,6 +6168,7 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     await fixture.driver.storeServiceAccountCredential({
       namespaceId: tenant.id,
       serviceAccountId: fixture.serviceAccountId,
+      credentialId: "cred-request-fixture",
       accessToken,
     });
     return fixture.objects.get(fixture.key).metadata;
@@ -6084,6 +6248,7 @@ test("managed PAT preparation projects the account-owned token and rejects a cha
   const secretRef = await driver.storeServiceAccountCredential({
     namespaceId: tenant.id,
     serviceAccountId,
+    credentialId: "cred-managed-fixture",
     accessToken: "at-managed-fixture",
   });
   revision.harnessAuth = {
@@ -6869,7 +7034,39 @@ test("credential-source authentication renders no model Secret and requires the 
     );
   }
 
-  const incompatible = /paired Sandbox and an OpenAI API key source/;
+  // A PAT source selects native Codex auth storage without projecting its credential.
+  const patSnapshot = { ...snapshot, sourceType: "codex-pat", loginMode: "codex_pat" };
+  const patType = {
+    ...sourceType,
+    type: "codex-pat",
+    harnessAuth: { modelProvider: "openai", loginMode: "codex_pat" },
+  };
+  driver.validateHarnessAuth(revision.harness, patSnapshot, revision.configuration, {}, patType);
+  const patPrepared = driver.harnessAuthForRevision(
+    { ...revision, harnessAuth: patSnapshot },
+    { harnessAuth: { ...patSnapshot, source: { ...source, type: "codex-pat" } } },
+    namespace,
+  );
+  assert.equal(patPrepared.loginMode, "codex_pat");
+  assert.deepEqual(patPrepared.environment, [
+    { name: "CODEX_LOGIN_MODE", value: "codex_pat" },
+    { name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" },
+    { name: "OPENCLAW_HARNESS_MODEL", value: "codex/gpt-5" },
+  ]);
+  // Native OpenClaw cannot load Codex PAT storage; reject before replacing a revision.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        nativeRevision.harness,
+        patSnapshot,
+        nativeRevision.configuration,
+        {},
+        patType,
+      ),
+    /compatible OpenAI source/,
+  );
+
+  const incompatible = /paired Sandbox and a compatible OpenAI source/;
   assert.throws(
     () =>
       new KubernetesComputeDriver(options(), { sandboxDriver }).validateHarnessAuth(
@@ -17209,22 +17406,35 @@ test("Kubernetes preparation diagnostics name a request timeout and keep real AP
       message: "Kubernetes API request timed out.",
     });
   }
-  {
+  // A 403 stays the raw ApiException. A 500 reaches the worker as the Kubernetes API's own
+  // TransientDependencyError, and the diagnostic walks past it to the answer, so it keeps the
+  // status (from 500 up, unavailable).
+  for (const [status, code] of [
+    [403, "KUBERNETES_API_REJECTED"],
+    [500, "KUBERNETES_API_UNAVAILABLE"],
+  ]) {
     const fixture = workspaceSetupFixture(true);
+    fixture.driver.waitBeforeRetry = async () => {};
     const clients = await fixture.driver.apiClients;
     clients.core.listNamespace = async () => {
-      throw new ApiException(403, "Forbidden", JSON.stringify({ kind: "Status", code: 403 }), {});
+      throw new ApiException(
+        status,
+        "Refused",
+        JSON.stringify({ kind: "Status", code: status }),
+        {},
+      );
     };
     const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
       () => assert.fail("the Namespace read must be refused"),
       (failure) => failure,
     );
+    assert.equal(error instanceof TransientDependencyError, status === 500);
     assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
-      code: "KUBERNETES_API_REJECTED",
+      code,
       stage: "prepare_revision",
       errorClass: "KubernetesApiError",
       message: "The Kubernetes API rejected revision preparation.",
-      status: 403,
+      status,
     });
   }
   // An abort that is no Kubernetes answer never reads as an HTTP status.
@@ -17300,6 +17510,19 @@ test("Kubernetes preparation diagnostics name the Agent Gateway for its own tran
       errorClass: "TransientDependencyError",
     },
   );
+  // The bound is the worker's own: 256 printable characters pass, and one more character or
+  // any control character leaves the message out.
+  for (const [message, kept] of [
+    ["x".repeat(256), true],
+    ["x".repeat(257), false],
+    ["The Agent Gateway route was unreachable\n(ECONNREFUSED).", false],
+  ]) {
+    const diagnostic = workspaceSetupFixture(false).driver.describePrepareRevisionFailure(
+      new TransientDependencyError("agent_gateway", "unreachable", message),
+    );
+    assert.equal(diagnostic.code, "AGENT_GATEWAY_UNAVAILABLE");
+    assert.equal(diagnostic.message, kept ? message : undefined, JSON.stringify(message));
+  }
 });
 
 for (const embedded of [true, false]) {

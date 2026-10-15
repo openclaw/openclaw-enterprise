@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-10-15"
-last_updated_session: authoring-run/0da590a9-3bb3-4aa3-a005-25ff485692db
+last_updated_session: authoring-run/acd06c56-509b-44d8-9dd3-0858ab106ad0
 ---
 
 # Public GitHub read flow
@@ -23,7 +23,7 @@ reader knows no credentials; GitHub owns visibility at the time of the read.
 ```mermaid
 graph TD
   Profile["Operator enables reader"] --> Service["Private Service and reader policy"]
-  Profile --> Compute["Check dedicated Harness and authored proxy"]
+  Profile --> Compute["Freeze eligible reader peer at revision admission"]
   Compute -->|not selected or denied| Ordinary["Revision without reader grant or skill"]
   Compute -->|exact reader IP allowed by revision| Revision["Mount managed skill and allow exact peer"]
   Revision --> Proxy["Agent reads through its limited native proxy"]
@@ -37,9 +37,13 @@ graph TD
 
 ### 1. Compose a private Service and an eligible revision
 
+`packages/occ/src/index.ts` asks the selected Compute Driver for side-effect-free
+admission facts before storing the revision. Kubernetes Compute freezes a digest of
+the configured reader peer only for a dedicated Codex revision with an explicit
+IP allow in its authored proxy. A deny that might match withholds the capability.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:publicGithubReadForRevision`
-consumes operator configuration and an explicit IP allow in the revision's authored
-proxy. A deny that might match withholds the capability. For a selected revision,
+requires the stored fact to match the current peer. An older revision without the
+fact stays unselected, including when its runtime projection is rebuilt. For a selected revision,
 Compute creates the managed skill's parent as the runtime user before projecting
 the read-only file. It uses the same immutable plugin-runtime snapshot to write a
 revision-owned egress policy to the exact reader Pod peer and port.
@@ -63,6 +67,8 @@ no completed representation, bearer, repository session or durable state is kept
 `apps/controller/src/drivers/compute/kubernetes/index.ts:deleteRetiredRevisionArtifacts`
 removes the revision's reader policy and skill snapshot after its Pods have
 terminated. Preparing or activating a successor does not change that grant.
+Reconciliation removes the grant earlier if the operator disables or changes the
+admitted peer; a new revision is needed to select the new peer.
 
 ## Debugging and Verification
 
@@ -82,5 +88,6 @@ terminated. Preparing or activating a successor does not change that grant.
 
 ## Changelog
 
+- 2026-10-15 09:03: Freeze reader selection at admission and revoke changed peers (authoring-run/acd06c56-509b-44d8-9dd3-0858ab106ad0 - 07d2178e530c07883a24c17efc950378c52e2b86)
 - 2026-10-15 05:37: Bind reader access and retirement to the selected revision (authoring-run/0da590a9-3bb3-4aa3-a005-25ff485692db - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
 - 2026-10-15 05:04: Document public reader revision, proxy and provider boundaries (authoring-run/20c735e1-24ca-4e55-9f8c-8c362173c58a - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)

@@ -79,9 +79,11 @@ async function readerWithPrivateProvider() {
 // OpenClaw permission profile, then give it to Codex command/exec without a model turn.
 async function readWithStockCodex() {
   const assert = (await import("node:assert/strict")).default;
-  const { readdirSync } = await import("node:fs");
+  const { mkdirSync, readdirSync } = await import("node:fs");
   const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
   const { pluginConfig, skillPath } = JSON.parse(process.argv[1]);
+  const workspace = "/home/node/workspace";
+  mkdirSync(workspace, { recursive: true });
   const dist = "/app/node_modules/openclaw/dist/";
   async function bundledFunction(chunk, name) {
     const file = readdirSync(dist).find((file) => file.startsWith(chunk + "-"));
@@ -141,6 +143,7 @@ async function readWithStockCodex() {
     ].join("\n");
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
+      cwd: workspace,
       command: ["/bin/sh", "-eu", "-c", shell, "public-read", skillPath],
     });
     assert.equal(result.exitCode, 0, result.stderr + result.stdout);

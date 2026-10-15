@@ -39,6 +39,12 @@ skill. Compute also withholds both if it cannot rule out a deny, such as a
 domain glob. It leaves the native proxy policy intact. The egress policy selects
 only the revision that opted in. Preparing or activating a successor preserves
 the serving revision's choice; stopping or retiring a revision removes its own policy.
+Reader selection is frozen at admission. A revision created before the reader was
+enabled stays unselected even if its proxy already allowed that address. Disabling
+or changing the configured reader peer revokes its grant on reconciliation; deploy
+a new revision to select the replacement. Apply the database migration before
+starting a controller that writes the new admission fact, and complete the rollout
+before admitting revisions with that controller.
 
 The private ClusterIP serves plain HTTP. Repository and file names are visible to
 that in-cluster path and to GitHub. NetworkPolicy selects managed Agent Pods in

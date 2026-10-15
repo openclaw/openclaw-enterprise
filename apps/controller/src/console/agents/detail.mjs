@@ -135,31 +135,16 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// Next steps for failure codes whose cause the operator can act on directly, and the
-// page that holds the setting to change. Model-probe codes come from the runtime
-// wrapper's startup model check (`runtime-entrypoints.ts`). OpenClaw classifies
-// transport errors (refused connection, DNS failure, "fetch failed") as a timeout, so
-// there an unreachable provider reports RUNTIME_MODEL_PROBE_TIMEOUT; Codex reports the
-// same failure as RUNTIME_MODEL_PROBE_FAILED unless the connection hangs until its cap.
-const DEPLOYMENT_FAILURE_GUIDANCE = {
-  RUNTIME_AUTHENTICATION_FAILED: {
-    text: "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key is valid and can use the selected model, update or replace the model credential Secret, then deploy a new version.",
-    link: "credentials",
-  },
-  RUNTIME_MODEL_PROBE_FAILED: {
-    text: "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-    link: "configuration",
-  },
-  RUNTIME_MODEL_PROBE_TIMEOUT: {
-    text: "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
-    link: "configuration",
-  },
+// The page that holds the setting to change for failure codes whose cause the operator can
+// act on directly. The API's error message already states the next step (finding 1393), so
+// the console adds only the link.
+const DEPLOYMENT_FAILURE_LINKS = {
+  RUNTIME_AUTHENTICATION_FAILED: "credentials",
+  RUNTIME_MODEL_PROBE_FAILED: "configuration",
+  RUNTIME_MODEL_PROBE_TIMEOUT: "configuration",
   // Kubernetes Compute fails activation at once when the Gateway refuses its own in-Pod
   // CLI (#1128); the Configuration's gateway password reference is what lets it in.
-  AGENT_GATEWAY_UNAUTHORIZED: {
-    text: "The Agent Gateway refused its own in-Pod CLI, so the version never finished starting. In the Configuration, select Enable gateway password access if it is not already enabled, save, then deploy a new version.",
-    link: "configuration",
-  },
+  AGENT_GATEWAY_UNAUTHORIZED: "configuration",
 };
 
 // The runtime classifies a failed startup model check into one of these kinds and
@@ -200,23 +185,19 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
   }
   const runtimeFailure = error.data?.runtimeFailure;
   const preparation = error.data?.preparation;
-  const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_GUIDANCE, error.code)
-    ? DEPLOYMENT_FAILURE_GUIDANCE[error.code]
+  const guidanceLink = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, error.code)
+    ? DEPLOYMENT_FAILURE_LINKS[error.code]
     : null;
-  const guidanceHref = guidance ? (hrefs[guidance.link] ?? null) : null;
+  const guidanceHref = guidanceLink ? (hrefs[guidanceLink] ?? null) : null;
   return element(
     "div",
     {},
     element("p", { className: "error", role: "alert" }, `${error.code}: ${error.message}`),
-    guidance
+    guidanceHref
       ? element(
           "p",
           { className: "hint deployment-failure-guidance" },
-          guidance.text,
-          guidanceHref ? " " : null,
-          guidanceHref
-            ? element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidance.link])
-            : null,
+          element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidanceLink]),
         )
       : null,
     preparation
@@ -1530,6 +1511,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
+    stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
     renderCurrentVersion();
     renderVersions(
       revisions,

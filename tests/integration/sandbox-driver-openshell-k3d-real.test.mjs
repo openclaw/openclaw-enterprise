@@ -68,8 +68,21 @@ const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).r
   "",
 );
 const openShellModelBaseUrl = process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim() || undefined;
+const modelCredentialVariable =
+  process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" || openShellModelBaseUrl !== undefined
+    ? "OPENAI_API_KEY"
+    : "CODEX_ACCESS_TOKEN";
+const modelCredential = process.env[modelCredentialVariable];
+const modelSourceType = modelCredentialVariable === "CODEX_ACCESS_TOKEN" ? "codex-pat" : "openai";
+const modelSecretField =
+  modelCredentialVariable === "CODEX_ACCESS_TOKEN" ? "access_token" : "api_key";
 // The model source's endpoint, which bounds where OpenShell inserts the model key.
-const modelBaseUrl = (openShellModelBaseUrl ?? "https://api.openai.com/v1").replace(/\/$/u, "");
+const modelBaseUrl = (
+  openShellModelBaseUrl ??
+  (modelSourceType === "codex-pat"
+    ? "https://chatgpt.com/backend-api/codex"
+    : "https://api.openai.com/v1")
+).replace(/\/$/u, "");
 const modelEndpoint = new URL(modelBaseUrl);
 const modelPort = Number(modelEndpoint.port || 443);
 const selected =
@@ -91,7 +104,7 @@ const selected =
 const requiresOpenShellK3d = {
   skip: selected
     ? false
-    : "Set OCC_TEST_OPENSHELL_K3D_REAL=1 with explicit k3d, PostgreSQL, OpenShell, real image, and OPENAI_API_KEY prerequisites.",
+    : "Set OCC_TEST_OPENSHELL_K3D_REAL=1 with explicit k3d, PostgreSQL, OpenShell, real image, and model credential prerequisites.",
 };
 const installationName = "OpenClaw OpenShell SandboxDriver integration";
 const authSecret = "openshell-sandbox-driver-auth-secret-32";
@@ -143,6 +156,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexSandbox: modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
 });
 const {
   kubectl,
@@ -1120,9 +1134,11 @@ function bridgeRequirements(context, claimName, subPath) {
   // Secret. The Sandbox receives the model source's attachment first, then one for each
   // other source the revision still holds; a withdrawn one is never re-attached.
   assert.equal(
-    context.requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    context.requirements.environment.some(({ name }) =>
+      ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"].includes(name),
+    ),
     false,
-    "Compute must not project OPENAI_API_KEY when a credential source authenticates the Harness.",
+    "Compute must not project model credentials when a credential source authenticates the Harness.",
   );
   const attached = context.requirements.credentialAttachments.map(({ sourceId }) => sourceId);
   assert.equal(attached[0], context.revision.harnessAuth.sourceId);
@@ -1332,9 +1348,16 @@ async function assertModelKeyIsPlaceholderOnly(namespace, pod, modelKey) {
     '  for (const variable of environ.split("\\0")) {',
     '    const separator = variable.indexOf("=");',
     "    if (separator > 0 && digest(variable.slice(separator + 1)) === keyDigest) leaked = true;",
-    '    if (variable.startsWith("OPENAI_API_KEY=")) values.push(variable.slice(15));',
+    `    if (variable.startsWith(${JSON.stringify(modelCredentialVariable + "=")})) values.push(variable.slice(${modelCredentialVariable.length + 1}));`,
     "  }",
     "}",
+    ...(modelSourceType === "codex-pat"
+      ? [
+          'const auth = JSON.parse(fs.readFileSync("/sandbox/.openclaw-runtime/home/.codex/auth.json", "utf8"));',
+          'if (digest(auth.personal_access_token ?? "") === keyDigest) leaked = true;',
+          'values.push(auth.personal_access_token ?? "");',
+        ]
+      : []),
     "process.stdout.write(JSON.stringify({",
     "  leaked,",
     "  count: values.length,",
@@ -1358,7 +1381,11 @@ async function assertModelKeyIsPlaceholderOnly(namespace, pod, modelKey) {
   );
   assert.equal(observed.leaked, false, "no Harness process environment may hold the model key.");
   assert.ok(observed.count > 0, "the Harness must receive the OpenShell credential placeholder.");
-  assert.equal(observed.placeholders, true, "OPENAI_API_KEY must be an OpenShell placeholder.");
+  assert.equal(
+    observed.placeholders,
+    true,
+    "The model credential must be an OpenShell placeholder.",
+  );
 }
 
 async function assertBridgedServicePrincipalToken(namespace, pod, expected) {
@@ -1405,7 +1432,7 @@ async function assertBridgedServicePrincipalToken(namespace, pod, expected) {
 function bridgedHarnessContainer(pod) {
   const container = pod.spec.containers.find(({ name }) => name === "agent");
   assert.ok(container, "the provider-owned Pod must contain the OpenShell Agent container.");
-  for (const name of ["APP_SERVER_TOKEN", "OPENAI_API_KEY"]) {
+  for (const name of ["APP_SERVER_TOKEN", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN"]) {
     assert.equal(
       (container.env ?? []).some((entry) => entry.name === name),
       false,
@@ -1507,6 +1534,15 @@ function createIntegrationSandboxDriverFactory(
       id: definition.id,
       drivers: definition.drivers,
       client: {
+        placement(namespaceName) {
+          if (namespaceName === undefined) {
+            return undefined;
+          }
+          // Match the real per-Namespace Helm release, preserving the Backend's host checks.
+          return new OpenShellGateway({
+            serviceName: `openshell-${hash(namespaceName, 10)}`,
+          }).placement(namespaceName);
+        },
         clientForNamespace(namespaceName) {
           const state = gatewayState.get(namespaceName);
           assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
@@ -1601,8 +1637,11 @@ function createIntegrationSandboxDriverFactory(
       if (ownedState !== undefined) {
         await stopGatewayForward(namespaceName, ownedState);
       }
-      context.signal.removeEventListener("abort", stopOwnedForward);
       throw error;
+    } finally {
+      // Once established, the shared management connection belongs to this fixture.
+      // Worker restarts cancel an operation, but the API still needs the same gateway.
+      context.signal.removeEventListener("abort", stopOwnedForward);
     }
   }
 
@@ -2333,22 +2372,22 @@ async function prepareProductionInstallation(
   );
   const modelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name: `openshell-model-${randomUUID()}`,
-    value: process.env.OPENAI_API_KEY,
+    value: modelCredential,
   });
   assert.equal(modelSecret.status, 201, JSON.stringify(modelSecret.error));
-  assert.equal(JSON.stringify(modelSecret).includes(process.env.OPENAI_API_KEY), false);
+  assert.equal(JSON.stringify(modelSecret).includes(modelCredential), false);
   // Registration copies the Secret value into the Namespace's OpenShell gateway through the
   // regular API. The Secret stays the source of record; the Harness never receives it.
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
-    type: "openai",
+    type: modelSourceType,
     ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
-    secrets: { api_key: modelSecret.data.ref },
+    secrets: { [modelSecretField]: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
   assert.equal(modelSource.data.state, "ready");
   assert.deepEqual(modelSource.data.status, { state: "ready" });
-  assert.equal(JSON.stringify(modelSource).includes(process.env.OPENAI_API_KEY), false);
+  assert.equal(JSON.stringify(modelSource).includes(modelCredential), false);
   const observedSource = await request(
     "GET",
     `/namespaces/${namespaceId}/credential-sources/${modelSource.data.id}`,
@@ -2460,8 +2499,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      "danger-full-access",
-      "OCC must freeze OpenShell-selected Codex revisions with the inner sandbox disabled.",
+      modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
+      "OCC must select Codex isolation from the admitted source login mode.",
     );
   } else {
     assert.equal(
@@ -2594,8 +2633,8 @@ async function prepareProductionInstallation(
   process.stderr.write(
     "OpenShell integration: approved mounts and privileges verified; checking secret exposure.\n",
   );
-  await assertNoSecretBytes(placement, [process.env.OPENAI_API_KEY, transport.appServerToken]);
-  await assertModelKeyIsPlaceholderOnly(placement, harnessPod, process.env.OPENAI_API_KEY);
+  await assertNoSecretBytes(placement, [modelCredential, transport.appServerToken]);
+  await assertModelKeyIsPlaceholderOnly(placement, harnessPod, modelCredential);
   process.stderr.write(
     "OpenShell integration: secret exposure checks passed; verifying gateway routing.\n",
   );
@@ -3516,13 +3555,14 @@ async function assertNonModelCredentialSource(topology) {
   // attached sources are substituted.
   const secondModelSecret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name: `openshell-model-second-${randomUUID()}`,
-    value: process.env.OPENAI_API_KEY,
+    value: modelCredential,
   });
   assert.equal(secondModelSecret.status, 201, JSON.stringify(secondModelSecret.error));
   const secondModel = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-second-${randomUUID()}`,
-    type: "openai",
-    secrets: { api_key: secondModelSecret.data.ref },
+    type: modelSourceType,
+    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    secrets: { [modelSecretField]: secondModelSecret.data.ref },
   });
   assert.equal(secondModel.status, 201, JSON.stringify(secondModel.error));
   const second = await deployAdditionalCredentialAgent(topology, secondModel.data.id, [toolA]);
@@ -3823,7 +3863,7 @@ async function assertAgentVisibleMaterialExcludesCredentials(topology) {
   const { request, namespaceId, placement, gatewayPlacement, observerPool } = topology;
   const agentId = topology.agent.id;
   const credentials = [
-    process.env.OPENAI_API_KEY,
+    modelCredential,
     ...(topology.toolSources ?? []).map(({ token }) => token),
     ...(topology.untrustedTlsSource === undefined ? [] : [topology.untrustedTlsSource.token]),
     ...(topology.keycloak === undefined ? [] : [topology.keycloak.clientSecret]),
@@ -4001,17 +4041,17 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.deepEqual(resynced.data.status, { state: "ready" });
   const replacement = await request("POST", `/namespaces/${namespaceId}/secrets`, {
     name: `openshell-model-replacement-${randomUUID()}`,
-    value: process.env.OPENAI_API_KEY,
+    value: modelCredential,
   });
   assert.equal(replacement.status, 201, JSON.stringify(replacement.error));
   const replaced = await request(
     "PATCH",
     `/namespaces/${namespaceId}/credential-sources/${sourceId}`,
-    { secrets: { api_key: replacement.data.ref } },
+    { secrets: { [modelSecretField]: replacement.data.ref } },
   );
   assert.equal(replaced.status, 200, JSON.stringify(replaced.error));
-  assert.deepEqual(replaced.data.secrets, { api_key: replacement.data.ref });
-  assert.equal(JSON.stringify(replaced).includes(process.env.OPENAI_API_KEY), false);
+  assert.deepEqual(replaced.data.secrets, { [modelSecretField]: replacement.data.ref });
+  assert.equal(JSON.stringify(replaced).includes(modelCredential), false);
 
   // The API records the withdrawal; only the worker's confirmed detach makes it revoked.
   const withdrawalPath = `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${sourceId}`;
@@ -4049,7 +4089,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
     observation = JSON.stringify(result);
   }
   assert.equal(
-    String(observation).includes(process.env.OPENAI_API_KEY),
+    String(observation).includes(modelCredential),
     false,
     "a revoked turn must not expose the model key",
   );
@@ -4069,7 +4109,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
 }
 
 async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
-  const redactions = [process.env.OPENAI_API_KEY, gatewayPassword, topology.appServerToken].filter(
+  const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
     (secret) => typeof secret === "string" && secret.length > 0,
   );
   const sections = [];
@@ -4164,7 +4204,7 @@ async function requestNativeOpenClawTurns(context, topology) {
       );
     }
     const body = await response.text();
-    assert.equal(body.includes(process.env.OPENAI_API_KEY), false);
+    assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
       response.status === 200
@@ -4287,6 +4327,12 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   const approvedRead = `head -c 1 ${approvedPath} > /dev/null`;
   const readonlyPath = approvedPath;
   const escapedPath = `${providerWorkspace}/../${nonce}-escape.txt`;
+  // Use native Codex, which is allowed to reach this host, so the refusal proves
+  // path enforcement rather than curl's separate binary restriction. A fresh home
+  // references the same opaque auth file without reusing cached cloud configuration.
+  const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
+  const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -4299,8 +4345,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(3) touch ${readonlyPath}; ` +
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
-      `(6) curl -fsSI --max-time 10 https://acme.com. ` +
+      `(6) curl -fsSI --max-time 10 https://acme.com; ` +
+      (modelSourceType === "codex-pat" ? `(7) ${deniedConfigCommand}. ` : "") +
       `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
+      (modelSourceType === "codex-pat" ? "Command 7 must also fail. " : "") +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -4314,6 +4362,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   const deniedCommand = completedCommands.find(({ command }) =>
     String(command).includes("acme.com"),
+  );
+  const deniedConfigRequest = completedCommands.find(({ command }) =>
+    String(command).includes(deniedBackend),
   );
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
@@ -4343,6 +4394,36 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
+  if (modelSourceType === "codex-pat") {
+    assert.ok(
+      deniedConfigRequest,
+      "the real Codex binary must attempt the unapproved backend path.",
+    );
+    assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
+    // must record its L7 denial of this exact native-Codex request.
+    await waitFor(
+      "OpenShell denial of an unrelated Codex backend path",
+      async () => {
+        const logs = await kubectl(
+          "logs",
+          topology.harnessPod.metadata.name,
+          "--namespace",
+          topology.placement,
+          "--all-containers=true",
+          "--tail=500",
+        );
+        return logs
+          .split("\n")
+          .some(
+            (line) =>
+              line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
+              line.includes("not permitted by policy"),
+          );
+      },
+      30_000,
+    );
+  }
   assert.match(result.assistant, new RegExp(nonce));
   assert.match(result.assistant, /WORKSPACE_WRITABLE/);
   assert.match(result.assistant, /APPROVED_PATH_READABLE/);
@@ -4367,12 +4448,17 @@ async function assertCredentialRouteEnforcement(topology) {
   const script = [
     "#!/bin/bash",
     `body=/tmp/${nonce}.json`,
-    // Codex removes OPENAI_API_KEY from the commands it runs, but a command can read the real
-    // placeholder from an ancestor's environment, as any Agent tool command could.
-    'model=$(for p in /proc/[0-9]*; do tr "\\0" "\\n" < "$p/environ" 2>/dev/null |',
-    "  sed -n 's/^OPENAI_API_KEY=//p'; done | head -1)",
+    // Read the same opaque placeholder the Harness uses; never copy the upstream credential.
+    ...(modelSourceType === "codex-pat"
+      ? [
+          `model=$(node -e 'const fs=require("node:fs"); const path=require("node:path"); process.stdout.write(JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME,"auth.json"),"utf8")).personal_access_token)')`,
+        ]
+      : [
+          'model=$(for p in /proc/[0-9]*; do tr "\\0" "\\n" < "$p/environ" 2>/dev/null |',
+          "  sed -n 's/^OPENAI_API_KEY=//p'; done | head -1)",
+        ]),
     'printf "PLACEHOLDER_FOUND=%s\\n" "$([ -n "$model" ] && echo yes || echo no)"',
-    'printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$OPENAI_API_KEY" ] && echo yes || echo no)"',
+    `printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$${modelCredentialVariable}" ] && echo yes || echo no)"`,
     // Prints NAME_EXIT and NAME_OUT for one probe; stderr is dropped.
     'probe() { local name=$1; shift; local out; out=$("$@" 2>/dev/null); local code=$?;',
     '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
@@ -4385,12 +4471,15 @@ async function assertCredentialRouteEnforcement(topology) {
     // OpenShell names the reason when it refuses a credential for the wrong endpoint.
     `printf 'FOREIGN_REFUSAL=%s\\n' "$(grep -o 'credential_endpoint_mismatch' "$body" ` +
       `2>/dev/null | head -1)"`,
-    // A minimal Responses request, the one API every model endpoint must serve, from a command
-    // Codex started rather than from Codex itself.
+    // Probe an authenticated source endpoint from a child command. PAT identity validation
+    // avoids requiring native Codex's per-workspace request headers; its model turn runs above.
     `probe MODEL curl -sS -o /dev/null -w '%{http_code},%{http_connect}' --max-time 60 ` +
-      `-H "Authorization: Bearer $model" -H 'Content-Type: application/json' ` +
-      `-d '${JSON.stringify({ model: providerModel, input: "Reply with OK.", max_output_tokens: 16 })}' ` +
-      `${modelBaseUrl}/responses`,
+      `-H "Authorization: Bearer $model" ` +
+      (modelSourceType === "codex-pat"
+        ? "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
+        : `-H 'Content-Type: application/json' ` +
+          `-d '${JSON.stringify({ model: providerModel, input: "Reply with OK.", max_output_tokens: 16 })}' ` +
+          `${modelBaseUrl}/responses`),
     // Direct connections that skip the proxy, by name and by address.
     // OpenShell may intercept these transparently, so a host the policy allows can still answer;
     // a host it denies must not.
@@ -4433,7 +4522,7 @@ async function assertCredentialRouteEnforcement(topology) {
       `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
       `Then reply with exactly ${nonce}.`,
   });
-  assert.equal(JSON.stringify(result).includes(process.env.OPENAI_API_KEY), false);
+  assert.equal(JSON.stringify(result).includes(modelCredential), false);
   assert.equal(JSON.stringify(result).includes(untrustedTlsSource.token), false);
   assert.match(result.assistant, new RegExp(nonce));
   const run = result.items
@@ -4497,7 +4586,7 @@ async function assertCredentialRouteEnforcement(topology) {
     if (length === 0) {
       return "empty";
     }
-    if (length === `Bearer ${process.env.OPENAI_API_KEY}`.length) {
+    if (length === `Bearer ${modelCredential}`.length) {
       return "model-key-length";
     }
     return length === `Bearer ${toolA.token}`.length ? "tool-token-length" : "other";
@@ -4505,7 +4594,7 @@ async function assertCredentialRouteEnforcement(topology) {
   const observed = {
     modelPlaceholder: {
       inheritedByCommand: value("PLACEHOLDER_INHERITED") === "yes",
-      readableFromAncestor: value("PLACEHOLDER_FOUND") === "yes",
+      readableFromHarness: value("PLACEHOLDER_FOUND") === "yes",
     },
     foreignDestination: {
       httpStatus: value("FOREIGN_OUT"),
@@ -4543,20 +4632,19 @@ async function assertCredentialRouteEnforcement(topology) {
     "OpenShell must not substitute the model placeholder for a foreign destination.",
   );
   // OpenShell matches a profile's binaries against every ancestor of the calling process, so a
-  // command Codex runs is admitted as Codex. Codex withholds OPENAI_API_KEY from its commands, but
-  // one that reads the placeholder from an ancestor gets the key inserted at the model endpoint,
-  // and only there: the foreign destination above was refused.
+  // command Codex runs is admitted as Codex. A child that reads the Harness placeholder can
+  // authenticate at the source's allowed endpoint; the foreign destination must remain refused.
   // TODO(tool isolation): once Agent tools run in their own Sandbox, outside Codex's process
   // tree, require this request to be refused and update the Credential Gateway reference.
   assert.equal(
-    observed.modelPlaceholder.readableFromAncestor,
+    observed.modelPlaceholder.readableFromHarness,
     true,
-    "a command must be able to read the model placeholder from an ancestor for this check.",
+    "a command must be able to read the Harness model placeholder for this check.",
   );
   assert.equal(
     observed.modelHostFromCurl.httpStatus,
     "200",
-    "a command Codex runs is expected to reach the model endpoint with the inserted key.",
+    "a command Codex runs must authenticate at the allowed source endpoint.",
   );
   // Skipping the proxy settings gains nothing: a denied host and a bare address stay unreachable.
   // The allowed host still answers, so the run has an outbound path and these failures are the
@@ -4763,7 +4851,7 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
     `OpenShell integration: untrusted model upstream ${JSON.stringify(observed)}.\n`,
   );
   assert.equal(
-    String(observation).includes(process.env.OPENAI_API_KEY),
+    String(observation).includes(modelCredential),
     false,
     "a refused model route must not expose the model key",
   );
@@ -5059,7 +5147,7 @@ test(
         prompt: `Reply with exactly ${nonce}.`,
       });
       assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(process.env.OPENAI_API_KEY), false);
+      assert.equal(JSON.stringify(modelTurn).includes(modelCredential), false);
       process.stderr.write(
         "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
       );

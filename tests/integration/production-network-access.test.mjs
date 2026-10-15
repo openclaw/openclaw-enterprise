@@ -85,5 +85,16 @@ test(
     ]) {
       await t.test(`optional routes for ${scenario.source}`, () => access.verify(scenario));
     }
+
+    // Exercise the actual Compute-generated revision policy against the CNI.
+    await access.installPublicReaderRevisions();
+    await t.test("only the selected revision reaches the exact public reader peer", async () => {
+      await access.verify({
+        source: "selectedreader",
+        allow: ["publicReader"],
+        deny: ["publicReaderWrongPort", "unexpected"],
+      });
+      await access.verify({ source: "oldreader", deny: ["publicReader", "publicReaderWrongPort"] });
+    });
   },
 );

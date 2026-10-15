@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-14
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-15
+last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -9,21 +9,14 @@ last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ## Overview
 
 Kubernetes Compute delegates dedicated Codex and native OpenClaw Harnesses to
-the OpenShell Sandbox Driver. Operator mode owns a Workspace for each OCC
-Namespace; managed mode fails before mutation. Model access uses a
-[credential source](credential-source-lifecycle.md), without granting the Agent
-Secret permission. Dedicated Codex receives revision-owned provider files and
-authenticates Gateway requests through OpenShell's bearer-passthrough exposure.
-Compute uses that advertised endpoint instead of the direct Harness Service.
+OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
+[Credential sources](credential-source-lifecycle.md) provide model access without
+Agent Secret permission. Codex authenticates Gateway requests through revision-owned
+provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
+Harness Service.
 
-The development Driver puts the expiring workspace-node setup envelope in a
-revision-owned provider file. The Harness signs the bootstrap token that the
-Gateway receives, while network policy limits its use to the node executable
-and Agent Gateway endpoint. This exposes the token to the Sandbox and is not a
-production credential-delivery contract.
-
-Both Kubernetes-only and Compose development control planes install the pinned
-Gateway and render the workspace chart, without compatibility projections.
+Workspace-node setup exposes a scoped bootstrap token through a revision-owned
+provider file; it remains development-only.
 
 ## Entry Points
 
@@ -133,6 +126,9 @@ and operator Workspaces, limiting Gateway access to API, worker, supervisor
 callbacks and dedicated Agent Gateways. See
 [local deployment guides](../guides/deploy/local-kubernetes-development.md).
 
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` sets container
+ownership for private routing files; Installation files remain `0644` in private state.
+
 Cleanup validates recorded engine/state before deleting the named cluster and
 Compose project/volumes; partial cleanup retains recovery state.
 
@@ -160,27 +156,35 @@ and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-With `provisionHarness`, Compute derives image, command, labels, environment,
-mounts, optional identity, and resources from its ordinary Deployment shape.
-First-deploy preparation starts the Gateway on fail-closed transport, leaving
-the Agent Service inactive. Until Gateway readiness and its Agent-owned node
-setup Secret exist, preparation stays incomplete without attaching credentials
-or creating providers/Sandboxes. Compute then adds that Secret reference and
-invokes the SandboxDriver.
+Compute derives `provisionHarness` image, command, labels, environment, mounts,
+optional identity, and resources from its ordinary Deployment shape.
+First deployment keeps the Agent Service inactive. Compute starts the Gateway on
+fail-closed transport, waits for readiness and its Agent-owned node setup Secret,
+then passes the Secret reference to the SandboxDriver. Credential attachment and
+provider/Sandbox creation wait for both prerequisites.
 The local OpenShell profile disables projected workload identity. If it is
 enabled, OpenShell rejects the revision before Gateway mutation because the
 pinned API cannot preserve the exact Agent ServiceAccount and token.
-For a `credential_source` revision it renders only `CODEX_LOGIN_MODE=api_key`,
-no model Secret, and calls `CredentialGatewayDriver.attachForRevision`. The
-attachments, one provider name per source, go into
-`requirements.credentialAttachments`. Compute passes those requirements and the
-immutable revision to OpenShell instead of creating the Deployment itself.
+For `credential_source`, Compute renders the catalog login mode without a model
+Secret and passes revision and `attachForRevision` provider names through
+`requirements.credentialAttachments`.
 For Codex, it reads the exact Agent transport Secret in the control plane and
-adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It turns the admitted
-plugin-runtime snapshot into `runtime.json` and `config.toml` workload-file
-requirements and removes their ConfigMap paths from the remaining environment.
+adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It converts the admitted plugin
+snapshot into `runtime.json`/`config.toml` workload files and removes their ConfigMap
+paths from the environment.
 
-The credential gateway derives the profile from immutable `config.base_url`,
+OCC supplies admitted login metadata to `OpenShellSandboxDriver.configureAgent`.
+API-key sources select `danger-full-access`; PAT and unresolved sources retain
+`workspace-write`. Both require user review.
+OpenShell blocks nested bubblewrap user namespaces; model readiness does not
+prove shell execution.
+
+PAT bootstrap (`prepareHarnessAuth`;
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
+writes an opaque placeholder to private `auth.json`, clears the child override,
+and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+admit bootstrap and model traffic; failure keeps revisions inactive.
+For API-key sources, the credential gateway derives the profile from immutable `config.base_url`,
 defaulting to OpenAI `/v1`. Its shared validator rejects invalid endpoints before
 [registration](credential-source-lifecycle.md#1-admit-the-registration-request).
 The profile binds credentials to the full base path, including prefixes such as
@@ -355,6 +359,10 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

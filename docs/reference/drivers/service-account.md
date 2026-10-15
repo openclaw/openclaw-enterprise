@@ -98,6 +98,10 @@ A later failure's compensation runs after the account lock is released, when
 another issuance may already hold the same Secret name, so it also deletes the
 Secret only while it holds this request's token, with uid and resourceVersion
 preconditions.
+The Secret also records the provider credential ID. A crash or an unknown
+COMMIT that failed runs no compensation, so under the account lock, with no
+credential recorded, issuance and deletion first revoke the credential a
+leftover Secret records and delete that Secret.
 Deletion revokes the credential, removes its Secret, and deletes the upstream
 account; each step treats an already-absent resource as done, so a retry
 completes a deletion that applied but failed. See

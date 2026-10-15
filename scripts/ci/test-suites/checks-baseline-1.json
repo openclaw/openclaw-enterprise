@@ -32,6 +32,7 @@
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/node-enrollment-client.test.mjs",
@@ -235,6 +236,12 @@
     {
       "path": "tests/integration/profile-renderer.test.mjs",
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
+    },
+    {
+      "path": "tests/integration/profile-public-github-read.test.mjs",
+      "expectedTests": [
+        "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
+      ]
     },
     {
       "path": "tests/integration/profile-preflight-chart-parity.test.mjs",

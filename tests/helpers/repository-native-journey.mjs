@@ -109,11 +109,17 @@ export async function verifyNativeRepositoryJourney({
   const sandboxProbe = `${outsideDirectory}/repository-sandbox-${f.suffix}.cjs`;
   const sandboxFile = `${workspace}/repository-sandbox-${f.suffix}.txt`;
   const sandboxContent = `sandbox-${f.suffix}\n`;
+  const systemSkill = "/home/node/.codex/skills/.system/skill-creator/SKILL.md";
+  const codexHomeSentinel = `/home/node/.codex/skill-access-sentinel-${f.suffix}`;
+  let systemSkillHash;
   const outsideContent = `outside-${f.suffix}\n`;
   const sandboxScript = [
     'const fs=require("node:fs")',
     `if(fs.readFileSync(${JSON.stringify(outside)},"utf8")!==${JSON.stringify(outsideContent)})process.exit(71)`,
     `fs.writeFileSync(${JSON.stringify(sandboxFile)},${JSON.stringify(sandboxContent)})`,
+    `if(!fs.readFileSync(${JSON.stringify(systemSkill)},"utf8").includes("name: skill-creator"))process.exit(72)`,
+    `try{fs.appendFileSync(${JSON.stringify(systemSkill)},"modified");process.exit(73)}catch(error){if(!["EACCES","EPERM","EROFS"].includes(error.code))throw error}`,
+    `try{fs.readFileSync(${JSON.stringify(codexHomeSentinel)});process.exit(74)}catch(error){if(!["EACCES","EPERM","ENOENT"].includes(error.code))throw error}`,
     'let denied="NO_ERROR"',
     `try{fs.writeFileSync(${JSON.stringify(outside)},"escaped")}catch(error){denied=error.code}`,
     'if(!["EACCES","EPERM","EROFS"].includes(denied))process.exit(70)',
@@ -122,9 +128,12 @@ export async function verifyNativeRepositoryJourney({
   if (dedicated) {
     // Keep the probe in the same read-only mount as its sentinel. Native Codex
     // executes a stable path instead of reformatting an inline JavaScript argument.
-    await consumerExec(
-      `const fs=require("node:fs");fs.mkdirSync(${JSON.stringify(outsideDirectory)},{recursive:true});fs.writeFileSync(${JSON.stringify(outside)},${JSON.stringify(outsideContent)});fs.writeFileSync(${JSON.stringify(sandboxProbe)},${JSON.stringify(sandboxScript)})`,
-    );
+    systemSkillHash = (
+      await consumerExec(
+        `const fs=require("node:fs");const crypto=require("node:crypto");fs.mkdirSync(${JSON.stringify(outsideDirectory)},{recursive:true});fs.writeFileSync(${JSON.stringify(outside)},${JSON.stringify(outsideContent)});fs.writeFileSync(${JSON.stringify(sandboxProbe)},${JSON.stringify(sandboxScript)});fs.writeFileSync(${JSON.stringify(codexHomeSentinel)},"synthetic-sentinel");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(${JSON.stringify(systemSkill)})).digest("hex"))`,
+      )
+    ).trim();
+    assert.match(systemSkillHash, /^[a-f0-9]{64}$/);
   }
   const commandSpecs = [
     ...(dedicated
@@ -427,6 +436,16 @@ ${nativeCommands}`;
       ),
     );
     assert.deepEqual(files, [sandboxContent, outsideContent]);
+    const skillHashAfter = (
+      await consumerExec(
+        `const fs=require("node:fs");const crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(${JSON.stringify(systemSkill)})).digest("hex"))`,
+      )
+    ).trim();
+    assert.equal(
+      skillHashAfter,
+      systemSkillHash,
+      "the installed system skill must remain unchanged",
+    );
   }
   const branchResponse = await observe("GET", `git/ref/heads/${branch}`, undefined, [200, 404]);
   if (readOnly) {

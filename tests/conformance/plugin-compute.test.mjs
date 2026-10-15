@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -3252,6 +3252,21 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   };
   const scenarios = [
     {
+      name: "provider PAT placeholder uses native auth storage before the model probe",
+      pat: true,
+      providerPat: true,
+      events: [started, assistant, completed],
+      ready: true,
+    },
+    {
+      name: "provider PAT metadata rejection keeps the revision unready",
+      pat: true,
+      providerPat: true,
+      loginStatus: 1,
+      loginStderr: "personal access token metadata request failed with status 401 Unauthorized",
+      failureCode: "AUTHENTICATION_FAILED",
+    },
+    {
       name: "verifier-only app server starts without exposing either token input",
       tokenVerifier: true,
       events: [started, assistant, completed],
@@ -3636,9 +3651,15 @@ test("Codex runtime gates startup and readiness on a successful native authentic
           process: {
             env: {
               CODEX_HOME: join(directory, "codex"),
+              OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
               CODEX_LOGIN_MODE: scenario.pat ? "codex_pat" : "api_key",
+              ...(scenario.providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
               ...(scenario.pat
-                ? { CODEX_ACCESS_TOKEN: "at-fixture-token" }
+                ? {
+                    CODEX_ACCESS_TOKEN: scenario.providerPat
+                      ? "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN"
+                      : "at-fixture-token",
+                  }
                 : { OPENAI_API_KEY: "fixture-api-key" }),
               OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
               OPENCLAW_AGENT_REVISION_ID: revisionId,
@@ -3662,7 +3683,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
             }
             if (specifier === "node:fs") {
               return {
-                mkdirSync() {},
+                mkdirSync,
                 mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
                 rmSync,
                 readFileSync() {
@@ -3708,9 +3729,21 @@ test("Codex runtime gates startup and readiness on a successful native authentic
                       "-c",
                       "cli_auth_credentials_store=file",
                       "login",
-                      "--with-access-token",
+                      scenario.providerPat ? "status" : "--with-access-token",
                     ]);
-                    assert.equal(options.input, "at-fixture-token");
+                    if (scenario.providerPat) {
+                      // No prefix fabrication or real-token projection: native Codex gets the
+                      // exact provider-issued placeholder from its typed auth-file field.
+                      assert.equal(options.env.CODEX_ACCESS_TOKEN, undefined);
+                      assert.deepEqual(
+                        JSON.parse(readFileSync(join(directory, "codex/auth.json"), "utf8")),
+                        {
+                          personal_access_token: "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN",
+                        },
+                      );
+                    } else {
+                      assert.equal(options.input, "at-fixture-token");
+                    }
                   }
                   if (!isLogin) {
                     assert.equal(sandbox.process.env.CODEX_ACCESS_TOKEN, undefined);
@@ -5171,8 +5204,13 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.equal(gateway.children.length, 6);
 });
 
-for (const withBroker of [false, true]) {
-  test(`Codex gateway supervisor applies plugin-free bridge runtime (broker=${withBroker})`, async () => {
+for (const [dedicated, withBroker, proxyEnabled] of [
+  [true, true, true],
+  [true, false, true],
+  [false, true, true],
+  [true, false, false],
+]) {
+  test(`Codex gateway supervisor applies plugin-free bridge runtime (dedicated=${dedicated}, broker=${withBroker}, proxy=${proxyEnabled})`, async () => {
     const revisionId = "revision-plugin-compute-1";
     const runtime = pluginRuntimeSpecForRevision(
       revision({ plugins: codexNoPluginState() }),
@@ -5187,11 +5225,21 @@ for (const withBroker of [false, true]) {
       [
         "/etc/openclaw/openclaw.json",
         JSON.stringify({
+          ...JSON.parse(
+            readFileSync(
+              new URL("../../deploy/presets/standard-codex.json", import.meta.url),
+              "utf8",
+            ),
+          ).template.configuration.values,
           gateway: { port: 8080 },
-          plugins: { entries: { codex: { enabled: true, config: { keep: true } } } },
         }),
       ],
     ]);
+    if (!proxyEnabled) {
+      const base = JSON.parse(files.get("/etc/openclaw/openclaw.json"));
+      base.plugins.entries.codex.config.appServer.networkProxy.enabled = false;
+      files.set("/etc/openclaw/openclaw.json", JSON.stringify(base));
+    }
     const intervals = [];
     let statusHandler;
     let child;
@@ -5205,6 +5253,7 @@ for (const withBroker of [false, true]) {
       process: {
         env: {
           APP_SERVER_TOKEN: "base-app-server-token",
+          ...(dedicated ? { APP_SERVER_URL: "ws://harness.example.test:4500" } : {}),
           HOME: "/home/node",
           OPENCLAW_AGENT_REVISION_ID: revisionId,
           OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
@@ -5273,26 +5322,41 @@ for (const withBroker of [false, true]) {
     assert.equal(intervals.length, 0);
 
     const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-    assert.equal(effective.plugins.entries.codex.config.keep, true);
     assert.equal(effective.plugins.entries.codex.config.codexPlugins, undefined);
-    assert.deepEqual(
-      effective.plugins.entries.codex.config.appServer.networkProxy,
-      withBroker
+    const proxy = effective.plugins.entries.codex.config.appServer.networkProxy;
+    const presetProxy = JSON.parse(
+      readFileSync(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ).template.configuration.values.plugins.entries.codex.config.appServer.networkProxy;
+    assert.deepEqual(proxy, {
+      ...presetProxy,
+      enabled: proxyEnabled,
+      ...(withBroker
         ? {
             enabled: true,
             mode: "full",
             allowLocalBinding: true,
-            readOnlyPaths: [
-              "/app/node_modules/openclaw",
-              "/home/node/.openclaw/plugin-skills",
-              "/home/node/openclaw-runtime-assets/plugin-skills",
-              "/opt/oce/repository-credentials",
-              "/run/oce/repository-credentials",
-            ],
-            domains: { "github.com": "allow", "*.oce.svc": "deny", "git.oce.svc": "allow" },
+            domains: {
+              ...presetProxy.domains,
+              "github.com": "allow",
+              "*.oce.svc": "deny",
+              "git.oce.svc": "allow",
+            },
           }
-        : { readOnlyPaths: ["/app/node_modules/openclaw"] },
-    );
+        : {}),
+      readOnlyPaths: withBroker
+        ? [
+            "/app/node_modules/openclaw",
+            "/home/node/.openclaw/plugin-skills",
+            "/home/node/openclaw-runtime-assets/plugin-skills",
+            "/opt/oce/repository-credentials",
+            "/run/oce/repository-credentials",
+            ...(dedicated ? ["/home/node/.codex/skills/.system"] : []),
+          ]
+        : [
+            "/app/node_modules/openclaw",
+            ...(dedicated && proxyEnabled ? ["/home/node/.codex/skills/.system"] : []),
+          ],
+    });
     const status = readStatusFromHandler(statusHandler);
     assert.deepEqual(status, {
       revisionId,

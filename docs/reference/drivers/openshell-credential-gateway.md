@@ -1,16 +1,14 @@
 # OpenShell Credential Gateway
 
-The bundled OpenShell Credential Gateway stores OCC
-[credential sources](../credential-sources.md) as OpenShell providers. The
-OpenShell supervisor applies them at its egress proxy, so the dedicated Codex
-Harness never receives the real model key. It implements the
+The OpenShell Credential Gateway stores OCC [credential sources](../credential-sources.md)
+as OpenShell providers. Its supervisor substitutes credentials at the egress proxy,
+keeping them outside the Harness. It implements the
 [CredentialGatewayDriver contract](credential-gateway.md) and works only with the
 [OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
 [Backend](../backends.md#openshell-gateway).
 
-**This Driver does not make OpenShell a supported production path.** It removes
-the model API key from the Harness. Workload identity, writable state, gateway
-authentication, admission, and provider-file proof remain subject to the
+**OpenShell remains unsupported for production.** Workload identity, writable state,
+authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
 
 ## Configure the Driver
@@ -91,19 +89,34 @@ Startup rejects the selection when:
 - `drivers.credential_refresh` is selected without `drivers.credential_gateway`; or
 - the configuration has any key other than `binaries` and `toolBinaries`.
 
-Both the API and the worker connect to the gateway with the Backend's
-credentials. The API registers and deletes providers; the worker creates
-Sandboxes, updates provider profiles, and reads attachment status. Allow both to
-reach the gateway.
+Both API and worker need gateway access with Backend credentials: the API
+registers/deletes providers; the worker creates Sandboxes, updates profiles and
+reads attachment status.
 
 ## Source-type catalog
 
 | Type                        | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication |
 | --------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ---------------------- |
 | `openai`                    | `api_key` (required)                        | `base_url` (optional)                                                           | `none`    | `openai` / `api_key`   |
+| `codex-pat`                 | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat` |
 | `bearer-token`              | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential) |
 | `oauth2-client-credentials` | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
 | `oauth2-refresh-token`      | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential) |
+
+Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS routes:
+
+- `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`.
+- `chatgpt.com/backend-api/codex/**`.
+- `chatgpt.com/backend-api/wham/config/bundle`.
+- `chatgpt.com/backend-api/wham/accounts/check`.
+- `chatgpt.com/backend-api/wham/settings/user`.
+- `chatgpt.com/backend-api/wham/usage`.
+
+Other routes remain denied.
+
+The Harness stores only an opaque `personal_access_token`. Readiness requires
+native login and model execution
+([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
 `openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints may have a prefix such as `/api/v1` and must support Responses. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
 
@@ -165,9 +178,8 @@ starts a new OpenShell authorization epoch, revoking running Sandboxes’ placeh
 
 ## How sources map to OpenShell
 
-Each OCC Namespace maps to one operator-mode OpenShell Workspace with the same
-name as its Kubernetes namespace. The Driver manages these objects in that
-Workspace:
+Each OCC Namespace maps to an operator-mode Workspace named after its Kubernetes
+namespace. The Driver manages:
 
 - **One provider profile per source.** Its ID equals the provider name. A digest
   annotation records its content; registration, update, or deployment applies
@@ -176,6 +188,7 @@ Workspace:
   by `/**`, for the configured binaries only. A `bearer-token` source exposes
   its token through `env_var` and binds it to its host, port, and path for
   `toolBinaries`.
+  A `codex-pat` source exposes `CODEX_ACCESS_TOKEN` at the catalog's fixed PAT endpoints.
 - **One provider per source.** The name is `oce-cs-` followed by 24 hexadecimal
   characters of the SHA-256 digest of the source ID. Labels record OCC
   ownership, the source ID, and the Namespace ID. The provider's
@@ -221,13 +234,10 @@ calls `GetSandbox`: a missing Sandbox reports `absent`, one that no longer lists
 the provider in `SandboxSpec.providers` reports `revoked` without a mutation,
 and only a listed provider is detached again.
 
-For Codex, Compute selects a named compatible provider with the source endpoint
-and HTTPS Responses transport. Other existing Harness consumers retain their
-default OpenAI endpoint limit. In the running
-Sandbox, the Harness environment holds only an
-`openshell:resolve:env:` placeholder for `OPENAI_API_KEY`. `codex login
---with-api-key` stores that placeholder, and the supervisor proxy substitutes the
-real key on matching requests.
+For API-key Codex, Compute selects a named compatible provider with the source endpoint
+and HTTPS Responses transport. Other Harness consumers retain their default endpoint limit.
+The Harness receives an `openshell:resolve:env:` placeholder as `OPENAI_API_KEY`
+or `CODEX_ACCESS_TOKEN`; native Codex stores it using the selected authentication path.
 
 ## Trust requirements
 

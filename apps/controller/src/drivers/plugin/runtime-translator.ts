@@ -45,6 +45,8 @@ export interface CodexOpenClawRuntimePolicy {
   readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
   readonly pluginApprovers?: PluginApprovers;
   readonly publicGithubRead?: CodexPublicGithubRead;
+  readonly dedicatedCodex?: boolean;
+  readonly baseProxyEnabled?: boolean;
 }
 
 export type CodexPluginCatalogReader = {
@@ -831,6 +833,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       repositoryBrokerNetworkPolicy,
       pluginApprovers,
       publicGithubRead,
+      dedicatedCodex = false,
+      baseProxyEnabled = false,
     }: CodexOpenClawRuntimePolicy = {},
   ): Record<string, unknown> | undefined {
     validatePolicies("codex", selections, pluginApprovers);
@@ -840,8 +844,14 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     // The native sandbox helper is packaged here even without selected plugins.
     const runtimePaths =
       selected.length === 0 ? CODEX_RUNTIME_READ_ONLY_PATHS : CODEX_PLUGIN_READ_ONLY_PATHS;
-    const readOnlyPaths =
+    const runtimeReadOnlyPaths =
       broker === undefined ? runtimePaths : CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS;
+    const readOnlyPaths = [
+      ...runtimeReadOnlyPaths,
+      ...(dedicatedCodex && (broker !== undefined || baseProxyEnabled)
+        ? ["/home/node/.codex/skills/.system"]
+        : []),
+    ];
     // Preserve the authored public-reader IP allow. Codex needs neither
     // broader local binding nor a mode change to permit that literal IP.
     const networkProxy = {

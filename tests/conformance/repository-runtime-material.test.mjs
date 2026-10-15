@@ -1344,6 +1344,60 @@ function publicReaderPolicies(f) {
   );
 }
 
+test("enabling the reader cannot grant an already admitted revision during activation or repair", async () => {
+  const f = await fixture("dedicated");
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+
+  // The serialized revision predates the operator enabling the service.
+  const oldRevision = structuredClone(f.revision);
+  f.driver.options.network.publicGithubRead = publicReader;
+  await f.driver.prepareRevision(oldRevision, context);
+  await f.driver.activateRevision(oldRevision, context);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  assert.equal(preparedCodexManifest(f).publicGithubRead, undefined);
+
+  // Reconstructing a lost immutable projection must retain the old decision.
+  for (const [key, object] of f.objects) {
+    if (object.kind === "ConfigMap" && object.data?.["runtime.json"]) {
+      f.objects.delete(key);
+    }
+  }
+  await f.driver.prepareRevision(oldRevision, context);
+  assert.equal(preparedCodexManifest(f).publicGithubRead, undefined);
+  assert.equal(publicReaderPolicies(f).length, 0);
+});
+
+test("reconciliation revokes a selected reader when its peer changes or is disabled", async () => {
+  for (const replacement of [undefined, { ...publicReader, podLabels: { app: "replacement" } }]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      domains: { [publicReader.address]: "allow" },
+    };
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
+    const context = f.context(undefined);
+    await f.driver.prepareRevision(f.revision, context);
+    assert.equal(publicReaderPolicies(f).length, 1);
+    f.driver.options.network.publicGithubRead = replacement;
+    // An existing immutable projection cannot be rewritten, but revocation must
+    // already have happened when reconciliation reports that conflict.
+    await assert.rejects(
+      f.driver.prepareRevision(f.revision, context),
+      /invalid immutable Kubernetes ConfigMap/,
+    );
+    assert.equal(publicReaderPolicies(f).length, 0);
+  }
+});
+
 test("ordinary dedicated revision gets only the public reader peer and skill; a disabled proxy or deny removes both", async () => {
   const { address } = publicReader;
   for (const [proxy, allowed] of [
@@ -1364,6 +1418,7 @@ test("ordinary dedicated revision gets only the public reader peer and skill; a 
     const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
     delete f.revision.repositoryCredentials;
     f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = proxy;
+    f.revision.compute.admission = f.driver.admitRevision(f.revision);
     await f.driver.prepareRevision(f.revision, f.context(undefined));
     f.markReady();
     await f.driver.activateRevision(f.revision, f.context(undefined));
@@ -1432,6 +1487,7 @@ for (const [change, previouslySelected] of [
         enabled: true,
         domains: selected ? { [publicReader.address]: "allow" } : {},
       };
+      revision.compute.admission = f.driver.admitRevision(revision);
       return f.driver.prepareRevision(revision, context);
     };
     const deployment = (revision) =>
