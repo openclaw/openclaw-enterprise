@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -10,6 +10,10 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "../../apps/controller/src/auth/configuration.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -53,6 +57,8 @@ test("Installation startup validates the optional external observability URL", a
   assert.equal(loaded.installation.observability.url, configuration.observability.url);
 
   const url = configuration.observability.url;
+  const rewrittenIpv4ObservabilityUrl =
+    /observability\.url IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
   for (const [observability, message] of [
     ...[
       "javascript:alert(1)",
@@ -73,9 +79,171 @@ test("Installation startup validates the optional external observability URL", a
         mode: "development",
         environment: { OCC_CONFIG_PATH: path },
       }),
-      message,
+      (error) => {
+        assert.match(error.message, message);
+        assert.doesNotMatch(error.message, rewrittenIpv4ObservabilityUrl);
+        return true;
+      },
     );
   }
+  // URL parsing drops an empty user info and keeps the host alone; profile preflight refuses
+  // any @ before the host, and so does startup.
+  for (const userinfo of [
+    "http://@grafana.example.internal/d",
+    "https://:@grafana.example.internal/d",
+    "http:@grafana.example.internal/d",
+    "http:\t//@grafana.example.internal/d",
+    "http://@192.0.2.10:3000/d",
+  ]) {
+    configuration.observability = { url: userinfo };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain user info or an @ before the host\./,
+      JSON.stringify(userinfo),
+    );
+  }
+  for (const shorthand of ["http://192.168.1", "http://2130706433"]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      (error) => {
+        assert.match(error.message, rewrittenIpv4ObservabilityUrl);
+        assert.doesNotMatch(error.message, /must be an absolute HTTP or HTTPS URL/);
+        return true;
+      },
+    );
+  }
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    configuration.observability = { url: raw };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode: "development",
+        environment: { OCC_CONFIG_PATH: path },
+      }),
+      /observability\.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./,
+      JSON.stringify(raw),
+    );
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const canonical = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(canonical.installation.observability.url, "http://192.168.1.1/");
+  assert.equal(new URL(canonical.installation.observability.url).hostname, "192.168.1.1");
+  configuration.observability = {
+    url: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+  };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  const queryBackslash = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  assert.equal(
+    new URL(queryBackslash.installation.observability.url).hostname,
+    "grafana.example.test",
+  );
+});
+
+test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
+  const configuration = installation();
+  configuration.occ.cluster = "production-west";
+  const path = await fixture(t, configuration);
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const processes = [
+    [
+      "apps/controller/src/server.mjs",
+      "startup-error",
+      {
+        ...shared,
+        OCC_HOST: "192.0.2.10",
+        OCC_PORT: "8080",
+        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+        OCC_AUTH_BASE_URL: "https://console.oce.example.internal",
+      },
+    ],
+    ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
+  ];
+  const boot = (script, event, env) => {
+    const result = spawnSync(process.execPath, [script], {
+      cwd: process.cwd(),
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(result.status, 1, script);
+    assert.ok(!result.stderr.includes(path), result.stderr);
+    return startupDiagnostic(result.stderr, event);
+  };
+  for (const shorthand of [
+    "http://192.168.1",
+    "http://2130706433",
+    "http://@192.168.1.1",
+    "http://@grafana.example.internal/d",
+    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
+    "javascript:alert(1)",
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+  ]) {
+    configuration.observability = { url: shorthand };
+    await writeFile(path, JSON.stringify(configuration), "utf8");
+    for (const [script, event, env] of processes) {
+      const diagnostic = boot(script, event, env);
+      assert.equal(diagnostic.code, "OBSERVABILITY_URL_INVALID", `${script} ${shorthand}`);
+      assert.equal(diagnostic.message, undefined);
+    }
+  }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  for (const role of ["gateway", "agent"]) {
+    const original = images[role];
+    for (const refused of [
+      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
+      original.replace(/^([^/]*\/)/, "$1re..po/"),
+    ]) {
+      assert.notEqual(refused, original);
+      images[role] = refused;
+      await writeFile(path, JSON.stringify(configuration), "utf8");
+      for (const [script, event, env] of processes) {
+        const diagnostic = boot(script, event, env);
+        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
+        assert.equal(diagnostic.message, undefined);
+      }
+    }
+    images[role] = original;
+  }
+  configuration.observability = { url: "http://192.168.1.1" };
+  await writeFile(path, JSON.stringify(configuration), "utf8");
+  for (const [script, event, env] of processes) {
+    const diagnostic = boot(script, event, env);
+    assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE", script);
+  }
+  const corrected = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(corrected.occ.cluster, "production-west");
+  assert.equal(corrected.observability.url, "http://192.168.1.1");
 });
 
 test("Installation startup declares native worker support only as a custom runtime image", async (t) => {
@@ -811,6 +979,65 @@ test("production requires one YAML while development may start without a Configu
       loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
       { message },
       JSON.stringify(path),
+    );
+  }
+});
+
+test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localhost subdomain", async (t) => {
+  for (const accepted of [
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+    "http://localhost:3000",
+    "https://console.occ-dev-example.oce.localhost:8443",
+  ]) {
+    assert.equal(isDevelopmentBrowserOrigin(accepted), true, accepted);
+  }
+  const refused = [
+    "http://x.localhost",
+    "https://.localhost",
+    "https://a..localhost",
+    "http://localhost:3000/auth",
+    "http://localhost:3000/",
+    "http://user@localhost:3000",
+    "https://console.example.com",
+    "ftp://127.0.0.1:3000",
+    // A bind-all address is not loopback, and "localhost" counts only as the whole last label.
+    "http://0.0.0.0:3000",
+    "https://console.notlocalhost",
+    "https://localhost.example.com",
+  ];
+  for (const value of refused) {
+    assert.equal(isDevelopmentBrowserOrigin(value), false, value);
+  }
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /HTTPS localhost subdomain/);
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /no path, query, fragment or user info/);
+
+  // The server refuses each spelling in configuration(), before reading the Installation, so the
+  // startup diagnostic names the setting instead of a later generic failure.
+  const path = await fixture(t);
+  for (const authBaseURL of [
+    "http://x.localhost",
+    "https://.localhost",
+    "http://localhost:3000/auth",
+  ]) {
+    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "development",
+        OCC_CONFIG_PATH: path,
+        OCC_HOST: "127.0.0.1",
+        OCC_PORT: "8080",
+        OCC_AUTH_BASE_URL: authBaseURL,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(server.status, 1, authBaseURL);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "AUTH_BASE_URL_INVALID",
+      authBaseURL,
     );
   }
 });

@@ -19,6 +19,8 @@ function withoutModelCredentials(environment) {
   const result = { ...environment };
   delete result.OPENAI_API_KEY;
   delete result.OPENAI_API_KEY_FILE;
+  delete result.CODEX_ACCESS_TOKEN;
+  delete result.CODEX_ACCESS_TOKEN_FILE;
   return result;
 }
 
@@ -279,9 +281,11 @@ export async function localFirstAgentStack(context) {
       "OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state for this checkout.",
     );
   }
-  if (!process.env.OPENAI_API_KEY?.trim()) {
+  const credentialVariable =
+    sandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+  if (!process.env[credentialVariable]?.trim()) {
     throw new Error(
-      "OPENAI_API_KEY is required to provision the protected local first-Agent test.",
+      `${credentialVariable} is required to provision the protected local first-Agent test.`,
     );
   }
   const safe = withoutModelCredentials({ ...testEnvironment, COMPOSE_DISABLE_ENV_FILE: "1" });

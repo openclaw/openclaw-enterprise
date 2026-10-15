@@ -156,6 +156,16 @@ function imageFailureOutput(error) {
   return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
 }
 
+// A docker run killed at its execFile timeout has a null code; say so instead of `null !== 1`.
+function describeDockerFailure(error) {
+  const tail = String(error.stderr ?? "")
+    .trim()
+    .split("\n")
+    .slice(-20)
+    .join("\n");
+  return `docker exited with code=${error.code} killed=${error.killed} signal=${error.signal}\nstderr tail:\n${tail}`;
+}
+
 function assertNoPackagingFailure(output) {
   assert.doesNotMatch(output, /ERR_MODULE_NOT_FOUND|Cannot find module|Cannot find package/);
   assert.doesNotMatch(output, /ENOENT: no such file or directory/);
@@ -225,35 +235,42 @@ test(
 
     let failure;
     try {
-      await runDocker([
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--mount",
-        `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
-        "-e",
-        "NODE_ENV=production",
-        "-e",
-        "OCC_HOST=10.0.0.5",
-        "-e",
-        "OCC_PORT=3000",
-        "-e",
-        "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
-        "-e",
-        "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
-        "-e",
-        "OCC_AUTH_BASE_URL=https://occ.example.invalid",
-        "-e",
-        "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
-        image,
-      ]);
+      // --init: on a timeout, docker forwards execFile's SIGTERM to the container. With the
+      // image's ENTRYPOINT ["node"], node is PID 1 and ignores it, leaving the container
+      // running. 60 s leaves room for a slow container start (finding 1379).
+      await runDocker(
+        [
+          "run",
+          "--rm",
+          "--init",
+          "--network",
+          "none",
+          "--mount",
+          `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+          "-e",
+          "NODE_ENV=production",
+          "-e",
+          "OCC_HOST=10.0.0.5",
+          "-e",
+          "OCC_PORT=3000",
+          "-e",
+          "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+          "-e",
+          "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
+          "-e",
+          "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+          "-e",
+          "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+          image,
+        ],
+        { timeout: 60_000 * imageSmokeTimeoutMultiplier },
+      );
     } catch (error) {
       failure = error;
     }
 
     assert.ok(failure, "the smoke intentionally stops at the unavailable database boundary");
-    assert.equal(failure.code, 1);
+    assert.equal(failure.code, 1, describeDockerFailure(failure));
     const output = imageFailureOutput(failure);
     assertPersistenceBoundary(output, "startup-error");
     assertNoPackagingFailure(output);

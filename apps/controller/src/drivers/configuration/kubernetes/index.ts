@@ -10,12 +10,17 @@ import type {
   Configuration,
   ConfigurationDriver,
   ConfigurationReference,
+  ConfigurationValidationOptions,
   JSONSchema,
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "@openclaw-enterprise/occ";
+import {
+  ConfigurationSizeError,
+  DependencyUnavailableError,
+  ResourceConflictError,
+} from "@openclaw-enterprise/occ";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
@@ -93,16 +98,22 @@ function checkConfiguration(configuration: Configuration, stored: boolean): void
   checkValues(configuration.values, stored);
 }
 
-function checkValues(document: OpenClawConfigurationDocument, stored: boolean): void {
+function checkValues(
+  document: OpenClawConfigurationDocument,
+  stored: boolean,
+  options?: ConfigurationValidationOptions,
+): void {
   const values = asRecord(document);
   if (values === undefined) {
     throw new ConfigurationValidationError("Configuration values must be a JSON object.");
   }
-  validateModelCredentialReferences(document, { stored });
+  validateModelCredentialReferences(document, { ...options, stored });
+  checkSize(values);
+}
+
+function checkSize(values: Readonly<Record<string, unknown>>): void {
   if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
-    throw new ConfigurationValidationError(
-      "Configuration exceeds the Kubernetes ConfigMap size limit.",
-    );
+    throw new ConfigurationSizeError(MAX_CONFIGMAP_BYTES);
   }
 }
 
@@ -166,8 +177,19 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     checkConfiguration(configuration, false);
   }
 
-  async validateValues(document: OpenClawConfigurationDocument): Promise<void> {
-    checkValues(document, false);
+  async validateValues(
+    document: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): Promise<void> {
+    checkValues(document, false, options);
+  }
+
+  async validateSize(document: OpenClawConfigurationDocument): Promise<void> {
+    // Values that are not an object are left to validate, which refuses them.
+    const values = asRecord(document);
+    if (values !== undefined) {
+      checkSize(values);
+    }
   }
 
   async create(configuration: Configuration): Promise<Configuration> {

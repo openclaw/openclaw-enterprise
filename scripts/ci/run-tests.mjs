@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, readdirSync, readFileSync } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
+import { stopCleanupCommands } from "./cleanup.mjs";
 import {
   failureInputLimit,
   failureSecrets,
@@ -439,29 +440,109 @@ function laneDeadlineMs() {
   return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
+// Past the deadline, or too close to it (under minStepMs) for a file to start: a test process
+// started then would be stopped before it ran anything (finding 1215).
 function laneDeadlinePassed() {
   const deadline = laneDeadlineMs();
-  return deadline !== undefined && Date.now() >= deadline;
+  return deadline !== undefined && deadline - Date.now() < minStepMs;
 }
 
 function laneDeadlineIssue(relativePath) {
   return issue(
     "lane-deadline",
-    `the lane deadline passed before this file started: ${relativePath}`,
+    `the lane deadline passed, or was under ${minStepMs} ms away, before this file started: ${relativePath}`,
     {
       file: relativePath,
     },
   );
 }
 
-// The file's timeout: the per-file limit, cut to what is left before the lane deadline.
+// prepareFile and a file's cleanup run in this process, where nothing can stop them, so a hung
+// one ran on to the job timeout with no results (finding 1210). Each now has a limit:
+// preparation the time left before the lane deadline, cleanup a fixed allowance that still
+// applies past the deadline. A step past its limit is abandoned: its file records a
+// prepare-timeout or cleanup-timeout, the setup queue moves on, and the runner exits once its
+// results are written instead of waiting for the step. The job's unconditional Cleanup lane step
+// removes what the step left in the lane state.
+function cleanupAllowanceMs() {
+  const value = Number.parseInt(process.env.CI_RUNNER_CLEANUP_TIMEOUT_MS ?? "", 10);
+  // A cleanup's limit includes its wait for the CI state lock, which test processes also take
+  // to create their databases.
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
+}
+
+function prepareLimitMs() {
+  const deadline = laneDeadlineMs();
+  return deadline === undefined ? undefined : deadline - Date.now();
+}
+
+// Cleanups run one at a time. All of them end by one window past the lane deadline (60 s, or
+// the allowance if shorter), so the cleanups of files the deadline stopped together cannot queue
+// one allowance each past the job timeout.
+function cleanupLimitMs() {
+  const allowance = cleanupAllowanceMs();
+  const deadline = laneDeadlineMs();
+  return deadline === undefined
+    ? allowance
+    : Math.min(allowance, deadline + Math.min(allowance, 60_000) - Date.now());
+}
+
+// Timers can fire a few milliseconds before Date.now() reaches their end, so a remaining
+// limit this short counts as none.
+const minStepMs = 1_000;
+
+let abandonedSteps = 0;
+
+class StepTimeoutError extends Error {
+  constructor(limitMs, started) {
+    super(started ? `step exceeded ${limitMs} ms` : "no time was left to start the step");
+    this.name = "StepTimeoutError";
+    this.limitMs = limitMs;
+    this.started = started;
+  }
+}
+
+// Runs step() for at most limitMs (no limit when undefined); it never starts without time left.
+function withinLimit(step, limitMs) {
+  if (limitMs === undefined) {
+    return step();
+  }
+  if (limitMs < minStepMs) {
+    return Promise.reject(new StepTimeoutError(0, false));
+  }
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      abandonedSteps += 1;
+      reject(new StepTimeoutError(limitMs, true));
+    }, limitMs);
+    Promise.resolve()
+      .then(step)
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolvePromise(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+// The file's timeout: the per-file limit, cut to what is left before the lane deadline, but
+// never under minStepMs. A file starts only with at least that much left (laneDeadlinePassed),
+// so the floor only absorbs the moments between that check and the start. A file started with a
+// second or two left can still be stopped during Node's startup; its timeout then says no test
+// was running.
 function fileTimeout() {
   const limitMs = testTimeoutMs();
   const deadline = laneDeadlineMs();
   if (deadline === undefined || deadline - Date.now() >= limitMs) {
     return { timeoutMs: limitMs, laneDeadline: false };
   }
-  return { timeoutMs: Math.max(1, deadline - Date.now()), laneDeadline: true };
+  const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
+  return { timeoutMs, laneDeadline: timeoutMs < limitMs };
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
@@ -928,15 +1009,32 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  // An abandoned preparation or cleanup most likely still holds the CI state lock. This file's
+  // preparation would wait for it until the deadline and then report a prepare-timeout of its own.
+  if (abandonedSteps > 0) {
+    issues.push(
+      issue(
+        "setup-abandoned",
+        `not started: an earlier file's preparation or cleanup did not finish: ${relativePath}`,
+        { file: relativePath },
+      ),
+    );
+    return emptyFileResult(relativePath, issues);
+  }
+
   if (prepareFile) {
     try {
       const result =
         (await setup(() =>
-          prepareFile({
-            lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-            file,
-            statePath,
-          }),
+          withinLimit(
+            () =>
+              prepareFile({
+                lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+                file,
+                statePath,
+              }),
+            prepareLimitMs(),
+          ),
         )) ?? {};
       prepared.env = validatePreparedEnv(result.env);
       prepared.cleanup = result.cleanup ?? null;
@@ -944,6 +1042,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         throw new Error("prepareFile cleanup must be a function");
       }
     } catch (error) {
+      if (error instanceof StepTimeoutError) {
+        // Its turn in the setup queue came after the deadline, or it ran into the deadline.
+        issues.push(
+          error.started
+            ? issue(
+                "prepare-timeout",
+                `prepareFile did not finish within ${error.limitMs} ms, cut to the lane deadline: ${relativePath}`,
+                { file: relativePath, step: "prepare", timeoutMs: error.limitMs },
+              )
+            : laneDeadlineIssue(relativePath),
+        );
+        return emptyFileResult(relativePath, issues);
+      }
       const sanitized = sanitizePreparationError(error);
       issues.push(
         issue("prepare-failed", `prepareFile failed for ${relativePath}`, {
@@ -959,7 +1070,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
-  // Preparation can outlast the deadline too; the cleanup below still runs.
+  // A preparation that ended just as its limit ran out; the cleanup below still runs.
   if (laneDeadlinePassed()) {
     issues.push(laneDeadlineIssue(relativePath));
   }
@@ -1064,10 +1175,21 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     await setup(async () => agentActivity?.finish({ env }));
     if (prepared.cleanup) {
       try {
-        await setup(prepared.cleanup);
+        await setup(() => withinLimit(prepared.cleanup, cleanupLimitMs()));
         cleanupResult = { status: "passed" };
       } catch (error) {
-        if (jobCancelling()) {
+        if (error instanceof StepTimeoutError) {
+          cleanupResult = { status: "timeout", timeoutMs: error.limitMs };
+          issues.push(
+            issue(
+              "cleanup-timeout",
+              error.started
+                ? `cleanup did not finish within ${error.limitMs} ms: ${relativePath}`
+                : `the cleanup window after the lane deadline closed before cleanup started: ${relativePath}`,
+              { file: relativePath, step: "cleanup", timeoutMs: error.limitMs },
+            ),
+          );
+        } else if (jobCancelling()) {
           // Keep the sanitized error: a parent that died for another reason (OOM-killed step
           // shell, closed terminal) also reads as a cancellation.
           cleanupResult = { status: "cancelled", error: sanitizeError(error) };
@@ -1104,7 +1226,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(
       issue(
         "test-timeout",
-        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "" : ` while running ${running.join(", ")}`}`,
+        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "; no test was running (stopped in a hook, teardown or top-level code)" : ` while running ${running.join(", ")}`}`,
         { file: relativePath },
       ),
     );
@@ -1590,9 +1712,74 @@ async function main() {
   return summary.status === "passed" ? 0 : 1;
 }
 
+// Parent pid of every process, from /proc on Linux (CI runners) or ps elsewhere. Synchronous,
+// so a step still running in this process cannot start a command between listing and killing.
+function processParents() {
+  const parents = new Map();
+  let entries;
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    const listed = spawnSync("ps", ["-A", "-o", "pid=", "-o", "ppid="], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    for (const line of listed.stdout?.split("\n") ?? []) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+      if (pid > 0) {
+        parents.set(pid, ppid);
+      }
+    }
+    return parents;
+  }
+  for (const entry of entries.filter((name) => /^\d+$/.test(name))) {
+    try {
+      // "pid (comm) state ppid ...": comm can hold spaces and parentheses.
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      parents.set(Number(entry), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+    } catch {
+      // The process has exited.
+    }
+  }
+  return parents;
+}
+
+// Every process this runner started that is still running, with their descendants. The whole
+// tree is listed before any is killed: a killed parent's children move to another parent.
+function killDescendants() {
+  // Stop owned cleanup groups before the snapshot can kill their supervisors
+  // alone. A command's already-orphaned descendants are absent from this tree.
+  stopCleanupCommands();
+  const children = new Map();
+  for (const [pid, ppid] of processParents()) {
+    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  }
+  const descendants = [];
+  for (let queue = [process.pid]; queue.length > 0;) {
+    const next = children.get(queue.shift()) ?? [];
+    descendants.push(...next);
+    queue.push(...next);
+  }
+  for (const pid of descendants) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // It has exited.
+    }
+  }
+}
+
 try {
   process.exitCode = await main();
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
+}
+// An abandoned preparation or cleanup can keep this process alive (a child it waits for, a
+// timer); the results are written, so stop here. Its commands run in this process's group and
+// would outlive it as orphans on a self-hosted runner (finding 1225), so end them first. Every
+// test file's process group has exited by now.
+if (abandonedSteps > 0) {
+  killDescendants();
+  process.exit();
 }

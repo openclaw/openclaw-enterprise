@@ -391,7 +391,12 @@ test(
         // the console. Its native startup turn must complete against the deterministic
         // Responses fixture using a synthetic Secret; this is not live model inference.
         const { renderPresetTemplate } = await import("../../packages/contracts/src/index.ts");
-        const preset = presets.data.find(({ name }) => name === "Standard Codex");
+        // The Preset list returns summaries; the exact Preset carries the template.
+        const preset = (
+          await request(
+            `/namespaces/${namespace.id}/presets/${presets.data.find(({ name }) => name === "Standard Codex").id}`,
+          )
+        ).data;
         const rendered = renderPresetTemplate(preset.template, {
           name: "Local sandbox proof",
           model: "gpt-6-astra",
@@ -901,6 +906,70 @@ test(
           assert.equal(sessionCookie.domain, fixture.consoleHost);
           assert.equal(sessionCookie.secure, true);
           assert.equal(sessionCookie.httpOnly, true);
+
+          const endpoint = {
+            hostname: fixture.consoleHost,
+            port: fixture.browserPort,
+            ca: await fixture.read("browser-ca.crt"),
+          };
+          const headers = {
+            origin,
+            cookie: cookies.map(({ name, value }) => `${name}=${value}`).join("; "),
+          };
+          // Prove the Keycloak session can commit an administrator mutation,
+          // then read the persisted account through the guarded API.
+          const created = await api(page, "/api/auth/accounts", {
+            email: `keycloak-member-${randomUUID()}@example.test`,
+            password: randomUUID(),
+          });
+          assert.equal(created.status, 201);
+          const path = `/api/auth/accounts/${created.json.data.id}`;
+          const before = await publishedJSON(endpoint, path, { headers });
+          assert.equal(before.data.disabled, false);
+          const disabled = await api(page, `${path}/disable`, {
+            expectedVersion: before.data.version,
+          });
+          assert.equal(disabled.status, 200);
+          const persisted = await publishedJSON(endpoint, path, { headers });
+          assert.equal(persisted.data.disabled, true);
+          assert.ok(persisted.data.version > before.data.version);
+
+          // Revoke this administrator's OCE sessions, then replay the captured
+          // cookie with a current target version so only session admission fails.
+          const revoked = await api(page, `/api/auth/accounts/${adminId}/revoke`, {
+            expectedVersion: account.data.version,
+          });
+          assert.equal(revoked.status, 200);
+          const refused = await publishedJSON(endpoint, `${path}/enable`, {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" },
+            body: JSON.stringify({ expectedVersion: persisted.data.version }),
+            expectedStatus: 401,
+          });
+          assert.equal(refused.error.code, "UNAUTHENTICATED");
+
+          // A fresh recovery session observes the durable state independently
+          // of the revoked cookie and the failed mutation response.
+          const recovery = await browser.newContext();
+          try {
+            const recoveryPage = await recovery.newPage();
+            await recoveryPage.goto(`${origin}/console/`);
+            const signedIn = await api(recoveryPage, "/api/auth/sign-in/email", {
+              email: "admin@development.openclaw.invalid",
+              password: (await fixture.read("initial-admin-password")).trim(),
+            });
+            assert.equal(signedIn.status, 200);
+            const recoveryCookies = await recovery.cookies(origin);
+            const unchanged = await publishedJSON(endpoint, path, {
+              headers: {
+                origin,
+                cookie: recoveryCookies.map(({ name, value }) => `${name}=${value}`).join("; "),
+              },
+            });
+            assert.deepEqual(unchanged.data, persisted.data);
+          } finally {
+            await recovery.close();
+          }
         } finally {
           await context.close();
         }

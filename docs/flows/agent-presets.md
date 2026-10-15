@@ -1,16 +1,15 @@
 ---
 created: 2026-09-21
-updated: 2026-10-12
-last_updated_session: authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247
+updated: 2026-10-15
+last_updated_session: authoring-run/4863651f-24de-427e-ac6f-152c65948af3
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The Console renders a Namespace Preset and saves an independent Configuration
-and Agent through existing APIs. This flow stops at the draft; deployment follows
-[revision admission](configuration-driver/persistence-and-revisions.md).
+The Console renders a Namespace Preset into an independent Agent draft.
+Deployment follows [revision admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -149,13 +148,13 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read), then reads the
-selected resource once. It sorts by case-insensitive locale order, then exact name.
-**Start with default Preset** prefers its `default-codex` ID, otherwise the first
-listed ID, through that same exact-resource read. Variable-free templates apply immediately; others retain the chooser and shortcut
-origin when restored. Empty lists or failed list/read requests cannot open a hidden
-hardcoded starter. **Start without Preset** opens the ordinary form without reading a Preset;
-it does not replace a denied selection. Creation authorization still applies.
+lists only readable Presets (the list requires Namespace read and returns summaries
+without templates), then reads the selected resource once. Quick-start prefers
+`default-codex`, otherwise the first readable Preset in case-insensitive locale
+order, with exact name order breaking ties. Custom starters appear by name.
+Variable-free templates apply immediately; others retain their chooser and origin. Empty or failed lists and reads cannot apply hidden templates. **Start without Preset** opens
+the ordinary form without reading a Preset; it does not replace a denied
+selection. Creation authorization still applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -287,6 +286,10 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-15 13:26: Name the selected custom starter and retain upstream Preset summaries. (authoring-run/4863651f-24de-427e-ac6f-152c65948af3 - 775a7cff0890d646ed433df45b9233ea58b553e6)
+
+- 2026-10-14: The Preset list returns summaries. (fix-1323-lists)
 
 - 2026-10-12 15:28: Integrate upstream b195e54e9 while retaining the custom profile and readable starter contracts. (authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247 - 85561c4fc4666805b187d0a554c872938eb9b048)
 

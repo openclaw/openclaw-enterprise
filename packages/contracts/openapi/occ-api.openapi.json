@@ -20697,6 +20697,20 @@
         "operationId": "listAgentRevisions",
         "parameters": [
           {
+            "description": "Revisions per page, 1 to 100; default 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": { "pattern": "^(?:[1-9][0-9]?|100)$", "type": "string" }
+          },
+          {
+            "description": "Opaque cursor from `meta.nextCursor` of the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": { "maxLength": 32, "pattern": "^v1\\.[1-9][0-9]{0,14}$", "type": "string" }
+          },
+          {
             "in": "path",
             "name": "namespaceId",
             "required": true,
@@ -20723,415 +20737,93 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An immutable revision with readable saved settings, or revision metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits saved configuration fields.",
+                      "description": "Readable revisions, newest first.",
                       "items": {
-                        "anyOf": [
-                          {
+                        "description": "Revision summary without saved settings. Read the exact revision for its configuration, or for configurationReadError when the saved settings are unreadable.",
+                        "properties": {
+                          "agentId": {
+                            "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "backendId": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                                "type": "string"
+                              },
+                              { "type": "null" }
+                            ]
+                          },
+                          "configurationGeneration": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "configurationId": {
+                            "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "format": "date-time",
+                            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                            "type": "string"
+                          },
+                          "harness": {
                             "additionalProperties": false,
                             "properties": {
-                              "agentId": {
-                                "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "backendId": {
+                              "id": { "minLength": 1, "type": "string" },
+                              "mode": {
                                 "anyOf": [
-                                  {
-                                    "maxLength": 200,
-                                    "minLength": 1,
-                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                    "type": "string"
-                                  },
-                                  { "type": "null" }
+                                  { "const": "embedded", "type": "string" },
+                                  { "const": "dedicated", "type": "string" }
                                 ]
                               },
-                              "compute": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "id": { "minLength": 1, "type": "string" },
-                                  "implementation": { "minLength": 1, "type": "string" }
-                                },
-                                "required": ["id", "implementation"],
-                                "type": "object"
-                              },
-                              "configuration": {
-                                "additionalProperties": { "$ref": "#/components/schemas/def-0" },
-                                "description": "A native OpenClaw configuration document.",
-                                "properties": {},
-                                "type": "object"
-                              },
-                              "configurationGeneration": {
-                                "maximum": 9007199254740991,
-                                "minimum": 1,
-                                "type": "integer"
-                              },
-                              "configurationId": {
-                                "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "configurationKind": { "const": "agent", "type": "string" },
-                              "createdAt": {
-                                "format": "date-time",
-                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                                "type": "string"
-                              },
-                              "credentialSources": {
-                                "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
-                                "items": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "sourceId": {
-                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": ["sourceId"],
-                                  "type": "object"
-                                },
-                                "maxItems": 8,
-                                "type": "array",
-                                "uniqueItems": true
-                              },
-                              "harness": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "id": { "minLength": 1, "type": "string" },
-                                  "mode": {
-                                    "anyOf": [
-                                      { "const": "embedded", "type": "string" },
-                                      { "const": "dedicated", "type": "string" }
-                                    ]
-                                  },
-                                  "version": { "minLength": 1, "type": "string" }
-                                },
-                                "required": ["id", "version", "mode"],
-                                "type": "object"
-                              },
-                              "harnessAuth": {
-                                "anyOf": [
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "method": { "const": "runtime", "type": "string" }
-                                    },
-                                    "required": ["method"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "method": { "const": "api_key", "type": "string" },
-                                      "source": {
-                                        "additionalProperties": false,
-                                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                        "properties": {
-                                          "id": {
-                                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          },
-                                          "kind": { "const": "secret", "type": "string" },
-                                          "namespaceId": {
-                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": ["kind", "namespaceId", "id"],
-                                        "type": "object"
-                                      }
-                                    },
-                                    "required": ["method", "source"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "method": { "const": "codex_pat", "type": "string" },
-                                      "source": {
-                                        "anyOf": [
-                                          {
-                                            "additionalProperties": false,
-                                            "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                            "properties": {
-                                              "id": {
-                                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              },
-                                              "kind": { "const": "secret", "type": "string" },
-                                              "namespaceId": {
-                                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": ["kind", "namespaceId", "id"],
-                                            "type": "object"
-                                          },
-                                          {
-                                            "additionalProperties": false,
-                                            "properties": {
-                                              "id": {
-                                                "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              },
-                                              "kind": {
-                                                "const": "service_account",
-                                                "type": "string"
-                                              },
-                                              "namespaceId": {
-                                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": ["kind", "namespaceId", "id"],
-                                            "type": "object"
-                                          }
-                                        ]
-                                      }
-                                    },
-                                    "required": ["method", "source"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "method": { "const": "oauth", "type": "string" },
-                                      "source": {
-                                        "additionalProperties": false,
-                                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                        "properties": {
-                                          "id": {
-                                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          },
-                                          "kind": { "const": "secret", "type": "string" },
-                                          "namespaceId": {
-                                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                            "type": "string"
-                                          }
-                                        },
-                                        "required": ["kind", "namespaceId", "id"],
-                                        "type": "object"
-                                      }
-                                    },
-                                    "required": ["method", "source"],
-                                    "type": "object"
-                                  },
-                                  {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "method": { "const": "credential_source", "type": "string" },
-                                      "sourceId": {
-                                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "required": ["method", "sourceId"],
-                                    "type": "object"
-                                  }
-                                ]
-                              },
-                              "id": {
-                                "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "namespaceId": {
-                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
-                              "plugins": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "driver": { "$ref": "#/components/schemas/def-1" },
-                                  "plugins": { "$ref": "#/components/schemas/def-6" }
-                                },
-                                "required": ["driver", "plugins"],
-                                "type": "object"
-                              },
-                              "repositoryCredentials": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "bindings": {
-                                    "items": {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "profile": {
-                                          "maxLength": 128,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                          "type": "string"
-                                        },
-                                        "repositoryRef": {
-                                          "maxLength": 128,
-                                          "minLength": 1,
-                                          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["repositoryRef", "profile"],
-                                      "type": "object"
-                                    },
-                                    "maxItems": 16,
-                                    "minItems": 1,
-                                    "type": "array"
-                                  },
-                                  "deadlineWallMs": {
-                                    "maximum": 9007199254740991,
-                                    "minimum": 1,
-                                    "type": "integer"
-                                  },
-                                  "driver": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "id": { "minLength": 1, "type": "string" },
-                                      "implementation": { "minLength": 1, "type": "string" }
-                                    },
-                                    "required": ["id", "implementation"],
-                                    "type": "object"
-                                  }
-                                },
-                                "required": ["driver", "deadlineWallMs", "bindings"],
-                                "type": "object"
-                              },
-                              "revision": { "minimum": 1, "type": "integer" },
-                              "secretBindings": {
-                                "additionalProperties": {
-                                  "additionalProperties": false,
-                                  "description": "Maps one destination environment variable to one exact Secret reference. Optional `delivery` defaults to `{ \"type\": \"env\" }` during admission.",
-                                  "properties": {
-                                    "delivery": {
-                                      "additionalProperties": false,
-                                      "description": "Gateway delivery mode. Only `{ \"type\": \"env\" }` is supported.",
-                                      "properties": {
-                                        "type": { "const": "env", "type": "string" }
-                                      },
-                                      "required": ["type"],
-                                      "type": "object"
-                                    },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["source"],
-                                  "type": "object"
-                                },
-                                "description": "Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: \"env\"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth.",
-                                "maxProperties": 64,
-                                "type": "object"
-                              },
-                              "secretDriverId": { "minLength": 1, "type": "string" }
+                              "version": { "minLength": 1, "type": "string" }
                             },
-                            "required": [
-                              "id",
-                              "namespaceId",
-                              "agentId",
-                              "revision",
-                              "backendId",
-                              "configurationId",
-                              "configurationKind",
-                              "configurationGeneration",
-                              "configuration",
-                              "harness",
-                              "compute",
-                              "harnessAuth",
-                              "createdAt"
-                            ],
+                            "required": ["id", "version", "mode"],
                             "type": "object"
                           },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "agentId": {
-                                "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "backendId": {
-                                "anyOf": [
-                                  {
-                                    "maxLength": 200,
-                                    "minLength": 1,
-                                    "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
-                                    "type": "string"
-                                  },
-                                  { "type": "null" }
-                                ]
-                              },
-                              "configurationReadError": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "code": {
-                                    "const": "SAVED_CONFIGURATION_UNREADABLE",
-                                    "type": "string"
-                                  },
-                                  "field": {
-                                    "anyOf": [
-                                      { "const": "plugins", "type": "string" },
-                                      { "const": "pluginApprovers", "type": "string" },
-                                      { "const": "repositoryBindings", "type": "string" },
-                                      { "const": "repositoryAccess", "type": "string" },
-                                      { "const": "harnessAuth", "type": "string" },
-                                      { "const": "credentialSources", "type": "string" },
-                                      { "const": "secretBindings", "type": "string" },
-                                      { "const": "repositoryCredentials", "type": "string" },
-                                      { "const": "configuration", "type": "string" }
-                                    ]
-                                  }
-                                },
-                                "required": ["code", "field"],
-                                "type": "object"
-                              },
-                              "createdAt": {
-                                "format": "date-time",
-                                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                                "type": "string"
-                              },
-                              "id": {
-                                "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "namespaceId": {
-                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                "type": "string"
-                              },
-                              "revision": { "minimum": 1, "type": "integer" }
-                            },
-                            "required": [
-                              "id",
-                              "namespaceId",
-                              "agentId",
-                              "revision",
-                              "backendId",
-                              "createdAt",
-                              "configurationReadError"
-                            ],
-                            "type": "object"
-                          }
+                          "id": {
+                            "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "revision": { "minimum": 1, "type": "integer" }
+                        },
+                        "required": [
+                          "id",
+                          "namespaceId",
+                          "agentId",
+                          "revision",
+                          "backendId",
+                          "configurationId",
+                          "configurationGeneration",
+                          "harness",
+                          "createdAt"
                         ],
-                        "description": "An immutable revision with readable saved settings, or revision metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits saved configuration fields."
+                        "type": "object"
                       },
+                      "maxItems": 100,
                       "type": "array"
                     },
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
+                        "nextCursor": {
+                          "anyOf": [{ "maxLength": 32, "type": "string" }, { "type": "null" }],
+                          "description": "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked."
+                        },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId"],
+                      "required": ["requestId", "nextCursor"],
                       "type": "object"
                     }
                   },
@@ -21179,7 +20871,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List authorized immutable revisions for one exact Agent",
+        "summary": "List authorized immutable revision summaries for one exact Agent, newest first",
         "tags": ["Agent revisions"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
@@ -26075,7 +25767,7 @@
                   "properties": {
                     "data": {
                       "items": {
-                        "additionalProperties": false,
+                        "description": "Preset summary without its template. Read the exact Preset for the template.",
                         "properties": {
                           "createdAt": {
                             "format": "date-time",
@@ -26095,105 +25787,9 @@
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
-                          },
-                          "template": {
-                            "additionalProperties": false,
-                            "description": "Reusable partial Agent launch settings. Scalar values may use {{ vars.name }}. Admission validates template syntax and credential boundaries. Ordinary creation APIs validate concrete launch settings.",
-                            "properties": {
-                              "agent": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "backendId": { "$ref": "#/components/schemas/def-0" },
-                                  "executionMode": { "$ref": "#/components/schemas/def-0" },
-                                  "harnessAuth": { "$ref": "#/components/schemas/def-0" },
-                                  "initialWorkspaceFiles": {
-                                    "additionalProperties": false,
-                                    "properties": {
-                                      "AGENTS.md": {
-                                        "maxLength": 16384,
-                                        "pattern": "^[^\\u0000]*$",
-                                        "type": "string"
-                                      },
-                                      "IDENTITY.md": {
-                                        "maxLength": 16384,
-                                        "pattern": "^[^\\u0000]*$",
-                                        "type": "string"
-                                      },
-                                      "SOUL.md": {
-                                        "maxLength": 16384,
-                                        "pattern": "^[^\\u0000]*$",
-                                        "type": "string"
-                                      },
-                                      "USER.md": {
-                                        "maxLength": 16384,
-                                        "pattern": "^[^\\u0000]*$",
-                                        "type": "string"
-                                      }
-                                    },
-                                    "type": "object"
-                                  },
-                                  "name": { "$ref": "#/components/schemas/def-0" },
-                                  "pluginApprovers": { "$ref": "#/components/schemas/def-0" },
-                                  "plugins": { "$ref": "#/components/schemas/def-0" },
-                                  "repositoryAccess": { "$ref": "#/components/schemas/def-0" },
-                                  "repositoryBindings": { "$ref": "#/components/schemas/def-0" }
-                                },
-                                "type": "object"
-                              },
-                              "configuration": {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "secretBindings": {
-                                    "additionalProperties": {
-                                      "$ref": "#/components/schemas/def-0"
-                                    },
-                                    "description": "Namespace-owned Secret bindings. Reference fields may use {{ vars.name }}.",
-                                    "properties": {},
-                                    "type": "object"
-                                  },
-                                  "values": {
-                                    "additionalProperties": {
-                                      "$ref": "#/components/schemas/def-0"
-                                    },
-                                    "description": "A native OpenClaw configuration document.",
-                                    "properties": {},
-                                    "type": "object"
-                                  }
-                                },
-                                "type": "object"
-                              },
-                              "variables": {
-                                "additionalProperties": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "default": {
-                                      "anyOf": [
-                                        { "type": "string" },
-                                        { "type": "number" },
-                                        { "type": "boolean" }
-                                      ],
-                                      "description": "A value of the declared type. Password variables take no default."
-                                    },
-                                    "description": { "type": "string" },
-                                    "type": {
-                                      "anyOf": [
-                                        { "const": "string", "type": "string" },
-                                        { "const": "number", "type": "string" },
-                                        { "const": "boolean", "type": "string" },
-                                        { "const": "password", "type": "string" }
-                                      ]
-                                    }
-                                  },
-                                  "required": ["type"],
-                                  "type": "object"
-                                },
-                                "type": "object"
-                              }
-                            },
-                            "type": "object"
                           }
                         },
-                        "required": ["id", "namespaceId", "name", "template", "createdAt"],
+                        "required": ["id", "namespaceId", "name", "createdAt"],
                         "type": "object"
                       },
                       "type": "array"
@@ -26254,7 +25850,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List readable Presets in one Namespace",
+        "summary": "List readable Preset summaries in one Namespace",
         "tags": ["Presets"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" },

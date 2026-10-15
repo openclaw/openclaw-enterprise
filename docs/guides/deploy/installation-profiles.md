@@ -1,12 +1,9 @@
 # Render installation profiles
 
-Installation profiles generate the two trusted files used by a production
-OpenClaw Enterprise install: a Helm values overlay and the Installation startup
-YAML mounted into the controller. Choose OpenClaw or Codex defaults, or a trusted customization.
-
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
-credentials, ChatGPT service accounts, repository registries, or Slack consumers.
+Choose OpenClaw or Codex defaults, or a trusted customization, to render Helm
+values and Installation startup YAML. Prepare infrastructure, Secrets, DNS,
+certificates, credentials, optional service accounts, registries and Slack
+consumers separately; rendering provisions none of them.
 
 ## Choose a profile
 
@@ -29,13 +26,9 @@ Both profiles enable:
   private metrics, digest-pinned images, DNS policy, trusted proxy CIDRs, and
   plugin-status proxy CIDRs.
 
-Gateway Pods, Harness Pods, and tenant container defaults use a `100m` CPU
-request and four-core (`"4"`) limit. The request reserves scheduling capacity;
-the limit permits bursts without reserving more. An embedded Gateway's startup
-model probe used about 16 CPU-seconds and became ready in 24–30 seconds at one
-core versus 51–72 seconds at `500m`. Additional cores serve later work.
-Concurrent runtimes can each consume four cores; a `limits.cpu` quota counts
-the whole limit.
+Gateway Pods, Harness Pods, and tenant defaults request `100m` CPU and allow
+four cores (`"4"`). Concurrent runtimes can each consume four cores; quotas
+count the whole limit.
 
 Memory requests cover the use measured between turns, so the scheduler reserves
 what each Agent actually holds; limits cover measured peaks:
@@ -46,16 +39,11 @@ what each Agent actually holds; limits cover measured peaks:
 | Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit |
 | Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
 
-Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
-`runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
-`runtime.nodeSelector` pool. A Harness runs
-the Agent's shell commands, so builds and test suites in large repositories can
-need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
-for such workloads. Limits reserve no node memory, so Harnesses building at the
-same time on one node can together exhaust it, and the kubelet then evicts Pods
-using more than their requests first; size agents nodes for the turns
-you expect to run concurrently.
+An embedded Agent reserves `1792Mi`; dedicated Codex reserves `2560Mi` across
+its Gateway (`runtime.gatewayNodeSelector`) and Harness (`runtime.nodeSelector`).
+Raise `resources.agent.limits.memory` for builds needing more than `6Gi`.
+Limits reserve no memory: concurrent builds can exhaust a node and trigger
+evictions. Size nodes for expected concurrency.
 
 Denying the 11 bundled plugins an OpenAI-only Agent does not use
 (`plugins.deny`) saved only about 50 MiB. Profile input cannot change these
@@ -93,9 +81,9 @@ fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
 must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files. The controller and repository
-references also follow the chart's rule: a letter or digit first,
-then letters, digits, `.`, `_`, `:`, `/`, or `-` before the digest. `controlPlane.adminEmail`
+casing fails preflight without emitting deployable files. All three must also be
+references Kubernetes can pull, as the chart and Compute check: only the registry
+host and tag may use uppercase, and an IPv6 registry host is allowed. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
 one `@` and a dotted domain.
 
@@ -139,19 +127,18 @@ one `@` and a dotted domain.
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
 Secret that holds the `occ` key, and the database CA Secret.
 
-For the `codex` profile, merge the reviewed Codex seccomp profile and model
-discovery egress into the base input:
+For the `codex` profile, add the reviewed Codex seccomp profile to the base input:
 
 ```json
 {
   "runtime": {
     "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
-  },
-  "codex": {
-    "modelDiscoveryCidrs": ["198.51.100.20/32"]
   }
 }
 ```
+
+The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
+preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
 
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
@@ -191,7 +178,21 @@ optional `port` (default 443).
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
-and rejects URLs the controller would reject at startup.
+and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
+
+### Hosted discovery egress
+
+With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
+`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
+`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
+IPv4 `/32` hosts.
+
+Supplied lists stay unchanged without DNS queries; `[]` requires an external
+HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
+
+Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
+Rerender and upgrade Helm after address changes; this initial snapshot does not
+refresh itself.
 
 ### External sign-in and trusted proxies
 
@@ -244,6 +245,9 @@ and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
+`origin`, and `x-api-key`; use a header that carries plain client addresses, such as
+`x-forwarded-for` or `x-real-ip`.
 Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
 characters, such as `example.com`, and its last label must start with a letter.
 Preflight refuses `example.123` and any longer name, which the chart and the API
@@ -396,6 +400,7 @@ the install as ready:
 - For hosted `codex-plugin` discovery under either profile family, a PAT supplied
   through a same-Namespace Secret or the Console. Curated discovery needs no
   credential. Configure runtime credentials per Agent.
+  See [discovery egress](#hosted-discovery-egress).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

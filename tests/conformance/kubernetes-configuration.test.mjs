@@ -485,6 +485,17 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
         },
       },
     },
+    // The other key and header slots the Gateway sends (finding 1307), refused since the
+    // 2026-10-14 notice.
+    { memory: { search: { remote: { apiKey: sentinel } } } },
+    { tools: { media: { models: [{ headers: { Authorization: `Bearer ${sentinel}` } }] } } },
+    { tts: { providers: { openai: { apiKey: sentinel } } } },
+    { talk: { providers: { openai: { apiKey: sentinel } } } },
+    // The other slots OpenClaw marks sensitive, and channel and plugin settings (finding 1309).
+    { gateway: { auth: { token: sentinel } } },
+    { hooks: { token: sentinel } },
+    { channels: { telegram: { botToken: sentinel } } },
+    { plugins: { entries: { brave: { config: { webSearch: { apiKey: sentinel } } } } } },
   ];
   for (const values of [...refusedWhenStored, ...refusedOnWrite]) {
     const unsafe = { ...configuration, values };
@@ -520,6 +531,9 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
     `http://user:${sentinel}@proxy.example:3128`,
     `http://${sentinel}@proxy`,
     `http://:${sentinel}@proxy`,
+    // Finding 1250: an environment reference in the port leaves the URL unparsable as
+    // written, but the user name and password are literal.
+    `http://user:${sentinel}@proxy.example:\${PROXY_PORT}`,
   ]) {
     const unsafe = {
       ...configuration,
@@ -978,16 +992,21 @@ test("Kubernetes Configuration stores a document up to one byte under 1 MiB of U
   assert.equal(JSON.stringify(wide).length < limit, true);
 
   await assert.doesNotReject(driver.validate({ ...configuration, values: largest }));
+  await assert.doesNotReject(driver.validateSize(largest));
   const stored = { ...configuration, values: largest };
   assert.deepEqual(
     await driver.checkedConfiguration(driver.manifest(stored, "tenant"), configuration, "tenant"),
     stored,
   );
   for (const values of [atLimit, wide]) {
-    await assert.rejects(
-      driver.validate({ ...configuration, values }),
-      /exceeds the Kubernetes ConfigMap size limit/,
-    );
+    await assert.rejects(driver.validate({ ...configuration, values }), {
+      name: "ConfigurationSizeError",
+      limitBytes: limit,
+    });
+    await assert.rejects(driver.validateSize(values), {
+      name: "ConfigurationSizeError",
+      limitBytes: limit,
+    });
     await assert.rejects(
       driver.checkedConfiguration(
         driver.manifest({ ...configuration, values }, "tenant"),

@@ -85,10 +85,11 @@ Codex `config.toml` or a reasoning-effort override.
 
 ### Plain console default
 
-**Start with default Preset** prefers the readable `default-codex` copy in the
+Quick-start prefers the readable `default-codex` copy in the
 selected Namespace, otherwise the first readable Preset by name using the
 browser's case-insensitive locale order, with exact name order breaking ties.
-Choose manually when a particular template is required.
+Custom starters appear by name; `default-codex` keeps **Start with default Preset**.
+Select specific templates manually.
 It reads that exact resource; a denied read does not open a substitute form.
 The shipped default has no variables, model, name, or credential; the ordinary
 form collects them. Templates with variables open the variable chooser first.
@@ -299,13 +300,13 @@ The collection path is `/namespaces/:namespaceId/presets`; an exact Preset adds
 `/:presetId`. Use the [generated API reference](api.md#presets) for full schemas
 and response envelopes.
 
-| Request                                            | Result                  | Required permission                                             |
-| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection.                    |
-| `GET` collection                                   | `200`, readable Presets | Namespace `read`, then `preset:read` checked on each candidate. |
-| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                                   |
-| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.                                 |
-| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.                                 |
+| Request                                            | Result                           | Required permission                                             |
+| -------------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `POST` collection with `{name, template}`          | `201`, created Preset            | `preset:create` on the Namespace collection.                    |
+| `GET` collection                                   | `200`, readable Preset summaries | Namespace `read`, then `preset:read` checked on each candidate. |
+| `GET` exact Preset                                 | `200`, Preset                    | `preset:read` on that Preset.                                   |
+| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
+| `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
 An included `template` replaces it completely; omitted fields stay unchanged. Writes check the template structure,
 variable syntax and default types, credential-binding structure, known

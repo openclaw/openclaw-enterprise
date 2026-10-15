@@ -55,6 +55,8 @@ export const CreateProvisioningSecrets = {
 };
 export const CreateDeploymentPending = story("createDeploymentPending");
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateDeploymentStopped = story("createDeploymentStopped");
+export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {
   ...story("createUnsupportedProvisioning"),
   name: "Unsupported provisioning",
@@ -78,6 +80,7 @@ export const RepositorySelection = {
 };
 export const RepositoryDetails = story("createRepositoriesDetails");
 export const RepositoryDescriptionsPending = story("createRepositoriesDescriptionsPending");
+export const RepositoryLocaleSearch = story("createRepositoriesLocaleSearch");
 export const RepositoryContributor = {
   ...story("createRepositoriesContributor"),
   name: "Contributor without issue management",

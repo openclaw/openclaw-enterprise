@@ -528,6 +528,14 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
       };
     }
     if (error instanceof APIError) {
+      if (
+        typeof status === "number" &&
+        Number.isSafeInteger(status) &&
+        status >= 500 &&
+        status < 600
+      ) {
+        return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+      }
       return { status: 401, code: "UNAUTHENTICATED" };
     }
   }

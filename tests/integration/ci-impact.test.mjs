@@ -17,6 +17,7 @@ import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -1098,6 +1099,31 @@ test("full-integration lanes read NODE_BASE_IMAGE from a variable their environm
   const names = lanes.map(([name]) => name);
   for (const lane of ["gateway-routing", "slack", "openshell"]) {
     assert.ok(names.includes(lane), lane);
+  }
+});
+
+test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.yml's runner", () => {
+  // Hosted ubuntu-24.04 refuses Chromium's sandbox, which PostgreSQL Authentication's
+  // sign-in cases turn on (finding 1383), and the k3d lanes need a kernel that enforces
+  // NetworkPolicy. These lanes must run where ci.yml runs them.
+  const job = loadYaml(".github/workflows/full-integration.yml").jobs["pr-safe-same-sha"];
+  const expression = job["runs-on"].replace(/^\$\{\{\s*|\s*\}\}$/g, "");
+  const runnerFor = (lane) =>
+    runInNewContext(expression, {
+      matrix: { lane },
+      startsWith: (value, prefix) => value.startsWith(prefix),
+    });
+  const ciRunners = new Map(laneTable().map((row) => [row.lane, row.runner]));
+  const lanes = job.strategy.matrix.include.map((entry) => entry.lane);
+  const pinned = lanes.filter(
+    (lane) =>
+      lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
+  );
+  for (const lane of ["postgres-auth", "k3d-observability"]) {
+    assert.ok(pinned.includes(lane), lane);
+  }
+  for (const lane of pinned) {
+    assert.equal(runnerFor(lane), ciRunners.get(lane), lane);
   }
 });
 

@@ -212,53 +212,18 @@ func (r *runner) importDevelopmentRepositoryService(ctx context.Context, state *
 }
 
 // Generate a private local CA and a server leaf for the chart's exact broker
-// hostname. The CA key remains in the private development state directory.
+// hostname.
 func writeDevelopmentRepositoryTLS(directory, hostname string) error {
 	return writeDevelopmentTLS(directory, "repository", "OCC development repository CA", []string{hostname})
 }
 
+// writeDevelopmentTLS writes a CA certificate and one server leaf with its key.
+// The CA key never reaches disk: it signs the leaf in memory and is dropped, so
+// a CA that developers trust in their browser cannot sign anything else later.
 func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) error {
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	files, _, err := generateDevelopmentTLS(prefix, subject, hostnames)
 	if err != nil {
 		return err
-	}
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return err
-	}
-	serial := func() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) }
-	caSerial, err := serial()
-	if err != nil {
-		return err
-	}
-	leafSerial, err := serial()
-	if err != nil {
-		return err
-	}
-	now := time.Now()
-	ca := &x509.Certificate{SerialNumber: caSerial, Subject: pkix.Name{CommonName: subject}, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(1, 0, 0), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
-	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
-	if err != nil {
-		return err
-	}
-	leaf := &x509.Certificate{SerialNumber: leafSerial, DNSNames: hostnames, NotBefore: now.Add(-5 * time.Minute), NotAfter: now.AddDate(0, 3, 0), BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
-	if err != nil {
-		return err
-	}
-	caPrivate, err := x509.MarshalPKCS8PrivateKey(caKey)
-	if err != nil {
-		return err
-	}
-	leafPrivate, err := x509.MarshalPKCS8PrivateKey(leafKey)
-	if err != nil {
-		return err
-	}
-	files := map[string][]byte{
-		prefix + "-ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
-		prefix + "-ca.key":  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: caPrivate}),
-		prefix + "-tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		prefix + "-tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafPrivate}),
 	}
 	for name, data := range files {
 		if err := exclusiveWrite(filepath.Join(directory, name), data, 0600); err != nil {
@@ -268,9 +233,81 @@ func writeDevelopmentTLS(directory, prefix, subject string, hostnames []string) 
 	return nil
 }
 
+// developmentTLSPermittedDomains names the DNS subtrees the CA may vouch for:
+// the leaf's names, with a leading wildcard label removed.
+func developmentTLSPermittedDomains(hostnames []string) []string {
+	domains := make([]string, 0, len(hostnames))
+	for _, hostname := range hostnames {
+		domains = append(domains, strings.TrimPrefix(hostname, "*."))
+	}
+	return domains
+}
+
+// generateDevelopmentTLS returns the PEM files to write and, for tests only, the
+// CA key. The CA is name-constrained to the leaf's DNS names and lives no
+// longer than the leaf.
+func generateDevelopmentTLS(prefix, subject string, hostnames []string) (map[string][]byte, *ecdsa.PrivateKey, error) {
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	serial := func() (*big.Int, error) { return rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128)) }
+	caSerial, err := serial()
+	if err != nil {
+		return nil, nil, err
+	}
+	leafSerial, err := serial()
+	if err != nil {
+		return nil, nil, err
+	}
+	now := time.Now()
+	notBefore, notAfter := now.Add(-5*time.Minute), now.AddDate(0, 3, 0)
+	ca := &x509.Certificate{
+		SerialNumber:                caSerial,
+		Subject:                     pkix.Name{CommonName: subject},
+		NotBefore:                   notBefore,
+		NotAfter:                    notAfter,
+		IsCA:                        true,
+		BasicConstraintsValid:       true,
+		MaxPathLenZero:              true,
+		KeyUsage:                    x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		PermittedDNSDomainsCritical: true,
+		PermittedDNSDomains:         developmentTLSPermittedDomains(hostnames),
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &caKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	leaf := &x509.Certificate{SerialNumber: leafSerial, DNSNames: hostnames, NotBefore: notBefore, NotAfter: notAfter, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	leafPrivate, err := x509.MarshalPKCS8PrivateKey(leafKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string][]byte{
+		prefix + "-ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+		prefix + "-tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+		prefix + "-tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: leafPrivate}),
+	}, caKey, nil
+}
+
 func replaceDevelopmentFile(path string, data []byte) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("development file must be regular: %s", path)
+	}
 	temporary := path + ".next"
-	if err := exclusiveWrite(temporary, data, 0600); err != nil {
+	if err := exclusiveWrite(temporary, data, info.Mode().Perm()); err != nil {
 		return err
 	}
 	if err := os.Rename(temporary, path); err != nil {

@@ -99,7 +99,9 @@ revisionTest(
     const current = await fixture.currentAgent(owner);
     assert.equal(current.activeRevisionId, recovery.id);
   },
-  { timeout: 30_000 },
+  // The file's first test, so its time includes waiting for the CI state lock behind the
+  // other files' preparation (see the fixture).
+  { timeout: 60_000 },
 );
 
 async function enqueueMaintenance(fixture, owner, revision) {

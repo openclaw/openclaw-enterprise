@@ -79,6 +79,164 @@ try {
   });
 });
 
+test("Docker Compute rejects an unbounded API response before its request deadline", async () => {
+  const source = String.raw`
+import assert from "node:assert/strict";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+let interval;
+let versionRequests = 0;
+let streamedBytes = 0;
+const limit = 4 * 1024 * 1024;
+const server = http.createServer((request, response) => {
+  if (request.url === "/_ping") {
+    response.end("OK");
+    return;
+  }
+  if (request.url.startsWith("/images/")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+    return;
+  }
+  assert.equal(request.url, "/version");
+  versionRequests += 1;
+  if (versionRequests === 3) {
+    // Exactly at the cap, declared and sent: read whole.
+    const empty = JSON.stringify({ Version: "27.0.0", Pad: "" });
+    const body = empty.replace('"Pad":""', '"Pad":"' + "x".repeat(limit - empty.length) + '"');
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+    });
+    response.end(body);
+    return;
+  }
+  if (versionRequests === 1) {
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(4 * 1024 * 1024 + 1),
+    });
+    response.flushHeaders();
+    return;
+  }
+  response.writeHead(200, { "content-type": "application/json" });
+  const chunk = Buffer.alloc(64 * 1024, 0x20);
+  interval = setInterval(() => {
+    response.write(chunk);
+    streamedBytes += chunk.length;
+  }, 5);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const nativeRequest = http.request;
+http.request = (options, callback) =>
+  nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+syncBuiltinESMExports();
+try {
+  const { DockerComputeDriver } = await import(process.argv[1]);
+  const driver = new DockerComputeDriver({ images: { gateway: "fixture:local", agent: "fixture:local" } });
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.equal(streamedBytes, 0);
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.ok(streamedBytes > 4 * 1024 * 1024, String(streamedBytes));
+  assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
+  clearInterval(interval);
+  await driver.preflight();
+} finally {
+  clearInterval(interval);
+  http.request = nativeRequest;
+  syncBuiltinESMExports();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const driver = new URL(
+    "../../apps/controller/src/drivers/compute/docker/index.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
+    timeout: 10_000,
+  });
+});
+
+test("Docker Agent readiness handles interrupted status responses immediately", async () => {
+  // Execute the exact generated container healthcheck against a real loopback peer that
+  // sends headers and a partial body before resetting the response stream.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { readdirSync } from "node:fs";
+import http from "node:http";
+import { join } from "node:path";
+import { promisify } from "node:util";
+const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
+const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
+  entry.startsWith("ws@"),
+);
+assert.ok(wsStore);
+const wsModules = join(process.cwd(), "node_modules/.pnpm", wsStore, "node_modules");
+const server = http.createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+  response.write('{"phase":"ready",');
+  setTimeout(() => response.destroy(), 10);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_STATUS_PORT: String(server.address().port),
+        OPENCLAW_AGENT_REVISION_ID: "rev_interrupted_status",
+        APP_SERVER_TOKEN: "synthetic-token",
+        APP_SERVER_PORT: "1",
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin runtime status unavailable: ECONNRESET\n");
+      return true;
+    },
+  );
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_READY_MARKER: join(process.cwd(), ".missing-readiness-marker"),
+        OPENCLAW_RUNTIME_STATUS_PORT: String(server.address().port),
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin ready marker is missing\n");
+      return true;
+    },
+  );
+} finally {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const runtimeEntrypoints = new URL(
+    "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", source, runtimeEntrypoints.href],
+    { cwd: process.cwd(), timeout: 10_000 },
+  );
+});
+
 test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
   // A fake engine behind the real Driver and Node HTTP client: the network inspect
   // finds an owned network, then the network DELETE answers with each status below.

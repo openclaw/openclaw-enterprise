@@ -6,12 +6,13 @@ disposable PostgreSQL databases. Start with the [shared requirements](README.md#
 ## Revision-worker tests
 
 The revision-worker suite allocates disposable databases under its run's
-owner so another test cannot consume its queue. It migrates one template database per
-file and gives each test a copy of it (`prepareFile({ template })`). Four cross-Namespace
-cases explicitly share a database within their test. Tests connect as `occ_app`; preparation
-uses the existing administrator and migrator paths. The suite rejects a standalone
-`OCC_TEST_DATABASE_URL` without prepared ownership before changing that database.
-Other suites keep the application-role URL setup below.
+owner so another test cannot consume its queue. Each test gets a copy
+(`prepareFile({ template })`) of the database prepared for its file. Nothing may stay
+connected to that database while the file runs, a `psql` session included: PostgreSQL
+refuses to copy it. Four cross-Namespace cases explicitly share a database within their
+test. Tests connect as `occ_app`; preparation uses the existing administrator and migrator
+paths. The suite rejects a standalone `OCC_TEST_DATABASE_URL` without prepared ownership
+before changing that database. Other suites keep the application-role URL setup below.
 
 From the repository root, run the complete application lane:
 
@@ -34,7 +35,7 @@ From the repository root, run the complete application lane:
 
 For one revision-worker file, use a fresh run directory. The example runs
 `postgres-worker-agent-revision.test.mjs`; its `-credential-sources`, `-health`, `-replacement`,
-`-refused-stop`, `-refused-wait`, `-yielded-redeploy` and `-teardown` siblings run alike:
+`-refused-stop`, `-refused-wait`, `-stop`, `-yielded-redeploy` and `-teardown` siblings run alike:
 
 ```sh
 (
@@ -139,14 +140,13 @@ already has an Installation.
 ## Preset preservation across controller upgrades
 
 Run `tests/integration/postgres-preset-upgrade.test.mjs` with an empty, migrated
-application-role `OCC_TEST_DATABASE_URL`, or through `postgres-platform` CI.
-The test saves edited/custom Presets and non-default Configuration through authenticated
-HTTP, then checks IDs, values and generations after stock startup and a restart
-with default seeding disabled. A new Namespace must receive no stock Presets.
+application-role `OCC_TEST_DATABASE_URL` or `postgres-platform` CI.
+Authenticated HTTP saves edited/custom Presets and Configuration. Restarts with
+stock inputs and disabled seeding must preserve IDs, values and generations;
+new Namespaces receive no stock Presets when seeding is disabled.
 
-CI proves current-version restarts. For cross-revision proof, prepare a before
-checkout with matching dependencies and migrate a fresh disposable database
-using that revision. Set `OCC_TEST_PRESET_BEFORE_ROOT` to its absolute path and
+CI proves current-version restarts. Cross-revision proof requires a prepared
+before checkout and a disposable database migrated by that revision. Set `OCC_TEST_PRESET_BEFORE_ROOT` to its absolute path and
 `OCC_TEST_PRESET_MIGRATION_DATABASE_URL` to that database's separate migrator-role
 URL. Run from the candidate:
 
@@ -154,10 +154,9 @@ URL. Run from the candidate:
 node --test tests/integration/postgres-preset-upgrade.test.mjs
 ```
 
-The test stops the before controller, applies candidate migrations, and starts
-the candidate twice. Scope credentials
-to this invocation; clean up its owned database/server. Missing application
-configuration skips; missing cross-revision migrator configuration fails.
+The test stops the before controller, migrates, and starts the candidate twice.
+Scope credentials to this invocation; remove its owned database/server. Missing application
+configuration skips; missing cross-revision migrator fails.
 Compute/Secret Drivers are fixtures: this proves saved-state preservation,
 not images, Kubernetes or model execution.
 

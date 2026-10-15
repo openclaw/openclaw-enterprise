@@ -50,17 +50,23 @@ export function createPresetFields(context, apply) {
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = element("p", { className: "error", role: "alert" });
   const inputs = element("div");
-  let defaultId;
-  // How the next selection change started: "shortcut" applies the default Preset at once;
+  let starter;
+  // How the next selection change started: "shortcut" applies the starter Preset at once;
   // "restore" reopens a retained shortcut chooser. Both discard the resulting form on exit.
   let origin;
   let discardOnExit = false;
-  const chooseHint = () =>
-    defaultId ? "Choose a Preset or start with the default Preset." : "Choose a Preset to start.";
+  const chooseHint = () => {
+    if (!starter) {
+      return "Choose a Preset to start.";
+    }
+    return starter.name === "default-codex"
+      ? "Choose a Preset or start with the default Preset."
+      : `Choose a Preset or start with ${starter.name}.`;
+  };
   const startDefault = button(
     "Start with default Preset",
     () => {
-      selector.value = defaultId;
+      selector.value = starter.id;
       origin = "shortcut";
       selector.dispatchEvent(new Event("change"));
     },
@@ -469,10 +475,12 @@ export function createPresetFields(context, apply) {
         ...readablePresets.map((preset) => element("option", { value: preset.id }, preset.name)),
       );
       selector.disabled = false;
-      defaultId =
-        readablePresets.find((preset) => preset.name === "default-codex")?.id ??
-        readablePresets[0]?.id;
-      startDefault.disabled = !defaultId;
+      starter =
+        readablePresets.find((preset) => preset.name === "default-codex") ?? readablePresets[0];
+      startDefault.disabled = !starter;
+      if (starter && starter.name !== "default-codex") {
+        startDefault.textContent = `Start with ${starter.name}`;
+      }
       if (retained && presets.some((preset) => preset.id === retained.id)) {
         selector.value = retained.id;
         origin = retained.discardOnExit ? "restore" : undefined;

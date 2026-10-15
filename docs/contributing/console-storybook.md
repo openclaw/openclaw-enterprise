@@ -111,20 +111,17 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 **Deployment retry after dependency failure**; switch versions and check
 **Since**.
 
-In **Custom Preset quick-start**, fill variables, apply the Preset, and check
-draft discard on return. Compare **No Presets**, **Loading default Preset**, and
-**Default Preset access denied**; manual setup remains available.
-**Preset name tie-break** checks uppercase selection.
+**Custom Preset quick-start** names the starter; check variables and draft discard.
+**Preset name tie-break** checks uppercase selection. Compare **No Presets**,
+**Loading default Preset**, and **Default Preset access denied**.
 
 **First deployment creates credentials** accepts **Deploy new version** without
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
 
-Choose a Preset, fill its variables, review seeded workspace files, and create
-a Codex-harness Agent: the Console submits inline Configuration and Secret
-references, then follows simulated provisioning. Another flow uses the default
-Preset with OpenAI Codex, a new or existing model Secret, and a model, editing
-IDENTITY.md and clearing USER.md first.
+Create a Codex-harness Agent from a Preset, reviewing variables and workspace
+files before simulated provisioning. The default-Preset flow covers model Secret
+selection, IDENTITY.md edits and clearing USER.md.
 OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
 
@@ -161,6 +158,9 @@ for the supported installation workflow, prerequisites, and Teams deployment lim
 
 Repository previews cover access levels, empty or pending discovery, unavailable
 choices, denied or unverified authorization, and reselection after a rejected save.
+In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
+confirm reference `IBM-platform`. Simulated data does not prove GitHub App access
+or credential delivery.
 In **Repository choices unavailable**, follow the setup link or retry; creation
 without repository access stays available. The recovery story keeps its saved
 Configuration and needs a current nonempty repository selection to retry.

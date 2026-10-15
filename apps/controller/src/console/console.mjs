@@ -40,6 +40,14 @@ const externalAttemptStorageKeys = {
 const oidcLabelStorageKey = "occ.console.oidcLabel";
 // Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
 // GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+// A retained view revalidates each read it made. A paged read keeps its cursor, so it compares
+// data and meta, without the request ID that differs on every call.
+function readSignature(result, includeMeta = false) {
+  return JSON.stringify(
+    includeMeta ? { data: result.data, meta: { ...result.meta, requestId: undefined } } : result,
+  );
+}
+
 function providerIcon(provider) {
   if (provider !== "github" && provider !== "google") {
     return null;
@@ -1017,7 +1025,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       const validations = await Promise.allSettled(
         [...retainedState.reads.keys()].map(async (path) => {
           if (!fresh.has(path)) {
-            fresh.set(path, await request(path));
+            fresh.set(
+              path,
+              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+            );
           }
         }),
       );
@@ -1031,7 +1042,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
-          ([path, value]) => JSON.stringify(fresh.get(path)) === value,
+          ([path, value]) =>
+            readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
       if (unchanged) {
         mountedViewState = retainedState;
@@ -1062,6 +1074,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      metaReads: new Set(),
       resumeHandlers: new Set(),
       user: session.user,
     };
@@ -1078,7 +1091,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, JSON.stringify(result));
+          viewState.reads.set(path, readSignature(result, options.includeMeta));
+          if (options.includeMeta) {
+            viewState.metaReads.add(path);
+          }
         }
         return result;
       } catch (error) {

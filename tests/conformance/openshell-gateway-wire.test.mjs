@@ -1668,7 +1668,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     {
       backend: {
         drivers: { credential_gateway: "credential-gateway-openshell" },
-        client: { clientForNamespace: () => client },
+        client: { clientForNamespace: () => client, placement: () => undefined },
       },
     },
   );

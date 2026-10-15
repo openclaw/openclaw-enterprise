@@ -62,6 +62,12 @@ complete, the operation fails rather than staying pending. The Driver does
 not automatically retry an interrupted request; an already-sent engine
 operation may still have taken effect.
 
+Engine response bodies have a 4 MiB budget. A larger declared content length
+is rejected before the body is read, and a response without that header is
+stopped when its received bytes cross the same limit. This fixed development
+boundary applies to all shared Driver requests, including image inspection and
+resource lists; unusually large legitimate metadata fails explicitly.
+
 Compose runs the shared initializer after migration and before the API or
 worker. Fresh setup creates the configured human administrator, service
 administrator, and singleton Installation; existing state is retained. Only

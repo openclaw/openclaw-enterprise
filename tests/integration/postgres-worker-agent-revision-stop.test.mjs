@@ -202,7 +202,9 @@ test(
 // ComputeStopYieldedError when the worker allows it and other Work is due, and a Harness is
 // stopped only after the drain. Kubernetes' own wait is in the Compute conformance tests. `busy`
 // names revisions that never become ready, so their deployments keep Work due; `onFirstStop` runs
-// once, inside an Agent's first stop. `record` is the first owner's.
+// once, inside an Agent's first stop. A record's `drainStartedAt` and `drainEndsAt` are its drain's
+// wall-clock window, set once `onFirstStop` returns, for same-run ordering checks. `record` is the
+// first owner's.
 function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
   const busy = new Set();
   const records = new Map(
@@ -215,6 +217,7 @@ function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
         harnessStops: [],
         pointers: new Set(),
         waitingWithoutYield: false,
+        drainStartedAt: undefined,
         drainEndsAt: undefined,
       },
     ]),
@@ -234,7 +237,8 @@ function gatewayDrainCompute(fixture, owners, { drainMs, onFirstStop }) {
       if (record.drainEndsAt === undefined) {
         record.drainEndsAt = Number.POSITIVE_INFINITY;
         await onFirstStop?.();
-        record.drainEndsAt = Date.now() + drainMs;
+        record.drainStartedAt = Date.now();
+        record.drainEndsAt = record.drainStartedAt + drainMs;
       }
       while (Date.now() < record.drainEndsAt) {
         currentComputeAbortSignal()?.throwIfAborted();
@@ -280,7 +284,8 @@ test(
   async (context) => {
     const fixture = await setup(context, { leaseDurationMs: 3_000 });
     const { owner, candidate } = await fixture.admitInitialRevision("drain-yield");
-    const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs: 6_000 });
+    const drainMs = 6_000;
+    const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs });
     const events = [];
     const emit = (event) => events.push({ ...event, at: Date.now() });
     await fixture.start(compute, { emit });
@@ -288,20 +293,23 @@ test(
     const busy = await fixture.revision(await fixture.agent("drain-yield-busy"), 1);
     record.busy.add(busy.id);
 
-    const requestedAt = Date.now();
+    // The stop's first pass yields, and the other Agent's deployment runs while the stop waits for
+    // the drain. The ordering checks below prove both, so a stop that does not yield fails there
+    // with its timeline. The 30 s waits only guard against a hang.
     const first = await fixture.requestStop(owner);
-    const yielded = await waitFor("the stop to yield", async () =>
-      stopPasses(events, first).find(({ code }) => code === "AGENT_STOP_YIELDED"),
+    const firstPass = await waitFor(
+      "the stop's first pass",
+      async () => stopPasses(events, first)[0],
+      30_000,
     );
-    assert.equal(yielded.outcome, "pending");
-    // The other Agent's deployment runs while the stop waits for the drain.
     await waitFor(
-      "another Agent's pass while the stop is deferred",
+      "another Agent's pass after the stop's first pass",
       async () =>
         events.some(
           ({ event, workId, at }) =>
-            event === "worker.completed" && workId === busy.idempotencyKey && at > yielded.at,
+            event === "worker.completed" && workId === busy.idempotencyKey && at > firstPass.at,
         ) || undefined,
+      30_000,
     );
     // A second stop while the first is deferred, and a controller restart. The restart lands
     // between passes or interrupts one (which then waits out its lease); either path must end.
@@ -313,9 +321,44 @@ test(
       fixture.work(second, "succeeded", 30_000),
     ]);
 
-    // Bounded: the stops end soon after the drain (a pass cut short by the restart waits out
-    // its lease), not after full waits of their own.
-    assert.ok(Date.now() - requestedAt < 6_000 + 15_000, `${Date.now() - requestedAt} ms`);
+    // Same-run ordering, not a wall-clock total (finding 1344). The worker is serial, so another
+    // Agent's pass ends inside the drain only if a stop pass ended during it, which a yield does
+    // (no pass failed, checked below). The stops end after the drain, and less than another drain
+    // after its end: a pass cut short by the restart waits out its 3 s lease, and a deferred stop
+    // rechecks within about 1 s. A stop that waited out a drain, a default lease or a long retry
+    // backoff of its own would end later.
+    const { drainStartedAt, drainEndsAt } = record;
+    const offset = (time) => (time === undefined ? "none" : `${time - drainStartedAt}`);
+    const otherPasses = events
+      .filter(({ event, workId }) => event === "worker.completed" && workId === busy.idempotencyKey)
+      .map((event) => event.at);
+    const stopEnds = [first, second].map(
+      (stop) => stopPasses(events, stop).find(({ outcome }) => outcome === "success")?.at,
+    );
+    const timeline = [
+      `drain 0..${offset(drainEndsAt)} ms`,
+      ...[first, second].map(
+        (stop, index) =>
+          `stop ${index + 1} ${stopPasses(events, stop)
+            .map(({ code, at }) => `${code}@${offset(at)}`)
+            .join(" ")}`,
+      ),
+      `other Agent's passes @${otherPasses.map(offset).join(",")}`,
+    ].join("; ");
+    assert.ok(
+      otherPasses.some((time) => time > drainStartedAt && time < drainEndsAt),
+      `no other Agent's pass ended during the drain: ${timeline}`,
+    );
+    assert.ok(
+      stopEnds.every((time) => time >= drainEndsAt),
+      `a stop ended before the drain: ${timeline}`,
+    );
+    assert.ok(
+      Math.max(...stopEnds) - drainEndsAt < drainMs,
+      `the stops ended a drain or more after it: ${timeline}`,
+    );
+    assert.equal(firstPass.code, "AGENT_STOP_YIELDED", timeline);
+    assert.equal(firstPass.outcome, "pending");
     // Yields refund their attempt; only a pass cut short by the restart may count.
     assert.ok(firstWork.attempt_count <= 2, `attempts ${firstWork.attempt_count}`);
     assert.ok(secondWork.attempt_count <= 2, `attempts ${secondWork.attempt_count}`);
@@ -332,7 +375,7 @@ test(
       assert.ok(stopPasses(events, stop).every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
     }
     // The yield names the revision whose Gateway drains.
-    assert.equal(yielded.revisionId, candidate.id);
+    assert.equal(firstPass.revisionId, candidate.id);
   },
 );
 
@@ -402,10 +445,23 @@ revisionTest(
       fixture.work(first.candidate, "succeeded"),
       fixture.work(second.candidate, "succeeded"),
     ]);
-    const requestedAt = Date.now();
     const stops = [await fixture.requestStop(first.owner), await fixture.requestStop(second.owner)];
     await Promise.all(stops.map((stop) => fixture.work(stop, "succeeded", 30_000)));
-    assert.ok(Date.now() - requestedAt < 6_000 + 10_000, `${Date.now() - requestedAt} ms`);
+    // The drains overlap: one starts before the other ends. Drains taken in turn, each stop
+    // holding the serial worker for its whole drain, start the second only after the first ends.
+    // Same-run ordering, not a wall-clock total (finding 1344); 30 s only guards against a hang.
+    const drains = [first, second].map(({ owner }) => records.get(owner.id));
+    const origin = Math.min(...drains.map(({ drainStartedAt }) => drainStartedAt));
+    assert.ok(
+      Math.max(...drains.map(({ drainStartedAt }) => drainStartedAt)) <
+        Math.min(...drains.map(({ drainEndsAt }) => drainEndsAt)),
+      `the drains ran in turn: ${drains
+        .map(
+          ({ drainStartedAt, drainEndsAt }) =>
+            `${drainStartedAt - origin}..${drainEndsAt - origin} ms`,
+        )
+        .join(", ")}`,
+    );
     // Taking turns yields about once a second per stop (3 each in a CI mutation run); now only
     // the stop that runs first yields, once, to the other's first pass (2 tolerates one more).
     const yields = [first, second].map(({ owner }) => records.get(owner.id).yields);
@@ -2498,6 +2554,77 @@ revisionTest(
       code: "REVISION_STOPPED",
       message: "Deployment ended because the Agent was stopped.",
     });
+  },
+);
+
+revisionTest(
+  "a stop admitted after the last running check waits for the claimed revision work, then stops the Agent",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-after-running-check");
+    const sibling = await fixture.agent("stop-after-running-check-sibling");
+    const candidate = await fixture.revision(owner, 1);
+    let releaseActivation;
+    const activationReleased = new Promise((resolve) => {
+      releaseActivation = resolve;
+    });
+    let activationStarted = false;
+    const stoppedRevisions = [];
+    const compute = {
+      ...fixture.compute,
+      // An after-commit Driver activates the published candidate after the worker's last check
+      // that the Agent runs. Holding it keeps the revision work claimed past that check.
+      async activateRevision(revision) {
+        if (revision.id === candidate.id && !activationStarted) {
+          activationStarted = true;
+          await activationReleased;
+        }
+      },
+      async stopRevision(revision) {
+        // Records whether the revision work had released its claim when the stop reached Compute.
+        const work = await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        stoppedRevisions.push([revision.id, work.rows[0]?.state]);
+        return fixture.compute.stopRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    let stop;
+    try {
+      await waitFor("candidate activation to start", async () =>
+        activationStarted ? true : undefined,
+      );
+      // A second worker stands in for another controller replica: the first is busy activating,
+      // and only the one-claim-per-Agent rule (the claim query skips an Agent with claimed work,
+      // backed by controller_work_one_claim_per_resource) keeps this one from taking the stop.
+      await fixture.start(compute, { pool: fixture.createWorkerPool() });
+      stop = await fixture.requestStop(owner);
+      // Claimed in queue order, the sibling's later stop finishing shows the second worker has
+      // passed over the owner's stop while the revision work held its claim.
+      const siblingStop = await fixture.requestStop(sibling);
+      await fixture.work(siblingStop, "succeeded");
+      const held = await fixture.observerPool.query(
+        "SELECT idempotency_key, state FROM occ.controller_work WHERE idempotency_key = ANY($1::text[])",
+        [[candidate.idempotencyKey, stop.idempotencyKey]],
+      );
+      assert.deepEqual(
+        Object.fromEntries(held.rows.map((row) => [row.idempotency_key, row.state])),
+        { [candidate.idempotencyKey]: "claimed", [stop.idempotencyKey]: "queued" },
+      );
+    } finally {
+      releaseActivation();
+    }
+
+    // The revision work finishes its activation, then the stop runs and stops the active
+    // candidate, so the Agent ends stopped rather than serving after its owner stopped it.
+    await fixture.work(candidate, "succeeded");
+    await fixture.work(stop, "succeeded");
+    const stopped = await fixture.currentAgent(owner);
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+    assert.equal(stopped.activeRevisionId, undefined);
+    assert.deepEqual(stoppedRevisions, [[candidate.id, "succeeded"]]);
+    assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_STOPPED"]);
   },
 );
 

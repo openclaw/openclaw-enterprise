@@ -147,13 +147,18 @@ Its closed `configuration` accepts:
   path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
   `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
   Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`), which URL parsing
-  cannot carry. The port, explicit or the scheme default, must be 1 to 65535,
+  cannot carry. An IPv4 host must be four decimal octets from 0 to 255 with no
+  leading zeros; shorthand, a single integer, hex, and leading zeros dial a
+  different address and are refused. The port, explicit or the scheme default, must be 1 to 65535,
   and a bare value must also parse as `http://<value>`, as both gateway clients
   read it.
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
-  `rootCertificatePath` is set.
+  `rootCertificatePath` is set. OAuth2 credential sources refuse `token_url`
+  hosts in the gateway's namespace only when OCE knows it: from a bare or
+  `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
+  `<service>.<namespace>.svc[.<cluster domain>]`.
 - `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound

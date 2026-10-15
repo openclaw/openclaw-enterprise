@@ -19,8 +19,15 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
-- The Agent must be running, have an active revision, and expose a `ComputeDriver.getGatewayEndpoint` value that can be mapped from private `wss:` to private `https:`.
+- The Agent must be running with an active revision owned by the selected Compute Driver: both Driver ID and implementation must match the revision. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+
+The local Compose-control-plane profile enables this capability only when both
+Kubernetes Compute and OpenShell are selected. Its development proxy terminates
+HTTPS on host loopback for the installation's console and wildcard Agent hosts;
+the private Envoy route in k3d still carries OCC-to-gateway traffic. The
+first-Agent helper's `--control-ui` option supplies the exact per-Agent native
+configuration. Other Compose profiles do not expose this browser endpoint.
 
 ## Authorization and availability
 
@@ -37,6 +44,22 @@ The response reports:
 | `available`   | The caller may open the returned `url` for the current active revision.                                        |
 
 A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
+
+Changing the selected Compute Driver does not migrate existing revisions. After
+lifecycle and native-configuration checks, OCC compares the selected Driver's ID
+and implementation with the active revision's recorded owner. A mismatch returns
+`503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
+private gateway-key lookup or transport. Agent-host HTTP retains its existing
+`403` refusal. WebSocket admission destroys the client socket without an HTTP
+response, before gateway-key lookup or connection; a mismatch during a WebSocket
+lease closes the connection through the existing failed-lease path. Matching ownership retains
+normal access. Earlier stopped, replacing and unsupported-configuration outcomes
+keep their precedence.
+
+The mismatch is not transient, so refreshing does not clear it. Each API process
+logs one `native_admin.compute_owner_mismatch` warning per revision and selected
+Driver, naming both Driver IDs and implementations. To restore access, select the
+revision's Compute Driver again, with the same ID and implementation.
 
 ## Agent host identity
 
@@ -113,7 +136,16 @@ device state, plugins, or other persistent gateway data.
 
 ## Changelog
 
+- 2026-10-14 01:20: Documented the Compute-owner mismatch warning and how to restore access. (fix-1287)
+
+- 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
+- 2026-10-13 23:57: Documented native-admin refusal when selected Compute ownership differs from the active revision. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
 - 2026-10-10 09:20: Documented that native listener edits are not re-checked and how to recover. (docs-1014)
+
+- 2026-10-06 12:00: Documented the Compose/OpenShell development endpoint and first-Agent Control UI option.
+
 - 2026-09-21 21:20: Documented status-only stopped results before deployment and after stop reconciliation. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Replaced the temporary exchange launch description with the shared OCE session cookie model, cookie-domain trust boundary, host-to-Agent admission, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)
