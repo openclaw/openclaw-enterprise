@@ -49,6 +49,23 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
     {
+      name: "provider PAT placeholder uses native auth storage before the model probe",
+      providerPat: true,
+      events: completedTurn(),
+      expect: ready,
+    },
+    {
+      name: "provider PAT metadata rejection keeps the revision unready",
+      providerPat: true,
+      native: [
+        login({
+          status: 1,
+          stderr: "personal access token metadata request failed with status 401 Unauthorized",
+        }),
+      ],
+      expect: loginFailure("AUTHENTICATION_FAILED"),
+    },
+    {
       name: "verifier-only app server starts without exposing either token input",
       transportToken: "verifier",
       events: completedTurn(),

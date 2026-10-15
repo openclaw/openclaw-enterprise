@@ -8,6 +8,7 @@ import {
   login,
   nativeValues,
   newPage,
+  persistedDeploymentError,
   trackSettledFetches,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -35,10 +36,7 @@ function deploymentBody(
   });
 }
 
-const authenticationFailure = {
-  code: "RUNTIME_AUTHENTICATION_FAILED",
-  message: "Deployment runtime credentials were rejected.",
-};
+const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -76,7 +74,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await activity.getByText("Recorded status: failed").waitFor();
   await record.getByText("Recorded outcome: failed").waitFor();
   await record
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${authenticationFailure.message}`)
     .waitFor();
   assert.equal(await record.getByText("No persisted startup failure.").count(), 0);
 });
@@ -556,10 +554,15 @@ test("Agent detail reports a failed selected version as probably not serving", a
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const selected = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   const { page } = await newPage(t, fixture);
-  await routeDeploymentStatus(page, fixture, namespace, agent, selected.revision, "failed", {
-    code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-    message: "Deployment runtime startup model check timed out.",
-  });
+  await routeDeploymentStatus(
+    page,
+    fixture,
+    namespace,
+    agent,
+    selected.revision,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
+  );
 
   const url = detailUrl(fixture, namespace.id, agent.id, selected.revision.id, "configuration");
   await login(page, fixture, url);
@@ -580,6 +583,8 @@ test("Agent detail reports a failed selected version as probably not serving", a
 // CLI, is not a rejected credential, so its next step points at the Configuration and the failed version's Logs, not at Credentials.
 // OpenClaw reports an unreachable provider (refused connection, DNS failure) as a timeout and
 // Codex as a failure, so each text names the harness it applies to.
+// The API's message carries the next step, so occ and HTTP clients get it too (finding 1393);
+// the console shows that message once and adds only the link to the page that holds the fix.
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -587,63 +592,47 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
   const { page } = await newPage(t, fixture);
   const cases = [
     {
-      error: {
-        code: "RUNTIME_MODEL_PROBE_FAILED",
-        message: "Deployment runtime startup model check failed.",
-        data: {
-          runtimeFailure: {
-            component: "gateway",
-            check: "model-probe",
-            checkedAt: "2026-10-03T08:00:00.000Z",
-            code: "MODEL_PROBE_FAILED",
-            cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-          },
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "gateway",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
         },
-      },
-      guidance:
-        /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\./,
+      }),
+      nextStep:
+        /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\.$/,
       // The runtime's classified cause names why this check failed.
       cause:
         "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
     },
     {
       // A cause without its own text keeps the kind label and the detail token.
-      error: {
-        code: "RUNTIME_MODEL_PROBE_FAILED",
-        message: "Deployment runtime startup model check failed.",
-        data: {
-          runtimeFailure: {
-            component: "agent",
-            check: "model-probe",
-            checkedAt: "2026-10-03T08:00:00.000Z",
-            code: "MODEL_PROBE_FAILED",
-            cause: { kind: "PROBE_STATUS", detail: "error-event" },
-          },
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "error-event" },
         },
-      },
-      guidance: /^The startup model check failed for a reason other than a rejected credential, /,
+      }),
+      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
       cause: "The model provider check reported a failure (error-event)",
     },
     {
-      error: {
-        code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-        message: "Deployment runtime startup model check timed out.",
-      },
-      guidance:
-        /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\./,
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
+      nextStep:
+        /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\..* then deploy a new version\.$/,
     },
     {
       // The Configuration holds the fix (Enable gateway password access), not Credentials.
-      error: {
-        code: "AGENT_GATEWAY_UNAUTHORIZED",
-        message:
-          "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
-      },
-      guidance:
-        /^The Agent Gateway refused its own in-Pod CLI, so the version never finished starting\. In the Configuration, select Enable gateway password access if it is not already enabled, save, then deploy a new version\./,
+      error: persistedDeploymentError("AGENT_GATEWAY_UNAUTHORIZED"),
+      nextStep: /\(Enable gateway password access\), then deploy again\.$/,
     },
   ];
-  for (const [index, { error, guidance, cause }] of cases.entries()) {
+  for (const [index, { error, nextStep, cause }] of cases.entries()) {
     const agent = await fixture.createAgent(namespace.id, `Agent ${index}`, nativeValues("v1"));
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     await routeDeploymentStatus(page, fixture, namespace, agent, revision, "failed", error);
@@ -655,8 +644,17 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       await page.goto(url.href);
     }
     const activity = page.locator(".deployment-status");
-    await activity.getByText(`${error.code}: ${error.message}`).waitFor();
-    await activity.locator(".deployment-failure-guidance").getByText(guidance).waitFor();
+    assert.match(error.message, nextStep);
+    await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
+    // The next step appears once, in the API's message; the hint holds only the link.
+    assert.equal(
+      await activity.locator(".deployment-failure-guidance").textContent(),
+      "Open Configuration",
+    );
+    assert.equal(
+      await activity.locator(".deployment-failure-guidance").getByRole("link").count(),
+      1,
+    );
     assert.equal(
       await activity.getByText("Cause", { exact: true }).count(),
       cause === undefined ? 0 : 1,

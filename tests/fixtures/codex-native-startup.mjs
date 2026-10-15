@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +18,7 @@ import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/comp
 const nodeRequire = createRequire(import.meta.url);
 const transportToken = "fixture-transport-token";
 const tokenDigest = createHash("sha256").update(transportToken).digest("hex");
+const providerPlaceholder = "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN";
 const modelCredentials = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"];
 const transportCredentials = ["APP_SERVER_TOKEN", "APP_TOKEN_SHA"];
 
@@ -51,11 +60,17 @@ export function readRuntimeStatusFromHandler(handler) {
 // parser and readiness control flow unmodified. No native provider is contacted.
 export function createCodexStartup(
   t,
-  { native, loginMode = "api_key", transportToken: tokenMode = "raw" },
+  {
+    native,
+    providerPat = false,
+    loginMode = providerPat ? "codex_pat" : "api_key",
+    transportToken: tokenMode = "raw",
+  },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const marker = join(directory, "ready");
+  const codexHome = join(directory, "codex");
   writeFileSync(marker, "stale\n", { mode: 0o600 });
   const diagnostics = [];
   const idleTimers = [];
@@ -89,10 +104,12 @@ export function createCodexStartup(
     },
     process: {
       env: {
-        CODEX_HOME: join(directory, "codex"),
+        CODEX_HOME: codexHome,
+        OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
         CODEX_LOGIN_MODE: loginMode,
+        ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
         ...(loginMode === "codex_pat"
-          ? { CODEX_ACCESS_TOKEN: "at-fixture-token" }
+          ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
           : { OPENAI_API_KEY: "fixture-api-key" }),
         OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
         OPENCLAW_AGENT_REVISION_ID: "revision-runtime-auth-gate",
@@ -116,7 +133,7 @@ export function createCodexStartup(
       }
       if (specifier === "node:fs") {
         return {
-          mkdirSync() {},
+          mkdirSync,
           mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
           rmSync,
           readFileSync() {
@@ -156,12 +173,27 @@ export function createCodexStartup(
                   "-c",
                   "cli_auth_credentials_store=file",
                   "login",
-                  loginMode === "codex_pat" ? "--with-access-token" : "--with-api-key",
+                  providerPat
+                    ? "status"
+                    : loginMode === "codex_pat"
+                      ? "--with-access-token"
+                      : "--with-api-key",
                 ]);
-                assert.equal(
-                  options.input,
-                  loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
-                );
+                if (providerPat) {
+                  // Native login reads the provider's exact placeholder from typed, private storage.
+                  absent(childEnvironment, ["CODEX_ACCESS_TOKEN"]);
+                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
+                  const authFile = join(codexHome, "auth.json");
+                  assert.deepEqual(JSON.parse(readFileSync(authFile, "utf8")), {
+                    personal_access_token: providerPlaceholder,
+                  });
+                  assert.equal(statSync(authFile).mode & 0o777, 0o600);
+                } else {
+                  assert.equal(
+                    options.input,
+                    loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
+                  );
+                }
               } else {
                 assert.ok(args.includes("exec"));
                 // Check the gate while the probe is running, before any app-server spawn.
@@ -174,6 +206,10 @@ export function createCodexStartup(
                 // Probe isolation and wrapper credential clearing are separate boundaries.
                 absent(childEnvironment, modelCredentials);
                 absent(sandbox.process.env, modelCredentials);
+                if (providerPat) {
+                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
+                  assert.ok(args.includes("cli_auth_credentials_store=file"));
+                }
                 assert.ok(options.timeout > 0 && options.timeout <= 30000);
                 if (step.timeout !== undefined) {
                   assert.equal(options.timeout, step.timeout);
@@ -197,6 +233,10 @@ export function createCodexStartup(
             assert.ok(args.includes('model="gpt-4.1"'));
             assert.equal(args[args.indexOf("--ws-token-sha256") + 1], tokenDigest);
             absent(options.env, [...transportCredentials, ...modelCredentials]);
+            if (providerPat) {
+              assert.equal(options.env.CODEX_HOME, codexHome);
+              assert.ok(args.includes("cli_auth_credentials_store=file"));
+            }
             appServerStarts++;
             return { on() {}, kill() {} };
           },
@@ -299,7 +339,7 @@ export function checkCodexStartup(t, scenario) {
   }
   assert.doesNotMatch(
     JSON.stringify(status) + runtime.diagnostics.join("\n"),
-    /fixture-api-key|at-fixture-token|fixture-transport-token|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
+    /fixture-api-key|at-fixture-token|fixture-transport-token|openshell:resolve:env|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
   );
 }
 

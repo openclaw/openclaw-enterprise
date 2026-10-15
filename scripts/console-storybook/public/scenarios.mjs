@@ -3072,7 +3072,7 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     description:
-      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
+      "v7 failed its startup model check; the recorded error states the next step, the record names the runtime's classified cause (the provider rejected the model or request format), and Open Configuration links the draft.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -4700,6 +4700,13 @@ export const scenarios = {
     stopNoSelection: true,
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
+  },
+  stopNeverDeployed: {
+    group: "Components/Stop Agent",
+    name: "Never deployed",
+    path: draft,
+    description:
+      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",

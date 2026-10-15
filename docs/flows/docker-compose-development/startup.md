@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-13
-last_updated_session: authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868
+updated: 2026-10-15
+last_updated_session: authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00
 ---
 
 # Compose development startup
@@ -270,9 +270,9 @@ image skips lookup. OpenShell uses its pinned image in both control-plane modes.
 The cluster API binds host loopback; creation leaves the default kubeconfig and
 current context unchanged.
 
-The host kubeconfig stays owner-readable. Non-root API and worker containers
-receive read-only configuration and kubeconfig using the internal load balancer
-with TLS verification; neither receives the engine socket.
+The host kubeconfig stays private. Non-root API/worker containers receive
+read-only configuration and kubeconfig for the TLS-verified internal load balancer,
+without the engine socket.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves engine-recorded names,
 including Podman `localhost/` and Docker Hub, defaults omitted tags to `:latest`,
@@ -297,6 +297,10 @@ With Compose and OpenShell, startup installs the pinned Agent Sandbox controller
 and OpenShell Gateway in k3d and selects operator workspace mode. The
 [OpenShell provisioning flow](../openshell-sandbox-provisioning.md#0-create-the-development-control-plane)
 owns their placement and resources.
+
+`internal/occdev/compose_routing.go:prepareComposeRoutingFiles` builds selected services
+before `--no-build` startup. Routing files belong to the API/worker identity; browser
+TLS files belong to the proxy identity. Both retain mode `0600`.
 
 The hybrid snapshot adds `compose.native-admin.yaml` with cluster-scoped browser
 and routing settings. A name-constrained CA signs only the console and wildcard Agent
@@ -333,12 +337,12 @@ permission setting, writing, or closing fails, including a partial external key
 before startup records a successful copy. Existing targets stay untouched; a
 removal failure is returned with the original file-operation error.
 
-On failure, startup attempts cleanup. Explicit Kubernetes shutdown validates the
-marker, state, and Compose snapshot, then uses the recorded engine endpoint.
-Cleanup stops the API and worker, then deletes the named k3d cluster and Compose
-project volumes. Cleanup continues after individual errors, retaining state on any failure; complete cleanup removes the state directory and helper-owned key. A
-returned external `--key-output` file stays operator-owned; startup removes a
-newly written external key if a later OpenShell readiness step fails.
+Failure triggers cleanup. Shutdown validates the marker, state and Compose
+snapshot, then stops API/worker and deletes owned k3d and Compose resources through
+the recorded engine. Cleanup continues after errors, retaining state on failure;
+success removes state and the helper-owned key. External `--key-output` files
+remain operator-owned, except startup removes a newly written key if later
+OpenShell readiness fails.
 
 ### 15. Start and remove the optional Keycloak profile
 
@@ -367,8 +371,7 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 - `OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_UI=1 node --test tests/integration/local-first-agent-real.test.mjs`
   checks its exact HTTPS console and Control UI origins and the deployed
   Configuration's allowed origin and trusted-proxy policy.
-- A successful startup does not prove Agent creation, model credentials, or a
-  model turn. Follow the owning runtime integration procedure for those claims.
+- Startup does not prove Agent creation or model execution; use the runtime integration.
 
 ## Related docs
 
@@ -381,6 +384,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 01:49: Build enabled browser proxy before startup. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - c7468f5965686a75474d81ba0fd11b9a16ccff75)
 
 - 2026-10-13 13:57: Reconciled Control UI startup with upstream cancellation, cleanup, and Keycloak paths. (authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868 - 96272fa0a5e4f359ed354abb1918e44986c19e76)
 

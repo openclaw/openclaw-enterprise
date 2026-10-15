@@ -30,7 +30,11 @@ const maxOutputLength = 32_768;
 const commandTimeout = 30 * 60_000;
 const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
-const sensitiveValues = new Set([process.env.OPENAI_API_KEY].filter(Boolean));
+const credentialVariable =
+  selectedSandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+const sensitiveValues = new Set(
+  [process.env.OPENAI_API_KEY, process.env.CODEX_ACCESS_TOKEN].filter(Boolean),
+);
 
 function redact(output) {
   for (const value of sensitiveValues) {
@@ -205,6 +209,8 @@ async function readKubernetesJson({ stateDirectory, cluster, env }, args, label)
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   try {
     const { stdout } = await execFileAsync(
       "kubectl",
@@ -229,6 +235,8 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   const common = [
     "--kubeconfig",
     join(stateDirectory, "kubeconfig"),
@@ -384,7 +392,10 @@ test(
     timeout: 2 * commandTimeout + refusalTimeout + stackLifecycleTimeout + 60_000,
   },
   async (context) => {
-    assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for the first invocation");
+    assert.ok(
+      process.env[credentialVariable],
+      `${credentialVariable} is required for the first invocation`,
+    );
     const stack = await localFirstAgentStack(context);
     const stateDirectory = stack.directory;
     assert.ok(
@@ -433,7 +444,12 @@ test(
 
     // The unique Agent remains until the fixture or the owner destroys the selected disposable stack.
     const first = readResult(
-      await runFirstAgent({ name, prompt: promptFor(firstReply), env, signal: context.signal }),
+      await runFirstAgent({
+        name,
+        prompt: promptFor(firstReply),
+        env,
+        signal: context.signal,
+      }),
       firstReply,
       resultOrigins,
     );
@@ -536,6 +552,8 @@ test(
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
     delete reuseEnv.OPENAI_API_KEY;
     delete reuseEnv.OPENAI_API_KEY_FILE;
+    delete reuseEnv.CODEX_ACCESS_TOKEN;
+    delete reuseEnv.CODEX_ACCESS_TOKEN_FILE;
     const second = readResult(
       await runFirstAgent({
         name,
@@ -596,11 +614,11 @@ test(
         "GET",
         `${base}/credential-sources/${agent.harnessAuth.sourceId}`,
       );
-      assert.equal(source.type, "openai");
+      assert.equal(source.type, "codex-pat");
       assert.equal(source.state, "ready");
-      assert.equal(source.secrets.api_key?.kind, "secret");
-      assert.equal(source.secrets.api_key?.namespaceId, first.namespaceId);
-      secretId = source.secrets.api_key?.id;
+      assert.equal(source.secrets.access_token?.kind, "secret");
+      assert.equal(source.secrets.access_token?.namespaceId, first.namespaceId);
+      secretId = source.secrets.access_token?.id;
       const bindings = await requestLocalApi(
         first.origin,
         serviceKey,
@@ -688,7 +706,7 @@ test(
         replaceKey: true,
         allowFailure: true,
         forbiddenOutput: replacementKey,
-        env: { ...reuseEnv, OPENAI_API_KEY: replacementKey },
+        env: { ...reuseEnv, [credentialVariable]: replacementKey },
         signal: context.signal,
         timeout: refusalTimeout,
       });
@@ -703,9 +721,12 @@ test(
         0,
         "An externally changed Configuration must block key replacement",
       );
+      // Control UI pins generation 2 and refuses drift before the content comparison.
       assert.match(
         `${refused.stdout}\n${refused.stderr}`,
-        /Configuration was changed outside this helper/,
+        selectedControlUi
+          ? /Configuration generation changed outside this helper/
+          : /Configuration was changed outside this helper/,
       );
       assert.equal(
         refused.containedForbiddenOutput,

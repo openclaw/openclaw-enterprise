@@ -147,6 +147,7 @@ Use only one of the two credential inputs. In production, use
 credential on the controller.
 
 - `OPENAI_API_KEY` — Authorized credential for local real-model use.
+- `CODEX_ACCESS_TOKEN`, `CODEX_ACCESS_TOKEN_FILE` — Personal access token or private token file for the OpenShell dedicated Codex first-Agent helper. Select one credential input.
 - `OPENAI_API_KEY_FILE` — Absolute path to a private credential file for the first-Agent helper.
 - `OPENCLAW_FIRST_AGENT_MODEL` — Plain OpenAI model ID, without a provider prefix; default for a new Agent: `gpt-6-astra`.
 

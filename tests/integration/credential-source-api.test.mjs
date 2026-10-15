@@ -547,6 +547,8 @@ test("bearer-token and OAuth2 hosts must not end in a numeric or 0x label", asyn
     ["a1.example.com", "validate"],
     ["0xdead.example.com", "validate attach"],
     ["123.example.com", "validate attach"],
+    // Only a whole-label number is one; this last label is a name.
+    ["example.0xg", "validate"],
   ];
   const message = (type) => `The ${type} host must be an exact DNS name.`;
   for (const type of TOOL_TYPES) {
@@ -638,6 +640,9 @@ test("OAuth2 token_url hosts must be multi-label DNS names, not IP addresses or 
     ["https://openshell-gateway-0:8443/token", "save"],
     // An SRV-style `_port._protocol` name is not a host name (finding 1366).
     ["https://_grpc._tcp.openshell-gateway/token", "save"],
+    // A stored token_url that does not parse (save never accepts one) is refused the same way,
+    // not with a parser error.
+    ["https://login example.test/token", "attach"],
   ];
   const port = "https://login.example.test:0/token";
   // In-cluster issuers have DNS names, which the protected host accepts too.
@@ -761,6 +766,8 @@ test("OAuth2 token_url hosts must not name the OpenShell gateway's own namespace
     "https://any.any.openshell-gateway/token",
     "https://keycloak.openshell-system.svc.example.internal/token",
     "https://10-42-0-5.openshell-system.pod.cluster.local/token",
+    // The namespace's `pod` zone itself, with no Pod label in front.
+    "https://openshell-system.pod.cluster.local/token",
   ];
   // CoreDNS's default `pods insecure` answers a Pod name with its written address, in any
   // namespace, so these name an address (here loopback) and are refused without a gateway.

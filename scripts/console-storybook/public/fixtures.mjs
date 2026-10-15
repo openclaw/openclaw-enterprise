@@ -129,10 +129,13 @@ function candidateDeploymentError(scenario, checkedAt) {
       message: "Deployment ended because the Agent was stopped.",
     };
   }
+  // Deployment error messages copy deploymentErrorMessage in
+  // packages/occ/src/state/controller-work.ts; keep them in step.
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
-      message: "Deployment runtime startup model check failed.",
+      message:
+        "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
       data: {
         runtimeFailure: {
           component: "gateway",
@@ -152,7 +155,8 @@ function candidateDeploymentError(scenario, checkedAt) {
   }
   return {
     code: "CONVERGENCE_DEADLINE_EXCEEDED",
-    message: "Deployment convergence deadline exceeded.",
+    message:
+      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
     data: {
       timeoutMs: 60000,
       runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },

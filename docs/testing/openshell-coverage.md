@@ -7,8 +7,9 @@ Unless a section says otherwise, the checks run in the default Codex scenario.
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
-Gateway Drivers. They register an `openai` credential source through the
-production API from an OCC Secret holding `OPENAI_API_KEY`, check its live
+Gateway Drivers. Through the production API they register a `codex-pat` source
+from `CODEX_ACCESS_TOKEN` for Codex, or an `openai` source from `OPENAI_API_KEY`
+for native OpenClaw and custom model endpoints. They check its live
 `ready` status, and bind the Agent with `credential_source`. The Agent service
 principal receives `operate` on the source only, not on the Secret.
 
@@ -28,13 +29,13 @@ After the egress turn, the test writes a probe script into the shared workspace
 and Codex runs it, so each request is a Sandbox process behind OpenShell's proxy.
 The script prints only status codes and flags. It checks that:
 
-- the model placeholder, read from an ancestor process because Codex withholds
-  `OPENAI_API_KEY` from its commands, is refused at a tool source's host with
+- the model placeholder, read from the Harness auth file for PATs or an ancestor
+  process for API keys, is refused at a tool source's host with
   `403 credential_endpoint_mismatch`. Any other failure fails the check;
-- a command Codex starts still gets the model key inserted on the model
-  source's endpoint, `api.openai.com/v1/**` by default. OpenShell matches
-  binaries against ancestors; the test expects this until Agent tools run in
-  their own Sandbox;
+- a command Codex starts can authenticate at a source endpoint: PAT identity
+  validation or API-key Responses. The real model turn separately exercises the
+  inference route. OpenShell matches binaries against ancestors; the test expects
+  this until Agent tools run in their own Sandbox;
 - skipping the proxy settings reaches neither a denied host nor a bare public
   address while an allowed host still answers, and the Harness Pod itself
   reaches no public address;
@@ -67,8 +68,8 @@ The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. Full
-integration lanes run only from `main`, so this proof runs after a withdrawal
-change lands, not on its pull request.
+manual integration lanes run from `main`; trusted pull requests also run the
+OpenShell advisory job described in [the QA guide](qa-matrix.md#automatic-openshell-coverage).
 
 ## Not covered
 

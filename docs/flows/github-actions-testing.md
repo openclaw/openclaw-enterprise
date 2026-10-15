@@ -8,13 +8,13 @@ last_updated_session: authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb
 
 ## Overview
 
-GitHub Actions ends at `CI Required` and cleanup. Full CI runs twenty-two noncredentialed lanes with disposable resources, rejecting missing or skipped coverage. Verified docs-only PRs run Suite Audit and docs checks. Neither proves protected integrations.
+CI's twenty-two noncredentialed lanes reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/full-integration.yml:jobs`: manual integration bound to the dispatched commit, with protected branch exceptions and a credential-free local installation lane.
-- `scripts/ci/run-tests.mjs:main`: local or workflow `audit`, `run` and `aggregate` commands; the suite map is the coverage owner.
+- `.github/workflows/qa-advisory.yml:jobs`: trusted PR Codex and OpenShell jobs, outside `CI Required`.
+- `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
 
@@ -49,6 +49,8 @@ graph TD
 ## Execution Trace
 
 ### 1. Select one source revision and coverage group
+
+`scripts/ci/run-tests.mjs:main` audits, runs and aggregates both locally and in CI.
 
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
@@ -229,6 +231,8 @@ External reconciliation awaits an approved resource ledger.
 ## Changelog
 
 - 2026-10-14 14:09: Remove environment approvals. (authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb - 909b0b9d4)
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 16:37: Document hosted QA image cleanup. (authoring-run/0733d076-37af-4fd5-ade5-869487072f47 - 1c406aef)
 

@@ -29,7 +29,8 @@ another prompt or verify it again.
   --replace-key    Replace this Agent's saved model key and deploy a new revision.
 
 OPENCLAW_FIRST_AGENT_MODEL defaults to ${defaultAgentModel} for a new Agent. Set OPENAI_API_KEY,
-use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. A normal repeat
+use OPENAI_API_KEY_FILE, or enter the key at the hidden prompt. For dedicated Codex with OpenShell,
+set CODEX_ACCESS_TOKEN or CODEX_ACCESS_TOKEN_FILE to use a personal access token. A normal repeat
 uses the previously stored key. Set OCC_DEVELOPMENT_STATE_DIRECTORY if Local Setup
 used a custom state directory.
 `;
@@ -234,6 +235,8 @@ async function loadLocalInstallation(harness, controlUi) {
   delete environment.DOCKER_CERT_PATH;
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   if (state.containerEngine === "podman") {
     environment.PODMAN_COMPOSE_PROVIDER ||= "podman-compose";
   }
@@ -458,22 +461,24 @@ function createApi({ origin, key }) {
   };
 }
 
-async function modelKey() {
-  if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY_FILE) {
-    throw new Error("Set only one of OPENAI_API_KEY and OPENAI_API_KEY_FILE.");
+async function modelKey(authMethod) {
+  const variable = authMethod === "codex_pat" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+  const fileVariable = `${variable}_FILE`;
+  if (process.env[variable] && process.env[fileVariable]) {
+    throw new Error(`Set only one of ${variable} and ${fileVariable}.`);
   }
-  let value = process.env.OPENAI_API_KEY;
-  if (process.env.OPENAI_API_KEY_FILE) {
-    const path = process.env.OPENAI_API_KEY_FILE;
+  let value = process.env[variable];
+  if (process.env[fileVariable]) {
+    const path = process.env[fileVariable];
     if (!isAbsolute(path)) {
-      throw new Error("OPENAI_API_KEY_FILE must name an absolute private file.");
+      throw new Error(`${fileVariable} must name an absolute private file.`);
     }
     await privateOwned(path);
     value = (await readFile(path, "utf8")).replace(/\r?\n$/, "");
   }
   if (!value) {
     if (!process.stdin.isTTY || !process.stderr.isTTY) {
-      throw new Error("Set OPENAI_API_KEY or OPENAI_API_KEY_FILE when no terminal is available.");
+      throw new Error(`Set ${variable} or ${fileVariable} when no terminal is available.`);
     }
     const sink = new Writable({
       write(_chunk, _encoding, done) {
@@ -481,7 +486,7 @@ async function modelKey() {
       },
     });
     const reader = createInterface({ input: process.stdin, output: sink, terminal: true });
-    process.stderr.write("OpenAI API key (hidden): ");
+    process.stderr.write("Model credential (hidden): ");
     try {
       value = await new Promise((resolveInput, reject) => {
         let answered = false;
@@ -490,7 +495,7 @@ async function modelKey() {
         });
         reader.once("close", () => {
           if (!answered) {
-            reject(new Error("OpenAI API key input was cancelled."));
+            reject(new Error("Model credential input was cancelled."));
           }
         });
         reader.question("", (answer) => {
@@ -511,7 +516,7 @@ async function modelKey() {
     value.includes("\n") ||
     value.includes("\0")
   ) {
-    throw new Error("The OpenAI API key must be a nonempty single line.");
+    throw new Error("The model credential must be a nonempty single line.");
   }
   return value;
 }
@@ -649,7 +654,8 @@ function assertManagedConfiguration(configuration, record, expected) {
 function assertManagedRevision(revision, record, expected) {
   const frozen = structuredClone(expected);
   if (record.sandboxDriver === "openshell" && record.harness === "codex") {
-    frozen.values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
+    frozen.values.plugins.entries.codex.config.appServer.sandbox =
+      record.authMethod === "api_key" ? "danger-full-access" : "workspace-write";
     frozen.values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
   }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
@@ -680,8 +686,10 @@ function assertManagedRevision(revision, record, expected) {
 function assertManagedCredentialSource(source, record, secret) {
   if (
     source.name !== record.credentialSourceName ||
-    source.type !== "openai" ||
-    !isDeepStrictEqual(source.secrets, { api_key: secret.ref }) ||
+    source.type !== (record.authMethod === "codex_pat" ? "codex-pat" : "openai") ||
+    !isDeepStrictEqual(source.secrets, {
+      [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref,
+    }) ||
     source.state !== "ready"
   ) {
     throw new Error("The recorded CredentialSource does not belong to this local first-agent run.");
@@ -860,6 +868,10 @@ async function main(options) {
     }
     const record = existing ?? {
       version: 3,
+      authMethod:
+        process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
+          ? "codex_pat"
+          : "api_key",
       name: options.name,
       namespaceId: namespace.id,
       model,
@@ -871,6 +883,21 @@ async function main(options) {
         ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
         : {}),
     };
+    if (
+      !["api_key", "codex_pat"].includes(record.authMethod) ||
+      (record.authMethod === "codex_pat" &&
+        (options.harness !== "codex" || local.sandboxDriver !== "openshell"))
+    ) {
+      throw new Error(
+        "Personal access tokens in this helper require OpenShell with dedicated Codex.",
+      );
+    }
+    if (
+      (process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE) &&
+      (process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_FILE)
+    ) {
+      throw new Error("Select only one model authentication method.");
+    }
     if (!existing) {
       await save(record);
     }
@@ -948,7 +975,7 @@ async function main(options) {
     if (!record.secretId) {
       record.secretId = await findFirstAgentSecret(local.database, namespace.id, record.secretName);
       if (!record.secretId) {
-        suppliedKey = await modelKey();
+        suppliedKey = await modelKey(record.authMethod);
         progress("Saving the model credential in the local platform Secret...");
         const secret = await api("POST", `${base}/secrets`, {
           name: record.secretName,
@@ -978,8 +1005,8 @@ async function main(options) {
         progress("Registering the model credential with the OpenShell gateway...");
         credentialSource = await api("POST", `${base}/credential-sources`, {
           name: record.credentialSourceName,
-          type: "openai",
-          secrets: { api_key: secret.ref },
+          type: record.authMethod === "codex_pat" ? "codex-pat" : "openai",
+          secrets: { [record.authMethod === "codex_pat" ? "access_token" : "api_key"]: secret.ref },
         });
       }
       assertManagedCredentialSource(credentialSource, record, secret);
@@ -990,7 +1017,7 @@ async function main(options) {
     }
 
     if (options.replaceKey && suppliedKey === undefined) {
-      suppliedKey = await modelKey();
+      suppliedKey = await modelKey(record.authMethod);
       progress("Replacing the saved model credential...");
       await api("PATCH", `${base}/secrets/${record.secretId}`, { value: suppliedKey });
       if (credentialSource !== undefined) {
@@ -1089,7 +1116,7 @@ async function main(options) {
       return observed.activeRevisionId === record.revisionId && deployment.status === "succeeded";
     });
     progress(
-      `Locating the Kubernetes gateway and waiting for a real response from openai/${model}...`,
+      `Locating the Kubernetes gateway and waiting for a real response from ${record.harness === "codex" ? "codex" : "openai"}/${model}...`,
     );
     const proof = await verifyFirstAgentModel(local.kubectl, {
       namespaceId: namespace.id,

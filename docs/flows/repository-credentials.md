@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-10-15
+last_updated_session: authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb
 ---
 
 # Repository credential service flow
@@ -250,7 +250,11 @@ bounded transport headers before dispatch. Credential bytes stay
 inside private adapter/sender callbacks. The sender's final-response-header wait
 starts after the bounded input pipeline finishes, unless headers have already
 arrived. Connection, upload, stall and total deadlines remain active in their
-respective phases.
+respective phases. Upload-pack plans carry separate response byte, first-header,
+stall and total budgets; discovery, receive-pack and API requests retain their
+ordinary limits. The service caps every plan by `maxExchangeMs` and the session
+deadline. Static-token plans also cap upload-pack to the available lease. The
+streaming byte counter applies backpressure without buffering the pack.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -359,6 +363,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 04:44: Bound upload-pack streaming separately while retaining exchange and credential fencing. (authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
 
 - 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
