@@ -4385,7 +4385,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   // references the same opaque auth file without reusing cached cloud configuration.
   const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
   const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
-  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
+  // Forced deletion requests native approval even in full-access mode. Use non-forced
+  // cleanup of this fresh probe directory so the command reaches the OpenShell boundary.
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -r -- "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -4456,7 +4458,14 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       deniedConfigRequest,
       "the real Codex binary must attempt the unapproved backend path.",
     );
-    assert.ok(Number.isSafeInteger(deniedConfigRequest.exitCode));
+    assert.ok(
+      Number.isSafeInteger(deniedConfigRequest.exitCode),
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${result.items.some(
+        ({ method, params }) =>
+          method === "item/commandExecution/requestApproval" &&
+          params?.itemId === deniedConfigRequest.id,
+      )}).`,
+    );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
     // must record its L7 denial of this exact native-Codex request.
