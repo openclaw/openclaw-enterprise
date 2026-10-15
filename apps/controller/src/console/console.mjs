@@ -928,10 +928,20 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     return;
   }
-  // Loading appears only once a load outlasts loadingDelayMs, so a fast one never flashes it.
-  // A return's held page stays until it revalidates (finding 1415).
+  // A full load keeps the startup text, and a held page stays, until the load outlasts
+  // loadingDelayMs, so a fast one never flashes loading. A return's held page stays until it
+  // revalidates (finding 1415). Anything else (a sign-in form, an error panel) shows loading
+  // at once.
+  const startup = !held && app.querySelector(":scope > .startup") !== null;
+  if (!held && !startup) {
+    publicPanel("Loading…", "Checking your session.");
+    if (current.feature !== "login") {
+      shell = renderShell(current.feature, true);
+      panel(shell.view, "Loading…", "Checking your session and Namespace access.");
+    }
+  }
   let loadingTimer =
-    held && retained
+    (held && retained) || (!held && !startup)
       ? null
       : setTimeout(() => {
           loadingTimer = null;
@@ -1041,8 +1051,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       installationAdmin = null;
       draftUserId = owner;
       retained = false;
-      if (held) {
-        // Another account's page must not stay on screen.
+      if (shell && previousOwner !== null && previousOwner !== owner) {
+        // Another account's page, or a shell naming it, must not stay on screen.
         stopLoadingTimer();
         held = false;
         shell = null;

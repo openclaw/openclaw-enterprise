@@ -124,8 +124,8 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Loads keep the
-shown page inert until admission and reads settle; navigation stays available. Only
-first visits show loading, after 250 ms. Up to 16 views, keyed by route, Namespace,
+shown page inert until admission and reads settle; navigation stays available. Loads
+other than returns show loading after 250 ms. Up to 16 views, keyed by route, Namespace,
 and session owner, are retained, excluding passwords and discovery state.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
