@@ -336,6 +336,25 @@ function installationDrivers({
   };
 }
 
+// Runs `before(statement, values, backendPid)` ahead of each statement a worker transaction sends,
+// and sends the statement once it settles. Lock-order tests use it to pause the worker at one
+// exact statement; the paused transaction then runs unchanged against the real database.
+function holdWorkerStatements(pool, before) {
+  pool.on("connect", (client) => {
+    const query = client.query.bind(client);
+    client.query = (config, values, callback) =>
+      typeof config === "string" && typeof values !== "function" && callback === undefined
+        ? Promise.resolve(before(config, values, client.processID)).then(() =>
+            query(config, values),
+          )
+        : query(config, values, callback);
+  });
+}
+
+// The statement every Namespace-first path (Stop, Delete, the provisioning fences and deploy
+// admission) uses to take the Namespace lock.
+const namespaceLockStatement = /\bFROM occ\.namespaces\s+WHERE id = \$1\b[^;]*\bFOR UPDATE\s*$/;
+
 async function createFixture(context, options = {}) {
   // Keep real admission and Secret access; only Slack's external response is a fixture.
   const originalFetch = globalThis.fetch;
@@ -456,6 +475,9 @@ async function createFixture(context, options = {}) {
     assert.equal(worker, undefined, "the fixture worker is already running");
     assert.equal(workerPool, undefined, "the fixture worker pool is already open");
     workerPool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+    if (options.beforeWorkerStatement !== undefined) {
+      holdWorkerStatements(workerPool, options.beforeWorkerStatement);
+    }
     worker = createControllerWorker({
       pool: workerPool,
       drivers,
@@ -4096,6 +4118,360 @@ test(
       ),
       true,
     );
+  },
+);
+
+async function admitProvisioning(fixture) {
+  const namespace = await fixture.bootstrapNamespace();
+  const secrets = await createProvisioningSecrets(fixture, namespace.id);
+  const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+    body: provisioningBody(namespace.id, secrets),
+  });
+  assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+  return {
+    namespace,
+    workId: admitted.data.provisioning.workId,
+    url: admitted.data.provisioning.url,
+  };
+}
+
+async function provisioningJob(pool, workId) {
+  const result = await pool.query(
+    `SELECT provisioning.agent_id, provisioning.status, provisioning.completed_phase,
+            provisioning.revision_id, work.state AS work_state, work.reason_code
+     FROM occ.agent_provisioning_work AS provisioning
+     JOIN occ.controller_work AS work ON work.idempotency_key = provisioning.work_id
+     WHERE provisioning.work_id = $1`,
+    [workId],
+  );
+  assert.equal(result.rowCount, 1);
+  return result.rows[0];
+}
+
+async function handoffCheckpoints(pool, workId) {
+  const result = await pool.query(
+    `SELECT 1 FROM occ.audit_events
+     WHERE action = 'openclaw.agents.provision.checkpoint'
+       AND details->>'workId' = $1
+       AND details->>'phase' = 'handoff'`,
+    [workId],
+  );
+  return result.rowCount;
+}
+
+test(
+  "a provisioning handoff that takes the Namespace lock before Stop admits its deployment, which Stop then ends",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    let target;
+    let handoffPid;
+    let admitting = false;
+    let releaseAdmission;
+    const admissionReleased = new Promise((resolve) => {
+      releaseAdmission = resolve;
+    });
+    const computeDriver = createRuntimeComputeDriver();
+    const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
+    // The first deployment never becomes ready, so only the Stop can end it.
+    computeDriver.prepareRevision = async (revision, operationContext) => ({
+      ...(await prepareRevision(revision, operationContext)),
+      ready: false,
+    });
+    // The handoff's deploy admission checks the runtime credentials while its transaction holds
+    // the Namespace and Agent locks. Holding that check holds the handoff with its locks.
+    const getRuntimeCredentialStatus = computeDriver.getAgentRuntimeCredentialStatus;
+    computeDriver.getAgentRuntimeCredentialStatus = async (binding) => {
+      if (!admitting && binding.namespace.id === target?.namespace.id) {
+        admitting = true;
+        await admissionReleased;
+      }
+      return getRuntimeCredentialStatus(binding);
+    };
+    const fixture = await createFixture(context, {
+      computeDriver,
+      // The worker is serial, so its latest Namespace lock is the held handoff's own.
+      beforeWorkerStatement: (statement, values, backendPid) => {
+        if (
+          target !== undefined &&
+          values?.[0] === target.namespace.id &&
+          namespaceLockStatement.test(statement)
+        ) {
+          handoffPid = backendPid;
+        }
+      },
+    });
+    target = await admitProvisioning(fixture);
+    const { namespace, workId, url } = target;
+    let stopping;
+    await fixture.startWorker();
+    try {
+      await waitFor("the handoff to hold its deploy admission", async () =>
+        admitting ? true : undefined,
+      );
+      assert.ok(handoffPid, "the handoff must have taken the Namespace lock");
+      const job = await provisioningJob(fixture.pool, workId);
+      assert.equal(job.completed_phase, "transport");
+      assert.equal(job.revision_id, null);
+      fixture.cancelProvisioningAtTeardown(namespace.id, job.agent_id);
+      const agentPath = `/namespaces/${namespace.id}/agents/${job.agent_id}`;
+      stopping = fixture.request("POST", `${agentPath}/stop`);
+      // Surface an early failure through the await below instead of an unhandled rejection.
+      stopping.catch(() => {});
+      await waitFor("Stop to wait on the handoff's Namespace lock", async () => {
+        const waiting = await fixture.pool.query(
+          `SELECT pid FROM pg_stat_activity
+           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
+          [handoffPid],
+        );
+        return waiting.rowCount > 0 ? true : undefined;
+      });
+      releaseAdmission();
+      const stopped = await stopping;
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      assert.equal(stopped.data.desiredRuntimeState, "stopped");
+
+      // The handoff committed first, so Stop's cancellation skipped the job, which now has a
+      // revision. Stop ends that first deployment instead, and the job records the outcome.
+      const settled = await waitFor(
+        "initial provisioning to settle",
+        async () => {
+          const observed = await fixture.request("GET", url);
+          assert.equal(observed.status, 200, JSON.stringify(observed.body));
+          return ["succeeded", "failed"].includes(observed.data.status) ? observed.data : undefined;
+        },
+        30_000,
+      );
+      assert.equal(settled.status, "failed", JSON.stringify(settled));
+      assert.equal(settled.agentId, job.agent_id);
+      assert.equal(settled.revisionId?.startsWith("rev_"), true, JSON.stringify(settled));
+      assert.deepEqual(settled.error, {
+        code: "REVISION_STOPPED",
+        message: "The Agent was stopped before its first deployment finished.",
+      });
+      const first = await fixture.request("GET", `${agentPath}/deployments/${settled.revisionId}`);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      assert.equal(first.data.error?.code, "REVISION_STOPPED");
+      const finished = await provisioningJob(fixture.pool, workId);
+      assert.deepEqual(
+        [finished.status, finished.revision_id, finished.work_state, finished.reason_code],
+        ["failed", settled.revisionId, "failed_permanent", "REVISION_STOPPED"],
+      );
+      assert.equal(await handoffCheckpoints(fixture.pool, workId), 1);
+      const revisions = await fixture.state.read((view) =>
+        view.revisions.listRevisions(namespace.id, job.agent_id),
+      );
+      assert.deepEqual(
+        revisions.map(({ id }) => id),
+        [settled.revisionId],
+      );
+    } finally {
+      releaseAdmission();
+      await stopping?.catch(() => {});
+      await fixture.stopWorker();
+    }
+  },
+);
+
+test(
+  "Stop that takes the Namespace lock before a waiting provisioning handoff rolls the whole handoff back",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    let fixture;
+    let target;
+    let handoffPid;
+    let releaseHandoff;
+    const handoffReleased = new Promise((resolve) => {
+      releaseHandoff = resolve;
+    });
+    const events = [];
+    fixture = await createFixture(context, {
+      onWorkerEvent: (event) => events.push(event),
+      // Pause the handoff transaction just before it locks the Namespace: the worker's first
+      // Namespace lock once the transport checkpoint has committed. By then the transaction
+      // has already read the job as running.
+      beforeWorkerStatement: async (statement, values, backendPid) => {
+        if (
+          handoffPid !== undefined ||
+          target === undefined ||
+          values?.[0] !== target.namespace.id ||
+          !namespaceLockStatement.test(statement)
+        ) {
+          return;
+        }
+        const job = await fixture.pool.query(
+          "SELECT completed_phase FROM occ.agent_provisioning_work WHERE work_id = $1",
+          [target.workId],
+        );
+        if (job.rows[0]?.completed_phase !== "transport") {
+          return;
+        }
+        handoffPid = backendPid;
+        await handoffReleased;
+      },
+    });
+    target = await admitProvisioning(fixture);
+    const { namespace, workId, url } = target;
+    let stopping;
+    await fixture.startWorker();
+    try {
+      await waitFor("the handoff to reach its Namespace lock", async () => handoffPid);
+      const job = await provisioningJob(fixture.pool, workId);
+      assert.deepEqual(
+        [job.status, job.completed_phase, job.revision_id],
+        ["running", "transport", null],
+      );
+      const agentPath = `/namespaces/${namespace.id}/agents/${job.agent_id}`;
+      // A lock held from a test connection orders the two waiters: Stop queues first, then the
+      // handoff. PostgreSQL grants a row lock to its waiters in the order they queued.
+      await withNamespaceLockHeld(fixture.pool, namespace.id, async (lock) => {
+        stopping = fixture.request("POST", `${agentPath}/stop`);
+        // Surface an early failure through the await below instead of an unhandled rejection.
+        stopping.catch(() => {});
+        await lock.waitForBlocked("Stop to wait on the Namespace lock");
+        releaseHandoff();
+        await waitFor("the handoff to queue behind Stop for the Namespace lock", async () => {
+          const backend = await fixture.pool.query(
+            "SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1",
+            [handoffPid],
+          );
+          return backend.rows[0]?.wait_event_type === "Lock" ? true : undefined;
+        });
+      });
+      const stopped = await stopping;
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      assert.equal(stopped.data.desiredRuntimeState, "stopped");
+      // Stop cancelled the job before the handoff got the lock, so the handoff's checkpoint
+      // refuses the cancelled job and its pass ends without a deployment.
+      await waitFor("the handoff's pass to end cancelled", async () =>
+        events.some(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.workId === workId &&
+            event.code === "PROVISIONING_CANCELLED",
+        )
+          ? true
+          : undefined,
+      );
+    } finally {
+      releaseHandoff();
+      await stopping?.catch(() => {});
+      await fixture.stopWorker();
+    }
+
+    // The whole handoff rolled back: no revision, no handoff checkpoint, and the job stays
+    // cancelled at the transport phase it had completed.
+    const finished = await provisioningJob(fixture.pool, workId);
+    assert.deepEqual(
+      [
+        finished.status,
+        finished.completed_phase,
+        finished.revision_id,
+        finished.work_state,
+        finished.reason_code,
+      ],
+      ["cancelled", "transport", null, "failed_permanent", "PROVISIONING_CANCELLED"],
+    );
+    assert.equal(await handoffCheckpoints(fixture.pool, workId), 0);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, finished.agent_id),
+    );
+    assert.deepEqual(revisions, []);
+    const status = await fixture.request("GET", url);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.equal(status.data.status, "failed");
+    assert.equal(status.data.error?.code, "PROVISIONING_CANCELLED");
+    assert.equal(status.data.revisionId, undefined);
+  },
+);
+
+test(
+  "Delete before admission cancels provisioning while a worker holds its claim, and finishes without a deployment",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    let writing = false;
+    let releaseWrite;
+    const writeReleased = new Promise((resolve) => {
+      releaseWrite = resolve;
+    });
+    const computeDriver = heldTransportDriver(async () => {
+      writing = true;
+      await writeReleased;
+    });
+    const fixture = await createFixture(context, { computeDriver });
+    let target;
+    let configurationId;
+    try {
+      target = await provisionUntilTransportWrite(fixture, () => writing);
+      const { workId, url } = target.admitted.data.provisioning;
+      configurationId = await provisioningConfigurationId(fixture.pool, workId);
+      const agentPath = `/namespaces/${target.namespace.id}/agents/${target.agentId}`;
+      const deleting = await fixture.request("DELETE", agentPath);
+      assert.equal(deleting.status, 202, JSON.stringify(deleting.body));
+      assert.equal(deleting.data.status, "deleting");
+      // Delete cancels the job at once, though the worker is still inside its attempt.
+      const cancelled = await fixture.request("GET", url);
+      assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+      assert.equal(cancelled.data.status, "failed");
+      assert.deepEqual(cancelled.data.error, {
+        code: "PROVISIONING_CANCELLED",
+        message: "Provisioning was cancelled because the Agent was deleted.",
+      });
+      assert.equal(cancelled.data.revisionId, undefined);
+
+      // The write completes and records its receipt without the claim. The worker's next fence
+      // finds the Agent deleting, so its pass ends before handoff; deletion then finishes.
+      releaseWrite();
+      await waitFor(
+        "the Agent deletion to finish",
+        async () => {
+          const observed = await fixture.request("GET", agentPath);
+          if (observed.status === 404) {
+            return true;
+          }
+          assert.equal(observed.status, 200, JSON.stringify(observed.body));
+          assert.equal(observed.data.status, "deleting");
+          return undefined;
+        },
+        45_000,
+      );
+    } finally {
+      releaseWrite();
+      await fixture.stopWorker();
+    }
+
+    // No deployment was ever admitted for the deleting Agent: the job never checkpointed a
+    // handoff, and Compute never prepared a revision for it.
+    const { workId } = target.admitted.data.provisioning;
+    assert.equal(await handoffCheckpoints(fixture.pool, workId), 0);
+    assert.equal(
+      computeDriver.calls.some(
+        ({ operation, agentId }) => operation === "prepareRevision" && agentId === target.agentId,
+      ),
+      false,
+    );
+    // Deletion removed the job, its work and the runtime credentials the write stored.
+    const remaining = await fixture.pool.query(
+      `SELECT
+         (SELECT count(*) FROM occ.agent_provisioning_work WHERE work_id = $1)::int AS jobs,
+         (SELECT count(*) FROM occ.controller_work WHERE idempotency_key = $1)::int AS work,
+         (SELECT count(*) FROM occ.agent_revisions
+           WHERE namespace_id = $2 AND agent_id = $3)::int AS revisions`,
+      [workId, target.namespace.id, target.agentId],
+    );
+    assert.deepEqual(remaining.rows, [{ jobs: 0, work: 0, revisions: 0 }]);
+    assert.equal(
+      computeDriver.calls.filter(
+        ({ operation, agentId }) =>
+          operation === "deleteAgentRuntimeCredentials" && agentId === target.agentId,
+      ).length,
+      1,
+    );
+    // The job's Configuration is no longer reserved, so it deletes like any other.
+    const configurationPath = `/namespaces/${target.namespace.id}/configurations/${configurationId}`;
+    const removed = await fixture.request("DELETE", configurationPath);
+    assert.equal(removed.status, 204, JSON.stringify(removed.body));
+    const gone = await fixture.request("GET", configurationPath);
+    assert.equal(gone.status, 404, JSON.stringify(gone.body));
   },
 );
 
