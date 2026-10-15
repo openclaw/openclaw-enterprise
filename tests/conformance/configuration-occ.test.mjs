@@ -633,13 +633,34 @@ test("a Configuration left one generation ahead of its record recovers on the ne
   );
   assert.deepEqual(configurationDriver.stored(reference), leftover);
 
+  // A retry that fails the same way as the first update (lost response, failed compensation
+  // read) leaves the stored document two generations ahead; it is still only a leftover.
+  configurationDriver.update = async (next) => {
+    configurationDriver.update = update;
+    await update(next);
+    configurationDriver.read = async () => {
+      configurationDriver.read = read;
+      throw new Error("synthetic Configuration outage");
+    };
+    throw new Error("synthetic Configuration update response loss");
+  };
+  await assert.rejects(
+    controller.updateConfiguration(administrator, updateInput(["lost-twice"])),
+    unavailable,
+  );
+  assert.equal(configurationDriver.stored(reference).generation, 3);
+  await assert.rejects(
+    controller.getConfiguration(administrator, namespace.id, configuration.id),
+    DependencyUnavailableError,
+  );
+
   // The retry replaces the leftover under a generation past it, never adopting its content.
   const recovered = await controller.updateConfiguration(administrator, updateInput(["east"]));
-  assert.equal(recovered.generation, 3);
+  assert.equal(recovered.generation, 4);
   assert.deepEqual(recovered.values, valuesWith(["east"]));
   assert.deepEqual(configurationDriver.stored(reference), {
     ...configuration,
-    generation: 3,
+    generation: 4,
     values: valuesWith(["east"]),
   });
   assert.deepEqual(
@@ -653,14 +674,16 @@ test("a Configuration left one generation ahead of its record recovers on the ne
     { namespaceId: namespace.id, agentId: agent.id },
     resolveApprovedDevelopmentHarness,
   );
-  assert.equal(revision.configurationGeneration, 3);
+  assert.equal(revision.configurationGeneration, 4);
   assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
-  // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; recovery 2 to 3.
+  // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; failed retry 2 to 3;
+  // recovery 3 to 4.
   assert.deepEqual(steps, [
     [1, 2],
     [2, 3],
     [3, 2],
     [2, 3],
+    [3, 4],
   ]);
 });
 
@@ -759,13 +782,34 @@ test("a Configuration whose ConfigMap a failed delete removed can still be delet
   );
   assert.deepEqual(recreated, []);
 
-  // A document left one generation ahead by a failed update is deleted with its record.
+  // A document left ahead by failed updates is deleted with its record.
   const ahead = await create("ahead");
   recreated.length = 0;
-  await configurationDriver.update({ ...ahead, generation: 2, values: { model: "unrecorded" } });
+  await configurationDriver.update({ ...ahead, generation: 3, values: { model: "unrecorded" } });
   await controller.deleteConfiguration(administrator, namespace.id, ahead.id);
   assert.equal(configurationDriver.stored(ahead), undefined);
   assert.deepEqual(recreated, []);
+
+  // A document further ahead than failed writes can leave is not a leftover: it fails closed.
+  const far = await create("far");
+  const farAhead = { ...far, generation: 102, values: { model: "far" } };
+  await configurationDriver.update(farAhead);
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, far.id),
+    DependencyUnavailableError,
+  );
+  await assert.rejects(
+    controller.updateConfiguration(administrator, {
+      namespaceId: namespace.id,
+      configurationId: far.id,
+      values: { model: "replacement" },
+    }),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(configurationDriver.stored(far), farAhead);
+  await configurationDriver.update({ ...farAhead, generation: 101 });
+  await controller.deleteConfiguration(administrator, namespace.id, far.id);
+  assert.equal(configurationDriver.stored(far), undefined);
 
   // With nothing left, the Namespace can be deleted.
   await controller.deleteNamespace(administrator, namespace.id);

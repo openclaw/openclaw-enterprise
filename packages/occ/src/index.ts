@@ -886,6 +886,14 @@ const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_
 const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
 
 /**
+ * How far a stored Configuration may run ahead of its record and still count as a leftover of
+ * failed writes (finding 1396). Each failed update whose compensation could not run adds one, and
+ * update advances the record once per skipped generation, so the bound also caps that work.
+ * A document further ahead fails closed, as any other mismatch does.
+ */
+const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
+
+/**
  * The most references a Secret read or delete examines. Each one costs authorization work,
  * so the bound keeps both the response and the IAM work small. Delete makes those decisions
  * while it holds the Namespace and Secret locks, so the bound also limits that lock window.
@@ -5449,7 +5457,7 @@ export class OpenClawController {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
-      const { previous, ahead } = await this.lockedConfiguration(driver, metadata);
+      const previous = await this.lockedConfiguration(driver, metadata);
       let secretBindings: SecretBindings;
       if (input.secretBindings === undefined) {
         secretBindings = this.bindings(metadata.secretBindings);
@@ -5464,9 +5472,10 @@ export class OpenClawController {
         metadata.generation,
         secretBindings,
       );
-      // A stored document one generation ahead holds content that was never recorded. The
-      // replacement skips past its generation, so that number never names two documents.
-      if (advanced && ahead) {
+      // A stored document ahead of the record holds content that was never recorded. The
+      // replacement skips past every generation it went through, one advance at a time (the
+      // record moves by exactly one per write), so no number names two documents.
+      while (advanced && advanced.generation <= previous.generation) {
         advanced = await state.configurations.advanceConfigurationGeneration(
           namespace.id,
           metadata.id,
@@ -5497,8 +5506,8 @@ export class OpenClawController {
       // timeout, a lost response) would otherwise leave the stored Configuration one generation
       // ahead of the rolled-back metadata (finding 911). A write that never applied is left alone,
       // and so is a stored generation another update committed after the lock was released. A
-      // replacement of a document left one generation ahead restores that document, which a
-      // retry can replace again (finding 1396).
+      // replacement of a leftover ahead of the record restores that leftover, which a retry can
+      // replace again (finding 1396).
       this.registerRollback(async () => {
         const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
         if (
@@ -5552,7 +5561,7 @@ export class OpenClawController {
       }
       // A record whose document a failed delete already removed has nothing left to delete or
       // restore (finding 1396); only a Driver that confirms the absence lets it go.
-      const locked = await this.lockedConfiguration(driver, configuration).catch(
+      const previous = await this.lockedConfiguration(driver, configuration).catch(
         async (error: unknown) => {
           if (await this.configurationAbsent(driver, configuration)) {
             return undefined;
@@ -5560,8 +5569,7 @@ export class OpenClawController {
           throw error;
         },
       );
-      if (locked !== undefined) {
-        const { previous } = locked;
+      if (previous !== undefined) {
         // Registered before the write: a delete that applied but answered with an error would
         // otherwise leave the metadata without its ConfigMap (finding 916). The rollback
         // recreates the previous Configuration only when it is gone and its record is still the
@@ -10825,14 +10833,15 @@ export class OpenClawController {
   /**
    * The stored Configuration behind a record that update or delete holds locked. A failed update
    * whose compensation could not run (a crash, a lost COMMIT acknowledgement that hid a rollback,
-   * or a compensation read that failed in the same outage) leaves the stored document exactly one
-   * generation ahead of the record (finding 1396). The record lock keeps other requests out, so
-   * that document is a leftover, not a write in flight; it comes back as `ahead`, for update to
-   * replace and delete to remove. Another request's compensation runs without the lock, but the
-   * Kubernetes Driver refuses a replace that does not move the generation by exactly one from the
-   * document it read, or whose resource version changed since, so the later of two writes fails
-   * and rolls back. Reads and deploys keep
-   * refusing the leftover, so unrecorded content is never served or recorded.
+   * or a compensation read that failed in the same outage) leaves the stored document one
+   * generation ahead of the record, and each such failure during recovery one more (finding
+   * 1396). The record lock keeps other requests out, so a document up to
+   * MAX_CONFIGURATION_LEFTOVER_LEAD generations ahead is a leftover, not a write in flight; it is
+   * returned at its own generation, for update to replace and delete to remove. Another
+   * request's compensation runs without the lock, but the Kubernetes Driver refuses a replace
+   * that does not move the generation by exactly one from the document it read, or whose
+   * resource version changed since, so the later of two writes fails and rolls back. Reads and
+   * deploys keep refusing the leftover, so unrecorded content is never served or recorded.
    */
   private async lockedConfiguration(
     driver: ConfigurationDriver,
@@ -10840,18 +10849,19 @@ export class OpenClawController {
       Configuration,
       "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
     >,
-  ): Promise<{ readonly previous: Readonly<Configuration>; readonly ahead: boolean }> {
+  ): Promise<Readonly<Configuration>> {
     const stored = await this.driverOperation(() =>
       driver.read({ id: record.id, namespaceId: record.namespaceId }),
     );
-    const ahead = stored?.generation === record.generation + 1;
-    return {
-      previous: this.exactConfiguration(
-        stored,
-        ahead ? { ...record, generation: record.generation + 1 } : record,
-      ),
-      ahead,
-    };
+    const lead = Number.isSafeInteger(stored?.generation)
+      ? stored.generation - record.generation
+      : 0;
+    return this.exactConfiguration(
+      stored,
+      lead > 0 && lead <= MAX_CONFIGURATION_LEFTOVER_LEAD
+        ? { ...record, generation: stored.generation }
+        : record,
+    );
   }
 
   /**
