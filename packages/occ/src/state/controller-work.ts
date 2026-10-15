@@ -601,15 +601,15 @@ function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
 function deploymentErrorMessage(code: string): string {
   switch (code) {
     case "CONVERGENCE_DEADLINE_EXCEEDED":
-      return "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime status for the cause, correct it, then deploy a new version.";
+      return "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.";
     case "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED":
       return "Harness credential initialization failed. Correct the cause and deploy again.";
     case "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT":
       return "Harness credential initialization exceeded its deadline. Correct the cause and deploy again.";
     case "RUNTIME_AUTHENTICATION_FAILED":
-      return "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key is valid and can use the selected model, update or replace the model credential Secret, then deploy a new version.";
+      return "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.";
     case "RUNTIME_CPU_STARVED":
-      return "Deployment runtime did not get enough CPU to finish its startup model check (its CPU limit or a busy node). Ask an admin to raise the runtime CPU limit or free node capacity, then deploy a new version.";
+      return "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.";
     // Model-probe codes come from the runtime wrapper's startup model check
     // (`runtime-entrypoints.ts`). OpenClaw classifies transport errors (refused connection,
     // DNS failure, "fetch failed") as a timeout; Codex reports them as
@@ -619,7 +619,7 @@ function deploymentErrorMessage(code: string): string {
     case "RUNTIME_MODEL_PROBE_FAILED":
       return "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_LOGIN_FAILED":
-      return "Deployment runtime could not sign in to the model provider. Check that the runtime can reach the provider and that the provider is responding, then deploy a new version.";
+      return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
     case "REVISION_SUPERSEDED":

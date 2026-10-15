@@ -1098,7 +1098,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // 1393); the console shows it once and adds only the link to Credentials.
   assert.match(
     failure.message,
-    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the model credential Secret, then deploy a new version\.$/,
+    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
   );
   await activity
     .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })

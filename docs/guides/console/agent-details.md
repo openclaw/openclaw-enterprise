@@ -47,7 +47,7 @@ new version to run the Agent again. A `failed` result shows the stored error. Se
 version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
 even from the draft or another version. If logs are unavailable, the panel
 shows an access or availability message.
-The error states the next step, as `occ` does. For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
+For most codes the error states the next step, as in `occ`. For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
 `RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` the panel also links **Credentials** or the draft **Configuration**.
 Startup evidence may identify the runtime component, failed check, code, and
 check time. A failed startup model check may also show its **Cause**, such as
@@ -273,8 +273,9 @@ viewed revision or tab.
 
 An accepted stop requests shutdown; it does not prove the runtime
 finished. **Refresh stop status** reads the desired state and selected revision.
-An uncertain result blocks another stop until a successful refresh. A
-never-deployed Agent shows no stop controls. To resume,
+An uncertain result blocks another stop until a successful refresh. With no
+selected version and none you can read, as before a first deploy, it shows no
+stop controls. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 

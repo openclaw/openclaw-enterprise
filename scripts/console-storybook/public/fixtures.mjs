@@ -129,6 +129,8 @@ function candidateDeploymentError(scenario, checkedAt) {
       message: "Deployment ended because the Agent was stopped.",
     };
   }
+  // Deployment error messages copy deploymentErrorMessage in
+  // packages/occ/src/state/controller-work.ts; keep them in step.
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
@@ -154,7 +156,7 @@ function candidateDeploymentError(scenario, checkedAt) {
   return {
     code: "CONVERGENCE_DEADLINE_EXCEEDED",
     message:
-      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime status for the cause, correct it, then deploy a new version.",
+      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
     data: {
       timeoutMs: 60000,
       runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },

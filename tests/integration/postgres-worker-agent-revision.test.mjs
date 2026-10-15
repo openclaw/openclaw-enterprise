@@ -1683,7 +1683,7 @@ revisionTest(
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message:
-        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime status for the cause, correct it, then deploy a new version.",
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 1, runtimeFailure },
     });
     assert.deepEqual(status.warnings, []);
@@ -1731,7 +1731,7 @@ revisionTest(
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message:
-        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime status for the cause, correct it, then deploy a new version.",
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 1 },
     });
     assert.notEqual(status.cleanup, null);
@@ -2032,7 +2032,7 @@ for (const scenario of [
       error: {
         code: "RUNTIME_AUTHENTICATION_FAILED",
         message:
-          "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key is valid and can use the selected model, update or replace the model credential Secret, then deploy a new version.",
+          "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
       },
     },
   },
@@ -2052,7 +2052,7 @@ for (const scenario of [
       error: {
         code: "RUNTIME_CPU_STARVED",
         message:
-          "Deployment runtime did not get enough CPU to finish its startup model check (its CPU limit or a busy node). Ask an admin to raise the runtime CPU limit or free node capacity, then deploy a new version.",
+          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
       },
     },
   },
@@ -2149,7 +2149,7 @@ revisionTest(
           error: {
             code: "RUNTIME_LOGIN_FAILED",
             message:
-              "Deployment runtime could not sign in to the model provider. Check that the runtime can reach the provider and that the provider is responding, then deploy a new version.",
+              "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
           },
         },
       },

@@ -2822,7 +2822,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       // occ and HTTP clients print this message as is, so it names the next step (finding 1393).
       message:
-        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime status for the cause, correct it, then deploy a new version.",
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 900_000, runtimeFailure },
     },
     warnings: [],
@@ -2930,13 +2930,13 @@ test("a refused deployment's status names its cause and remedy without naming pr
     // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
     // the guidance the console used to add on its own.
     RUNTIME_AUTHENTICATION_FAILED:
-      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key is valid and can use the selected model, update or replace the model credential Secret, then deploy a new version.",
+      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
     RUNTIME_CPU_STARVED:
-      "Deployment runtime did not get enough CPU to finish its startup model check (its CPU limit or a busy node). Ask an admin to raise the runtime CPU limit or free node capacity, then deploy a new version.",
+      "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
     RUNTIME_MODEL_PROBE_TIMEOUT:
       "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
     RUNTIME_LOGIN_FAILED:
-      "Deployment runtime could not sign in to the model provider. Check that the runtime can reach the provider and that the provider is responding, then deploy a new version.",
+      "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
     RUNTIME_STARTUP_FAILED:
       "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
     // Internal inconsistencies keep the generic text.

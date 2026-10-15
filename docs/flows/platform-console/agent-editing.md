@@ -283,7 +283,7 @@ admission, not completed Compute shutdown. When stopped,
 **Request Stop again** confirms a new stop intent through the same authorized route.
 It remains available without a selected revision because history/candidate cleanup
 is not exposed, and an uncertain write blocks it until readback succeeds. When the
-Agent is stopped, has no selected revision and its version list loaded empty for this
+Agent is stopped, has no selected revision and its version list is loading or empty for this
 viewer (`setNoReadableVersions`), as after an API create without a deploy, no stop control renders.
 Cancelling confirmation restores its invoking button; submitted requests focus status refresh.
 
