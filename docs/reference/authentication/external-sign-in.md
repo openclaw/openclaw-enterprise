@@ -159,8 +159,11 @@ scope is requested.
 | Not an active member of any entry           | `MEMBERSHIP_REQUIRED`    | `membership`             |
 | No match, and a lookup GitHub didn't answer | `MEMBERSHIP_UNAVAILABLE` | `membership-unavailable` |
 
-Both are `authentication.login` denials whose `details` carry `provider: github` and the
-numeric GitHub `subject`. The callback returns to
+Both are `authentication.login` denials whose `details` carry `provider: github`, the
+numeric GitHub `subject`, a valid login returned by GitHub when available, and the attempt ID.
+Successful GitHub sign-ins and refusals after profile verification record the same identity
+fields. The login is diagnostic only; authorization uses the immutable subject. See
+[sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
 `/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
 `MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
 malformed answer, and any status other than `200` or `404`. It fails closed and logs
