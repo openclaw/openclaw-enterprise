@@ -523,29 +523,16 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
           protocol: "rest",
           path: "/api/accounts/v1/user-auth-credential/whoami",
         },
-        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/codex/**" },
-        // Native PAT startup loads managed configuration before any model turn.
-        {
-          host: "chatgpt.com",
-          port: 443,
-          protocol: "rest",
-          path: "/backend-api/wham/config/bundle",
-        },
-        // Workspace discovery gates native inference; attribution is loaded per turn.
-        {
-          host: "chatgpt.com",
-          port: 443,
-          protocol: "rest",
-          path: "/backend-api/wham/accounts/check",
-        },
-        {
-          host: "chatgpt.com",
-          port: 443,
-          protocol: "rest",
-          path: "/backend-api/wham/settings/user",
-        },
-        // The Gateway reads native rate limits when recovering a usage-limit error.
-        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
+        ...[
+          "/backend-api/codex/**",
+          // Native PAT startup loads managed configuration before any model turn.
+          "/backend-api/wham/config/bundle",
+          // Workspace discovery gates native inference; attribution is loaded per turn.
+          "/backend-api/wham/accounts/check",
+          "/backend-api/wham/settings/user",
+          // The Gateway reads native rate limits when recovering a usage-limit error.
+          "/backend-api/wham/usage",
+        ].map((path) => ({ host: "chatgpt.com", port: 443, protocol: "rest", path })),
       ],
       binaries: options.binaries,
       inferenceCapable: true,

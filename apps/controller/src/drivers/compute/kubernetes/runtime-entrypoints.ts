@@ -3425,14 +3425,10 @@ if (providerManagedPat) {
   require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
     JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
 }
-let loginArguments;
-if (providerManagedPat) {
-  loginArguments = ["-c", "cli_auth_credentials_store=file", "login", "status"];
-} else if (loginMode === "api_key") {
-  loginArguments = ["-c", "cli_auth_credentials_store=file", "login", "--with-api-key"];
-} else {
-  loginArguments = ["-c", "cli_auth_credentials_store=file", "login", "--with-access-token"];
-}
+const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+const loginArguments = [
+  "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
+];
 function codexChildEnvironment() {
   const environment = { ...process.env };
   delete environment.APP_SERVER_TOKEN;

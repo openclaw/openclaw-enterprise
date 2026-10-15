@@ -14,20 +14,17 @@ import (
 func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developmentState) error {
 	// Create without starting the readers, and inspect their actual images and
 	// Compose user overrides rather than assuming the image's default UID.
-	services := []string{"up", "--no-start", "--build", "--no-deps", "controller", "worker-kubernetes"}
+	readers := []string{"controller", "worker-kubernetes"}
 	// Startup uses --no-build after ownership preparation, including for the browser endpoint.
 	if state.BrowserPort != 0 {
-		services = append(services, "browser-proxy")
+		readers = append(readers, "browser-proxy")
 	}
-	if err := r.compose(ctx, state, services...); err != nil {
+	args := append([]string{"up", "--no-start", "--build", "--no-deps"}, readers...)
+	if err := r.compose(ctx, state, args...); err != nil {
 		return err
 	}
 	var owner [2]int
 	var readerImage string
-	readers := []string{"controller", "worker-kubernetes"}
-	if state.BrowserPort != 0 {
-		readers = append(readers, "browser-proxy")
-	}
 	for index, service := range readers {
 		id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
 			"--filter", "label=com.docker.compose.project="+state.ComposeProject,
