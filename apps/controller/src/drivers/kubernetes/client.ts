@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import type { AgentOptions } from "node:https";
 import type {
   Cluster,
+  HttpLibrary,
   KubeConfig,
   ObservableMiddleware,
   RequestContext,
   ResponseContext,
 } from "@kubernetes/client-node";
-import { Agent, type buildConnector, type Dispatcher, ProxyAgent } from "undici";
+import { Agent, type buildConnector, type Dispatcher, fetch, ProxyAgent } from "undici";
 import { currentComputeAbortSignal } from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
 
@@ -101,10 +102,47 @@ export async function createKubernetesClientConfiguration(
   };
   const clientConfiguration = sdk.createConfiguration({
     baseServer: new sdk.ServerConfiguration(cluster.server, {}),
+    httpApi: nonRedirectingHttpLibrary(sdk),
     authMethods: { default: configuration },
     middleware: [cancellationMiddleware],
   });
   return { sdk, clientConfiguration, kubeConfig: configuration, server: cluster.server };
+}
+
+/**
+ * client-node's default HTTP library is undici fetch with redirects followed. A Pod
+ * proxy response is written by the Pod, and the API server passes some `Location`
+ * values through, so following one could send this client's credential to another
+ * API server path, or make it fetch another origin from the controller's network
+ * position (finding 1347). The Kubernetes API redirects no request the controller
+ * makes (the proxy's trailing-slash 301 needs a bare `/proxy` path), so every client
+ * returns a 3xx as received: client-node reports it as an ApiException with that
+ * status, and no second request is made.
+ */
+export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
+  return sdk.wrapHttpLibrary({
+    async send(request) {
+      const dispatcher = request.getDispatcher();
+      const response = await fetch(request.getUrl(), {
+        method: request.getHttpMethod().toString(),
+        body: request.getBody() ?? null,
+        headers: request.getHeaders(),
+        signal: request.getSignal() ?? null,
+        redirect: "manual",
+        ...(dispatcher === undefined ? {} : { dispatcher }),
+      });
+      const headers: Record<string, string> = {};
+      response.headers.forEach((value, name) => {
+        headers[name] = value;
+      });
+      return new sdk.ResponseContext(response.status, headers, {
+        text: () => response.text(),
+        binary: async () => Buffer.from(await response.arrayBuffer()),
+        // undici and the DOM typings disagree on the stream's chunk type; both are Uint8Array.
+        stream: () => response.body as ReadableStream<Uint8Array> | null,
+      });
+    },
+  });
 }
 
 /** How long a reused API connection may sit idle before the client closes it. */

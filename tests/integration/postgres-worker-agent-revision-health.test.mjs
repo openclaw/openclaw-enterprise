@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -64,6 +69,170 @@ test(
     }
   },
 );
+
+// Finding 1209: a file hung 22 minutes in teardown, past its job's timeout, naming nothing.
+// Node's test timeout does not cover after hooks, and pg's pool.end() waits for every
+// checked-out client, so one client a failed test never released hung the file. Each teardown
+// step now has a limit: the stuck step is named, and the database drop still runs, ending the
+// leaked session.
+test(
+  "worker fixture teardown names a pool that never ends and still drops the database",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // This test runs the teardown itself and expects it to fail, so the fixture registers its
+    // after hooks with this stand-in; the fallback runs them only if the test fails first.
+    const hooks = [];
+    let leaked;
+    let disposed = false;
+    context.after(async () => {
+      leaked?.release(true);
+      if (!disposed) {
+        for (const hook of hooks) {
+          await Promise.resolve()
+            .then(hook)
+            .catch(() => {});
+        }
+      }
+    });
+    const fixture = await setup(
+      { after: (hook) => hooks.push(hook) },
+      { disposeLimitsMs: { "pool end": 1_000 } },
+    );
+    leaked = await fixture.observerPool.connect();
+    // A terminated session errors twice (the server's notice, then the closed socket).
+    const terminated = new Promise((resolve) => leaked.on("error", resolve));
+
+    disposed = true;
+    await assert.rejects(fixture.database.dispose(), {
+      message: "revision fixture teardown: pool end did not finish within 1000 ms",
+    });
+    // The drop (WITH (FORCE)) ended the leaked client's session, which nothing else would.
+    const ended = await Promise.race([terminated, delay(10_000, undefined, { ref: false })]);
+    assert.ok(ended instanceof Error, "the database drop ended the leaked connection");
+    leaked.release(true);
+    leaked = undefined;
+  },
+);
+
+// Runs `body` as a test file of its own under the revision fixture (created with `fixtureOptions`),
+// needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
+// after 30 s naming the file as still running.
+async function runFixtureFile(t, body, { fixtureOptions, status: expectedStatus = 0 } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "abandoned.test.mjs");
+  const helper = new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url);
+  await writeFile(
+    file,
+    `import assert from "node:assert/strict";
+import test, { after } from "node:test";
+import { createWorkerRevisionFixtures, disposeStep } from ${JSON.stringify(helper.href)};
+const { cleanup } = createWorkerRevisionFixtures(import.meta.url${
+      fixtureOptions === undefined ? "" : `, ${JSON.stringify(fixtureOptions)}`
+    });
+// A pool.end() that never settles while its socket keeps the event loop alive.
+const abandonStep = () =>
+  assert.rejects(
+    disposeStep("pool end", 100, () => {
+      setInterval(() => {}, 1_000);
+      return new Promise(() => {});
+    }),
+    { message: "revision fixture teardown: pool end did not finish within 100 ms" },
+  );
+after(cleanup);
+${body}`,
+  );
+  // A test runner of its own (this file's context would make it skip the file), in its own
+  // process group, so a file that never exits can be killed with its test process.
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawn(process.execPath, ["--test", file], {
+    detached: true,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const killGroup = () => {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // The group has exited.
+    }
+  };
+  t.after(killGroup);
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  const limit = setTimeout(killGroup, 30_000);
+  const [status, signal] = await once(child, "close");
+  clearTimeout(limit);
+  assert.equal(signal, null, `the file was still running after 30 s:\n${output}`);
+  assert.equal(status, expectedStatus, output);
+  assert.match(output, /revision fixture teardown: pool end did not finish within 100 ms/);
+  return output;
+}
+
+// Finding 1223: a teardown step left running past its limit can hold its process open (a pool's
+// socket, a child), so the file sat idle after its last test until the runner's file timeout
+// killed it. A file that abandoned a step now exits once its own teardown is done. Runs the
+// fixture's real teardown step in its own test process.
+test("an abandoned teardown step that holds its process open does not keep the file alive", async (t) => {
+  const output = await runFixtureFile(
+    t,
+    `// A root after hook registered after cleanup, slower than the exit grace, still finishes.
+after(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  console.log("later after hook finished");
+});
+test("a stuck step is abandoned at its limit", async () => {
+  assert.equal(await disposeStep("worker stop", 5_000, () => "stopped"), "stopped");
+  await abandonStep();
+});
+`,
+  );
+  // Finding 1246: the exit grace starts once every root after hook has run, not at cleanup.
+  assert.match(output, /later after hook finished/);
+});
+
+// Finding 1246: a step a root after hook after cleanup abandons also ends the file.
+test("a teardown step abandoned by a later root after hook does not keep the file alive", async (t) => {
+  await runFixtureFile(
+    t,
+    `after(abandonStep);
+test("nothing is abandoned during the tests", () => {});
+`,
+  );
+});
+
+// Finding 1258: node:test skips the remaining after hooks after a failing one, so a root after
+// hook after cleanup that throws also skips the hook that starts the exit grace. The backstop
+// cleanup arms once a step was abandoned still ends the file, and its failure is still reported.
+test("a later root after hook that fails after an abandoned step does not keep the file alive", async (t) => {
+  const output = await runFixtureFile(
+    t,
+    `after(() => {
+  throw new Error("later after hook failed");
+});
+test("a stuck step is abandoned at its limit", abandonStep);
+`,
+    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+  );
+  assert.match(output, /later after hook failed/);
+});
+
+// Finding 1258: the same when the failing later hook is the one that abandoned the step.
+test("a later root after hook that abandons a step and fails does not keep the file alive", async (t) => {
+  const output = await runFixtureFile(
+    t,
+    `after(async () => {
+  await abandonStep();
+  throw new Error("later after hook failed");
+});
+test("nothing is abandoned during the tests", () => {});
+`,
+    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+  );
+  assert.match(output, /later after hook failed/);
+});
 
 // The worker is serial. A Compute wait that only saves a later pass asks whether
 // other Work is waiting and ends early when it is, so another Agent's deploy

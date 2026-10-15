@@ -149,8 +149,8 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read), then reads the
-selected resource once. The **Start with default Preset** button uses the listed
+lists only readable Presets (the list requires Namespace read; its items are
+summaries without the template), then reads the selected resource once. The **Start with default Preset** button uses the listed
 `default-codex` ID through that same exact-resource read. It applies
 variable-free templates immediately; customized variable definitions retain the
 ordinary chooser. If that chooser is
@@ -290,6 +290,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-14: The Preset list returns summaries. (fix-1323-lists)
 
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 

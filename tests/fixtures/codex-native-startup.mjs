@@ -1,0 +1,380 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import vm from "node:vm";
+import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+
+const nodeRequire = createRequire(import.meta.url);
+const transportToken = "fixture-transport-token";
+const tokenDigest = createHash("sha256").update(transportToken).digest("hex");
+const providerPlaceholder = "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN";
+const modelCredentials = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT_WORKSPACE_ID"];
+const transportCredentials = ["APP_SERVER_TOKEN", "APP_TOKEN_SHA"];
+
+export const timedOut = { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
+export function login(result = { status: 0 }) {
+  return { operation: "login", result };
+}
+export function probe(events, result = {}, timeout) {
+  return {
+    operation: "probe",
+    result: {
+      status: 0,
+      stdout: events.map((event) => JSON.stringify(event)).join("\n"),
+      ...result,
+    },
+    timeout,
+  };
+}
+
+export function readStatusFromHandler(handler, path = "/openclaw/plugin-runtime/status") {
+  let body = "";
+  handler(
+    { method: "GET", url: path },
+    {
+      writeHead() {},
+      end(chunk) {
+        body += chunk;
+      },
+    },
+  );
+  return JSON.parse(body);
+}
+
+export function readRuntimeStatusFromHandler(handler) {
+  return readStatusFromHandler(handler, "/openclaw/runtime/status");
+}
+
+// Substitute only native process output; execute the production login/probe
+// parser and readiness control flow unmodified. No native provider is contacted.
+export function createCodexStartup(
+  t,
+  {
+    native,
+    providerPat = false,
+    loginMode = providerPat ? "codex_pat" : "api_key",
+    transportToken: tokenMode = "raw",
+  },
+) {
+  const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const marker = join(directory, "ready");
+  const codexHome = join(directory, "codex");
+  writeFileSync(marker, "stale\n", { mode: 0o600 });
+  const diagnostics = [];
+  const idleTimers = [];
+  const retryTimers = [];
+  const boundaryErrors = [];
+  let statusHandler;
+  let appServerStarts = 0;
+  let nativeCalls = 0;
+  let clock = 0;
+  const absent = (environment, names) => {
+    for (const name of names) {
+      assert.equal(
+        Object.hasOwn(environment, name),
+        false,
+        `${name} must not reach this environment`,
+      );
+    }
+  };
+  const sandbox = {
+    URL,
+    setTimeout(callback, delay) {
+      retryTimers.push({ callback, delay });
+    },
+    console: {
+      error(message) {
+        diagnostics.push(message);
+      },
+    },
+    setInterval(callback, delay) {
+      idleTimers.push({ callback, delay });
+    },
+    process: {
+      env: {
+        CODEX_HOME: codexHome,
+        OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+        CODEX_LOGIN_MODE: loginMode,
+        ...(providerPat ? { OCE_CODEX_CREDENTIAL_SOURCE: "1" } : {}),
+        ...(loginMode === "codex_pat"
+          ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
+          : { OPENAI_API_KEY: "fixture-api-key" }),
+        OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
+        OPENCLAW_AGENT_REVISION_ID: "revision-runtime-auth-gate",
+        OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
+        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "pod-runtime-auth-gate",
+        OPENCLAW_PLUGIN_READY_MARKER: marker,
+        ...(tokenMode === "verifier"
+          ? { APP_TOKEN_SHA: tokenDigest }
+          : { APP_SERVER_TOKEN: transportToken }),
+        APP_SERVER_PORT: "4500",
+      },
+      on() {},
+      exit() {
+        assert.fail("startup must either remain unready or start the app server");
+      },
+    },
+    require(specifier) {
+      if (specifier === "node:perf_hooks") {
+        return { performance: { now: () => clock } };
+      }
+      if (specifier === "node:fs") {
+        return {
+          mkdirSync,
+          mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
+          rmSync,
+          readFileSync() {
+            throw new Error("no plugin runtime payload is configured");
+          },
+          writeFileSync,
+        };
+      }
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            statusHandler = handler;
+            return { listen() {} };
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawnSync(command, args, options) {
+            const step = native[nativeCalls++];
+            try {
+              assert.ok(step, "unexpected native invocation after script exhausted");
+              assert.equal(command, "codex");
+              assert.equal(args.includes("login") ? "login" : "probe", step.operation);
+              const childEnvironment = options.env ?? sandbox.process.env;
+              absent(childEnvironment, transportCredentials);
+              if (step.operation === "login") {
+                assert.equal(childEnvironment.CODEX_LOGIN_MODE, loginMode);
+                // The wrapper retains its transport input; native login must not inherit it.
+                assert.equal(
+                  tokenMode === "verifier"
+                    ? sandbox.process.env.APP_TOKEN_SHA
+                    : sandbox.process.env.APP_SERVER_TOKEN,
+                  tokenMode === "verifier" ? tokenDigest : transportToken,
+                );
+                assert.deepEqual(Array.from(args), [
+                  "-c",
+                  "cli_auth_credentials_store=file",
+                  "login",
+                  providerPat
+                    ? "status"
+                    : loginMode === "codex_pat"
+                      ? "--with-access-token"
+                      : "--with-api-key",
+                ]);
+                if (providerPat) {
+                  // Native login reads the provider's exact placeholder from typed, private storage.
+                  absent(childEnvironment, ["CODEX_ACCESS_TOKEN"]);
+                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
+                  const authFile = join(codexHome, "auth.json");
+                  assert.deepEqual(JSON.parse(readFileSync(authFile, "utf8")), {
+                    personal_access_token: providerPlaceholder,
+                  });
+                  assert.equal(statSync(authFile).mode & 0o777, 0o600);
+                } else {
+                  assert.equal(
+                    options.input,
+                    loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
+                  );
+                }
+              } else {
+                assert.ok(args.includes("exec"));
+                // Check the gate while the probe is running, before any app-server spawn.
+                assert.equal(appServerStarts, 0);
+                assert.equal(
+                  existsSync(marker),
+                  false,
+                  "stale readiness must be removed before probing",
+                );
+                // Probe isolation and wrapper credential clearing are separate boundaries.
+                absent(childEnvironment, modelCredentials);
+                absent(sandbox.process.env, modelCredentials);
+                if (providerPat) {
+                  assert.equal(childEnvironment.CODEX_HOME, codexHome);
+                  assert.ok(args.includes("cli_auth_credentials_store=file"));
+                }
+                assert.ok(options.timeout > 0 && options.timeout <= 30000);
+                if (step.timeout !== undefined) {
+                  assert.equal(options.timeout, step.timeout);
+                }
+                if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
+                  clock += options.timeout;
+                }
+              }
+              return step.result;
+            } catch (error) {
+              // The production probe catches process errors. Preserve fixture violations
+              // so a caught assertion can never masquerade as an expected failed probe.
+              boundaryErrors.push(error);
+              throw error;
+            }
+          },
+          spawn(command, args, options) {
+            assert.equal(command, "codex");
+            assert.ok(args.includes("app-server"));
+            // Plugin reviewer validation must observe the admitted model, not a native default.
+            assert.ok(args.includes('model="gpt-4.1"'));
+            assert.equal(args[args.indexOf("--ws-token-sha256") + 1], tokenDigest);
+            absent(options.env, [...transportCredentials, ...modelCredentials]);
+            if (providerPat) {
+              assert.equal(options.env.CODEX_HOME, codexHome);
+              assert.ok(args.includes("cli_auth_credentials_store=file"));
+            }
+            appServerStarts++;
+            return { on() {}, kill() {} };
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+  return {
+    diagnostics,
+    idleTimers,
+    retryTimers,
+    get appServerStarts() {
+      return appServerStarts;
+    },
+    start() {
+      vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
+    },
+    retryAfter(milliseconds) {
+      clock += milliseconds;
+      retryTimers[0].callback();
+    },
+    status() {
+      assert.ok(statusHandler);
+      return readRuntimeStatusFromHandler(statusHandler);
+    },
+    marker() {
+      return existsSync(marker) ? readFileSync(marker, "utf8") : undefined;
+    },
+    assertNativeScriptConsumed() {
+      if (boundaryErrors.length) {
+        throw boundaryErrors[0];
+      }
+      assert.equal(
+        nativeCalls,
+        native.length,
+        "every scripted native invocation must be consumed exactly once",
+      );
+    },
+  };
+}
+
+// Ordinary scenarios log in successfully and run one probe; native scripts retain
+// explicit control over login failures, retries, process results, and timeouts.
+export function checkCodexStartup(t, scenario) {
+  const runtime = createCodexStartup(t, {
+    ...scenario,
+    native: scenario.native ?? [login(), probe(scenario.events, scenario.result)],
+  });
+  runtime.start();
+  if (scenario.retryAfterMs !== undefined) {
+    assert.equal(runtime.appServerStarts, 0);
+    assert.equal(runtime.marker(), undefined);
+    assert.equal(runtime.status().runtimeFailure, undefined);
+    assert.equal(runtime.retryTimers.length, 1);
+    assert.equal(runtime.retryTimers[0].delay, 1000);
+    runtime.retryAfter(scenario.retryAfterMs);
+  }
+  assert.equal(
+    runtime.retryTimers.length,
+    scenario.retryAfterMs === undefined ? 0 : 1,
+    "no unexpected retry",
+  );
+  runtime.assertNativeScriptConsumed();
+  const expected = scenario.expect;
+  const probes = checkStartupDiagnostics(runtime, scenario);
+  const messages = runtime.diagnostics.filter((line) => !line.startsWith("{"));
+  const status = runtime.status();
+  assert.equal(status.revisionId, "revision-runtime-auth-gate");
+  assert.equal(status.container, "agent");
+  assert.equal(status.podUid, "pod-runtime-auth-gate");
+  if (expected.code === "READY") {
+    assert.equal(runtime.appServerStarts, 1);
+    assert.deepEqual(messages, []);
+    assert.equal(runtime.idleTimers.length, 0);
+    assert.equal(runtime.marker(), "ready\n");
+    assert.equal(status.runtimeFailure, undefined);
+  } else {
+    assert.equal(runtime.appServerStarts, 0);
+    assert.deepEqual(messages, ["Harness model authentication probe failed."]);
+    assert.equal(runtime.idleTimers.length, 1);
+    assert.equal(typeof runtime.idleTimers[0].callback, "function");
+    assert.ok(runtime.idleTimers[0].delay > 0);
+    assert.equal(runtime.marker(), undefined);
+    assert.equal(status.runtimeFailure.component, "agent");
+    assert.equal(status.runtimeFailure.check, expected.check);
+    assert.equal(status.runtimeFailure.code, expected.code);
+    assert.match(status.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
+    // Only a failed model probe carries a cause: a closed kind and a fixed
+    // token, never native output, provider text or the credential.
+    if (expected.code === "MODEL_PROBE_FAILED") {
+      assert.ok(expected.cause);
+    }
+    assert.deepEqual(status.runtimeFailure.cause, expected.cause);
+    assert.deepEqual(probes.at(-1)?.cause, expected.cause);
+    assert.deepEqual(
+      [probes.at(-1)?.providerStatus, probes.at(-1)?.providerCode],
+      [expected.provider?.status, expected.provider?.code],
+    );
+  }
+  assert.doesNotMatch(
+    JSON.stringify(status) + runtime.diagnostics.join("\n"),
+    /fixture-api-key|at-fixture-token|fixture-transport-token|openshell:resolve:env|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
+  );
+}
+
+function checkStartupDiagnostics(runtime, scenario) {
+  const expected = scenario.expect;
+  const json = runtime.diagnostics.filter((line) => line.startsWith("{")).map(JSON.parse);
+  const phases = json.filter(({ event }) => event === "runtime.startup_phase");
+  const probes = json.filter(({ event }) => event !== "runtime.startup_phase");
+  assert.deepEqual(
+    probes.map(({ code }) => code),
+    scenario.probeCodes ?? (expected.check === "login" ? [] : [expected.code]),
+  );
+  for (const [index, diagnostic] of probes.entries()) {
+    assert.equal(diagnostic.event, "codex.model_probe");
+    assert.equal(diagnostic.attempt, index + 1);
+    assert.ok(diagnostic.elapsedMs >= 0);
+  }
+  // Startup timing reports fixed phase names and outcomes only: no model,
+  // provider, credential or path value can appear in these lines.
+  assert.deepEqual(
+    phases.map(({ phase, outcome }) => [phase, outcome]),
+    expected.phases,
+  );
+  for (const phase of phases) {
+    assert.deepEqual(Object.keys(phase), [
+      "event",
+      "container",
+      "phase",
+      "outcome",
+      "ms",
+      "sinceStartMs",
+    ]);
+    assert.equal(phase.container, "agent");
+    assert.ok(Number.isInteger(phase.ms) && phase.ms >= 0);
+    assert.ok(phase.sinceStartMs >= phase.ms);
+  }
+  return probes;
+}

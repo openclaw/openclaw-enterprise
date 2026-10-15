@@ -43,14 +43,15 @@ func TestDevelopmentRepositoryCertificateTrustsOnlyItsBrokerHost(t *testing.T) {
 	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, DNSName: "git.other.svc.cluster.local"}); err == nil {
 		t.Fatal("certificate unexpectedly authorized another broker hostname")
 	}
-	for _, name := range []string{"repository-ca.key", "repository-tls.key"} {
-		info, err := os.Stat(filepath.Join(directory, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm()&0077 != 0 {
-			t.Fatalf("%s is not private", name)
-		}
+	info, err := os.Stat(filepath.Join(directory, "repository-tls.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0077 != 0 {
+		t.Fatal("repository-tls.key is not private")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "repository-ca.key")); !os.IsNotExist(err) {
+		t.Fatalf("repository CA key was written: %v", err)
 	}
 }
 

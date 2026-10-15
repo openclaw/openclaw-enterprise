@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-12"
-last_updated_session: "authoring-run/522f2037-41de-4f2e-ae7b-8b26a769aa47"
+updated: "2026-10-15"
+last_updated_session: "authoring-run/40b9b9bd-a17c-4a00-8101-d13ebd2facd5"
 ---
 
 # Agent Native Admin UI Flow
@@ -12,56 +12,76 @@ Deployment prepares enabled Kubernetes native admin policy in an immutable Agent
 
 ## Entry Points
 
-- Trigger: Ordinary deployment or guided provisioning admits a revision; Console renders an Agent detail tab, calls the native admin availability API, and opens the returned Agent URL.
+- Trigger: Deployment/provisioning admits a revision; Console opens native admin; the local first-Agent helper prepares a Compose/OpenShell Agent.
+- Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Source: `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 - Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getGatewayEndpoint` value.
 
 ## Flow
 
 ```mermaid
 graph TD
-  DEP["Deploy or provision Agent"] --> OPT{"Installation routing and Agent UI enabled?"}
-  OPT -->|yes| PREP["Compute prepares exact origin and native policy"]
+  LOCAL["Local first-Agent selects Control UI"] --> LOCAL2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
+  LOCAL2 --> DEP
+  DEP["Deploy or provision Agent"] --> OPT{"Installation/routing/UI enabled?"}
+  OPT -->|yes| PREP["Compute prepares native policy"]
   OPT -->|no| COPY["Preserve explicit opt-out"]
-  PREP -->|accepted| SNAP["Validate and freeze revision copy"]
-  PREP -->|setting conflict| REFUSE["Refuse admission without a new revision"]
+  PREP -->|accepted| SNAP["Validate and freeze revision"]
+  PREP -->|setting conflict| REFUSE["Refuse admission"]
   COPY --> SNAP
-  SNAP --> A["Console opens Agent detail tab"] --> B["GET exact Agent native-admin status"]
-  B --> C["Resolve OCC session and exact Agent administrator principal"]
+  SNAP --> A["Console opens Agent"] --> B["GET native-admin status"]
+  B --> C["Authenticate exact-Agent administrator"]
   C --> D{"Exact Agent exists?"}
   D -->|no| E["Return protected-route error"]
   D -->|yes| F{"Installation enabled?"}
   F -->|no| G["Return disabled"]
   F -->|yes| H["Call resolveNativeAdminAvailability"]
-  H --> I{"Active revision selection available?"}
-  I -->|no| J{"Authorized stopped Agent without an active revision?"}
-  J -->|yes| X["Return stopped without an origin"]
+  H --> I{"Active revision available?"}
+  I -->|no| J{"Stopped without active revision?"}
+  J -->|yes| X["Stopped; no origin"]
   J -->|no| Y["Return unavailable"]
   I -->|yes| K{"Agent desired running?"}
-  K -->|no| L["Return stopped with derived origin"]
-  K -->|yes| R2{"Newer revision replacing it on an exclusive Compute Driver?"}
+  K -->|no| L["Stopped; derived origin"]
+  K -->|yes| R2{"Exclusive replacement pending?"}
   R2 -->|yes| Y
-  R2 -->|no| M{"Native config and endpoint supported?"}
-  M -->|no| N["Return unsupported with derived origin"]
-  M -->|yes| O["Return available Agent URL"]
-  O --> P["Browser opens derived Agent host with shared OCE session cookie"]
-  P -->|HTTP| Q["OCC resolves host to exact Agent using platform state"]
+  R2 -->|no| M{"Native config supported?"}
+  M -->|no| N["Unsupported; derived origin"]
+  M -->|yes| CO{"Compute owner matches revision?"}
+  CO -->|no| CF["503 dependency error"]
+  CO -->|yes| EP{"Private endpoint supported?"}
+  EP -->|no| N
+  EP -->|yes| O["Available; Agent URL"]
+  O --> P["Browser opens Agent host with shared cookie"]
+  P -->|HTTP| Q["Resolve host to exact Agent"]
   P -->|WebSocket| V["OCC guards client socket during admission"]
   V --> Q
-  Q --> R{"Shared session and exact Agent administer still valid?"}
-  R -->|no| S["Reject request; audit exact-Agent authorization denial"]
-  R -->|yes| T["Resolve current active revision and supported native config"]
-  T --> U["OCC strips browser credentials and proxies HTTP to private gateway"]
-  T -->|WebSocket client reset| VB["Stop before gateway connection"]
-  T -->|WebSocket client connected with exact Origin| VC["Proxy 101 upgrade with revision lease"]
-  U -->|HTML preview with sandbox routing enabled| W["Browser loads public shell from separate preview origin"]
-  W --> Z["Envoy sandbox listener routes to Agent sandbox port"]
-  Z --> AA["Native UI delivers HTML into runtime-isolated iframe"]
+  Q --> R{"Session and exact-Agent grant valid?"}
+  R -->|no| S["Reject and audit denial"]
+  R -->|yes| T["Resolve revision, policy and Compute owner"]
+  T -->|owner mismatch| RF["Refuse before key/connection"]
+  T -->|matching owner| U["Strip browser credentials; proxy HTTP"]
+  T -->|WebSocket client reset| VB["No upstream connection"]
+  T -->|WebSocket, matching owner and exact Origin| VC["Proxy 101 upgrade with revision lease"]
+  U -->|Sandbox preview enabled| W["Load separate-origin public shell"]
+  W --> Z["Envoy routes to sandbox port"]
+  Z --> AA["Native UI delivers isolated iframe HTML"]
 ```
 
 ## Execution Trace
+
+### 0. Local first-Agent opts into native admin
+
+`scripts/first-agent.mjs:loadLocalInstallation`
+`scripts/first-agent.mjs:nativeConfiguration`
+`scripts/first-agent.mjs:ensureManagedConfiguration`
+
+The option requires launcher-owned Compose/OpenShell browser state. Because OCC
+assigns the Agent ID, the helper saves disabled Configuration generation 1,
+creates the Agent, derives its origin, and patches generation 2 before
+deployment. Generation 2 enables `controlUi`, pins its origins, and grants the
+`occ-workspace-files` trusted-proxy identity `operator.admin` with device
+auto-approval. An existing helper-owned name cannot change this selection.
 
 ### 1. Deployment admission prepares the Agent copy
 
@@ -102,71 +122,67 @@ The warning text tells operators that native admin access can change gateway sta
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getAdministerableActiveAgentRevision`
 
-The handler validates the human session and exact-Agent `administer`, then calls
-`getAdministerableActiveAgentRevision`. A stopped Agent without an active revision
-returns status-only `stopped`; a desired-running Agent awaiting activation returns
-`unavailable`. IAM or State outages remain `503`, and authorization denials remain
-audited `403`. The panel always selects the active revision independently of the
-viewed snapshot.
+`getNativeAdminStatus` validates the human session and delegates to the shared resolver. Exact-Agent authorization and existence precede even `disabled`. Enabled access requires a public origin/domain and `getAdministerableActiveAgentRevision`.
 
-With a revision selected, OCC derives the target. A stopped Agent includes that
-target with `stopped`; replacement by a newer exclusive revision is `unavailable`.
-The support predicate checks trusted-proxy auth, admin scopes, device approval,
-UI enablement, exact origins and unsafe flags. A failed predicate or missing clean
-private `wss:` endpoint returns `unsupported`. Only `available` resolves a private
-`gatewayBase`, which the browser response omits. See
-[availability semantics](../reference/agent-native-admin.md#authorization-and-availability).
+`ResourceConflictError` for an authorized stopped Agent without an active revision becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the active revision, independently of the viewed snapshot. Denials remain `403` with the human IAM audit.
+
+With an active revision, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, admin scopes/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+
+Then the selected Compute Driver's `id` and `implementation` must match `revision.compute`. Selection changes do not migrate revisions. A mismatch raises status `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Matching ownership proceeds to endpoint validation; a missing or unclean private `wss:` endpoint returns `unsupported`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
 ### 5. OCC derives the isolated Agent host
 
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
+`apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
 `deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs beneath the
 configured domain. `nativeAdminTarget` substitutes that host in `publicOrigin`,
 preserves its scheme and port, and selects `/`.
 
-The host hash is not reversible. Native-host admission resolves the host back to an exact Agent by checking existing Installation, Namespace, and Agent state for the derived host. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed. This flow does not add a persistent host registry.
+The first-Agent script imports this Node-only helper without requiring workspace dependencies.
 
-`nativeAdminGatewayHttpBase` accepts only a `wss:` endpoint without username, password, query, or hash, then converts it to `https:` while preserving authority and the Agent base path. This keeps workspace-file WSS behavior unchanged while defining the private HTTP base needed by the native UI bridge.
+Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
+
+`nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
 
 ### 6. Shared cookie admits the Agent host
 
 `apps/controller/src/auth/index.ts:createControllerAuth`
 
-When native admin is enabled, startup passes `nativeAdmin.sharedCookieDomain` to
-Better Auth as `OCC_AUTH_COOKIE_DOMAIN`, and Better Auth emits the ordinary OCE
-session cookie at that configured shared cookie parent domain. The controller
-validates that the console host and Agent host suffix fit that parent on
-DNS-label boundaries and rejects public suffixes, malformed domains, or values
-outside the parent. It does not infer a broader parent domain from the console
-or Agent hostname. When native admin is disabled, leftover shared-cookie-domain
-configuration is ignored and the console keeps the legacy host-only
-`openclaw_occ` cookie prefix and scope.
-
-A domain-scoped session cookie cannot use a host-only `__Host-` prefix. The controller keeps one canonical cookie name and scope so the browser does not choose between duplicate host-only and domain cookies during migration.
+With native admin enabled, startup validates the explicit shared cookie parent
+against console and Agent hosts on DNS-label boundaries, refusing malformed
+domains and public suffixes. Better Auth receives that parent as
+`OCC_AUTH_COOKIE_DOMAIN`; no broader parent is inferred. Disabled native admin
+ignores leftover shared-domain settings and retains the legacy host-only
+`openclaw_occ` name and scope. A domain-scoped cookie cannot use `__Host-`;
+one canonical name/scope avoids duplicate host-only and domain cookies.
 
 ### 7. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
-handling. For hosts beneath the configured native admin domain, that early
-intercept prevents the Agent origin from exposing console or controller API
-routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
-the selected IAM identity, resolves the requested host to the exact Agent,
-revalidates exact Agent `administer`, selects the current active revision, and
-validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+The `onRequest` interceptor runs before ordinary OCC routes, preventing Agent
+origins from exposing console/API routes. It authenticates the shared cookie,
+resolves the IAM identity and exact Agent from platform state, checks
+`administer`, selects the active revision and validates native support.
+Attributable denials retain the human/exact-Agent IAM audit.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state.
+Admission reads Better Auth once, reusing verified session metadata for expiry
+and attribution. Each WebSocket lease repeats admission against current state.
+Both Compute owner fields are rechecked: mismatch retains HTTP `403`, destroys
+new WebSockets without an HTTP response or gateway-key/connection effects, and
+closes existing sockets through failed leases. Stopped, replacing and unsupported
+configuration outcomes precede that comparison.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy canonicalizes a bounded path suffix, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from the gateway's user-photo route (`/api/users/<id>/avatar`) becomes an empty `404`: it means OpenClaw could not fetch a Gravatar fallback, which a dedicated Gateway without internet egress never can, and the UI shows initials for both. The native gateway never receives the OCE session cookie.
+The proxy bounds and canonicalizes the path, requires matching `Origin` for
+non-GET/HEAD, and strips cookies, service keys, forwarding/identity/scope headers
+and upstream `Set-Cookie`. It rejects service-worker scripts, rewrites
+same-upstream redirects to the Agent origin and adds `worker-src 'none'` to CSP
+before forwarding to the private HTTPS base. Only gateway user-photo
+(`/api/users/<id>/avatar`) `502`s become empty `404`s, allowing initials when
+Gravatar is unreachable. OCE cookies never reach the gateway.
 
 ### 8. OCC proxies native WebSocket upgrades
 
@@ -176,7 +192,16 @@ The API process intercepts `upgrade` before Fastify routing. It accepts only der
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminWebSocket`
 
-The WebSocket proxy requires a non-null exact Agent `Origin`, forwards a sanitized upgrade request to the private `https:` gateway base, and only connects the browser after the upstream returns `101`. `onConnect` appends `openclaw.agents.native_admin.websocket.connect`; `onClose` appends `openclaw.agents.native_admin.websocket.close`. The `websocket.connect` audit record includes `connectionId`; the matching `websocket.close` audit record reuses that `connectionId` and includes `closeReason`, whose value distinguishes lifecycle, revocation, dependency, client, upstream, and shutdown paths. A timer rechecks the shared-session admission path every 25 seconds, with each lease bounded to 5 seconds. Failed, denied, timed-out, or revision-changed lease checks close both sockets and preserve the IAM denial audit when authorization is the reason. An authorized reconnect uses the current active revision. Native chat does not renew the OCE session.
+The proxy requires a non-null exact Agent `Origin`, sanitizes the upgrade request,
+and connects the browser only after the private HTTPS gateway returns `101`.
+`onConnect` appends `openclaw.agents.native_admin.websocket.connect`;
+`onClose` appends `openclaw.agents.native_admin.websocket.close`. Both records
+share `connectionId`; `closeReason` distinguishes lifecycle, revocation,
+dependency, client, upstream and shutdown outcomes. Every 25 seconds a timer
+rechecks shared-session admission, bounding each lease to 5 seconds. Failed,
+denied, timed-out or revision-changed leases close both sockets, preserving IAM
+denial audits where applicable. Authorized reconnects select the current active
+revision. Native chat does not renew the OCE session.
 
 ### 9. Runtime renders HTML on a separate origin
 
@@ -209,13 +234,12 @@ The init container cannot write through the gateway's later mount path.
 - `unavailable` means a desired-running Agent has no active revision, or a newer revision on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old revision remains recorded as active without a workload.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
-- Browser requests should not contain native-admin exchange, bootstrap, callback, launch-code, state, verifier, or Agent-specific session-cookie traffic.
-- The native gateway should never observe the OCE session cookie; inspect sanitized proxy inputs when testing this boundary.
+- Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic. The native gateway must not receive the OCE cookie.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
-- A client TCP reset during pending WebSocket admission should leave the API process running. If exact-Agent authorization then denies the request, its attributable denial audit should still appear; an allowed request should not open an upstream connection after the client disconnects.
+- A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warning copy, available status, and opening the returned URL. Integration proof should cover shared-cookie admission, denied service API keys, unknown host denial, proxied asset loads, WebSocket reconnect, authorization lease renewal (the PostgreSQL suite shortens the 25-second interval), revision-change closure and reconnect, and a reversible native admin edit on a disposable Agent.
+- Browser tests cover panel visibility, warnings, availability, and URL opening. Integration proof covers shared-cookie admission, denied service keys and unknown hosts, assets, WebSocket leases and reconnects, and a reversible native edit.
 
 ## Related docs
 
@@ -231,12 +255,22 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-15 13:30: Merged deployment preparation with upstream local first-Agent and Compute-owner flows. (authoring-run/40b9b9bd-a17c-4a00-8101-d13ebd2facd5 - 128433480bdc186f460312eece38a8ad486ecdeb)
+
+- 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
+
+- 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
+- 2026-10-13 23:57: Documented the active revision Compute-owner comparison and status/proxy refusal before gateway effects. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
+
 - 2026-10-12 15:30: Refreshed first-deployment admission for the shared configuration helper on latest inspected upstream; Agent save remains unchanged. (authoring-run/522f2037-41de-4f2e-ae7b-8b26a769aa47 - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-12 14:04: Ported first-deployment admission onto inspected pure-main baseline with accompanying code changes. (authoring-run/c4085970-fd77-4614-a01b-95819dc08e6f - 80725162a946f80652b939a32a57ee4e922eeb5c)
 - 2026-10-12 12:20: Documented first-deployment Compute admission and provisioning origin preparation. (authoring-run/ed71af64-d4b4-45ac-9ad4-6c2d65a97d17 - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-08 03:40: Documented client reset handling during native-admin WebSocket admission and the denial-audit and upstream-connection ordering at inspected revision `002d0f796`. (authoring-run/1e4aaf85-2e38-434d-99c0-75881fe9991c - 002d0f79639a9c814eb1fa2799530516a6c90cde)
+
+- 2026-10-06 12:00: Traced the optional first-Agent Configuration generation that derives and allows the exact local native-admin origin before deployment. (authoring-run/0e6b1c8a-1723-4b20-ae51-08fa9457204a - 99641a7ab)
 
 - 2026-10-04 07:30: Only a missing active revision reports `unavailable`; IAM and other dependency outages return `503`, and close or refuse proxied requests as `dependency_failure`. (bh11-native-status)
 

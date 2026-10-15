@@ -86,7 +86,7 @@ input is not supported. The server validates document fields against the
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                                                                                                                                                                                                                                                            |
-| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs) with configuration generation, deployment status, and `*` on the active one.                                                                                                                                                                                                                                                               |
+| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                     |
 | `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                                                                                                                                                                                                                                                            |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
@@ -105,11 +105,11 @@ revision, not runtime health. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
 For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
-`agent get`, `agent list`, and `agent revisions` retain metadata and show
+`agent get` and `agent list` retain metadata and show
 `CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
-`configurationReadError`. Revision history leaves deployment status null for
-unreadable rows; if the Agent itself is unreadable, it skips all status reads
-and explains why on stderr. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
+`configurationReadError`. Revision history lists summaries, so it leaves
+deployment status null for an unreadable revision and names it on stderr; if
+the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
 `service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
 explicit zero is refused before output-file creation or API issuance.

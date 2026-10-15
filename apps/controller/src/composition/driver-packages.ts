@@ -326,7 +326,12 @@ export async function loadDriverPackage(
   }
   const packageDirectory = dirname(installedManifestPath);
   const contained = relative(packageDirectory, entryPath);
-  if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
+  if (
+    contained === "" ||
+    contained === ".." ||
+    contained.startsWith(`..${sep}`) ||
+    isAbsolute(contained)
+  ) {
     throw new Error(`${path}.package entry escapes its installed package root.`);
   }
   // Node loads `.mjs` as ESM without reading a package scope, and `.js` by the nearest

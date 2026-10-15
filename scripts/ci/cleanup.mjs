@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { spawn } from "node:child_process";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
+import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,6 +11,15 @@ import { withStateLock } from "./state-lock.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
+const activeCommands = new Set();
+
+// A caller that is about to hard-kill its descendant processes must stop these
+// groups first: killing a supervisor alone prevents its IPC-disconnect cleanup.
+function stopCleanupCommands() {
+  for (const stop of activeCommands) {
+    stop();
+  }
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -28,13 +38,91 @@ function parseArgs(argv) {
   return args;
 }
 
+// Every container engine and k3d command has a limit, so one that never returns cannot hold
+// the job's Cleanup lane step, or a test's database drop, until the job timeout. Past it the
+// command gets SIGTERM, then SIGKILL after a grace period. Tests shorten both.
+function positiveEnvMs(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function commandTimeoutMs() {
+  return positiveEnvMs("OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS", 5 * 60_000);
+}
+
+// DROP DATABASE ... WITH (FORCE) ends the database's sessions and returns in seconds.
+function databaseDropTimeoutMs() {
+  return Math.min(60_000, commandTimeoutMs());
+}
+
 function execFile(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(command, args, {
+    const processGroup = process.platform !== "win32";
+    const spawnOptions = {
       cwd: options.cwd ?? repositoryRoot,
       env: { ...process.env, ...(options.env ?? {}) },
-      stdio: options.stdio ?? ["ignore", "pipe", "pipe"],
-    });
+    };
+    // The supervisor remains the group leader until command and pipes settle.
+    // It also owns termination when this caller exits without running JS hooks.
+    const child = processGroup
+      ? fork(new URL("./cleanup-command.mjs", import.meta.url), [], {
+          ...spawnOptions,
+          detached: true,
+          execArgv: [],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+        })
+      : spawn(command, args, { ...spawnOptions, stdio: ["ignore", "pipe", "pipe"] });
+    let commandResult;
+    if (processGroup) {
+      child.on("message", (result) => {
+        commandResult = result;
+      });
+    }
+    let signalError;
+    let killSent = false;
+    const signalCommand = (signal) => {
+      if (signal === "SIGKILL") {
+        killSent = true;
+      }
+      try {
+        if (processGroup) {
+          // A live supervisor anchors the numeric group ID. Once it exits,
+          // never signal an ID that another process could have reused.
+          if (child.pid > 1 && child.exitCode === null && child.signalCode === null) {
+            process.kill(-child.pid, signal);
+          }
+        } else {
+          child.kill(signal);
+        }
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          signalError ??= error;
+        }
+      }
+    };
+    const stop = () => signalCommand("SIGKILL");
+    activeCommands.add(stop);
+    const timeoutMs = options.timeoutMs ?? commandTimeoutMs();
+    const graceMs = positiveEnvMs("OPENCLAW_CI_COMMAND_KILL_GRACE_MS", 5_000);
+    let timedOut = false;
+    let settled = false;
+    let killTimer;
+    let abandonTimer;
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      signalCommand("SIGTERM");
+      killTimer = setTimeout(() => {
+        signalCommand("SIGKILL");
+        // A descendant can escape the group while retaining these pipes. Bound
+        // their lifetime without signalling processes outside our owned group.
+        abandonTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish(child.exitCode, child.signalCode);
+        }, graceMs);
+      }, graceMs);
+    }, timeoutMs);
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -43,15 +131,63 @@ function execFile(command, args, options = {}) {
     child.stderr?.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    child.on("error", reject);
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolvePromise({ stdout, stderr });
-      } else {
+    function finish(code, signal, spawnError) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      activeCommands.delete(stop);
+      clearTimeout(timeoutTimer);
+      clearTimeout(killTimer);
+      clearTimeout(abandonTimer);
+      // Close can precede the grace timer if surviving descendants closed their
+      // output. They still belong to the timed-out command and must be stopped.
+      if (timedOut && !killSent) {
+        signalCommand("SIGKILL");
+      }
+      let error = spawnError;
+      if (processGroup && !error) {
+        if (commandResult) {
+          ({ code, signal } = commandResult);
+          if (commandResult.error) {
+            error = Object.assign(new Error(commandResult.error.message), commandResult.error);
+          }
+        } else {
+          error = new Error(
+            `Cleanup command supervisor exited before reporting a result (${signal ?? code})`,
+          );
+        }
+      }
+      if (timedOut) {
+        error = new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs} ms`);
+      } else if (!error && code !== 0) {
         const message = stderr.trim() || stdout.trim() || signal || String(code);
-        reject(new Error(`${command} ${args.join(" ")} failed: ${message}`));
+        error = new Error(`${command} ${args.join(" ")} failed: ${message}`);
+      }
+      if (error) {
+        Object.assign(error, { stdout, stderr });
+        if (signalError) {
+          error.cause = signalError;
+        }
+        reject(error);
+      } else {
+        resolvePromise({ stdout, stderr });
+      }
+    }
+    child.on("error", (error) => {
+      if (child.pid === undefined) {
+        finish(null, null, error);
+      } else {
+        // A failed kill is not a failed spawn: keep the pipe-abandonment bound.
+        signalError ??= error;
       }
     });
+    // Exit precedes pipe drain. Keep the deadline and escalation alive until
+    // close, even when the wrapper has exited but its descendants have not.
+    child.on("close", (code, signal) => finish(code, signal));
+    if (processGroup) {
+      child.send({ command, args });
+    }
   });
 }
 
@@ -187,7 +323,7 @@ async function cleanupDatabase(resource, state) {
       "-c",
       `DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`,
     ],
-    { env: { OCC_POSTGRES_PORT: String(compose.port) } },
+    { env: { OCC_POSTGRES_PORT: String(compose.port) }, timeoutMs: databaseDropTimeoutMs() },
   );
 }
 
@@ -314,12 +450,21 @@ async function cleanupResource(resource, state) {
       assertResourceOwner(resource, state);
       await cleanupKeycloak(resource, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" });
       break;
+    case laneImagesResourceKind:
+      assertResourceOwner(resource, state);
+      await restoreLaneImages(resource, {
+        execFile,
+        docker: process.env.OCC_DOCKER_BIN ?? "docker",
+      });
+      break;
     default:
       throw new Error(`Unknown cleanup resource kind: ${resource.kind}`);
   }
 }
 
-async function cleanupResourceIds(statePath, resourceIds) {
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
+async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {
   const path = resolve(statePath);
   if (!isAbsolute(path)) {
     throw new Error("Cleanup state path must resolve to an absolute path.");
@@ -328,7 +473,9 @@ async function cleanupResourceIds(statePath, resourceIds) {
     return;
   }
   // A test may prepare and clean databases from its own process beside the runner.
-  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds));
+  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds), {
+    timeoutMs: lockTimeoutMs,
+  });
 }
 
 async function stateExists(path) {
@@ -385,7 +532,7 @@ async function main() {
   await cleanupState(args.state);
 }
 
-export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster };
+export { cleanupResourceIds, cleanupState, deleteOwnedK3dCluster, stopCleanupCommands };
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {

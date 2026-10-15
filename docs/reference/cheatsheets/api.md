@@ -98,7 +98,7 @@
 
 ### Agent revisions
 
-- [`listAgentRevisions`](../api.md#get-namespacesnamespaceidagentsagentidrevisions): List authorized immutable revisions for one exact Agent.
+- [`listAgentRevisions`](../api.md#get-namespacesnamespaceidagentsagentidrevisions): List authorized immutable revision summaries for one exact Agent, newest first.
 - [`getAgentRevision`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionid): Get an exact authorized immutable Agent revision.
 
 ### Agent runtime credentials
@@ -173,7 +173,7 @@
 
 ### Presets
 
-- [`listPresets`](../api.md#get-namespacesnamespaceidpresets): List readable Presets in one Namespace.
+- [`listPresets`](../api.md#get-namespacesnamespaceidpresets): List readable Preset summaries in one Namespace.
 - [`getPreset`](../api.md#get-namespacesnamespaceidpresetspresetid): Read one exact Namespace-owned Preset.
 - [`createPreset`](../api.md#post-namespacesnamespaceidpresets): Create a reusable Namespace-owned Agent Preset.
 - [`updatePreset`](../api.md#patch-namespacesnamespaceidpresetspresetid): Update a Preset without changing existing Agents.

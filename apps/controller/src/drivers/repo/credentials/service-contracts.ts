@@ -65,6 +65,10 @@ export interface ServiceLimits {
   readonly gitFetchInputBytes: number;
   readonly gitPushInputBytes: number;
   readonly gitResponseBytes: number;
+  readonly gitFetchResponseBytes: number;
+  readonly gitFetchStallMs: number;
+  readonly gitFetchFirstHeaderMs: number;
+  readonly gitFetchExchangeMs: number;
   readonly apiInputBytes: number;
   readonly apiResponseBytes: number;
   readonly controlBodyBytes: number;
@@ -74,6 +78,7 @@ export interface ServiceLimits {
   readonly inputMs: number;
   readonly firstHeaderMs: number;
   readonly exchangeMs: number;
+  readonly maxExchangeMs: number;
   readonly providerActionMs: number;
   readonly shutdownGraceMs: number;
   readonly credentialMarginMs: number;

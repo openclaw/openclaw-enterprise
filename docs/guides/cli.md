@@ -35,7 +35,9 @@ fi
 
 Ensure `$HOME/.local/bin` is on `PATH`. On Linux, use
 `sha256sum "$OCC_ASSET"` in place of `shasum -a 256` if `shasum` is not
-installed. The printed CLI version should match the selected release.
+installed. The printed CLI version should match the selected release. Use
+the release your controller runs, and upgrade `occ` with it: an older `occ` can
+misread newer API responses, such as paged revision lists.
 
 To build from a trusted source checkout instead, run this from its root to
 install `occ` on your Go binary path:
