@@ -6,14 +6,15 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 
 ## Checks and gates
 
-| Checks                                                                                                                                                       | When they run                                                         | Blocks merge               | Blocks publication                                                            | Blocks deployment                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------- | --------------------------------------- |
-| [Selected CI suites, including integration tests](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                  | PRs, pushes to `main`, merge groups, manual CI                        | Yes, through `CI Required` | Container and CLI releases require successful exact-source main-push CI       | No automatic Agent/platform gate        |
-| [First Agent Smoke](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                                                | Code/configuration PRs, pushes to `main`, merge groups, and manual CI | No; outside `CI Required`  | Yes, for container and CLI releases: the entire main-push CI run must succeed | No automatic Agent/platform gate        |
-| [QA advisory: Codex model/UI and Calendar, OpenShell, local installation](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml) | Every same-repository PR except Dependabot; manual dispatch           | No                         | No                                                                            | No                                      |
-| [Full Integration](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)                                                   | Manual dispatch                                                       | No                         | No                                                                            | No                                      |
-| [Native controller/runtime image checks on AMD64 and ARM64](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-check.yml)           | Container preparation or manual image checks                          | No                         | Yes, for container publication                                                | No automatic Agent/platform gate        |
-| [Documentation deployment build](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                                           | Every `main` push or manual Pages dispatch on `main`                  | No                         | No                                                                            | Yes, for that documentation update only |
+| Check                             | When it runs                                                   | Blocks merge               | GitHub Actions                                                                                   |
+| --------------------------------- | -------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| CI                                | PRs, pushes to `main`, merge groups, manual                    | Yes, through `CI Required` | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
+| First Agent Smoke (job within CI) | Code/configuration PRs, pushes to `main`, merge groups, manual | No; outside `CI Required`  | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
+| QA Matrix Advisory                | Every same-repository PR except Dependabot; manual             | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)        |
+| Full Integration                  | Manual; lane-specific branch and credential requirements apply | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)   |
+| Check Native Container Images     | Manual, manual CI, or container publication preparation        | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-check.yml)    |
+| Observability Demo                | Relevant PRs and `main` pushes; merge groups; manual           | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Every `main` push; manual on `main`                            | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)         |
 
 Docs-only PRs run static checks without product tests. Test-only PRs select
 affected CI suites; other changes and main pushes run all ordinary CI test lanes. QA advisory and
@@ -104,7 +105,7 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 ### Publication configuration
 
 Protect `main`, require `CI Required`, and review workflow changes. Publication
-requires successful exact-source main-push CI. Repository writers can dispatch;
+requires the entire exact-source main-push CI run to succeed, including First Agent Smoke. Repository writers can dispatch;
 there is no second-person approval or approval-comment requirement.
 
 Create a separate `container-publish` environment: no required reviewers or wait
