@@ -1119,7 +1119,9 @@ test("full-integration runs kernel- and sandbox-sensitive same-SHA lanes on ci.y
     (lane) =>
       lane === "postgres-auth" || lane.startsWith("k3d-fixture-") || lane === "k3d-observability",
   );
-  assert.ok(pinned.includes("postgres-auth"));
+  for (const lane of ["postgres-auth", "k3d-observability"]) {
+    assert.ok(pinned.includes(lane), lane);
+  }
   for (const lane of pinned) {
     assert.equal(runnerFor(lane), ciRunners.get(lane), lane);
   }

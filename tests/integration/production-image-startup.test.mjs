@@ -235,8 +235,9 @@ test(
 
     let failure;
     try {
-      // --init: the image's ENTRYPOINT ["node"] would otherwise run node as PID 1, which
-      // ignores SIGTERM. The 60 s timeout covers a slow container start (finding 1379).
+      // --init: on a timeout, docker forwards execFile's SIGTERM to the container. With the
+      // image's ENTRYPOINT ["node"], node is PID 1 and ignores it, leaving the container
+      // running. 60 s leaves room for a slow container start (finding 1379).
       await runDocker(
         [
           "run",
