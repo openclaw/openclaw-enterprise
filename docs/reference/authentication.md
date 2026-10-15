@@ -102,7 +102,7 @@ not require Origin, and an invalid key never falls back to a session cookie.
 | `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
 
-Human-session Namespace IAM writes retain assigning authority through their transaction; see
+Human-session IAM writes retain assigning authority through COMMIT; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
 
 The `sessionKey` names the current session, stays stable across reads, and changes

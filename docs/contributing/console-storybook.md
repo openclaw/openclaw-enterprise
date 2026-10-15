@@ -75,11 +75,10 @@ Stories reach error states through real controls after loading fixture data.
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
 
-In **Components/Native admin → Administrator Needs Assignment**, follow the
-hint, assign the fixture Principal `platform-administrator` in Share Agent, then
-select **Refresh access**. The launch link appears in the same tab. Compare
-**Disabled and hidden** and **Denied and hidden**; neither shows the assignment
-hint.
+In **Components/Native admin → Administrator Needs Assignment**, assign
+`platform-administrator` in Share Agent, then **Refresh access**. The launch link
+appears. Compare **Disabled and hidden** and **Denied and hidden**; neither shows
+the hint.
 
 ## Return navigation
 

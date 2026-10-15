@@ -119,26 +119,11 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` advances request generation and requests `GET /api/auth/session`.
-First loads show loading. Return navigation/Refresh can restore up to 16 views
-keyed by route, Namespace and session owner during reads. Passwords and
-discovery state clear first. Controls stay inert until admission;
-navigation remains available.
+First loads show loading. Return/Refresh retains up to 16 views by route, Namespace and session. Passwords/discovery clear first; controls remain inert until admission while navigation stays available.
 
-`apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
-abort signal through JSON and text body consumption. After headers arrive,
-cancellation retains the signal's reason and socket failures reach the caller's
-interrupted-read recovery. Only JSON syntax failures become invalid-response
-errors; a failed body never causes an automatic replay.
+`apps/controller/src/console/api-client.mjs:createApiClient` keeps its abort signal through JSON/text body reads. Cancellation preserves its reason; socket failures reach interrupted-read recovery. Only JSON syntax failures become invalid-response errors. Failed bodies are never replayed.
 
-Retained views keep DOM, handlers and draft callbacks. Returning rereads GET
-dependencies and compares outcomes/user identity. `readSuccess` records data and pagination metadata without request IDs;
-`readFailure` records HTTP status/code without request IDs. Unchanged outcomes
-reactivate; recovery, changed failures or a newly readable Namespace rebuild.
-A cached tab-local `403` avoids another audited request until Retry. Session/page
-admission precedes reuse. Pending reads, transport/malformed failures, expiry,
-password input and mutations prevent reuse. `revalidate: false` GETs skip replay.
-Successful read-only catalog/diagnostic POSTs preserve views. Refresh rebuilds.
-Debug disclosures retain expanded state after this validation.
+Views retain DOM, handlers and drafts. Return revalidates GET outcomes and user identity. `readSuccess` stores data/pagination signatures; `readFailure` stores HTTP status/code; both omit request IDs. Matching outcomes reactivate; recovery, changed failures or a newly readable Namespace rebuild. Cached tab-local `403` avoids repeated audits until Retry. Admission precedes reuse. Pending/transport/malformed reads, expiry, passwords and mutations prevent reuse. `revalidate: false` skips replay; read-only catalog/diagnostic POSTs preserve views. Refresh rebuilds. Debug disclosures stay expanded.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.

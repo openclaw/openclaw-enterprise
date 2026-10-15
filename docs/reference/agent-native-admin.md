@@ -1,8 +1,8 @@
 # Agent native admin UI
 
-Agent OpenClaw access lets an explicitly assigned person open a deployed Gateway with their assigned runtime permissions. OCE decides who may enter and which configured OpenClaw role they receive. OpenClaw defines and enforces that role's permissions; each Agent's files, plugins and provider accounts remain shared.
+Assigned people open Gateways with configured OpenClaw permissions. OCE selects assignments; OpenClaw enforces permissions. Files, plugins and provider accounts remain shared.
 
-The feature is disabled by default. A disabled status requires exact Agent `administer` permission but no runtime assignment. When enabled, the console shows **OpenClaw** on the Agent detail tabs for callers with exact Agent `use` permission and a direct person/Agent `runtimeRole` assignment. Installation administrators without access see an assignment hint and **Refresh access**. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. The **OpenClaw** card opens the Agent host with the OCE session cookie. OCC resolves the Agent and proxies native HTTP and WebSockets. Installation administrators without access see a Sharing hint and **Refresh access**.
 
 ## Who can open it
 
@@ -10,7 +10,7 @@ Opening OpenClaw requires a human session, Agent `use` permission and an explici
 
 Existing human administrators receive explicit `platform-administrator` assignments when runtime roles are introduced, including effective Installation, Namespace-group and exact-Agent grants. Denied administrators and service identities are excluded. These assignments can be downgraded or removed independently of OCE administration; removal does not restore access through the old administrator grant. Group-derived assignments become individual assignments managed through Sharing.
 
-Kubernetes always offers `platform-administrator`, with full native access. Without configured `gateway.roles`, this assignment retains the existing shared administrator transport and profile, including on already-running Gateways. With configured roles it uses the person's native profile and a Driver-owned administrator policy. Other assigned roles require configured definitions and qualified human transport. The reserved `platform-administrator` policy cannot be overridden.
+Kubernetes always offers reserved `platform-administrator` with full native access. Without `gateway.roles`, it retains the shared administrator transport/profile on running Gateways. Configured roles use the person's profile and Driver-owned administrator policy. Other roles need definitions and qualified human transport. The reserved policy cannot be overridden.
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
 
@@ -24,7 +24,7 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running, have an active revision owned by the selected Compute Driver (matching both ID and implementation), and provide the Compute Driver's human-access descriptor for the selected role and active revision.
-- Configured roles require the verified proxy-role admission bridge from the [runtime recipe](../../deploy/runtime/README.md). An unpatched runtime rejects that role configuration. Save `gateway.roles` with a default and named definitions before assigning a configured role; deploy it before opening OpenClaw with that role. The explicit built-in administrator path without `gateway.roles` retains the existing transport and does not require that bridge. Role definitions must use canonical native agent IDs and de-duplicated scope/agent arrays; any normalization mismatch fails admission through the policy digest check.
+- Configured roles require the [verified proxy-role bridge](../../deploy/runtime/README.md); unpatched runtimes reject them. Save `gateway.roles` with a default and named definitions before assignment, then deploy before opening OpenClaw. The built-in administrator needs no bridge without `gateway.roles`. Definitions require canonical native agent IDs and de-duplicated scope/agent arrays; normalization mismatches fail the policy digest check.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval with every scope used by the selected role. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 The local Compose-control-plane profile enables this capability only when both
@@ -50,21 +50,9 @@ The response reports:
 
 A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
 
-Changing the selected Compute Driver does not migrate existing revisions. After
-lifecycle and native-configuration checks, OCC compares the selected Driver's ID
-and implementation with the active revision's recorded owner. A mismatch returns
-`503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
-private gateway-key lookup or transport. Agent-host HTTP retains its existing
-`403` refusal. WebSocket admission destroys the client socket without an HTTP
-response, before gateway-key lookup or connection; a mismatch during a WebSocket
-lease closes the connection through the existing failed-lease path. Matching ownership retains
-normal access. Earlier stopped, replacing and unsupported-configuration outcomes
-keep their precedence.
+Changing Compute selection does not migrate revisions. After lifecycle and native-configuration checks, OCC requires the selected Driver ID and implementation to match the active revision. A mismatch returns status `503 DEPENDENCY_UNAVAILABLE` before endpoint, key or transport lookup. Agent-host HTTP returns `403`; WebSocket admission destroys the socket without an HTTP response, and an existing socket closes on its next lease check. Earlier stopped, replacing and unsupported outcomes retain precedence.
 
-The mismatch is not transient, so refreshing does not clear it. Each API process
-logs one `native_admin.compute_owner_mismatch` warning per revision and selected
-Driver, naming both Driver IDs and implementations. To restore access, select the
-revision's Compute Driver again, with the same ID and implementation.
+Refreshing cannot resolve a mismatch. Each API process logs one `native_admin.compute_owner_mismatch` warning per revision and selected Driver, naming both owners. Restore the revision's Driver ID and implementation.
 
 ## Agent host identity
 
@@ -98,9 +86,11 @@ With configured roles, the native Gateway sees `oce:<Principal ID>`, a stable ac
 
 For native authenticated HTTP, creating a profile or changing its role retires the authority captured before acquisition. That request returns `401` before the handler runs; a separate request uses the committed role. OCC never automatically replays an HTTP write. WebSocket admission acquires authority after role publication.
 
-Assignable role definitions live in the saved `gateway.roles` Configuration; native admission uses the active revision’s immutable definitions; the Driver owns the built-in administrator policy. The person-to-role mapping lives in the exact Agent's OCE AccessBinding `runtimeRole` field. A native role edit does not change that assignment; the next proxied admission reapplies the OCE role. Profiles linked to different OCE people cannot admit them as one person. `GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` returns saved Configuration ID/generation, assignable names and permission summaries, desired runtime state, and optional active-revision summaries. This works before deployment and while stopped. An Installation administrator changes an assignment with `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`, supplying `runtimeRole` and the catalog’s `configuration` as `runtimeRoleConfiguration`; deleting that binding revokes entry. Creation also requires `runtimeRoleConfiguration` when selecting a role. A stale Configuration ID or generation returns `409`; unknown roles return `400`. Saved role definitions take effect only after deployment; an assignment absent from the active catalog fails closed. There is at most one assignment per person/Agent. Groups, service identities, broad bindings and Installation administration do not select a native role.
+Saved `gateway.roles` defines assignable roles; the active revision defines deployed policy. Compute owns the built-in administrator policy. The exact human/Agent AccessBinding stores `runtimeRole`. Native edits cannot change that assignment: the next admission reapplies it. Profiles linked to multiple OCE people cannot admit them as one person.
 
-The Kubernetes Driver configures `gateway.auth.trustedProxy.managedIdentityPrefixes: ["oce:"]` and `managedIdentities: ["occ-workspace-files"]`. The runtime bridge accepts role assignments only for identities in this declared scope and rejects profiles linked to more than one managed identity. Selectors must be nonempty, trimmed lowercase values; at least one prefix or exact identity is required when role headers are enabled. The Driver rejects conflicting selectors.
+`GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` returns Configuration ID/generation, role names and permission summaries, desired runtime state and optional active-revision summaries, including before deployment and while stopped. An Installation administrator creates or changes an assignment using `runtimeRole` and the catalog's `configuration` as `runtimeRoleConfiguration`. Changes use `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`; deletion revokes entry. A stale Configuration ID/generation returns `409`; unknown roles return `400`. Definitions require deployment; roles absent from the active catalog deny entry. Only one assignment per person/Agent is allowed. Groups, services, broad bindings and Installation administration select no native role.
+
+Kubernetes configures `gateway.auth.trustedProxy.managedIdentityPrefixes: ["oce:"]` and `managedIdentities: ["occ-workspace-files"]`. The bridge refuses undeclared identities and profiles with multiple managed identities. Selectors must be nonempty, trimmed lowercase values; role headers require at least one prefix or exact identity. Compute rejects conflicts.
 
 Kubernetes retains the separate `occ-workspace-files` identity with the reserved `oce-service` role for server operations. The role catalog excludes that reserved role. OCE core consumes opaque role names and Compute descriptors; native profile details stay in the runtime and Driver.
 

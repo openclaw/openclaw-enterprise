@@ -129,7 +129,7 @@ only on the new version draft; Logs only on a version.
 [repository access](../../reference/console/create-and-deploy.md#create-an-agent).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.
-Returning from another page rechecks completed reads, so recovered panels refresh.
+Returning rechecks reads and refreshes recovered panels.
 
 ### Unreadable saved settings
 
@@ -260,9 +260,8 @@ When enabled by the Installation and permitted for your account, **OpenClaw**
 provides **Refresh access** and **Open OpenClaw**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
 
-If you are an Installation administrator without OpenClaw access, the card directs
-you to assign your Principal ID a role in **Share Agent** below. After saving,
-select **Refresh access** to open it in the same tab.
+Installation administrators without access see a hint: assign your Principal ID
+a role in **Share Agent**, save, then **Refresh access**.
 
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)

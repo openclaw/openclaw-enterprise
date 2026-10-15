@@ -242,22 +242,20 @@ native Configuration or an AgentRevision.
 
 `getGatewayEndpoint` derives
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
-API access. Preparation and activation reconcile an owned `HTTPRoute` in the
+API access. Preparation/activation reconcile `HTTPRoute` ownership in the
 Gateway's namespace (control plane for dedicated, data plane for embedded).
-Both rules use the private hostname, configured Gateway's `https` listener and
-same-namespace gateway Service:
+Both rules use that hostname, the `https` listener and same-namespace Service:
 
 - The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
   the suffix for service HTTP and WebSocket requests.
 
 Human access uses `wss://<hostname>/people/namespaces/<namespaceId>/agents/<agentId>`
-and a `-people` HTTPRoute preserving verified identity, role, policy digest and
-scopes. Absent or unaccepted human routes cannot match the service prefix. Native
-device auto-approval must explicitly cap every selected-role scope.
+and a `-people` HTTPRoute preserving identity, role, policy digest and scopes.
+Missing/unaccepted human routes cannot match the service prefix. Device
+auto-approval must cap every selected-role scope.
 
-Browser requests stay within that human base; Envoy and gateway Services remain
-private. See
+Browser requests stay within that base. Gateways remain private; see
 [Agent native admin UI](../../agent-native-admin.md#agent-host-identity).
 Namespaces receive the Gateway membership label used by `allowedRoutes`.
 Runtime-enabled dedicated revisions also receive a `/node` route and a

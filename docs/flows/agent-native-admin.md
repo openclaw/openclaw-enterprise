@@ -87,21 +87,9 @@ auto-approval. An existing helper-owned name cannot change this selection.
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail requests `${path}/native-admin` with the panel hidden. Disabled
-responses and ordinary-user denials keep it hidden. Denied Installation
-administrators see a self-assignment hint and **Refresh access**. Stopped,
-unavailable and unsupported responses show feedback; read failures retain the
-error and Refresh button. Only `available` with an Agent URL exposes **Open
-OpenClaw**, opening a new tab with `noopener noreferrer`.
+Agent detail requests `${path}/native-admin`. Disabled responses and ordinary-user denials hide the panel. Denied Installation administrators see self-assignment guidance and **Refresh access**. Other states show feedback; only `available` exposes **Open OpenClaw**, opening with `noopener noreferrer`.
 
-Tab `sessionStorage` caches audited `403` paths per session owner.
-**Refresh access** forgets only this path and retries, allowing a new assignment
-to take effect. Logout, sign-in or a new tab asks afresh. The [shared page
-cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back
-revalidation. `updateCurrentAgent` refreshes when polling or **Refresh
-deployment** observes changed `activeRevisionId` or `desiredRuntimeState`; a
-pending read queues one further read. The panel warns that native edits do not
-update durable OCE Configuration.
+Tab `sessionStorage` caches audited `403` paths per session owner. **Refresh access** forgets this path and retries; logout, sign-in or a new tab asks afresh. The [page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Polling or **Refresh deployment** refreshes changed `activeRevisionId` or `desiredRuntimeState`; a pending read queues one retry. Native edits do not update OCE Configuration.
 
 ### 2. OCC protects the availability route
 
@@ -143,13 +131,9 @@ Then the selected Compute Driver ID and implementation must match `revision.comp
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/` as the entrypoint.
+`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs under the configured domain. `nativeAdminTarget` substitutes that host in `publicOrigin` and returns `/`. The first-Agent script imports the Node-only helper without workspace dependencies.
 
-The first-Agent script imports this Node-only helper without requiring workspace dependencies.
-
-Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
-
-`nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
+Host admission checks existing platform state without a registry. Unknown hosts, wrong suffixes, deleted Agents and non-unique matches deny access. `nativeAdminGatewayHttpBase` converts a clean `wss:` endpoint to `https:` preserving authority and base path; userinfo, query and hash are refused. Workspace WSS routing is unchanged.
 
 ### 5. Shared cookie admits the Agent host
 
@@ -165,19 +149,11 @@ Shared-domain cookies cannot use a `__Host-` prefix. One canonical cookie name a
 
 `onRequest` intercepts native Agent hosts before OCC routing, preventing those origins from exposing console/API routes. OCC authenticates the shared session, resolves the exact Agent and IAM principal, revalidates `use` and the assignment, then checks the active revision and native configuration. Denials retain attributable human IAM audit evidence.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state. The shared resolver also
-rechecks both Compute owner fields. A mismatch retains the existing `403` refusal
-for Agent-host HTTP. WebSocket admission destroys the client socket without an
-HTTP response, before gateway-key lookup or connection. A failed lease closes
-existing sockets. Stopped, replacing and unsupported-configuration branches still precede
-the ownership comparison.
+Admission returns the verified identity and session once for expiry checks and attribution. Each WebSocket lease repeats admission and Compute-owner checks. A mismatch returns Agent-host HTTP `403`, destroys new WebSockets before key lookup or connection, and closes existing sockets through failed-lease handling. Earlier lifecycle and unsupported-configuration outcomes retain precedence.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
-The HTTP proxy bounds the path suffix, rejects missing or nonmatching `Origin` on non-GET/HEAD requests, strips browser cookies, service keys, forwarding headers, native identity, native scopes, and upstream `Set-Cookie`, rejects service-worker script requests, rewrites same-upstream `Location` values to the Agent origin, appends `worker-src 'none'` to proxied Content Security Policy, and forwards to the private `https:` gateway base. A `502` from the gateway's user-photo route (`/api/users/<id>/avatar`) becomes an empty `404`: it means OpenClaw could not fetch a Gravatar fallback, which a dedicated Gateway without internet egress never can, and the UI shows initials for both. The native gateway never receives the OCE session cookie.
+The proxy bounds paths to the Agent base, checks exact `Origin` for writes, strips browser credentials, forwarding/native authority headers and upstream `Set-Cookie`, and forwards to private HTTPS. It rewrites same-upstream redirects, refuses service-worker scripts and adds CSP `worker-src 'none'`. A user-photo `/api/users/<id>/avatar` upstream `502` becomes an empty `404`: the offline Gateway cannot fetch Gravatar, so the UI shows initials. The native Gateway never receives the OCE cookie.
 
 ### 7. OCC proxies native WebSocket upgrades
 
@@ -199,32 +175,13 @@ The proxy requires an exact, non-null Agent `Origin`, sanitizes the request and 
 `apps/controller/src/drivers/compute/kubernetes/runtime-access.ts:humanRuntimeAccess`
 `deploy/runtime/openclaw-trusted-proxy-role.patch`
 
-Kubernetes offers `platform-administrator` alongside configured roles. Migration
-converts effective human Agent `administer` grants into explicit `use` assignments,
-with one entry Role per Namespace visible in Sharing. Removal never falls back
-to old grants. Without Gateway roles, only explicit administrator assignments use
-the existing service transport and shared profile. Configured roles select the
-human route; malformed values never fall back to the administrator profile.
+Kubernetes offers `platform-administrator` alongside configured roles. The migration converts effective human Agent `administer` grants into exact `use` assignments with Namespace entry Roles. Removal never restores old grants. Without configured roles, only explicit administrator assignments use the shared service profile; malformed roles deny access.
 
-The Driver supplies the reserved administrator or configured policy over
-`/people/namespaces/<namespaceId>/agents/<agentId>`, with `oce:<Principal ID>` and
-a policy digest. Preparation retains the serving revision's route ownership,
-protecting access from failed-candidate retirement. A role-free replacement leaves
-that route for predecessor retirement. Service traffic uses disjoint `/namespaces`;
-OCC replaces browser authority headers.
+Configured roles use `/people/namespaces/<namespaceId>/agents/<agentId>`, `oce:<Principal ID>` and a policy digest. Preparation retains serving-revision route ownership through failed candidate retirement; a role-free replacement leaves it for predecessor retirement. Service traffic uses disjoint `/namespaces`. OCC replaces browser authority headers.
 
-Trusted-proxy configuration declares the managed `oce:` prefix and exact
-`occ-workspace-files` identity. The Gateway verifies authentication and the role
-digest, rejects undeclared identities and profiles with multiple managed
-identities, then commits the role through native identity authority before
-admission. HTTP checks the same policy. Role publication retires earlier authority
-with `401`; new requests use the committed role without OCC replay. OpenClaw
-enforces permissions. Backend connections retain `oce-service`; independently
-authenticated local owners retain access.
+The Gateway verifies trusted-proxy authentication, managed identity scope and policy digest, refusing profiles with multiple managed identities. It commits the selected role before admission. HTTP retires prior authority with `401`; new requests use the committed role without OCC replay. OpenClaw enforces permissions; backend connections retain `oce-service`, and independently authenticated local owners retain access.
 
-WebSocket admission intersects client-requested operator scopes with the proxy ceiling using OpenClaw's native scope semantics. A broad UI request can therefore receive narrower session scopes without gaining general configuration or administrator access. Non-operator connections retain exact scope matching.
-
-The same lease closes changed assignments or descriptors within 30 seconds. New HTTP requests and upgrades resolve current policy immediately; native profiles update at reconnect.
+Operator WebSockets intersect requested scopes with the proxy ceiling using native semantics; non-operator connections retain exact matching. The lease closes changed assignments or descriptors within 30 seconds. New HTTP requests/upgrades resolve current policy; profiles update at reconnect.
 
 ### 9. Runtime renders HTML on a separate origin
 
@@ -254,15 +211,14 @@ The init container cannot write through the gateway's later mount path.
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
 - `disabled` means the Installation has not enabled the feature.
 - `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable` means a desired-running Agent has no active revision or an exclusive Compute Driver is replacing the active workload. Check Deployment activity, including failed replacements, then refresh access. Other dependency outages return `503`.
+- `unavailable`: no active revision or an exclusive replacement is in progress. Check Deployment activity, including failed replacements, then refresh. Other dependency outages return `503`.
 - `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
-- Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
-- Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic. The native gateway must not receive the OCE cookie.
+- Wrong/unknown hosts fail before proxying; check host derivation, lifecycle and `agentNativeAdmin.domain`.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
 - `openclaw.agents.native_admin.websocket.connect` audits should include `connectionId`; matching `openclaw.agents.native_admin.websocket.close` audits should reuse `connectionId` and include `closeReason` with one of the expected categories: lifecycle, revocation, dependency, client, upstream, or shutdown.
 - Service-worker registration failure is expected: the HTTP proxy rejects `Service-Worker: script` requests and adds `worker-src 'none'` to proxied responses.
-- Browser tests cover panel visibility, warnings, availability, and URL opening. Integration proof covers shared-cookie admission, denied service keys and unknown hosts, assets, WebSocket leases and reconnects, and a reversible native edit.
+- Browser tests cover panel states and launch. Integration covers shared cookies, service-key/host denials, assets, WebSocket leases/reconnects and reversible native edits.
 
 ## Related docs
 
