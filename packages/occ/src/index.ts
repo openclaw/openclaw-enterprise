@@ -16,6 +16,8 @@ import type {
   Agent,
   AgentCredentialSourceBinding,
   AgentRead,
+  AgentRevisionSummary,
+  AgentRevisionSummaryPage,
   AgentRevisionRead,
   InitialWorkspaceFiles,
   AgentDeploymentDiagnostics,
@@ -39,6 +41,7 @@ import type {
   CredentialSource,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
+  CredentialSourceLoginMode,
   CredentialSourceStatus,
   CredentialWithdrawal,
   CredentialWithdrawalStatus,
@@ -61,6 +64,7 @@ import type {
   ManagedIAMResourceKind,
   Permission,
   Preset,
+  PresetSummary,
   PresetTemplate,
   PermissionAction,
   PluginDesiredSelection,
@@ -134,7 +138,7 @@ import {
   immutableCopy,
   isNonEmptyString,
 } from "@openclaw-enterprise/utils";
-import { resolveConfiguredHarnessId } from "./configured-harness.ts";
+import { requireFallbackProviders, resolveConfiguredHarnessId } from "./configured-harness.ts";
 import { requireDeployableRoster } from "./openclaw-roster.ts";
 import {
   capability,
@@ -252,6 +256,7 @@ import {
   provisioningEffectReceipt as readProvisioningEffectReceipt,
   provisioningPendingEffect,
   settleProvisioningEffect as buildProvisioningEffectSettlement,
+  withoutProvisioningEffect,
   type ProvisioningEffectReceipt,
   type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
@@ -288,6 +293,7 @@ export {
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
   ConfigurationHarnessError,
+  ConfigurationSizeError,
   configurationSettingMessage,
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
@@ -319,6 +325,7 @@ export {
   RuntimeLogsError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
+  SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   SecretBindingDriverError,
@@ -358,6 +365,7 @@ export {
 } from "./native-worker-support.ts";
 export {
   backendDefinitionMap,
+  gatewayEndpointRewritesIpv4,
   validateBackendDefinitions,
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
@@ -394,6 +402,8 @@ export {
   type TransactionalAuditWriter,
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
+export { imageReferenceProblem } from "./image-reference.ts";
+export type { ImageReferenceProblem } from "./image-reference.ts";
 export {
   environmentReference,
   invalidHeaderNameRequirement,
@@ -404,7 +414,11 @@ export {
   urlHoldsUserinfo,
 } from "./model-provider-settings.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
-export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
+export {
+  CODEX_APPROVAL_POLICY_SETTING,
+  codexApprovalPolicy,
+  refuseLiteralGatewayPassword,
+} from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
@@ -788,6 +802,11 @@ export type AgentProvisioningWorkerOutcome =
       readonly code: string;
       /** A Compute refusal's reason for the operator log; status keeps the fixed text. */
       readonly reason?: string;
+      /**
+       * For the operator log: a Configuration the refused job wrote but never recorded, which
+       * its Driver could not delete. Nothing references it any more.
+       */
+      readonly orphanedConfigurationId?: string;
     };
 
 export interface AgentProvisioningWorkerOptions {
@@ -2154,17 +2173,16 @@ export class OpenClawController {
     matches: (agent: Pick<Agent, "id" | "namespaceId">) => boolean,
   ): Promise<Pick<Agent, "id" | "namespaceId"> | undefined> {
     return this.read(async (state) => {
+      // One read of Agent identities in live Namespaces; no saved settings are decoded.
       let selected: Pick<Agent, "id" | "namespaceId"> | undefined;
-      for (const namespace of await state.namespaces.listNamespaces()) {
-        for (const agent of await state.agents.listAgents(namespace.id)) {
-          if (agent.namespaceId !== namespace.id || !matches(agent)) {
-            continue;
-          }
-          if (selected !== undefined) {
-            return undefined;
-          }
-          selected = { id: agent.id, namespaceId: agent.namespaceId };
+      for (const agent of await state.agents.listAgentReferences()) {
+        if (!matches(agent)) {
+          continue;
         }
+        if (selected !== undefined) {
+          return undefined;
+        }
+        selected = { id: agent.id, namespaceId: agent.namespaceId };
       }
       return selected;
     });
@@ -2478,9 +2496,8 @@ export class OpenClawController {
         configurationInput.secretBindings,
         harnessAuth,
       );
-      validateModelProviderSettings(configurationInput.values);
-      validateConfigurationSettings(configurationInput.values);
-      this.validateComputeConfiguration(configurationInput.values);
+      await configurationDriver.validateSize?.(configurationInput.values);
+      this.validateConfigurationContent(configurationInput.values);
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
         namespaceId: namespace.id,
@@ -2618,7 +2635,7 @@ export class OpenClawController {
         record.status === "cancelled" ||
         record.revisionId !== undefined ||
         (record.agentId !== undefined &&
-          (await state.revisions.listRevisions(namespaceId, record.agentId)).length !== 0)
+          (await state.revisions.listRevisionMetadata(namespaceId, record.agentId)).length !== 0)
       ) {
         throw new ResourceStateConflictError(
           "Provisioning cannot retry after cancellation or deployment handoff.",
@@ -2806,17 +2823,23 @@ export class OpenClawController {
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
-      await this.mutate(async (state) => {
+      const unrecorded = await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
           throw new WorkClaimLostError();
         }
+        const unrecorded =
+          disposition === "permanent"
+            ? await this.unrecordedProvisioningConfiguration(state, current)
+            : undefined;
         record = await state.provisioning.recordFailure(
           claim,
           {
             completedPhase: current.completedPhase,
             progress: {
-              ...current.progress,
+              ...(unrecorded === undefined
+                ? current.progress
+                : withoutProvisioningEffect(current.progress)),
               error: { code, message },
             },
           },
@@ -2849,11 +2872,17 @@ export class OpenClawController {
             : {}),
           details: { workId: current.workId, phase: current.completedPhase, code },
         });
+        return unrecorded;
       });
+      const orphanedConfigurationId =
+        unrecorded === undefined
+          ? undefined
+          : await this.deleteUnrecordedProvisioningConfiguration(unrecorded);
       return Object.freeze({
         outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
         ...(error instanceof ComputeProvisioningRefusedError ? { reason: error.reason } : {}),
+        ...(orphanedConfigurationId === undefined ? {} : { orphanedConfigurationId }),
       });
     }
   }
@@ -3451,29 +3480,63 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * One page of the Agent's revisions the principal may read, newest first, as summaries: a
+   * list never decodes a saved snapshot (finding 1323). The page holds up to `limit` readable
+   * revisions numbered below `before`; unreadable ones are skipped. `nextBefore` names the
+   * page's last revision, and only when an older revision was found readable when checked.
+   */
   async listRevisions(
     principalId: string,
     namespaceId: string,
     agentId: string,
-  ): Promise<readonly Readonly<AgentRevisionRead>[]> {
+    page: { readonly before?: number; readonly limit: number } = { limit: 50 },
+  ): Promise<Readonly<AgentRevisionSummaryPage>> {
+    if (!Number.isSafeInteger(page.limit) || page.limit < 1 || page.limit > 100) {
+      throw new ScopeViolationError("The revision page size is invalid.");
+    }
+    if (page.before !== undefined && (!Number.isSafeInteger(page.before) || page.before < 1)) {
+      throw new ScopeViolationError("The revision page cursor is invalid.");
+    }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
+    // Read checks stay per revision. The cursor names only a revision found readable when
+    // checked. The scan reads the store in batches of at least 100, reducing queries for
+    // small pages, but it may still scan all older revisions. A full page looks ahead for
+    // one more revision found readable when checked before it emits a cursor.
+    // Access can change before the next request, so that page may be empty. A batch one
+    // larger than the page lets a fully readable page find the next revision in one query.
+    const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
-      const readable: Readonly<AgentRevisionRead>[] = [];
-      for (const revision of await state.revisions.listRevisionsForBrowsing(
-        agent.namespaceId,
-        agent.id,
-      )) {
-        if (
-          await this.canRead(principalId, {
-            kind: "agent_revision",
-            id: revision.id,
-            namespaceId: agent.namespaceId,
-          })
-        ) {
+      const readable: Readonly<AgentRevisionSummary>[] = [];
+      let before = page.before;
+      for (;;) {
+        const listed = await state.revisions.pageRevisionSummaries(agent.namespaceId, agent.id, {
+          ...(before === undefined ? {} : { before }),
+          limit: batch,
+        });
+        for (const revision of listed.revisions) {
+          if (
+            !(await this.canRead(principalId, {
+              kind: "agent_revision",
+              id: revision.id,
+              namespaceId: agent.namespaceId,
+            }))
+          ) {
+            continue;
+          }
+          if (readable.length === page.limit) {
+            return Object.freeze({
+              revisions: Object.freeze(readable),
+              nextBefore: readable.at(-1)!.revision,
+            });
+          }
           readable.push(revision);
         }
+        if (listed.nextBefore === undefined) {
+          return Object.freeze({ revisions: Object.freeze(readable) });
+        }
+        before = listed.nextBefore;
       }
-      return Object.freeze(readable);
     });
   }
 
@@ -3585,7 +3648,15 @@ export class OpenClawController {
         });
         return Object.freeze({ outcome: "succeeded" as const, revisionId });
       }
-      const error = deploymentErrorForWork(work);
+      const deploymentError = deploymentErrorForWork(work);
+      // Stopping the first rollout is the owner's choice, not a fault to correct.
+      const error =
+        deploymentError?.code === "REVISION_STOPPED"
+          ? Object.freeze({
+              code: "REVISION_STOPPED",
+              message: "The Agent was stopped before its first deployment finished.",
+            })
+          : deploymentError;
       const pending = status !== "failed";
       const code = pending
         ? "PROVISIONING_DEPLOYMENT_PENDING"
@@ -3765,8 +3836,8 @@ export class OpenClawController {
       }
       // Native admin status must know whether a newer deployment is replacing this revision.
       // Only the newest later revision is decoded strictly, so an unreadable older snapshot
-      // cannot make a healthy Agent's native admin unavailable.
-      const newest = (await state.revisions.listRevisionsForBrowsing(namespace.id, agent.id))
+      // cannot make a healthy Agent's native admin unavailable, and no other is decoded at all.
+      const newest = (await state.revisions.listRevisionMetadata(namespace.id, agent.id))
         .filter((candidate) => candidate.revision > revision.revision)
         .sort((left, right) => right.revision - left.revision)[0];
       const successor =
@@ -4077,14 +4148,15 @@ export class OpenClawController {
     });
   }
 
+  /** The Presets the principal may read, without their templates (finding 1323). */
   async listPresets(
     principalId: string,
     namespaceId: string,
-  ): Promise<readonly Readonly<Preset>[]> {
+  ): Promise<readonly Readonly<PresetSummary>[]> {
     const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
-      const readable: Readonly<Preset>[] = [];
-      for (const preset of await state.presets.listPresets(namespace.id)) {
+      const readable: Readonly<PresetSummary>[] = [];
+      for (const preset of await state.presets.listPresetSummaries(namespace.id)) {
         if (
           await this.canRead(principalId, {
             kind: "preset",
@@ -4266,19 +4338,36 @@ export class OpenClawController {
           "The selected Configuration Driver cannot validate Preset values.",
         );
       }
-      // The model provider and Compute rules first, as on Configuration create and update, so
-      // a value they refuse gets the same message wherever it is written. A variable without a
-      // default is still a placeholder here; the Configuration it fills is checked on create.
-      // Only text the render put a placeholder into waits on a variable, located by its path: an
-      // escaped token is literal text that stays in the launch render, so it is checked as
-      // written (finding 1214), even where it reads like a placeholder elsewhere (finding 1220).
+      // The content rules Configuration create and update run, so a value they refuse gets the
+      // same message wherever it is written. A variable without a default is still a
+      // placeholder here; the Configuration it fills is checked on create. Only text the render
+      // put a placeholder into waits on a variable, located by its path: an escaped token is
+      // literal text that stays in the launch render, so it is checked as written (finding
+      // 1214), even where it reads like a placeholder elsewhere (finding 1220).
       const options: ConfigurationValidationOptions = { unresolved, unresolvedType };
-      validateModelProviderSettings(values, options);
-      this.validateComputeConfiguration(values, options);
+      this.validateConfigurationContent(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values, options);
     }
     return template;
+  }
+
+  /**
+   * The Configuration content rules every write runs, in one order, so a value one refuses is
+   * refused, with the same message, wherever it is written: Configuration create and update,
+   * Agent provisioning and Preset defaults (finding 1311). A Preset save passes `options`,
+   * locating its unfilled variables. The model provider settings; the Codex approval policy and
+   * a literal Gateway password; the agents shape, fallback provider and Gateway roster rules
+   * (findings 1305 and 1308); then the selected Compute Driver's rules.
+   */
+  private validateConfigurationContent(
+    values: OpenClawConfigurationDocument,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    validateModelProviderSettings(values, options);
+    validateConfigurationSettings(values, options);
+    requireDeployableRoster(values, options);
+    this.validateComputeConfiguration(values, options);
   }
 
   // Configuration content every topology of the selected Compute Driver refuses is refused
@@ -4454,7 +4543,7 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
-    const config = Object.freeze({ ...(input.config ?? {}) });
+    const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const { namespace, gateway, refresh, source, values } = await this.mutate(async (state) => {
@@ -4471,9 +4560,14 @@ export class OpenClawController {
       }
       const selected = this.credentialGatewayDriver();
       const type = await this.credentialSourceType(selected, input.type);
-      credentialSourceFieldsMatch("config", type.config, config);
+      credentialSourceFieldsMatch("config", type.config, written);
       credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
-      selected.validateSourceConfig({ type: type.type, config });
+      // The Driver may return the configuration in the form it uses, such as a normalized URL:
+      // the stored record, the response and the gateway then agree (finding 1292).
+      const config = Object.freeze({
+        ...(selected.validateSourceConfig({ type: type.type, config: written }) ?? written),
+      });
+      credentialSourceFieldsMatch("config", type.config, config);
       const refreshDriver =
         type.rotation === "refresh" ? this.credentialRefreshDriver() : undefined;
       const read = await this.readCredentialSourceSecrets(state, principalId, locked, secretRefs);
@@ -4498,6 +4592,7 @@ export class OpenClawController {
         values: read,
       };
     });
+    const config = source.config;
     const placed = await this.credentialNamespace(namespace);
     let status: CredentialSourceStatus;
     // A returned result means every gateway effect of this attempt has finished; a throw does not.
@@ -5045,10 +5140,9 @@ export class OpenClawController {
         values,
         createdAt: this.timestamp(),
       });
-      validateModelProviderSettings(values);
-      validateConfigurationSettings(values);
-      requireDeployableRoster(values);
-      this.validateComputeConfiguration(values);
+      // A document too large to store is refused before the content rules walk it (finding 1317).
+      await driver.validateSize?.(values);
+      this.validateConfigurationContent(values);
       await driver.validate(configuration);
       const metadata = await state.configurations.createConfiguration({
         id: configuration.id,
@@ -5389,12 +5483,11 @@ export class OpenClawController {
         values,
         createdAt: advanced.createdAt,
       });
-      validateModelProviderSettings(values);
+      // A document too large to store is refused before the content rules walk it (finding 1317).
+      await driver.validateSize?.(values);
       // A stored Configuration that predates these rules still reads, and deployment refuses it
       // as before; only a replacement that keeps the refused value fails.
-      validateConfigurationSettings(values);
-      requireDeployableRoster(values);
-      this.validateComputeConfiguration(values);
+      this.validateConfigurationContent(values);
       await driver.validate(configuration);
       // Registered before the write: a replace that applied but answered with an error (a
       // timeout, a lost response) would otherwise leave the stored Configuration one generation
@@ -6870,6 +6963,7 @@ export class OpenClawController {
         revisionHarness,
         compute,
         sandbox,
+        harnessAuth.method === "credential_source" ? harnessAuth.loginMode : undefined,
       );
       // The Compute rules first, as on Configuration save, so a stored Configuration that
       // predates a rule both refuse gets the message its next save would.
@@ -6931,6 +7025,8 @@ export class OpenClawController {
       // Agent saves check the plugins against the Configuration they name, but a later
       // Configuration save does not know which Agents use it: check the admitted pair again.
       this.validatePluginConfiguration(pluginState?.plugins, admittedConfiguration);
+      // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
+      // nothing created), because the worker must decode them all to stop or retire them.
       const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
       const repositoryCredentials = this.admitRepositoryCredentials(
@@ -7305,7 +7401,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespaceId, agentId, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by Stop.",
+        message: "Provisioning was cancelled because the Agent was stopped.",
       });
       const stopped = await state.agents.transitionAgentDesiredRuntimeState(
         namespaceId,
@@ -7525,7 +7621,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespace.id, agent.id, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by deletion.",
+        message: "Provisioning was cancelled because the Agent was deleted.",
       });
       // Deletion ends delivery ownership immediately, including never-deployed Agents.
       await state.workspaceSetups.delete(namespace.id, agent.id);
@@ -8053,6 +8149,7 @@ export class OpenClawController {
     const restrictionIds = snapshotIds(evidence?.restrictionIds);
     if (
       typeof allowed !== "boolean" ||
+      typeof reason !== "string" ||
       !isNonEmptyString(driverId) ||
       !evidence ||
       (identityId !== undefined && !isNonEmptyString(identityId)) ||
@@ -8619,8 +8716,9 @@ export class OpenClawController {
     return found;
   }
 
+  /** Callers hold the Namespace lock. */
   private async guardAgentProvisioning(
-    state: PlatformReadView,
+    state: PlatformUnitOfWork,
     namespaceId: string,
     agentId: string,
     handoff = false,
@@ -8637,13 +8735,61 @@ export class OpenClawController {
       record.status === "queued" ||
       record.status === "running" ||
       this.provisioningBefore(record, "configuration") ||
-      (record.status === "failed" && record.revisionId === undefined) ||
-      (record.status === "cancelled" && this.provisioningHasUnresolvedEffect(record))
+      (record.status === "failed" && record.revisionId === undefined)
     ) {
       throw new ResourceStateConflictError(
         "The Agent is reserved for provisioning. Stop or delete it, or retry its failed provisioning request.",
       );
     }
+    if (record.status === "cancelled" && this.provisioningHasUnresolvedEffect(record)) {
+      await this.settleAbandonedProvisioningEffect(state, namespaceId, agentId);
+    }
+  }
+
+  /**
+   * A cancelled job never runs again, so nothing else settles the runtime-credential write it
+   * left pending, and without this its stopped Agent could only be deleted (finding 1384). Once
+   * the claim that began the write has lapsed (at once if no worker held it when Stop cancelled
+   * the job), its worker has stopped issuing requests, so this settles it under the Namespace and
+   * Agent locks, as Agent deletion does. A request already sent may still land; that is safe
+   * because the write creates only absent Secrets, and deploy admission checks the runtime
+   * credentials and creates missing ones. Inside the lease the Agent stays reserved; with
+   * conflicting or malformed evidence it can only be deleted.
+   */
+  private async settleAbandonedProvisioningEffect(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<void> {
+    const agent = await state.agents.lockAgent(namespaceId, agentId);
+    if (agent?.status !== "active") {
+      throw new AgentDeletingError();
+    }
+    const current =
+      (await state.provisioning.settleAbandonedEffect(namespaceId, agentId)) ??
+      (await state.provisioning.findByAgent(namespaceId, agentId));
+    if (
+      current === undefined ||
+      current.revisionId !== undefined ||
+      !this.provisioningHasUnresolvedEffect(current)
+    ) {
+      return;
+    }
+    const pending = provisioningPendingEffect(current);
+    // Only a well-formed write still inside its cancelled claim's lease settles by waiting.
+    if (
+      pending?.kind === "transport" &&
+      pending.ownerPresent &&
+      current.progress.effectReceipt === undefined &&
+      current.progress.cancelledClaimExpiresAt !== undefined
+    ) {
+      throw new ResourceStateConflictError(
+        "The Agent's cancelled provisioning may still be writing its runtime credentials. Try again in a few seconds, or delete the Agent.",
+      );
+    }
+    throw new ResourceStateConflictError(
+      "The Agent's cancelled provisioning left a runtime-credential write that cannot be settled. Delete the Agent.",
+    );
   }
 
   private async guardProvisioningConfiguration(
@@ -8952,6 +9098,58 @@ export class OpenClawController {
       }
       return this.settleProvisioningEffect(workId, record, effect);
     });
+  }
+
+  /**
+   * The Configuration a failing job wrote through its Driver but never recorded (finding 1395).
+   * The write settled, then the Configuration step's transaction refused (a duplicate Agent name,
+   * for example) and rolled back the record, or a later fence refused the job before that step
+   * ran again. Nothing else deletes that document. A write that has not settled, a job past its
+   * Configuration step, a Configuration record with the ID, or a write made through a Driver the
+   * Installation no longer selects leaves it alone.
+   */
+  private async unrecordedProvisioningConfiguration(
+    state: PlatformUnitOfWork,
+    record: Readonly<AgentProvisioningRecord>,
+  ): Promise<Readonly<{ id: string; namespaceId: string }> | undefined> {
+    if (!this.provisioningBefore(record, "configuration") || record.configurationId !== undefined) {
+      return undefined;
+    }
+    const receipt = readProvisioningEffectReceipt(record);
+    const pending = provisioningPendingEffect(record);
+    if (
+      receipt?.kind !== "configuration" ||
+      pending?.kind !== "configuration" ||
+      pending.owner !== receipt.owner ||
+      pending.targetId !== receipt.targetId ||
+      !this.selections.has("configuration") ||
+      asRecord(record.plan.drivers)?.configuration !== this.configurationDriver().id
+    ) {
+      return undefined;
+    }
+    if (
+      (await state.configurations.findConfiguration(record.namespaceId, receipt.targetId)) !==
+      undefined
+    ) {
+      return undefined;
+    }
+    return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
+  }
+
+  /**
+   * Deletes the Configuration a refused job wrote but never recorded, through the Driver call
+   * Configuration deletion uses, once the failure that forgets it has committed. A failed
+   * delete keeps the refusal as it is and returns the ID for the operator log.
+   */
+  private async deleteUnrecordedProvisioningConfiguration(
+    reference: Readonly<{ id: string; namespaceId: string }>,
+  ): Promise<string | undefined> {
+    try {
+      await this.driverOperation(() => this.configurationDriver().delete(reference));
+      return undefined;
+    } catch {
+      return reference.id;
+    }
   }
 
   /** The Configuration that provisioning writes through the Configuration Driver. */
@@ -9636,7 +9834,7 @@ export class OpenClawController {
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
-      if ((await state.revisions.listRevisions(namespace.id, agent.id)).length > 0) {
+      if ((await state.revisions.listRevisionMetadata(namespace.id, agent.id)).length > 0) {
         throw new ResourceStateConflictError(
           "Runtime credentials can be provisioned only before the Agent has historical revisions.",
         );
@@ -10337,8 +10535,11 @@ export class OpenClawController {
       configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
     } catch (error) {
       // A model selection that names no supported Harness is the Configuration's own fault,
-      // not this Agent's; deployment refuses it with this message. Nothing below can run.
+      // not this Agent's; deployment refuses it with this message. Nothing below can run. A
+      // fallback on another provider is refused here, by name, as the Harness rules below refuse
+      // every other selection on another provider (finding 1298).
       if (error instanceof ConfigurationHarnessError) {
+        requireFallbackProviders(configuration.values);
         return;
       }
       throw error;
@@ -10396,10 +10597,13 @@ export class OpenClawController {
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
     sandbox: SandboxDriver | undefined,
+    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument {
     const sandboxConfiguration =
       sandbox?.configureAgent !== undefined
-        ? frozenValues(sandbox.configureAgent(frozenValues(values), harness))
+        ? frozenValues(
+            sandbox.configureAgent(frozenValues(values), harness, credentialSourceLoginMode),
+          )
         : values;
     return frozenValues(
       compute.runtimeLogging === "driver"

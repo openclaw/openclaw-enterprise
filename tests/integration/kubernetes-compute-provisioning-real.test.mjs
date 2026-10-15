@@ -715,8 +715,14 @@ test(
     assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
     assert.equal(revisions.data.length, 1);
     assert.equal(revisions.data[0].id, provisioned.revisionId);
-    assert.equal(revisions.data[0].compute.id, driver.id);
-    assert.equal(revisions.data[0].compute.implementation, driver.implementation);
+    // The list returns a summary; the admitted Compute placement is on the exact revision.
+    const exactRevision = await fixture.request(
+      "GET",
+      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/revisions/${provisioned.revisionId}`,
+    );
+    assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
+    assert.equal(exactRevision.data.compute.id, driver.id);
+    assert.equal(exactRevision.data.compute.implementation, driver.implementation);
 
     const configuration = await resource(
       "configmap",

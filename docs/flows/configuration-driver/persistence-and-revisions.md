@@ -16,16 +16,31 @@ OCC owns API-level native Configuration validation before it calls the selected
 bundled or installed Configuration Driver: model provider settings,
 `requireDeployableRoster` in
 [the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
-an `agents` roster every deployment refuses with deployment's own text, and
+an `agents` roster or a model fallback on another provider than its primary's
+that every deployment refuses with deployment's own text, and
 [the settings rules](../../../packages/occ/src/configuration-settings.ts), which
 refuse a Codex approval policy the Gateway refuses and a literal
 `gateway.auth.password`, and the selected Compute Driver's optional
 [`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
-Kubernetes refuses unsupported channels and model credentials outside the Harness
-authentication binding. A stored row that predates a rule still reads and an
-edit can replace it: a bundled Driver checks a stored document only against
+Kubernetes refuses unsupported channels, model credentials outside the Harness
+authentication binding, and model selections or provider `apiKey`s off the
+primary model's provider. Configuration create and update, Agent provisioning and
+Preset save run this one set (`validateConfigurationContent` in
+[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+variable is checked as far as its written text goes, and in full once filled.
+Create, update and provisioning first ask the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
+to refuse a document too large to store, so no content rule walks it. Its
+`ConfigurationSizeError` returns `400 INVALID_REQUEST` naming the limit, not the
+generic invalid-configuration text.
+A stored row that predates a rule still reads and an edit can replace it: a
+bundled Driver checks a stored document only against
 the credential-reference rules in force before 2026-10-12, and every write and
-deployment against all of them. The Driver owns backing document
+deployment against all of them. Those include a `${NAME}` reference or SecretRef
+in every slot OpenClaw marks sensitive, channel and plugin secrets included
+([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+[the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
+which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)

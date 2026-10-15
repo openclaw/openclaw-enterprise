@@ -34,9 +34,9 @@ Set `OCC_FIRST_AGENT_SMOKE_DIRECTORY` to choose the work directory. The script c
 
 ## Run a protected integration lane
 
-[Full Integration](../../.github/workflows/full-integration.yml) is manually dispatched. `all` excludes `qa-matrix` and `dev-up-k3d`; select either explicitly. Most lanes use `main` and credentialed environments require approval. `dev-up-k3d` is credential-free and can run on a reviewed branch. `helper-timeout` and standalone `logging-collector` have no environment gate. `provider-account` is main-only and has no per-run approval.
+[Full Integration](../../.github/workflows/full-integration.yml) is manually dispatched. `all` excludes `qa-matrix` and `dev-up-k3d`; select either explicitly. Most lanes use `main`. Users with repository write access can dispatch credentialed lanes without separate environment approval. `dev-up-k3d` is credential-free and can run on a reviewed branch. `helper-timeout` and standalone `logging-collector` have no environment gate. `provider-account` is main-only and has no per-run approval.
 
-An administrator can permit an exact branch for `k3d-model` in `integration-model` or `openshell` in `integration-openshell`, preserving `main`, required reviewers, and self-review prevention. Wildcards fail preflight. After approval, the workflow tests the immutable event commit. Remove the branch rule after the run.
+An administrator can permit an exact branch for `k3d-model` in `integration-model` or `openshell` in `integration-openshell`, preserving `main` and no required reviewers. Wildcards fail preflight. Inspect the commit before dispatch; the workflow tests that immutable event commit. Remove the branch rule after the run.
 
 ```sh
 gh workflow run full-integration.yml --ref '<approved-branch>' -f lane=k3d-model
@@ -54,6 +54,8 @@ gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3
 Check the run's `headSha` and `full-results-dev-up-k3d` artifact: all six cases must pass without skips. The job allows 180 minutes, including setup and cleanup. Trusted PRs also run this lane in QA advisory, with artifact `qa-advisory-local-installation-dev-up-k3d`. It is excluded from `CI Required` and Full Integration `all`.
 
 ## Manual Full Integration lanes
+
+The QA advisory workflow also runs the full [OpenShell lane](qa-matrix.md#automatic-openshell-coverage) on trusted PRs.
 
 | Lane                | Coverage and guide                                                                                                          |
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -92,6 +94,10 @@ node scripts/ci/cleanup.mjs --state <private-state-file>
 ```
 
 Run cleanup after preparation or test failures too. See [local browser diagnostics](local.md#browser-failure-diagnostics) and the [CI flow](../flows/github-actions-testing.md) for failure evidence.
+
+### Cleanup command deadlines
+
+A cleanup timeout fails the lane and retains failed resources in private state for retry. `OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS` defaults to 300000 (five minutes) per container-engine or k3d command; database drops use the smaller of this value and 60 seconds. `OPENCLAW_CI_COMMAND_KILL_GRACE_MS` defaults to 5000 (five seconds) for TERM-to-KILL and pipe closure, and also applies to preparation. Scope overrides per invocation; invalid values use defaults. Deadlines include pipe drain. Bounded waiting does not prove resource deletion. See [termination and ownership](../flows/github-actions-testing.md#4-clean-up-and-publish-the-bounded-result).
 
 ### Select immutable images for local preparation
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import dns from "node:dns/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -10,7 +11,13 @@ import {
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
 
+import {
+  normalizeOpenAiBaseUrl,
+  openAiBaseUrlRewritesIpv4,
+  openAiBaseUrlSpellingMessage,
+} from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
+import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -38,23 +45,21 @@ const secretKeyRule = {
   validate: isKubernetesSecretKey,
   description: "a Kubernetes Secret key of at most 253 characters",
 };
-// runtime.image reaches only KubernetesComputeDriver (installation.yaml images.gateway
-// and images.agent), never the chart. Compute requires only the trailing digest, so this
-// keeps the old rule: no whitespace or second @, which no runtime pulls. The chart's
-// control-plane rule would refuse working references such as an IPv6 registry host
-// ([fd00::1]:5000/runtime@sha256:...).
-const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
-// The chart's rule for the images it renders: the controller (which also feeds
-// prepare-bootstrap-volume) and repository credentials.
-const controlPlaneDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
-// Kubernetes refuses an image whose repository path has an uppercase letter
-// (InvalidImageName); the chart, the image tools and Compute refuse it too. Uppercase may appear
-// only in the registry host (the first component, when a / follows it) and in the tag.
-function lowercaseImageRepository(value) {
-  if (/^(?:[^/@]*\/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)/.test(value)) {
+// Every image field takes a reference Kubernetes can pull, pinned to a lowercase SHA-256
+// digest. controllerImage and repository.image reach the chart, and the controller image
+// also feeds prepare-bootstrap-volume; runtime.image reaches only
+// KubernetesComputeDriver (installation.yaml images.gateway and images.agent). The chart,
+// Compute and the image tools apply the same imageReferenceProblem rule.
+const digestImage = /@sha256:[a-f0-9]{64}$/;
+// Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as one
+// with an uppercase repository path. Uppercase may appear only in the registry host (the first
+// component, when a / follows it) and in the tag.
+function pullableImageReference(value) {
+  const problem = imageReferenceProblem(value);
+  if (problem === "uppercase-repository") {
     return "repository path must be lowercase; Kubernetes refuses to pull an uppercase one. Only the registry host and the tag may use uppercase.";
   }
-  return true;
+  return problem === undefined;
 }
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
 // The shape check alone still matches 192.0.2.999 and port 99999.
@@ -296,6 +301,29 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
   return value;
 }
 
+// Kubernetes Compute startup's rule and messages (finding 1296). The normalized URL is the one
+// Compute uses.
+function codexModelBaseUrl(runtime, diagnostics) {
+  const field = "runtime.codexModelBaseUrl";
+  const value = asString(runtime, field.split("."), diagnostics);
+  // Normalize only after the raw spelling is accepted. `https://192.168.1/v1` would otherwise
+  // become `https://192.168.0.1/v1` and pass Compute.
+  if (typeof value === "string" && value !== "" && openAiBaseUrlRewritesIpv4(value)) {
+    diagnostics.errors.push(
+      `${field} IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`,
+    );
+    return value;
+  }
+  const url = normalizeOpenAiBaseUrl(value);
+  if (url === undefined && value !== "") {
+    diagnostics.errors.push(
+      openAiBaseUrlSpellingMessage(field, value) ??
+        `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
+    );
+  }
+  return url ?? value;
+}
+
 // URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
 function stripUrlEdges(value) {
   let start = 0;
@@ -393,17 +421,17 @@ function httpOrigin(value) {
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
-// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
-// user info first (writtenUserinfo), so the host follows scheme:// directly.
+// hex, shorthand, a single integer or a trailing dot publish a different host. isIP accepts
+// only four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every
+// IPv4 host that way, so the written host must equal the parsed one. Callers refuse user info
+// first (writtenUserinfo), so the host follows scheme:// directly.
 function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
-  return (
-    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
-  );
+  return written === url.hostname;
 }
 
 // KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
@@ -1132,6 +1160,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayNodeSelector",
       "transportSecretPrefix",
       "codexSeccompProfile",
+      "codexModelBaseUrl",
     ],
     diagnostics,
   );
@@ -1415,13 +1444,13 @@ function buildRendered(profile, parsed, diagnostics) {
     description: NAME_RULE,
   });
   const controllerImage = asString(controlPlane, ["controlPlane", "controllerImage"], diagnostics, {
-    pattern: controlPlaneDigestImage,
-    validate: lowercaseImageRepository,
+    pattern: digestImage,
+    validate: pullableImageReference,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const runtimeImage = asString(runtime, ["runtime", "image"], diagnostics, {
     pattern: digestImage,
-    validate: lowercaseImageRepository,
+    validate: pullableImageReference,
     description: "an immutable image reference with a SHA-256 digest",
   });
   const authBaseUrl = asString(controlPlane, ["controlPlane", "authBaseUrl"], diagnostics, {
@@ -1494,8 +1523,10 @@ function buildRendered(profile, parsed, diagnostics) {
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
-  if (profile.name === "openclaw" && runtime.codexSeccompProfile !== undefined) {
-    diagnostics.errors.push("runtime.codexSeccompProfile is only consumed by the codex profile.");
+  for (const key of ["codexSeccompProfile", "codexModelBaseUrl"]) {
+    if (profile.name === "openclaw" && runtime[key] !== undefined) {
+      diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
+    }
   }
   if (!repositoryEnabled && Object.keys(repository).some((key) => key !== "enabled")) {
     diagnostics.errors.push(
@@ -1537,15 +1568,35 @@ function buildRendered(profile, parsed, diagnostics) {
       : undefined;
   const rewrittenObservabilityIpv4 =
     parsedObservability !== undefined && !ipv4HostKept(rawObservabilityUrl, parsedObservability);
-  const observabilityUrl = rewrittenObservabilityIpv4
-    ? undefined
-    : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
-        validate: observabilityDestination,
-        description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
-      });
+  // A tab or newline is deleted. A backslash before the query becomes a slash. A backslash
+  // in the query does not change the host. Userinfo already has its own message, including
+  // when a tab sits in `http:\t//@host`.
+  const observabilityQueryAt =
+    typeof rawObservabilityUrl === "string" ? rawObservabilityUrl.search(/[?#]/) : -1;
+  const observabilityBeforeQuery =
+    typeof rawObservabilityUrl === "string" && observabilityQueryAt !== -1
+      ? rawObservabilityUrl.slice(0, observabilityQueryAt)
+      : rawObservabilityUrl;
+  const observabilityHostChars =
+    typeof rawObservabilityUrl === "string" &&
+    (/[\t\n\r]/.test(rawObservabilityUrl) || observabilityBeforeQuery.includes("\\")) &&
+    !writtenUserinfo(rawObservabilityUrl) &&
+    !rewrittenObservabilityIpv4;
+  const observabilityUrl =
+    rewrittenObservabilityIpv4 || observabilityHostChars
+      ? undefined
+      : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
+          validate: observabilityDestination,
+          description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
+        });
   if (rewrittenObservabilityIpv4) {
     diagnostics.errors.push(
       "controlPlane.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
+  if (observabilityHostChars) {
+    diagnostics.errors.push(
+      "controlPlane.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
     );
   }
 
@@ -1635,7 +1686,7 @@ function buildRendered(profile, parsed, diagnostics) {
             ),
           }),
       modelDiscoveryCidrs:
-        profile.name === "codex"
+        profile.name === "codex" && codex.modelDiscoveryCidrs !== undefined
           ? stringArray(codex, ["codex", "modelDiscoveryCidrs"], diagnostics, {
               validate: (value) => isIpv4Cidr(value, 32),
               description: "an IPv4 /32 CIDR",
@@ -1845,6 +1896,9 @@ function buildRendered(profile, parsed, diagnostics) {
                         "a relative localhost profile path without traversal or unconfined mode",
                     },
                   ),
+                  ...(runtime.codexModelBaseUrl === undefined
+                    ? {}
+                    : { codexModelBaseUrl: codexModelBaseUrl(runtime, diagnostics) }),
                 }
               : {}),
             ...(managedSlackProxyEnabled
@@ -1952,8 +2006,8 @@ function buildRendered(profile, parsed, diagnostics) {
     values.repositoryCredentials = {
       enabled: true,
       image: asString(repository, ["repository", "image"], diagnostics, {
-        pattern: controlPlaneDigestImage,
-        validate: lowercaseImageRepository,
+        pattern: digestImage,
+        validate: pullableImageReference,
         description: "an immutable image reference with a SHA-256 digest",
       }),
       // Installation startup checks a GitHub Backend ID with isBackendId, then bounds it to
@@ -2104,6 +2158,51 @@ function buildRendered(profile, parsed, diagnostics) {
   return { values, installation };
 }
 
+async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
+  const plugin = profile.installation.drivers.plugin;
+  if (
+    plugin.id !== "codex-plugin" ||
+    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
+  ) {
+    return;
+  }
+  const hosts = ["auth.openai.com", "chatgpt.com"];
+  diagnostics.prerequisites.push(
+    "Verify API Pods can reach auth.openai.com and chatgpt.com on HTTPS using their actual DNS and translated destinations before testing hosted discovery in the Console.",
+  );
+  if (parsed.codex.modelDiscoveryCidrs !== undefined) {
+    if (values.api.modelDiscoveryCidrs.length === 0) {
+      diagnostics.warnings.push(
+        "codex.modelDiscoveryCidrs is explicitly empty: supply external API HTTPS policy for auth.openai.com and chatgpt.com; Helm grants no discovery egress.",
+      );
+    }
+    return;
+  }
+  // Independent resolvers ignore process-level DNS settings unless copied. Keep
+  // those settings while bounding queries; explicit operator CIDRs stay offline.
+  const resolver = new dns.Resolver({ timeout: 1500, tries: 1 });
+  resolver.setServers(dns.getServers());
+  const answers = await Promise.allSettled(hosts.map((host) => resolver.resolve4(host)));
+  const addresses = [];
+  answers.forEach((answer, index) => {
+    if (answer.status === "rejected") {
+      diagnostics.errors.push(
+        `Hosted Codex discovery could not resolve IPv4 addresses for ${hosts[index]}. Rerender with DNS access or supply codex.modelDiscoveryCidrs with reviewed IPv4 /32 destinations.`,
+      );
+    } else {
+      addresses.push(...answer.value);
+    }
+  });
+  if (diagnostics.errors.length === 0) {
+    values.api.modelDiscoveryCidrs = [...new Set(addresses)]
+      .sort()
+      .map((address) => `${address}/32`);
+    diagnostics.warnings.push(
+      "Hosted discovery egress is a DNS snapshot from the renderer host. Verify it matches API Pod destinations, and rerender then upgrade Helm when addresses change.",
+    );
+  }
+}
+
 async function writePreflight(outDir, profile, diagnostics, output = {}) {
   const preflight = {
     ok: diagnostics.errors.length === 0,
@@ -2135,6 +2234,10 @@ const [profile, rawInput] = await Promise.all([
 ]);
 const parsed = buildInput(rawInput, diagnostics);
 const { values, installation } = buildRendered(profile, parsed, diagnostics);
+
+if (diagnostics.errors.length === 0) {
+  await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
+}
 
 if (diagnostics.errors.length === 0) {
   const installationYaml = renderYaml(installation);

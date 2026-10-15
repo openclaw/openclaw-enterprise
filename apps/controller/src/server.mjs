@@ -1,4 +1,9 @@
-import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "./auth/configuration.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+  refuseRewrittenIpv4Host,
+  refuseWrittenUserinfo,
+} from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -15,7 +20,6 @@ import { createOccMetrics } from "./metrics/index.ts";
 import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
-const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
@@ -60,14 +64,14 @@ function startupFailureCode(error) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
   if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must be an absolute HTTP)/.test(
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
       message,
     )
   ) {
     return "OBSERVABILITY_URL_INVALID";
   }
   if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase)/.test(
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
       message,
     )
   ) {
@@ -245,8 +249,10 @@ function configuration() {
   refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
   refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
-  if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
-    throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
+  // The same rule createFastifyApp applies to the development browser origin, checked here so
+  // startup refuses it as AUTH_BASE_URL_INVALID before loading anything else.
+  if (mode === "development" && !isDevelopmentBrowserOrigin(authBaseURL)) {
+    throw new Error(`Development OCC_AUTH_BASE_URL must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
 
   // { github?, google?, oidc? }: each configured provider carries the recovery user ID.

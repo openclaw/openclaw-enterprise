@@ -16,7 +16,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ConfigurationValidationError, validateModelCredentialReferences } from "../model-auth.ts";
 import { resolveKubernetesControlNamespace } from "../../compute/kubernetes/index.ts";
-import { DependencyUnavailableError, ResourceConflictError } from "@openclaw-enterprise/occ";
+import {
+  ConfigurationSizeError,
+  DependencyUnavailableError,
+  ResourceConflictError,
+} from "@openclaw-enterprise/occ";
 import { createKubernetesClientConfiguration } from "../../kubernetes/client.ts";
 import { kubernetesRequest } from "../../kubernetes/request.ts";
 import {
@@ -104,10 +108,12 @@ function checkValues(
     throw new ConfigurationValidationError("Configuration values must be a JSON object.");
   }
   validateModelCredentialReferences(document, { ...options, stored });
+  checkSize(values);
+}
+
+function checkSize(values: Readonly<Record<string, unknown>>): void {
   if (Buffer.byteLength(JSON.stringify(values), "utf8") >= MAX_CONFIGMAP_BYTES) {
-    throw new ConfigurationValidationError(
-      "Configuration exceeds the Kubernetes ConfigMap size limit.",
-    );
+    throw new ConfigurationSizeError(MAX_CONFIGMAP_BYTES);
   }
 }
 
@@ -176,6 +182,14 @@ export class KubernetesConfigurationDriver implements ConfigurationDriver {
     options?: ConfigurationValidationOptions,
   ): Promise<void> {
     checkValues(document, false, options);
+  }
+
+  async validateSize(document: OpenClawConfigurationDocument): Promise<void> {
+    // Values that are not an object are left to validate, which refuses them.
+    const values = asRecord(document);
+    if (values !== undefined) {
+      checkSize(values);
+    }
   }
 
   async create(configuration: Configuration): Promise<Configuration> {

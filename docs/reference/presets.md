@@ -295,13 +295,13 @@ The collection path is `/namespaces/:namespaceId/presets`; an exact Preset adds
 `/:presetId`. Use the [generated API reference](api.md#presets) for full schemas
 and response envelopes.
 
-| Request                                            | Result                  | Required permission                                             |
-| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection.                    |
-| `GET` collection                                   | `200`, readable Presets | Namespace `read`, then `preset:read` checked on each candidate. |
-| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                                   |
-| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.                                 |
-| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.                                 |
+| Request                                            | Result                           | Required permission                                             |
+| -------------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `POST` collection with `{name, template}`          | `201`, created Preset            | `preset:create` on the Namespace collection.                    |
+| `GET` collection                                   | `200`, readable Preset summaries | Namespace `read`, then `preset:read` checked on each candidate. |
+| `GET` exact Preset                                 | `200`, Preset                    | `preset:read` on that Preset.                                   |
+| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
+| `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
 An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,

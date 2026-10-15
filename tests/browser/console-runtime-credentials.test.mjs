@@ -242,14 +242,24 @@ test("active Agent can deploy the current saved draft as a new version", async (
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.equal(revisions.status, 200);
-  assert.equal(revisions.data.length, 2);
-  assert.equal(revisions.data[0].id, first.revision.id);
-  assert.equal(revisions.data[0].configurationGeneration, 1);
-  assert.deepEqual(revisions.data[0].configuration, first.revision.configuration);
-  assert.equal(revisions.data[1].id, deployed.id);
-  assert.equal(revisions.data[1].configurationGeneration, currentDraft.generation);
+  // Revision summaries list newest first; each saved Configuration is on its exact read.
+  assert.deepEqual(
+    revisions.data.map(({ id, configurationGeneration }) => [id, configurationGeneration]),
+    [
+      [deployed.id, currentDraft.generation],
+      [first.revision.id, 1],
+    ],
+  );
+  const savedConfiguration = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.configuration;
+  assert.deepEqual(await savedConfiguration(first.revision.id), first.revision.configuration);
   assert.equal(
-    revisions.data[1].configuration.plugins.entries.knowledge.config.marker,
+    (await savedConfiguration(deployed.id)).plugins.entries.knowledge.config.marker,
     "current-draft",
   );
 });

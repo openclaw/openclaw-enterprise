@@ -1140,12 +1140,11 @@ function run(args, env, readinessUrl) {
 );
 
 test(
-  "runtime image Gateway keeps OpenShell's Codex turns out of Codex's own sandbox",
+  "runtime image Gateway preserves OpenShell Codex isolation policy",
   imageTestOptions,
   async () => {
-    // Finding 1026: bwrap cannot create a user namespace inside an OpenShell Sandbox, so the
-    // pinned Gateway must send danger-full-access per turn for the OpenShell-configured app
-    // server. This runs the bundled Codex policy resolver on the documented Configuration.
+    // The bundled resolver must preserve both PAT and API-key isolation choices and the
+    // human reviewer, including models without model-backed review support.
     const documented = {
       mode: "guardian",
       approvalPolicy: "on-request",
@@ -1157,21 +1156,18 @@ test(
     const cases = [
       { documented },
       { documented: { ...documented, approvalPolicy: "never" } },
+      { documented: { ...documented, sandbox: "danger-full-access" } },
       { documented: { ...documented, approvalsReviewer: "auto_review" } },
     ].flatMap(({ documented: appServer }) =>
       // The Gateway passes no provider for the documented `codex/<model>` ref; `openai` is a
       // model it can verify for model-backed review.
-      [undefined, "openai"].map((modelProvider) => ({
-        appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY },
-        modelProvider,
-      })),
+      [undefined, "openai"].flatMap((modelProvider) =>
+        ["workspace-write", "danger-full-access"].map((sandbox) => ({
+          appServer: { ...appServer, ...OPENSHELL_CODEX_APP_SERVER_POLICY, sandbox },
+          modelProvider,
+        })),
+      ),
     );
-    // Without the reviewer pin, the documented shape is the reported failure. If this case
-    // resolves to danger-full-access after a pin bump, re-evaluate the pin before dropping it.
-    cases.push({
-      appServer: { ...documented, sandbox: "danger-full-access" },
-      expectedSandbox: "workspace-write",
-    });
     const script = String.raw`
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -1224,8 +1220,8 @@ process.stdout.write(JSON.stringify(results));
     ]);
     assert.deepEqual(
       JSON.parse(stdout),
-      cases.map(({ expectedSandbox }) => ({
-        sandbox: expectedSandbox ?? "danger-full-access",
+      cases.map(({ appServer }) => ({
+        sandbox: appServer.sandbox,
         approvalsReviewer: "user",
       })),
     );

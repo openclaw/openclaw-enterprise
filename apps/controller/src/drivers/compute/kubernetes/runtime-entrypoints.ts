@@ -3418,18 +3418,24 @@ if (pluginRuntime !== undefined) {
   assertCodexPluginRuntime(pluginRuntime);
   writeCodexConfigToml(pluginRuntime);
 }
-const loginArguments = loginMode === "api_key"
-  ? ["-c", "cli_auth_credentials_store=file", "login", "--with-api-key"]
-  : [
-      "-c",
-      "cli_auth_credentials_store=file",
-      "login",
-      "--with-access-token",
-    ];
+// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
+// classify it. The native PAT auth-file contract still hydrates and validates account metadata.
+const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
+if (providerManagedPat) {
+  require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
+    JSON.stringify({ personal_access_token: accessToken }), { mode: 0o600 });
+}
+const loginFlag = loginMode === "api_key" ? "--with-api-key" : "--with-access-token";
+const loginArguments = [
+  "-c", "cli_auth_credentials_store=file", "login", providerManagedPat ? "status" : loginFlag,
+];
 function codexChildEnvironment() {
   const environment = { ...process.env };
   delete environment.APP_SERVER_TOKEN;
   delete environment.APP_TOKEN_SHA;
+  if (providerManagedPat) {
+    delete environment.CODEX_ACCESS_TOKEN;
+  }
   return environment;
 }
 // Codex reports provider HTTP rejections as "status 401 Unauthorized" or
@@ -3546,9 +3552,6 @@ function probeCodexAuthentication(timeout) {
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".requires_openai_auth=true",
         "-c", "model_providers." + pluginRuntime.manifest.modelEndpoint.modelProvider + ".supports_websockets=false",
       ]),
-      ...(loginMode === "chatgpt_service_account" ? [
-        "-c", "forced_chatgpt_workspace_id=" + JSON.stringify(workspaceId),
-      ] : []),
       "Reply only READY. Do not use tools.",
     ], {
       cwd: directory,
@@ -3706,7 +3709,7 @@ const child = spawn(
     "shell_environment_policy.experimental_use_profile=false",
     "-c",
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
-    ...(loginMode === "oauth" ? ["-c", "cli_auth_credentials_store=file"] : []),
+    ...(loginMode === "oauth" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
     "app-server",
     "--listen",
     "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
@@ -4215,6 +4218,7 @@ function readinessFail(reason) {
     (response) => {
       let body = "";
       response.setEncoding("utf8");
+      response.on("error", () => readinessExit(reason));
       response.on("data", (chunk) => {
         body += chunk;
         if (body.length > 65536) readinessExit(reason);
@@ -4247,6 +4251,9 @@ function checkPluginStatus(ready) {
     (response) => {
       let body = "";
       response.setEncoding("utf8");
+      response.on("error", (error) =>
+        readinessFail("plugin runtime status unavailable: " + readinessErrorCode(error)),
+      );
       response.on("data", (chunk) => {
         body += chunk;
         if (body.length > 65536) readinessExit("plugin runtime status response is too large");

@@ -153,3 +153,16 @@ export function settleProvisioningEffect(
     }),
   });
 }
+
+/** The job's progress without its external effect, for a failure that deletes what it wrote. */
+export function withoutProvisioningEffect(
+  progress: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(progress).filter(
+        ([key]) => key !== "pendingEffect" && key !== "effectReceipt",
+      ),
+    ),
+  );
+}

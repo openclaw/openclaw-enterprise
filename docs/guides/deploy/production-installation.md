@@ -154,9 +154,11 @@ or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
 
 ### Advanced: copy manual YAML examples
 
-Use this branch only when deliberately skipping profiles; it refuses to overwrite
-existing configuration YAML. The manual example selects the curated Codex PluginDriver catalog,
-unlike the `codex` profile's default hosted PAT-backed discovery.
+Without profiles, this branch refuses overwrites and selects curated discovery;
+Codex profiles use hosted discovery.
+
+Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
+the startup Secret alone grants none.
 
 ```bash
 (

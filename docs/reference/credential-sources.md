@@ -9,7 +9,7 @@ Harness never receives the real credential. An Agent uses a model source through
 
 Credential sources require a selected Credential Gateway. The only
 implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
-Its `openai` type authenticates dedicated Codex models, and its `bearer-token`
+Its `openai` API-key and `codex-pat` personal-access-token types authenticate dedicated Codex models, and its `bearer-token`
 type carries a static token to one API endpoint. With a
 [Credential Refresh Driver](drivers/credential-refresh.md) selected, its
 `oauth2-client-credentials` and `oauth2-refresh-token` types carry OAuth2
@@ -53,8 +53,10 @@ The request fields are:
 - `config`: optional nonsecret strings keyed by catalog field name. For the
   OpenShell `openai` type, `base_url` selects an HTTPS OpenAI-compatible `/v1`
   endpoint and defaults to `https://api.openai.com/v1`. Codex requires the
-  OpenAI Responses API. The endpoint is immutable source configuration; register
-  a new source to change it. Invalid endpoint values return `400 INVALID_REQUEST`
+  OpenAI Responses API. Its host must be a DNS name, not an IP address. OCC
+  stores and returns the endpoint normalized (`https://API.example.com:443/v1/`
+  as `https://api.example.com/v1`). The endpoint is immutable source
+  configuration; register a new source to change it. Invalid endpoint values return `400 INVALID_REQUEST`
   before OCC reads Secrets or stores a source record.
 - `secrets`: Secret references keyed by catalog field name. Each Secret must
   belong to the same Namespace: a reference to another Namespace fails with

@@ -332,7 +332,7 @@ export interface CredentialSourceReference extends ResourceRef {
 }
 
 /** Login modes a Harness can use when its model credential arrives from a source. */
-export type CredentialSourceLoginMode = "api_key";
+export type CredentialSourceLoginMode = "api_key" | "codex_pat";
 
 export interface CredentialSourceFieldSpec {
   readonly name: string;
@@ -812,6 +812,20 @@ export type AgentRevisionMetadata = Pick<
   AgentRevision,
   "id" | "namespaceId" | "agentId" | "revision" | "backendId" | "createdAt"
 >;
+
+/**
+ * A revision without its saved settings: metadata plus the database-checked fields that tell
+ * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ */
+export type AgentRevisionSummary = AgentRevisionMetadata &
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+
+/** One page of revision summaries, newest first, and the revision number the next page starts below. */
+export interface AgentRevisionSummaryPage {
+  readonly revisions: readonly Readonly<AgentRevisionSummary>[];
+  /** Revisions numbered below this one remain; undefined on the last page. */
+  readonly nextBefore?: number;
+}
 
 export type AgentRevisionRead =
   | AgentRevision
@@ -1384,8 +1398,14 @@ export interface CredentialAttachmentStatus {
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
   listSourceTypes(context: CredentialGatewayContext): Promise<readonly CredentialSourceType[]>;
-  /** Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record. */
-  validateSourceConfig(input: Pick<CredentialSourceInput, "type" | "config">): void;
+  /**
+   * Validate nonsecret configuration without I/O, before OCC reads Secrets or stores a record.
+   * A returned configuration, with the same fields, is what OCC stores and registers instead of
+   * the written one, such as a URL in the normalized form the gateway uses.
+   */
+  validateSourceConfig(
+    input: Pick<CredentialSourceInput, "type" | "config">,
+  ): Readonly<Record<string, string>> | void;
   registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,
@@ -1460,6 +1480,8 @@ export interface SandboxDriver extends Driver {
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
+    /** Admitted catalog metadata; unavailable during pre-admission configuration checks. */
+    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
@@ -1933,6 +1955,12 @@ export interface ConfigurationDriver extends Driver {
     values: OpenClawConfigurationDocument,
     options?: ConfigurationValidationOptions,
   ): Promise<void>;
+  /**
+   * Refuses values too large to store, as `validate` would. OCC calls it before its content
+   * rules on Configuration create and update and Agent provisioning, so no rule walks them.
+   * Throw OCC's `ConfigurationSizeError` so the API names the limit to the caller.
+   */
+  validateSize?(values: OpenClawConfigurationDocument): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
   createExact?(configuration: Configuration): Promise<Configuration>;
   inspectExact?(configuration: Configuration): Promise<Configuration | undefined>;
@@ -1955,7 +1983,13 @@ export {
   isServiceAccountHarnessAuth,
 } from "./harness-auth.ts";
 
-export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
+export type {
+  Preset,
+  PresetSummary,
+  PresetTemplate,
+  PresetLaunchSettings,
+  PresetVariable,
+} from "./presets.ts";
 export { normalizePresetTemplate } from "./presets.ts";
 export {
   PRESET_JSON_MAX_BYTES,

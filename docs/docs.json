@@ -459,6 +459,14 @@
                     "label": "Earlier Breaking Changes"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
+                    "label": "Breaking Changes Before 2026-10-13"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
+                    "label": "Breaking Changes Before 2026-10-12"
+                  },
+                  {
                     "page": "guides/deploy/breaking-changes-before-2026-10-11",
                     "label": "Breaking Changes Before 2026-10-11"
                   },
@@ -966,6 +974,7 @@
               "testing/qa-matrix",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-coverage",
               "flows/agent-repository-credentials",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",

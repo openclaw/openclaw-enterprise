@@ -75,6 +75,10 @@ beside the list. **Create new version** opens the current saved Configuration;
 Viewing an older version does not select it for deployment. The
 [HTTP API](../../reference/api.md#agent-revisions)
 also lists and reads revisions; `occ agent revisions "$AGENT_ID"` lists them.
+Lists hold summaries, newest first, 50 to a page (`limit` up to 100); pass
+`meta.nextCursor` as `cursor` (or `occ agent revisions --cursor`) for older ones.
+The console's **Show older versions** loads the next page. A revision's saved
+settings are on its exact read. OCC never prunes revisions.
 
 The **Plugins** tab shows the saved Agent selections in **Create new version** and the
 frozen selections in an admitted revision. Change and save draft plugin policies

@@ -63,17 +63,17 @@ do not create an Agent or make a model call. They default to Docker; set
 The real Sandbox suite tests a dedicated Codex Agent, including authenticated
 Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
-alone do not prove these outcomes.
+alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
-The CI lane needs an existing authorized `OPENAI_API_KEY` and an
-`OCC_TEST_OPENAI_MODEL` that the key can use. Do not put the key in a command,
+The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` and an
+`OCC_TEST_OPENAI_MODEL` that the token can use. Do not put the token in a command,
 logs, or shell history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
 network access to the pinned assets. The CI preparation creates a disposable
 cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
 immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
 sufficient. See the [CI lane guide](ci.md#manual-full-integration-lanes) for the hosted run.
 
-To run the same lane locally, export the key and model through your approved
+To run the same lane locally, export the token and model through your approved
 credential workflow. Preparation builds the controller unless
 `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` selects an approved, immutable prebuilt
 controller. For a local build, choose an approved digest-pinned Node 24 build
@@ -128,17 +128,16 @@ proven environment running. Run `./scripts/k3d down --harness openclaw` to remov
 
 For a manual Compose-plus-k3d proof, start the development environment above
 with `OCC_DEVELOPMENT_CONTROL_PLANE=compose`. Supply an existing authorized
-`OPENAI_API_KEY` or set `OPENAI_API_KEY_FILE` to an absolute private file; set
+`CODEX_ACCESS_TOKEN` or set `CODEX_ACCESS_TOKEN_FILE` to an absolute private file; set
 only one. Then run:
 
 ```sh
-node scripts/first-agent.mjs my-agent --harness codex
+node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
 A successful model turn prints `Model response verified:`. An active revision or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
-`--replace-key`. The starter disables tools and the OpenClaw Control UI; its
-printed URL opens the OCE console. Run `./scripts/dev-down` with the same state
+`--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.
 
 ## Troubleshooting
