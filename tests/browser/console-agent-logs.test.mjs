@@ -679,10 +679,24 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const [first] = logRequests(requests, revisionId);
   assert.equal(new URL(first.path, fixture.origin).searchParams.has("pod"), false);
   // The download is named after the Pod the page read, as with a Pod picker.
+  const downloadResponse = page.waitForResponse((response) =>
+    response.url().includes("download=true"),
+  );
   const downloadEvent = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download" }).click();
   const saved = await downloadEvent;
   assert.equal(saved.suggestedFilename(), `${agent.id}-${revisionId}-gateway-${pod}.log`);
+  const currentResponse = await downloadResponse;
+  assert.equal(currentResponse.status(), 200);
+  assert.equal(
+    currentResponse.headers()["content-disposition"],
+    `attachment; filename="${agent.id}-${revisionId}-gateway-${pod}.log"`,
+  );
+  const currentBody = await readFile(await saved.path(), "utf8");
+  assert.equal(currentBody, await currentResponse.text());
+  assert.match(currentBody.split("\n")[0], / instance=current /);
+  assert.match(currentBody, /log reader can see this/);
+  assert.equal(currentBody.includes("output before the restart"), false);
 
   // A Pod can disappear after the page read but before this separate audited read.
   // The real Compute fixture reports no current Harness Pod; OCC emits stream:null.
@@ -706,6 +720,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const header = emptyBytes.toString("utf8").split("\n")[0];
   assert.ok(header.startsWith(`# agent=${agent.id} revision=${revisionId} source=agent `));
   assert.equal(header.includes(" pod="), false);
+  assert.match(header, / instance=current /);
   assert.equal(emptyBytes.includes("last Harness Pod output"), false);
   assert.equal(emptyDownload.suggestedFilename(), `${agent.id}-${revisionId}-agent-no-pod.log`);
   assert.deepEqual(await readFile(await emptyDownload.path()), emptyBytes);
@@ -716,6 +731,29 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   // The page's stream reports the restart, so the previous instance is readable.
   await page.getByLabel("Previous instance").check();
   await pane.getByText("output before the restart").waitFor();
+  // Both the API attachment and the Console save identify this separate instance.
+  const previousResponse = page.waitForResponse((response) =>
+    response.url().includes("download=true"),
+  );
+  const previousDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download" }).click();
+  const priorResponse = await previousResponse;
+  const priorDownload = await previousDownload;
+  assert.equal(priorResponse.status(), 200);
+  assert.equal(new URL(priorResponse.url()).searchParams.get("previous"), "true");
+  assert.equal(
+    priorResponse.headers()["content-disposition"],
+    `attachment; filename="${agent.id}-${revisionId}-gateway-${pod}-previous.log"`,
+  );
+  assert.equal(
+    priorDownload.suggestedFilename(),
+    `${agent.id}-${revisionId}-gateway-${pod}-previous.log`,
+  );
+  const priorBody = await readFile(await priorDownload.path(), "utf8");
+  assert.equal(priorBody, await priorResponse.text());
+  assert.match(priorBody.split("\n")[0], / instance=previous /);
+  assert.match(priorBody, /output before the restart/);
+  assert.equal(priorBody.includes("log reader can see this"), false);
   await page.getByLabel("Previous instance").uncheck();
   await pane.getByText("log reader can see this").waitFor();
 

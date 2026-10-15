@@ -132,7 +132,11 @@ function recordText(record: SanitizedRuntimeLogRecord): string {
  * The download body: the same sanitized records as the JSON page, one per line.
  * Like the JSON serializer it accepts only branded records.
  */
-export function runtimeLogDownloadBody(page: RuntimeLogPage, agentId: string): string {
+export function runtimeLogDownloadBody(
+  page: RuntimeLogPage,
+  agentId: string,
+  previous: boolean,
+): string {
   const stream = page.stream;
   const header = [
     `# agent=${agentId} revision=${page.revisionId} source=${page.source}`,
@@ -140,19 +144,25 @@ export function runtimeLogDownloadBody(page: RuntimeLogPage, agentId: string): s
     stream?.container === undefined ? "" : ` container=${stream.container}`,
     stream?.restartCount === undefined ? "" : ` restartCount=${stream.restartCount}`,
     stream?.sandbox === undefined ? "" : ` sandbox=${stream.sandbox}`,
+    page.source === "sandbox" ? "" : ` instance=${previous ? "previous" : "current"}`,
     ` observedAt=${page.observedAt} withheld=${page.withheld}`,
   ].join("");
   const lines = serializedRecords(page.records).map(recordText);
   return `${[header, ...lines].join("\n")}\n`;
 }
 
-/** `<agent>-<revision>-<source>-<pod or sandbox>.log`; every part is an OCC or Kubernetes name. */
-export function runtimeLogDownloadFileName(page: RuntimeLogPage, agentId: string): string {
+/** Previous container instances append `-previous`; names use OCC or Kubernetes identifiers. */
+export function runtimeLogDownloadFileName(
+  page: RuntimeLogPage,
+  agentId: string,
+  previous: boolean,
+): string {
   const name = [
     agentId,
     page.revisionId,
     page.source,
     page.stream?.pod ?? page.stream?.sandbox ?? "no-pod",
   ].join("-");
-  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}.log`;
+  const suffix = page.source !== "sandbox" && previous ? "-previous" : "";
+  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}${suffix}.log`;
 }

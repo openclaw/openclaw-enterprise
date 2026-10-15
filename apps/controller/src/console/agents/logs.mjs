@@ -72,8 +72,10 @@ function unobservedDescription() {
   };
 }
 
-function downloadFileName(agentId, revisionId, source, pod) {
-  return `${[agentId, revisionId, source, pod].join("-").replace(/[^A-Za-z0-9_.-]/g, "_")}.log`;
+function downloadFileName(agentId, revisionId, source, pod, previous) {
+  const name = [agentId, revisionId, source, pod].join("-");
+  const suffix = source !== "sandbox" && previous ? "-previous" : "";
+  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}${suffix}.log`;
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
@@ -486,6 +488,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
           revisionId,
           source.id,
           downloadPodName(text, source, pod),
+          query.get("previous") === "true",
         ),
         hidden: true,
       });

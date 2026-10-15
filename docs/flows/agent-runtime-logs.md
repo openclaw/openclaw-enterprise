@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-15
-last_updated_session: authoring-run/8e4e2c2d-907a-411c-96f0-f882c1118e6d
+last_updated_session: authoring-run/5d925828-f306-4469-bedb-9c60bc9c6def
 ---
 
 # Agent runtime logs flow
@@ -14,8 +14,8 @@ returns redacted, bounded Compute Driver records. Downloads stay local.
 ## Entry Points
 
 - `GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/runtime`
-  and `GET .../runtime/logs` (optionally `download=true`) from console Logs, `occ agent runtime|logs` (`internal/occcli/agent_runtime.go`) or the API.
-  See the
+  and `GET .../runtime/logs` (`download=true` for attachments) from Console,
+  `occ agent runtime|logs` (`internal/occcli/agent_runtime.go`) or API. See
   [CLI reference](../reference/cli.md#runtime-status-and-logs).
 - Source: `apps/controller/src/index.ts:createFastifyApp`,
   `packages/occ/src/index.ts:OpenClawController.describeAgentRuntime` and
@@ -194,27 +194,27 @@ Sandbox, or concealed from a non-member) maps to
 Sandbox IDs are refused; a new Sandbox ID emits `stream_replaced`.
 `sanitizeSandboxLogLines` parses the OCSF shorthand into allowlisted fields.
 
-A download (`download=true`) forces `tailLines` to 1000, rejects a `cursor` with
-`400`, and starts a new view; `apps/controller/src/index.ts:auditAction`
+Downloads (`download=true`) force `tailLines=1000`, reject cursors (`400`), and start
+a new view; `apps/controller/src/index.ts:auditAction`
 names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 
 ### 4. Return
 
 `apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and
-`runtimeLogDownloadBody` reject reserved `content` records;
-`runtimeLogDownloadFileName` names `<agent>-<revision>-<source>-<pod>.log`.
-`runtime-logs/read.ts:runtimeLogPageAtLevel` filters after signing; unknown levels,
-gaps and withheld counts remain. Console filters
-(`apps/controller/src/console/agents/logs.mjs`) use loaded rows; debug is opt-in.
-Cached `403` avoids duplicate denials. Pod cards show state/exit; Gateway views
-link Harness output or Deployment activity.
-CLI rejects zero/sub-second `--since`; omission keeps unfiltered reads.
-`runAgentLogs --follow` polls every two seconds and exits cleanly on cancellation;
-non-follow cancellation errors. `internal/occclient/transport.go:apiError` accepts
-`Retry-After` seconds or HTTP dates: positive delays up to one hour postpone `429`
-retries, rounded up to seconds. Invalid/expired delays retain the interval;
-other failures and server admission are unchanged. Driver failures use fixed
-`RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
+`runtimeLogDownloadBody` reject reserved `content` records.
+Container headers label the requested `instance=current` or `instance=previous`, even
+without Pods. `runtimeLogDownloadFileName` and
+Console (`apps/controller/src/console/agents/logs.mjs`) use the download request
+for `-previous.log`; current and Sandbox filenames stay unchanged.
+`runtime-logs/read.ts:runtimeLogPageAtLevel` filters after signing, preserving unknown
+levels/gaps/withheld counts. Console filters loaded rows; debug is opt-in.
+Cached `403` avoids duplicate denials. Pod cards show state/exit; Gateway links
+Harness output or Deployment activity.
+CLI rejects zero/sub-second `--since`; omission leaves reads unfiltered.
+`runAgentLogs --follow` polls every two seconds. Cancelling follow succeeds; cancelling a one-shot read fails. `internal/occclient/transport.go:apiError` accepts
+`Retry-After` seconds/HTTP dates: positive delays ≤1h postpone `429` retries,
+rounded up to seconds; invalid/expired delays retain the interval.
+Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadlines.
 
 ## Debugging and Verification
 
@@ -226,8 +226,8 @@ other failures and server admission are unchanged. Driver failures use fixed
   `503 RUNTIME_LOGS_AUDIT_UNAVAILABLE`: no output read.
 - `runtime-logs-content.test.mjs` verifies handlers with synthetic Driver pages;
   `occ-api-security.test.mjs` verifies authorization and cursor failures.
-  Kubernetes conformance substitutes API observations. Sandbox conformance and wire tests prove their declared
-  handler/protocol boundaries, not real runtime execution.
+  Kubernetes conformance substitutes API observations; Sandbox conformance/wire tests prove
+  handler/protocol boundaries, not runtime execution.
 
 ## Related docs
 
@@ -240,6 +240,8 @@ other failures and server admission are unchanged. Driver failures use fixed
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 20:56: Label container exports. (authoring-run/5d925828-f306-4469-bedb-9c60bc9c6def - 7041b4c11a1bc9109fbb150beac2f8bc430474a6)
 
 - 2026-10-15 22:11: Merge main; preserve both flows. (authoring-run/8e4e2c2d-907a-411c-96f0-f882c1118e6d - 20d9edc976cc)
 

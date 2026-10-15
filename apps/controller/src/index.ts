@@ -2686,12 +2686,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2721,9 +2722,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
