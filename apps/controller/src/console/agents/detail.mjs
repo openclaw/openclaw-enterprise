@@ -1544,6 +1544,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
+      // On first load the newest version's panel replaces the loading placeholder once its
+      // first status read settles, in the same frame as the summary and status line, so the
+      // page below moves once instead of once for an empty panel and again for the status.
+      // A newer version found later replaces the shown (older) panel at once.
+      const firstLoad = activityPanel === deploymentStatus;
+      const showPanel = (panel) => {
+        if (activityPanel !== panel) {
+          activityPanel.replaceWith(panel);
+          activityPanel = panel;
+        }
+      };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
             context,
@@ -1555,6 +1566,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
+              showPanel(nextPanel);
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
@@ -1588,8 +1600,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 : "No readable deployment records.",
             ),
           );
-      activityPanel.replaceWith(nextPanel);
-      activityPanel = nextPanel;
+      if (!mostRecent || !firstLoad) {
+        showPanel(nextPanel);
+      }
       activityRevisionId = mostRecent?.id ?? null;
     }
     renderLatestDeployment();

@@ -709,7 +709,15 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     await page.getByLabel("Authentication method", { exact: true }).inputValue(),
     "api_key",
   );
-  assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
+  const authMethod = page.getByLabel("Authentication method", { exact: true });
+  assert.equal(await authMethod.isEnabled(), true);
+  assert.deepEqual(
+    await authMethod
+      .locator("option:not([disabled])")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["api_key"],
+  );
+  await authMethod.selectOption("api_key");
   assert.equal(await apiKeySecret.inputValue(), "");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication source").count(), 0);

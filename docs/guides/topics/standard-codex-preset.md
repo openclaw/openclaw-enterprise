@@ -189,7 +189,3 @@ If the runtime rejects or ignores the network/search fields, stop deployment
 and select compatible images. Do not switch to danger-full-access or live
 search to make it work. A sandbox startup failure requires fixing the runtime
 or seccomp prerequisites.
-
-[Preset integration coverage](../../testing/local.md#standard-codex-preset)
-checks installation and draft creation. It does not substitute for the native
-enforcement and model checks above.

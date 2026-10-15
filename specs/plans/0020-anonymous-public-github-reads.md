@@ -21,7 +21,7 @@ and provider I/O, and passing the Agent journey on the reviewed source with no s
    the reviewed seccomp profile on a supported runner. The command must use its
    projected skill, limited proxy and no local binding to recover a pull title
    present only at the private TLS provider. No model or repository credentials are needed.
-5. Run the existing [Gateway Routing journey](../../docs/testing/gateway-routing.md)
+5. Run the existing [Gateway Routing journey](../../docs/testing/kubernetes.md#private-gateway-routing)
    in an authorized isolated environment on the proposed source. Require managed
    skill discovery and a model answer containing the random pull title absent
    from the prompt. The provider in this journey is controlled; record live

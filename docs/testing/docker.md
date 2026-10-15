@@ -1,157 +1,201 @@
-# Docker or Podman Compose tests
+# Docker, image, and Helm tests
 
-Docker and Podman Compose support control-plane startup and Namespace operations.
-The Docker Compute Driver currently rejects Agent harness authentication bindings;
-Agent deployment requires a binding. The retained real Agent suites therefore
-cannot complete a model or TUI journey through the current OCC API. Neither an
-exported `OPENAI_API_KEY` nor a runtime image restores that support.
+## Overview
 
-Use [local Kubernetes runtime tests](kubernetes.md) for the supported authenticated
-Agent path. Historical Docker and Podman model-turn results do not prove the
-current binding contract.
+Run Compose startup, container image, and Helm checks. Use [Kubernetes](kubernetes.md)
+for an authenticated Agent journey: the Docker Compute Driver rejects Agent
+harness authentication bindings, so the retained real Agent model and TUI tests
+fail at admission.
 
 ## Verify Compose startup
 
-Follow the [quickstart](../guides/quickstart.md) to prove database initialization,
-API and worker readiness, and authenticated Installation access. The host/startup
-integration cases can also be run with:
+Compose supports control-plane startup and Namespace operations.
+
+Follow the [quickstart](../guides/quickstart.md), or run the host/startup cases:
 
 ```sh
 node --test tests/integration/dev-up.test.mjs
 ```
 
-On macOS, follow the Podman prerequisite in the
-[startup flow](../flows/docker-compose-development/startup.md).
-
-This verification does not prove an Agent model turn. Follow the exact cleanup
-command printed by `dev-up` to preserve the development database and credentials.
+On macOS, follow the Podman prerequisite in the [startup flow](../flows/docker-compose-development/startup.md).
+Use the cleanup command printed by `dev-up` to preserve the database and credentials.
 
 ## Verify Compose cleanup
 
-Run the cleanup case against a real engine and the shipped PostgreSQL image:
+With Go, Podman and `podman-compose` installed, run:
 
 ```sh
-OCC_TEST_PODMAN_COMPUTE_REAL=1 \
-  node --test --test-name-pattern='Compose cleanup preserves' \
+OCC_TEST_PODMAN_COMPUTE_REAL=1 node --test --test-name-pattern='Compose cleanup preserves' \
   tests/integration/docker-compute-real.test.mjs
 ```
 
-Requires Go, Podman, and `podman-compose`. On macOS, select a rootless or rootful
-machine connection through `CONTAINER_CONNECTION` for this invocation; the test
-does not change the default connection. For Docker Engine with Compose, replace
-the selector with `OCC_TEST_DOCKER_COMPUTE_REAL=1`.
+On macOS, select the machine with `CONTAINER_CONNECTION`. For Docker Engine and
+Compose, use `OCC_TEST_DOCKER_COMPUTE_REAL=1` instead. This case uses disposable
+resources and verifies that `occ dev down` preserves the database volume unless
+`--volumes` is specified. It does not deploy an Agent.
 
-This case starts only the development PostgreSQL service to exercise cleanup
-after partial startup. The compiled `occ dev down` must remove project containers
-and networks while preserving the database volume, then delete the volume only
-with `--volumes`. It uses disposable project resources and no model credentials
-or Agent runtime image. Failure cleanup uses Compose directly without masking
-the CLI failure. This proves the cleanup lifecycle, not Agent execution.
-
-## Docker response interruption regression
-
-With workspace dependencies already installed, run:
+## Driver regressions
 
 ```sh
 node --test tests/conformance/docker-compute.test.mjs
-```
-
-The preflight interruption case runs the production Driver and Node HTTP client
-against a local HTTP fault server in an isolated child. Only the socket address
-is redirected; the server closes a partially delivered response. Expect prompt
-rejection followed by a successful preflight retry. This covers response handling,
-not a Docker daemon, Compose startup, Agent deployment, or model execution.
-
-## Docker transport-token retry fixture
-
-With Docker Engine available at `/var/run/docker.sock` and workspace dependencies
-already installed, run from the repository root:
-
-```sh
 OCC_TEST_DOCKER_TOKEN_RETRY=1 NODE_BASE_IMAGE=node:24-bookworm \
   node --test tests/integration/docker-compute-token-retry.test.mjs
 ```
 
-The fixture calls the real Docker Driver directly and runs its runtime entrypoints
-in disposable containers. Minimal gateway and app-server binaries exercise
-WebSocket authentication, including invalid and missing bearer rejection. Login
-and model-probe responses are simulated solely to satisfy launcher startup. The
-case checks both peer-loss directions, retained token reuse, token rotation,
-replacement of a healthy gateway holding a stale token, and preservation of
-foreign-owned same-name containers and their siblings.
-
-The suite also exercises Namespace cleanup through the real Driver and engine.
-It disconnects an inert owned container and removes its network externally, then
-requires Namespace deletion to remove the container and workspace volume while
-preserving a sibling Namespace. It also checks ordinary and repeated deletion.
-This cleanup case uses the selected Node base image without building or pulling.
-
-This is Driver regression coverage without an Agent authentication binding. It
-does not pass through current OCC Agent admission or prove genuine OpenClaw,
-Codex, model calls, or the Compose control plane. The authentication support
-boundary at the top of this page still applies.
-
-The test builds an image from `NODE_BASE_IMAGE` (default `node:24-bookworm`)
-and the installed WebSocket dependency, without installing packages. It uses an
-inert fixture provider key and removes its own containers, network, and image.
-A selected run fails on missing prerequisites or cleanup failure. CI selects
-this case in the `images-packaging` lane.
+The first uses a local HTTP fault fixture. The second requires Docker at
+`/var/run/docker.sock`, builds a fixture image, and removes its own resources.
+Its gateway, app-server and provider responses are fixtures: it does not prove
+Agent admission, a model call, or Compose orchestration.
 
 ## Verify Codex startup probe recovery
 
-Use an existing immutable Node 24+ Linux image and a running Docker engine:
+With a running Docker engine and an existing immutable Node 24+ Linux image:
 
 ```sh
 OCC_TEST_CODEX_PROBE_IMAGE=sha256:<local-image-id> \
   node --test tests/integration/codex-model-probe.test.mjs
 ```
 
-The image selector also accepts a repository digest. The test never pulls an
-image. It runs the generated dedicated Codex launcher in disposable containers
-with networking disabled, a read-only root, and temporary writable state. A
-fixture CLI supplies failures and success; no provider credentials are needed.
-The `images-packaging` CI lane uses its selected Node base image for this test.
-
-Expect timeout recovery, two-attempt exhaustion, nonretryable rejection, malformed
-output, tool events, external `SIGKILL`, and termination during backoff to pass.
-The tests exercise real 30-second subprocess deadlines and verify the readiness
-file, HTTP runtime status, cleanup, and sanitized logs. They take about 95 seconds
-and remove their own containers and temporary files. They do not establish real
-Codex/provider compatibility or Kubernetes deployment success; use the
-[Kubernetes runtime journey](kubernetes.md) for those checks.
+The image may be a repository digest; the test does not pull it. It uses a
+fixture CLI and removes its containers and temporary files. It takes about 95
+seconds and does not prove provider compatibility.
 
 ## Docker Compose development test environment
 
-`tests/integration/docker-compute-real.test.mjs` retains the Docker and Podman
-model/TUI scenarios for future Driver work. `pnpm podman:test` selects its Podman
-path. These commands currently fail at Agent admission when selected; an
-unselected skipped suite is not passing model evidence. The existing test inputs
-are listed here for contributors diagnosing that boundary, not as a runnable
-supported deployment procedure.
+`tests/integration/docker-compute-real.test.mjs` retains real-runtime scenarios
+for future Driver work; `pnpm podman:test` selects Podman. Selected Agent cases
+currently fail at admission; unselected cases skip. The inputs are
+`OCC_TEST_DOCKER_COMPUTE_REAL` or `OCC_TEST_PODMAN_COMPUTE_REAL`,
+`OCC_DOCKER_GATEWAY_IMAGE`, `OCC_DOCKER_AGENT_IMAGE` (or shared
+`OCC_DOCKER_RUNTIME_IMAGE`), `OPENAI_API_KEY`, `OCC_TEST_OPENAI_MODEL` and
+optionally `PYTHON`. See the test source for defaults.
 
-The retained Docker and Podman journeys include interrupted dedicated
-preparation: kill the test-owned worker after Codex starts but before gateway
-creation, wait for the surviving container to become healthy, restart the
-worker, and require revision activation with the same Codex container and
-matching transport tokens. A provider response through the recovered gateway
-is the intended authentication proof. Current admission prevents reaching
-this scenario; its presence is not successful live recovery evidence. The
-Podman test uses an init process in its PostgreSQL container to reap child
-processes during interruption testing without changing deployed Compose
-configuration.
+See the [Docker Compute support boundary](../reference/drivers/docker-compute.md).
 
-| Variable                       | Requirement or default                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------------------- |
-| `OCC_TEST_DOCKER_COMPUTE_REAL` | Set to `1` to explicitly opt into the real Docker Compute proof.                        |
-| `OCC_TEST_PODMAN_COMPUTE_REAL` | Set to `1` to select Podman and its embedded and dedicated real-runtime proof.          |
-| `OCC_DOCKER_GATEWAY_IMAGE`     | Existing production-equivalent OpenClaw gateway image; defaults to the runtime image.   |
-| `OCC_DOCKER_AGENT_IMAGE`       | Existing production-equivalent Codex Agent image; defaults to the runtime image.        |
-| `OCC_DOCKER_RUNTIME_IMAGE`     | Optional shared image fallback for both gateway and Agent.                              |
-| `OPENAI_API_KEY`               | Existing authorized provider credential for real embedded and dedicated model turns.    |
-| `OCC_TEST_OPENAI_MODEL`        | Authorized provider model; defaults to exact API model ID `gpt-6-astra`.                |
-| `PYTHON`                       | Optional host Python interpreter for `tests/helpers/tui-pty.py`; defaults to `python3`. |
+## Container publication registry proof
 
-## Related
+With Docker and Skopeo 1.13.3, run:
 
-- [Choose another test suite](README.md).
-- [Docker Compute support boundary](../reference/drivers/docker-compute.md).
+```sh
+OCC_TEST_CONTAINER_REGISTRY=1 node --test tests/integration/container-registry-real.test.mjs
+```
+
+The test pulls a digest-pinned registry image and removes its disposable
+loopback registry. It checks publication against that registry, not GHCR access
+or GitHub permissions. It skips without the selector.
+
+## Images and Helm
+
+Image and Helm checks require Node 24+, installed dependencies, and Docker
+unless stated otherwise. Use locally built images or pull the immutable published
+images selected below. These checks make no model calls.
+
+### Check published images
+
+On a native host for each target architecture, use the source revision that
+produced the images. Follow [image selection and registry authentication](../guides/deploy/production-installation.md#use-published-images).
+Set the immutable `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` references, then run:
+
+```sh
+docker pull "$CONTROLLER_IMAGE"
+docker pull "$RUNTIME_IMAGE"
+OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
+  node --test tests/integration/production-image-startup.test.mjs \
+    tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-peer.test.mjs \
+    tests/integration/runtime-image-native-worker.test.mjs \
+    tests/integration/runtime-image-state-migration.test.mjs \
+    tests/integration/runtime-image-managed-files.test.mjs \
+    tests/integration/runtime-image-native-listener.test.mjs \
+    tests/integration/repository-runtime-volume.test.mjs
+```
+
+All cases must pass without skips for the exact pair before installation. Repeat
+for changed digests. An unset image selector skips its cases. Runtime checks need
+`OCC_TEST_CODEX_SECCOMP_PROFILE` in CI and when the Docker default blocks the
+Codex sandbox. The controller check expects an unreachable database; it does
+not prove connectivity. Runtime checks do not prove a model turn or Slack delivery.
+
+### Build images from the checkout
+
+Build the [runtime image](../../deploy/runtime/README.md) and the controller
+image using the [production prerequisites](../guides/deploy.md#production-prerequisites).
+Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the local tags and run the image
+suite above, omitting the `docker pull` commands.
+
+### Render the Helm chart
+
+With Helm and `yq` supporting `eval-all -o=json`:
+
+```sh
+node --test tests/integration/production-kubernetes-packaging.test.mjs
+```
+
+Missing Helm or `yq` skips cases. Rendering does not install the chart or prove
+live admission or NetworkPolicy enforcement. `OCC_HELM_BIN` can select Helm.
+
+## Development Compose packaging
+
+With a Compose provider on `PATH`, run:
+
+```sh
+node --test tests/integration/development-packaging.test.mjs tests/integration/logging-packaging.test.mjs
+```
+
+The tests inspect configuration without starting containers. Missing Compose or
+required `yq` fails the cases; the logging Helm checks also require Helm.
+
+## Repository image-pair qualification
+
+For fixture coverage, run `node --test tests/integration/production-image-qualification.test.mjs`.
+For real image-pair compatibility, use Linux as UID 1000 and stage immutable
+images for the native Docker architecture. Set `OCC_PROBE_CONTROLLER_IMAGE`,
+`OCC_PROBE_BROKER_IMAGE`, `OCC_PROBE_OLD_CONTROLLER_IMAGE` and
+`OCC_PROBE_OLD_BROKER_IMAGE`. Select an old controller without the admission
+probe and an old broker without durable-admission capability. Then run:
+
+```sh
+umask 077
+pair_state_dir=$(mktemp -d)
+node scripts/ci/run-tests.mjs run image-pair-qualification \
+  --state "$pair_state_dir/state.json" --results "$pair_state_dir/results.json"
+```
+
+The lane requires all four images and fails on skipped cases. It checks protocol
+compatibility, not cluster behavior or a live Agent workflow.
+
+## Runtime image startup test environment
+
+The runtime suite above uses task-owned Docker containers. In CI it requires the
+reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE`. If running inside a container against
+a host Docker daemon, mount the repository and fixture temporary directory at
+the same absolute host paths and set `TMPDIR` to that shared directory.
+`OCC_DOCKER_BIN` selects an alternate executable. For emulated startup, set
+`OCC_TEST_IMAGE_TIMEOUT_MULTIPLIER` to an integer from 1 to 10.
+
+## Repository runtime volume test environment
+
+The runtime suite includes `repository-runtime-volume.test.mjs`, which requires
+Docker `volume-subpath` support. It exercises the installed client and removes
+its owned container and volume. It does not prove Kubernetes fsGroup or live
+GitHub behavior.
+
+## Verify installation image selections
+
+Before a registry-backed installation, check the exact selected digests on each
+native architecture as above. In the installation shell, compare them to the
+prepared YAML. Stop if either comparison fails. For separate runtime images,
+set the checked `GATEWAY_IMAGE` and `AGENT_IMAGE` digests explicitly:
+
+```sh
+: "${CONTROLLER_IMAGE:?Set the checked controller digest}"
+export GATEWAY_IMAGE="${GATEWAY_IMAGE:-${RUNTIME_IMAGE:?Set the checked runtime digest}}"
+export AGENT_IMAGE="${AGENT_IMAGE:-${RUNTIME_IMAGE:?Set the checked runtime digest}}"
+yq e -e '.images.controller == strenv(CONTROLLER_IMAGE)' "$OCC_INPUT_DIRECTORY/values.yaml" && \
+  yq e -e '.drivers.compute.configuration.images.gateway == strenv(GATEWAY_IMAGE) and .drivers.compute.configuration.images.agent == strenv(AGENT_IMAGE)' "$OCC_INPUT_DIRECTORY/installation.yaml"
+```
+
+Repeat the image checks and comparisons when a digest changes. The local
+Kubernetes import path uses generated YAML and skips this comparison.
