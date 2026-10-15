@@ -632,6 +632,10 @@ select:not([multiple])[size="1"] {
   margin: 0;
   font-size: 12px;
 }
+/* Until Deployment activity first settles, Agent detail shows its header and summary only. */
+.agent-detail-pending > :not(.agent-toolbar, .resource-id, .agent-current-summary) {
+  display: none;
+}
 .agent-status-line {
   margin: 10px 0 0;
   padding: 10px 14px;
