@@ -256,6 +256,7 @@ const runtimeImageStockBrokerDiagnosticStages = new Set([
   "config-patch",
   "fixture-reachability",
   "initialize",
+  "bundled-system-skill",
   "proxy-env",
   "broker-denial",
   "outside-home-read",
@@ -1797,6 +1798,7 @@ environment.OPENCLAW_PLUGIN_RUNTIME_JSON = JSON.stringify({
 });
 const codexAuthFixturePath = "/home/node/.codex/auth.json";
 fs.mkdirSync("/home/node/.codex", { recursive: true });
+fs.mkdirSync("/home/node/workspace", { recursive: true });
 fs.writeFileSync(codexAuthFixturePath, JSON.stringify({ OPENAI_API_KEY: "synthetic-offline-key" }), { mode: 0o600 });
 const homeControlSentinelPath = "/home/node/openclaw-stock-codex-control-sentinel.txt";
 const homeControlSentinel = "synthetic-openclaw-control-sentinel\\n";
@@ -1901,7 +1903,15 @@ const timeout = setTimeout(() => {
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
 
     markStockBrokerStage("bundled-system-skill");
-    const skillPath = "/home/node/.codex/skills/.system/skill-creator/SKILL.md";
+    const control = await execShell("cd /home/node/workspace && printf restricted-command-ok");
+    assert.equal(control.exitCode, 0, "restricted command control failed: " + control.stderr);
+    assert.equal(control.stdout, "restricted-command-ok");
+    const catalog = await rpc("skills/list", { cwds: ["/home/node/workspace"], forceReload: true });
+    const skill = catalog.data.flatMap((entry) => entry.skills)
+      .find((entry) => entry.name === "skill-creator" && entry.enabled && entry.scope === "system");
+    assert.ok(skill, "Codex must advertise an enabled system skill");
+    const skillPath = skill.path;
+    assert.equal(skillPath, "/home/node/.codex/skills/.system/skill-creator/SKILL.md");
     const skillBefore = fs.readFileSync(skillPath, "utf8");
     assert.ok(skillBefore.length > 0, "Codex must install its bundled skill before the probe");
     const skillRead = await execShell("cat " + skillPath);

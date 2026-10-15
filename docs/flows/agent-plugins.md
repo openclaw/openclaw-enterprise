@@ -247,8 +247,9 @@ those codes mean not serving. Readiness verifies workload, revision, startup
 instance, selection keys and warnings. Docker Codex healthchecks fail on
 interrupted status bodies, preserving the transport code or original reason.
 
-With the repository broker, dedicated Codex can read its runtime and bundled
-skills at `/home/node/.codex/skills/.system`, not neighboring credentials. Startup
+With an enabled tool proxy, dedicated Codex can read its bundled skills at
+`/home/node/.codex/skills/.system`, including without a repository broker. The
+profile does not expose neighboring credentials. Startup
 links `/home/node/.openclaw/plugin-skills` to
 `/home/node/openclaw-runtime-assets/plugin-skills` without exposing gateway state.
 

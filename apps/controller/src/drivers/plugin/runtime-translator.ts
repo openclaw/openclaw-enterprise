@@ -833,6 +833,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     repositoryBrokerNetworkPolicy: unknown = undefined,
     defaultApprovers?: unknown,
     dedicatedCodex = false,
+    baseProxyEnabled = false,
   ): Record<string, unknown> | undefined {
     validatePolicies("codex", selections, defaultApprovers);
     const selected = selectionEntries(selections);
@@ -848,10 +849,14 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
             appServer: {
               networkProxy: {
                 // The native sandbox helper is packaged here even without selected plugins.
-                readOnlyPaths:
-                  selected.length === 0
+                readOnlyPaths: [
+                  ...(selected.length === 0
                     ? CODEX_RUNTIME_READ_ONLY_PATHS
-                    : CODEX_PLUGIN_READ_ONLY_PATHS,
+                    : CODEX_PLUGIN_READ_ONLY_PATHS),
+                  ...(dedicatedCodex && baseProxyEnabled
+                    ? ["/home/node/.codex/skills/.system"]
+                    : []),
+                ],
               },
             },
           };
@@ -1094,6 +1099,7 @@ export function codexOpenClawConfiguration(
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   defaultApprovers?: PluginApprovers,
   dedicatedCodex = false,
+  baseProxyEnabled = false,
 ): OpenClawConfigurationDocument | undefined {
   return pluginRuntimeTranslator.codexOpenClawConfiguration(
     selections,
@@ -1101,6 +1107,7 @@ export function codexOpenClawConfiguration(
     repositoryBrokerNetworkPolicy,
     defaultApprovers,
     dedicatedCodex,
+    baseProxyEnabled,
   ) as OpenClawConfigurationDocument | undefined;
 }
 

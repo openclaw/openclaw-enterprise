@@ -5171,12 +5171,13 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.equal(gateway.children.length, 6);
 });
 
-for (const [dedicated, withBroker] of [
-  [true, true],
-  [true, false],
-  [false, true],
+for (const [dedicated, withBroker, proxyEnabled] of [
+  [true, true, true],
+  [true, false, true],
+  [false, true, true],
+  [true, false, false],
 ]) {
-  test(`Codex gateway supervisor applies plugin-free bridge runtime (dedicated=${dedicated}, broker=${withBroker})`, async () => {
+  test(`Codex gateway supervisor applies plugin-free bridge runtime (dedicated=${dedicated}, broker=${withBroker}, proxy=${proxyEnabled})`, async () => {
     const revisionId = "revision-plugin-compute-1";
     const runtime = pluginRuntimeSpecForRevision(
       revision({ plugins: codexNoPluginState() }),
@@ -5201,6 +5202,11 @@ for (const [dedicated, withBroker] of [
         }),
       ],
     ]);
+    if (!proxyEnabled) {
+      const base = JSON.parse(files.get("/etc/openclaw/openclaw.json"));
+      base.plugins.entries.codex.config.appServer.networkProxy.enabled = false;
+      files.set("/etc/openclaw/openclaw.json", JSON.stringify(base));
+    }
     const intervals = [];
     let statusHandler;
     let child;
@@ -5290,6 +5296,7 @@ for (const [dedicated, withBroker] of [
     ).template.configuration.values.plugins.entries.codex.config.appServer.networkProxy;
     assert.deepEqual(proxy, {
       ...presetProxy,
+      enabled: proxyEnabled,
       ...(withBroker
         ? {
             enabled: true,
@@ -5312,7 +5319,10 @@ for (const [dedicated, withBroker] of [
             "/run/oce/repository-credentials",
             ...(dedicated ? ["/home/node/.codex/skills/.system"] : []),
           ]
-        : ["/app/node_modules/openclaw"],
+        : [
+            "/app/node_modules/openclaw",
+            ...(dedicated && proxyEnabled ? ["/home/node/.codex/skills/.system"] : []),
+          ],
     });
     const status = readStatusFromHandler(statusHandler);
     assert.deepEqual(status, {
