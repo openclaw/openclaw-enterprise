@@ -352,7 +352,7 @@ test("A full load replaces the startup status once when its reads settle in time
   await login(page, fixture, url);
   await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
   await pauseClock(page);
-  // Record from before the console's module runs, which adds the startup status.
+  // Record from before the console's module runs, which takes over the startup status.
   await page.addInitScript(
     `document.addEventListener("readystatechange", () => {
       if (document.readyState === "interactive") (${recordShownPages})();
@@ -361,9 +361,6 @@ test("A full load replaces the startup status once when its reads settle in time
 
   await page.reload();
   await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
-  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), [
-    "no page",
-    "startup",
-    "Agents",
-  ]);
+  // The shell's static status is there from the first parse (finding 1444).
+  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), ["startup", "Agents"]);
 });
