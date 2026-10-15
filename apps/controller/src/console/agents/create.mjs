@@ -249,9 +249,15 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
-  const presets = createPresetFields(context, (rendered, options, draft) =>
-    renderAgentForm(context, rendered, options, draft),
-  );
+  // Starting the form replaces the launch view, and with it the control that started it. Give
+  // focus to the page heading instead of dropping it to the document (finding 1446).
+  const startForm = (rendered, options, draft) => {
+    renderAgentForm(context, rendered, options, draft);
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
+  };
+  const presets = createPresetFields(context, startForm);
   context.view.replaceChildren(
     link("← Agents", "agents", context),
     element(
@@ -267,9 +273,7 @@ export function renderCreateAgent(context, draft) {
         "div",
         { className: "launch-actions" },
         presets.startDefault,
-        button("Start without Preset", () =>
-          renderAgentForm(context, {}, {}, { discardOnExit: true }),
-        ),
+        button("Start without Preset", () => startForm({}, {}, { discardOnExit: true })),
       ),
     ),
     element(

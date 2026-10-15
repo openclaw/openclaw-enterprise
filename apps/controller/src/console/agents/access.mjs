@@ -231,6 +231,8 @@ export function renderAgentAccess(context, agent) {
     if (state.pending || !context.isCurrent()) {
       return;
     }
+    // Refresh is disabled while it reads, which drops its focus; give it back (finding 1446).
+    const refocus = document.activeElement === refresh;
     state.pending = true;
     state.error = null;
     render();
@@ -255,6 +257,9 @@ export function renderAgentAccess(context, agent) {
       if (context.isCurrent()) {
         state.pending = false;
         render();
+        if (refocus && !section.hidden && document.activeElement === document.body) {
+          refresh.focus({ preventScroll: true });
+        }
       }
     }
   }

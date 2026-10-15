@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -155,4 +156,48 @@ test("saving and reloading the authentication source update the Agent page in pl
   await waitForInputValue(secretField, secretOptionLabel(first));
   assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(page), "Reload authentication source");
+});
+
+// Refresh sharing, the Configuration editor's Cancel and the Create Agent shortcuts replaced or
+// disabled the control the reader used, dropping keyboard focus to the document (finding 1446).
+test("Refresh sharing, editor Cancel and the Create Agent shortcuts keep keyboard focus", async (t) => {
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  );
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Kept focus", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Kept Focus", nativeValues("focus"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Kept Focus" }).waitFor();
+
+  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  await sharing.getByText("Current policy loaded.", { exact: false }).waitFor();
+  await sharing.getByRole("button", { name: "Refresh sharing" }).focus();
+  await page.keyboard.press("Enter");
+  await sharing.getByRole("button", { name: "Refresh sharing", disabled: false }).waitFor();
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
+  assert.equal(await focusedText(page), "Refresh sharing");
+
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  assert.equal(await focusedText(page), "Edit Configuration");
+
+  for (const shortcut of ["Start with default Preset", "Start without Preset"]) {
+    await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+    const start = page.getByRole("button", { name: shortcut });
+    await page.getByRole("button", { name: "Start with default Preset", disabled: false }).waitFor();
+    await start.focus();
+    await page.keyboard.press("Enter");
+    await page.getByLabel("Agent name").waitFor();
+    await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
+    assert.equal(
+      await page.evaluate(() => globalThis.document.activeElement?.tagName),
+      "H1",
+      shortcut,
+    );
+  }
 });
