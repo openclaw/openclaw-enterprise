@@ -83,7 +83,7 @@ The panel retains discovery grants and explains other possible access sources.
   grants before submitting again. A present binding does not prove an earlier
   request's outcome.
 - The real-runtime sharing case is described in
-  [gateway routing tests](../../testing/gateway-routing.md#native-gateway-sharing).
+  [gateway routing tests](../../testing/kubernetes.md#native-gateway-sharing).
 
 ## Related docs
 

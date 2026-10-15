@@ -338,7 +338,7 @@ and Pod generation without printing credentials.
 
 The [test guide](../testing/repository-credentials.md) distinguishes lifecycle,
 installed-runtime and live-provider proof. The
-[image volume case](../testing/images.md#repository-runtime-volume-test-environment)
+[image volume case](../testing/docker.md#repository-runtime-volume-test-environment)
 checks Docker mounts; Helm checks rendered ingress. Neither proves CNI enforcement.
 Console recordings cover fixture/API behavior, not model, Slack or GitHub execution.
 Ready Pods and commands do not prove live writes.

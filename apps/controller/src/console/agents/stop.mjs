@@ -1,11 +1,20 @@
 import { button, element } from "../dom.mjs";
 import { message, shortId } from "./list.mjs";
 
-export function createAgentStop(context, path, agent, onDeleting, onAgentChanged = () => {}) {
+export function createAgentStop(
+  context,
+  path,
+  agent,
+  onDeleting,
+  onAgentChanged = () => {},
+  allowed = null,
+) {
   const section = element("section", {
     className: "agent-card stop-note",
     "aria-labelledby": "agent-stop-title",
   });
+  const permissionNotice = "Your access does not include stopping this Agent.";
+  let restrictConfirmation;
   const feedback = element("div");
   const actions = element("div", { className: "form-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
@@ -14,6 +23,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   const state = {
     agent,
     pending: false,
+    forbidden: false,
     needsRefresh: false,
     notice: "",
     error: null,
@@ -64,6 +74,9 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
             ),
           ]
         : []),
+      ...(state.forbidden
+        ? [element("p", { className: "notice", role: "status" }, permissionNotice)]
+        : []),
       ...(state.notice
         ? [element("p", { className: "notice", role: "status" }, state.notice)]
         : []),
@@ -80,8 +93,8 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
           ]
         : []),
     );
-    stop.disabled = requested || state.pending || state.needsRefresh;
-    repeat.disabled = state.pending || state.needsRefresh;
+    stop.disabled = requested || state.pending || state.needsRefresh || state.forbidden;
+    repeat.disabled = state.pending || state.needsRefresh || state.forbidden;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     // An Agent created through the API starts stopped and has no version until its first
@@ -106,7 +119,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   function focusStatusControl() {
     const target =
       state.needsRefresh || state.agent.desiredRuntimeState === "stopped" ? refresh : stop;
-    (target.isConnected ? target : title).focus();
+    (target.isConnected && !target.disabled ? target : title).focus();
   }
 
   function setAgent(next) {
@@ -176,7 +189,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   async function stopAgent(dialog, cancel, confirm) {
-    if (state.pending || state.needsRefresh) {
+    if (state.forbidden || state.pending || state.needsRefresh) {
       return;
     }
     state.pending = true;
@@ -240,7 +253,7 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   function openConfirmation(event) {
-    if (state.pending || state.needsRefresh) {
+    if (state.forbidden || state.pending || state.needsRefresh) {
       return;
     }
     const invoker = event.currentTarget;
@@ -254,18 +267,32 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     const confirm = button(
       "Stop Agent",
       () => {
+        if (state.forbidden) {
+          return;
+        }
         submitted = true;
         void stopAgent(dialog, cancel, confirm);
       },
       { className: "danger" },
     );
+    const description = element(
+      "p",
+      { id: "agent-stop-confirm-description", "aria-live": "polite" },
+      "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
+    );
+    const showRestriction = () => {
+      // A late answer cannot undo a request already sent.
+      if (!dialog.open || state.pending) {
+        return;
+      }
+      confirm.disabled = true;
+      description.textContent = permissionNotice;
+      cancel.focus();
+    };
+    restrictConfirmation = showRestriction;
     dialog.append(
       element("h2", { id: "agent-stop-confirm-title" }, `Stop ${state.agent.name}?`),
-      element(
-        "p",
-        { id: "agent-stop-confirm-description" },
-        "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
-      ),
+      description,
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
@@ -276,6 +303,9 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     dialog.addEventListener(
       "close",
       () => {
+        if (restrictConfirmation === showRestriction) {
+          restrictConfirmation = undefined;
+        }
         dialog.remove();
         if (context.isCurrent() && !state.pending && !submitted) {
           if (invoker.isConnected && !invoker.disabled) {
@@ -293,6 +323,13 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   }
 
   render();
+  void allowed?.then((permitted) => {
+    if (permitted === false && context.isCurrent()) {
+      state.forbidden = true;
+      restrictConfirmation?.();
+      render();
+    }
+  });
   return {
     section,
     // The detail page reports whether its version list loaded empty (true), loaded with

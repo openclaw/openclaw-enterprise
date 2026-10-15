@@ -69,7 +69,7 @@ the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. Full
 manual integration lanes run from `main`; trusted pull requests also run the
-OpenShell advisory job described in [the QA guide](qa-matrix.md#automatic-openshell-coverage).
+OpenShell advisory job described in [Tests in each workflow](ci.md#tests-in-each-workflow).
 
 ## Not covered
 

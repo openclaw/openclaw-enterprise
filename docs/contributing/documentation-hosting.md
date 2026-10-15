@@ -9,8 +9,9 @@ the site's visibility.
 
 The [documentation workflow](../../.github/workflows/docs-pages.yml) builds
 `dist/docs`, including search, and deploys it to GitHub Pages after pushes to
-`main`. Its manual trigger also deploys only `main`. It uses the existing
-`github-pages` environment and does not need a Cloudflare credential.
+`main`. Its manual trigger also deploys only `main`. Select GitHub Actions as the Pages source and use the `github-pages` environment.
+The job grants `pages: write` and `id-token: write`; no deployment secret or
+Cloudflare credential is needed.
 
 The custom domain is `docs-enterprise.openclaw.org`. Its DNS record is
 `docs-enterprise CNAME openclaw.github.io` in the `openclaw.org` zone. The zone is

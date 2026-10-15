@@ -1611,6 +1611,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
+  }
+
   async function denial(
     operation: OccApiRoute,
     request: FastifyRequest,
@@ -2165,6 +2190,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "deleteNamespace") {
       const namespace = await controller.transact(async (unit) => {
         const deleting = await controller!.deleteNamespace(context.actorId, namespaceId);
@@ -2380,6 +2417,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
+      return;
     }
 
     if (
@@ -4051,9 +4105,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 

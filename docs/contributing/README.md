@@ -37,6 +37,11 @@ assign existing issues to a two-week iteration in the project.
 - [Documentation hosting](documentation-hosting.md) covers private publication,
   the custom domain, and the approval required to enable public access.
 
+## Release
+
+Use the [release guides](../release/README.md) to configure publication workflows
+and publish containers, Helm charts, and OCC CLI binaries.
+
 Read the [contribution policy](../../CONTRIBUTING.md) before opening a pull
 request. It covers repository access, verification, review, and private security
 reporting.
