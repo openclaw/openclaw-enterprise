@@ -424,10 +424,10 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   await t.test(
     "each caller gets a fair share: one read in flight, back-to-back reads, and an honest shared park",
     multipleCallers,
-    async () => {
+    async (st) => {
       const fair = createPublicGithubReadServer().listen(0, "127.0.0.1");
       await once(fair, "listening");
-      t.after(() => {
+      st.after(() => {
         fair.closeAllConnections();
         fair.close();
       });
@@ -458,7 +458,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       for (let poll = 0; held.length + answered.length < 3 && poll < 500; poll++) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      t.after(() => {
+      st.after(() => {
         for (const res of held) {
           res.writeHead(200, { "content-type": "application/json" }).end("{}");
         }

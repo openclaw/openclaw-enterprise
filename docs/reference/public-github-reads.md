@@ -82,8 +82,9 @@ destination, redirects, client-header forwarding or write operations.
 
 A `404` can mean missing or private. GitHub's anonymous quota is small and
 shared at the egress IP; `429` gives a retry time. Each Agent Pod gets one read
-in flight; a second concurrent read receives `429` with a short retry time. A busy
-reader returns `503`. Each provider read is bounded to 24 seconds and 12 MiB, with
+in flight, held until its provider read ends, even if the client gives up; a
+second concurrent read receives `429` with a short retry time. A busy reader
+returns `503`. Each provider read is bounded to 24 seconds and 12 MiB, with
 at most three distinct reads in flight. Only simultaneous identical reads can share a result;
 completed results are never cached. A failed or incomplete listing cannot
 establish there were zero matches. See the [Agent read flow](../flows/public-github-reads.md)

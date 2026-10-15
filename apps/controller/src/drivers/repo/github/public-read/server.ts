@@ -254,7 +254,9 @@ export function createPublicGithubReadServer() {
         const now = Date.now();
         // GitHub's anonymous quota belongs to the egress address, so the park is
         // shared. Report the later of its retry and reset times, or a minute.
-        const reset = exhausted ? Number(headers["x-ratelimit-reset"]) - now / 1000 : 0;
+        const reset = exhausted
+          ? Math.max(1, Number(headers["x-ratelimit-reset"]) - now / 1000)
+          : 0;
         const seconds = Math.max(Number(headers["retry-after"]) || 0, reset || 0) || 60;
         retryAt = Math.max(retryAt, now + Math.min(86400, Math.max(1, seconds)) * 1000);
       }
