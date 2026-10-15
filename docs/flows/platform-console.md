@@ -118,11 +118,10 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` advances the request generation and requests `GET /api/auth/session`.
-Loads show loading, but returns keep the shown page inert during admission and
-reads; navigation remains available. At most 16 document-local views, keyed by
-route, Namespace, and session owner, are retained; password fields and derived
-discovery state clear first.
+`loadPage` starts a request generation with `GET /api/auth/session`. First visits
+show loading. Returns and Refresh keep the shown page inert during admission and
+reads; navigation stays available. Up to 16 views, keyed by route, Namespace, and
+session owner, are retained, excluding passwords and their discovery state.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,
@@ -130,13 +129,12 @@ cancellation retains the signal's reason and socket failures reach the caller's
 interrupted-read recovery. Only JSON syntax failures become invalid-response
 errors; a failed body never causes an automatic replay.
 
-Completed views retain DOM, handlers, and draft capture callbacks. On return,
-`loadPage` rereads GET dependencies and compares data and user identity. Unchanged
-views remount; changed data or the first readable Namespace for a view without
-a selection rebuilds them.
+Completed views retain DOM, handlers, and draft callbacks. On return, `loadPage`
+checks GET dependencies and user identity. A match remounts the view, including expanded
+debug details. Changed data or the first readable Namespace for a view without a
+selection rebuilds it; Refresh always rebuilds.
 Pending or failed reads, password input, and mutations prevent reuse; read-only
-catalog and diagnostic POSTs do not. Refresh always rebuilds. Debug runtime
-disclosures retain expanded state under the same validation.
+catalog and diagnostic POSTs do not.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.

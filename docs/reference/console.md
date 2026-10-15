@@ -48,8 +48,8 @@ the destination heading when the previous control disappears.
 and releases page controls.
 
 A return keeps the shown page inert until session, Namespace access, and the
-retained view's reads pass; only matching views reappear. Refresh always rebuilds. Agent-detail refocus revalidates access without
-rebuilding, preserving editors, form input, open Slack searches, and the enabled
+retained view's reads pass; only matching views reappear. Refresh always
+rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
 Namespace; sign-out, session changes, exit, or Backend denial clear them.
 
@@ -58,14 +58,14 @@ mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offe
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
-Selection persists in `?namespace=<id>` across navigation, reload, and Back.
-An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
-namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks, naming a known selection;
-later reads do not.
-Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
-global pages remain available.
+The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
+ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
+updates the URL in place.
+
+During session and Namespace checks, the selector is disabled and hides its choices.
+On return, it names the destination's Namespace. Subsequent page reads do
+not block it. Without a readable Namespace, Agents and Namespaces explain how to
+get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
 scope; global pages stay open. The selector cannot broaden API authorization.
