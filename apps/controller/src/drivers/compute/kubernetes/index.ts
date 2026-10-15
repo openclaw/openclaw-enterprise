@@ -1143,7 +1143,7 @@ const REQUEST_RETRY_ATTEMPTS = 6;
 const REQUEST_RETRY_BASE_DELAY_MS = 50;
 const REQUEST_RETRY_MAX_DELAY_MS = 2_000;
 const REQUEST_RETRY_BUDGET_MS = 2_000;
-/** Fresh reads before a conflicting OAuth bootstrap Job delete fails its pass. */
+/** Read-and-delete attempts for the OAuth bootstrap Job; the last 409 or 404 fails the pass. */
 const OAUTH_BOOTSTRAP_DELETE_ATTEMPTS = 3;
 /** Each Kubernetes call on the runtime log path; the service bounds the whole request. */
 const RUNTIME_LOG_CALL_TIMEOUT_MS = 5_000;
