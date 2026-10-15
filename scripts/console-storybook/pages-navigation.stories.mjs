@@ -11,6 +11,7 @@ export const RuntimeImagesUnavailable = {
 
 export const FirstVisits = { ...story("navigationFirstVisit") };
 export const ReturnToLoadedPages = { ...story("navigationRetained") };
+export const SlowRechecks = { ...story("navigationSlowRecheck") };
 export const ReturnAccessDenied = { ...story("navigationDenied") };
 export const ReturnSessionExpired = { ...story("navigationExpired") };
 

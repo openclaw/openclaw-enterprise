@@ -124,9 +124,10 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Loads keep the
-shown page inert until admission and reads settle; navigation stays available. Loads
-other than returns show loading after 250 ms. Up to 16 views, keyed by route, Namespace,
-and session owner, are retained, excluding passwords and discovery state.
+shown page inert until admission and reads settle; navigation stays available. Returns
+and refocus checks show **Still checking…** after 1 s; other loads show loading after
+250 ms. Up to 16 views, keyed by route, Namespace, and session owner, are retained,
+excluding passwords and discovery state; an abandoned return keeps its view.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,
@@ -361,6 +362,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
 - 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
