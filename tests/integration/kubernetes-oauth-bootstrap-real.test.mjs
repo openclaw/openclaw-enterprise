@@ -322,22 +322,28 @@ test(
     await fixture.startWorker();
     // Stop at the bootstrap handoff boundary: this fixture deliberately has no
     // native Codex or private Gateway route, so it cannot prove runtime activation.
+    // Past the handoff every pass fails at that boundary, and the worker's three
+    // attempts (full-jitter backoff) can fail the deployment within a second of the
+    // bootstrap's removal, before this poll sees it. Only a failure while the source
+    // is unconsumed refutes the handoff. The status is read first: a failed deployment
+    // runs no further pass, so a source still unconsumed after it stays unconsumed.
+    const prepareFailures = () =>
+      workerEvents.filter(({ event }) => event === "worker.compute-prepare-failed");
     await waitFor("Job completion and source consumption before native startup", async () => {
       assert.equal(watchError, undefined);
       const status = await fixture.request("GET", `${agentPath}/deployments/${first.id}`);
-      assert.notEqual(
-        status.data.status,
-        "failed",
-        JSON.stringify(
-          workerEvents.filter(({ event }) => event === "worker.compute-prepare-failed"),
-        ),
-      );
+      if (
+        (await sourceObject(source))?.metadata.annotations?.["openclaw.dev/oauth-phase"] !==
+        "consumed"
+      ) {
+        assert.notEqual(status.data.status, "failed", JSON.stringify(prepareFailures()));
+        return false;
+      }
+      const completed = jobFor(first, "Complete");
       return (
-        jobFor(first, "Complete") !== undefined &&
-        (await sourceObject(source))?.metadata.annotations?.["openclaw.dev/oauth-phase"] ===
-          "consumed" &&
-        (await missing("job", jobFor(first, "Complete").metadata.name, placement)) &&
-        (await missing("secret", jobFor(first, "Complete").metadata.name, placement))
+        completed !== undefined &&
+        (await missing("job", completed.metadata.name, placement)) &&
+        (await missing("secret", completed.metadata.name, placement))
       );
     }).catch(async (error) => {
       const deployment = await fixture.request("GET", `${agentPath}/deployments/${first.id}`);
@@ -347,6 +353,8 @@ test(
       }));
       throw new Error(
         JSON.stringify({
+          error: error.message,
+          prepareFailures: prepareFailures(),
           deployment: deployment.body,
           pods,
           jobs: observations.map(({ metadata, status }) => ({ name: metadata.name, status })),
