@@ -4437,6 +4437,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.ok(escapedCommand, "the real Codex Harness must attempt escaping its workspace.");
   assert.ok(approvedCommand, "the real Codex Harness must execute the approved curl command.");
   assert.ok(deniedCommand, "the real Codex Harness must execute the denied curl command.");
+  // A declined escalation alone is not evidence of an OS-level denial: require executed commands.
+  for (const command of [readonlyCommand, escapedCommand, deniedCommand]) {
+    assert.ok(Number.isSafeInteger(command.exitCode), "the denied command must have executed.");
+  }
   assert.equal(workspaceCommand.exitCode, 0, "OpenShell must allow approved workspace writes.");
   assert.equal(approvedPathCommand.exitCode, 0, "OpenShell must allow projected config reads.");
   assert.notEqual(
@@ -4452,6 +4456,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       deniedConfigRequest,
       "the real Codex binary must attempt the unapproved backend path.",
     );
+    assert.ok(Number.isSafeInteger(deniedConfigRequest.exitCode));
     assert.notEqual(deniedConfigRequest.exitCode, 0);
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
     // must record its L7 denial of this exact native-Codex request.

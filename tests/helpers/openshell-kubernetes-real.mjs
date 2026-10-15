@@ -1147,6 +1147,14 @@ export function createOpenShellKubernetesFixture({
         const message = JSON.parse(String(data));
         rememberFailureSignals(message);
         items.push(message);
+        if (message.id !== undefined && (
+          message.method === "item/commandExecution/requestApproval" ||
+          message.method === "item/fileChange/requestApproval"
+        )) {
+          // Boundary probes must observe denials, never grant escalation or wait for a human.
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { decision: "decline" } }));
+          return;
+        }
         if (message.id !== undefined) {
           const entry = pending.get(message.id);
           pending.delete(message.id);
