@@ -474,7 +474,8 @@ function retainMountedView() {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
-    selection: app.querySelector("#namespace-selector option:checked")?.textContent ?? null,
+    // The rendered selection, not a choice the user just made to leave this view.
+    selection: app.querySelector("#namespace-selector option[selected]")?.textContent ?? null,
     scrollY: window.scrollY,
   });
   while (retainedViews.size > 16) {

@@ -122,7 +122,8 @@ stops reads. Missing provenance stays explicit.
 First loads show loading. Return navigation and Refresh can restore one of at most
 16 document-local views keyed by route, Namespace, and session owner while reads
 run. Password fields and their derived discovery state clear before retention.
-Controls stay inert until admission succeeds; navigation remains available.
+Controls stay inert until admission succeeds, without dimming
+(`data-admission-blocked`); navigation remains available.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,
@@ -374,6 +375,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-15 19:30: Keep restored views' controls and selector label steady during admission. (public-pr/2523)
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 

@@ -35,7 +35,7 @@ test("Returning to a loaded page keeps its header selection and controls steady 
   await page.route("**/api/auth/session", async (route) => {
     sessionRequested();
     await sessionHeld;
-    await route.continue();
+    await route.continue().catch(() => {});
   });
   t.after(() => releaseSession());
   // Refocusing the window rechecks the session and Namespace access before the
@@ -66,4 +66,48 @@ test("Returning to a loaded page keeps its header selection and controls steady 
   assert.equal(await create.getAttribute("data-admission-blocked"), null);
   await create.click();
   await page.waitForURL("**/console/agents/new**");
+});
+
+test("Back after switching Namespace names the retained page's own Namespace while access is rechecked", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const first = await fixture.createNamespace("First scope", { ready: true });
+  const second = await fixture.createNamespace("Second scope", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${first.id}`);
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  const selector = page.locator("#namespace-selector");
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  await selector.selectOption(second.id);
+  await page.waitForURL(`**/console/agents?namespace=${second.id}`);
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+
+  let releaseSession;
+  const sessionHeld = new Promise((resolve) => {
+    releaseSession = resolve;
+  });
+  let sessionRequested;
+  const requested = new Promise((resolve) => {
+    sessionRequested = resolve;
+  });
+  await page.route("**/api/auth/session", async (route) => {
+    sessionRequested();
+    await sessionHeld;
+    await route.continue().catch(() => {});
+  });
+  t.after(() => releaseSession());
+  await page.goBack();
+  await requested;
+  await page.locator('.content [aria-live="polite"][inert]').waitFor();
+  assert.equal(await page.locator(".content .scope").textContent(), "Namespace · First scope");
+  assert.equal(
+    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
+    "First scope",
+  );
+  assert.equal(await selector.locator('option:not([value=""])').count(), 0);
+
+  releaseSession();
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  assert.equal(await selector.inputValue(), first.id);
 });

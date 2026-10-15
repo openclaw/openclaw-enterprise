@@ -1676,7 +1676,7 @@ summary:focus-visible {
   border-radius: 0;
   background: var(--accent);
 }
-.plugin-tool-switch:disabled {
+.plugin-tool-switch:disabled:not([data-admission-blocked]) {
   opacity: 0.5;
   cursor: default;
 }

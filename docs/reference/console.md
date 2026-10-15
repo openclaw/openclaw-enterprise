@@ -64,6 +64,7 @@ An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a vali
 namespace** updates the URL and removes the warning without leaving the page.
 Page load, Refresh, and admission-starting navigation disable the selector and
 hide its choices during session and Namespace checks; retained-view reads do not.
+On a return, the disabled selector names the restored view's Namespace.
 Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
 global pages remain available.
 
