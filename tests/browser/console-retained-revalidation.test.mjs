@@ -480,6 +480,7 @@ const slowRecheckCases = [
     hold: (namespace) => `**/namespaces/${namespace.id}/agents`,
     act: (page) => page.getByRole("button", { name: "Refresh", exact: true }).click(),
     shows: "loading",
+    focus: "Refresh",
   },
   {
     name: "Back to a loaded page",
@@ -542,14 +543,29 @@ for (const c of slowRecheckCases) {
     read.release();
     await page.locator(settledView).waitFor();
     assert.equal(await checking.count(), 0);
-    if (c.shows === "loading") {
+    if (c.focus) {
       assert.equal(
-        await page.evaluate(() => globalThis.document.activeElement?.textContent),
-        "Refresh",
+        await page.evaluate(() => globalThis.document.activeElement?.textContent.trim()),
+        c.focus,
       );
     }
   });
 }
+
+test("Back after an abandoned Refresh rebuilds the page instead of restoring it", async (t) => {
+  const { namespace, page } = await openPausedList(t, "Abandoned Refresh", ["Refreshed Agent"]);
+  await tagView(page, "before-refresh");
+  const read = await holdRead(t, page, `**/namespaces/${namespace.id}/agents`, { once: true });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await read.requested;
+  // Leave before the Refresh finishes; the page it was replacing must not come back.
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  read.release();
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Refreshed Agent" }).waitFor();
+  assert.equal(await viewTag(page), null);
+});
 
 test("A first visit's read that answers after a second navigation paints nothing", async (t) => {
   const { namespace, agents, page } = await openPausedList(t, "Superseded visit", ["Late Agent"]);

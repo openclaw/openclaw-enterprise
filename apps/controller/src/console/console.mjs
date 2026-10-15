@@ -963,6 +963,10 @@ async function loadPage({
     discardCreationOnExit = null;
   }
   const taken = knownPrivateState ? peekRetainedView(current) : null;
+  if (!reuseView) {
+    // Refresh and save/reload discard the shown view even if the load is abandoned.
+    forgetRetainedView(taken);
+  }
   const retainedView = taken?.retained ?? null;
   let retained = retainedView !== null;
   // Every load keeps the shown page, inert, and swaps once: a return when its retained view

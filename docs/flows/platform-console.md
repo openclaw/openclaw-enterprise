@@ -125,7 +125,7 @@ stops reads. Missing provenance stays explicit.
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Loads keep the
 shown page inert until admission and reads settle; navigation stays available. Returns
-and refocus checks show **Still checking…** after 1 s; other loads show loading after
+to retained views and refocus checks show **Still checking…** after 1 s; other loads show loading after
 250 ms. Up to 16 views, keyed by route, Namespace, and session owner, are retained,
 excluding passwords and discovery state; an abandoned return keeps its view.
 
