@@ -1474,7 +1474,14 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     const blocked = JSON.parse(await configuration.inputValue());
     for (const [key, value] of Object.entries(policy)) {
-      assert.deepEqual(blocked.plugins[key], value);
+      if (key === "entries") {
+        // Harness selection adds runtime wiring but must retain each authored enablement.
+        for (const [id, entry] of Object.entries(value)) {
+          assert.equal(blocked.plugins.entries[id].enabled, entry.enabled);
+        }
+      } else {
+        assert.deepEqual(blocked.plugins[key], value);
+      }
     }
     // Permission is changed only by the explicit JSON edit, after which the ordinary API save succeeds.
     blocked.plugins.allow = ["knowledge", "codex"];
