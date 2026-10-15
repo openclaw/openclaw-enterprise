@@ -149,6 +149,10 @@
         "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
         "failed provisioning can retry through the API and resume without duplicating the Agent",
         "Stop and Delete cancel failed pre-handoff provisioning Agents without deployment resurrection",
+        "Stop during an interrupted runtime-credential write lets the Agent deploy once the claim's lease ends",
+        "Stop after failed provisioning left its runtime-credential write unsettled lets the Agent deploy",
+        "Stop before admission cancels provisioning while a worker holds its claim, and a Deploy right after waits for the write",
+        "Delete after the first deployment's admission waits for provisioning to finish, then removes it",
         "failed provisioning keeps the accepted plan reserved until retry or deletion",
         "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan"
       ]
