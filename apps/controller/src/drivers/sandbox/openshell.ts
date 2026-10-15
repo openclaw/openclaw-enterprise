@@ -3,6 +3,7 @@ import { KubernetesObjectApi, type KubernetesObject, PatchStrategy } from "@kube
 import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
+  SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
@@ -134,6 +135,29 @@ class OpenShellSandboxConfigurationFailure extends Error {}
 const GRPC_NOT_FOUND = 5;
 const GRPC_PERMISSION_DENIED = 7;
 const GRPC_UNAUTHENTICATED = 16;
+
+/**
+ * OpenShell's refusal of OCC's own gateway identity during a Namespace step, which the
+ * gateway client passes through as the raw gRPC error: retrying cannot help until an
+ * operator fixes the identity's token or permissions, so Compute fails the step at once
+ * instead of spending attempts on it, and its reason names the gRPC code (finding 1390).
+ * UNAVAILABLE and DEADLINE_EXCEEDED keep their retryable gateway failure.
+ */
+function namespaceRefusal(error: unknown): unknown {
+  const code = asRecord(error)?.code;
+  const name =
+    code === GRPC_PERMISSION_DENIED
+      ? "PERMISSION_DENIED"
+      : code === GRPC_UNAUTHENTICATED
+        ? "UNAUTHENTICATED"
+        : undefined;
+  return name === undefined
+    ? error
+    : new SandboxNamespaceRefusedError(
+        `OpenShell refused the controller gateway identity with gRPC ${name}.`,
+        { cause: error },
+      );
+}
 
 const NETWORK_TLS_MODES = Object.freeze({
   skip: "NETWORK_TLS_MODE_SKIP",
@@ -2024,6 +2048,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async ensureNamespace(context: SandboxNamespaceContext): Promise<void> {
+    try {
+      await this.ensureNamespaceWorkspace(context);
+    } catch (error) {
+      throw namespaceRefusal(error);
+    }
+  }
+
+  private async ensureNamespaceWorkspace(context: SandboxNamespaceContext): Promise<void> {
     this.requireOperatorWorkspaceMode("ensure a Namespace");
     const namespace = namespaceName(context.namespace);
     await applyOperatorNamespaceLabels(context, this.options.gateway.operatorNamespaceLabels);
@@ -2311,6 +2343,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async cleanup(
+    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
+  ): Promise<void> {
+    try {
+      await this.cleanupResources(context);
+    } catch (error) {
+      // Revision cleanup keeps its errors: only the Namespace steps classify a refusal.
+      throw context.revision === undefined ? namespaceRefusal(error) : error;
+    }
+  }
+
+  private async cleanupResources(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
   ): Promise<void> {
     if (context.revision !== undefined) {

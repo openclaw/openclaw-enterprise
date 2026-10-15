@@ -141,6 +141,13 @@ at once. The driver's own message stays in the controller:
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED` (Secret-backed environment) and
 `SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness).
 
+When the provider refuses the controller's own identity during `ensureNamespace`
+or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.
+The driver throws `SandboxNamespaceRefusedError` from `@openclaw-enterprise/occ`,
+whose message names only the provider's refusal code. Compute fails the Namespace
+step as `permanent` at once, and the worker logs that message as the `reason`.
+OpenShell throws it for gRPC `PERMISSION_DENIED` and `UNAUTHENTICATED`.
+
 ## Limits
 
 - Supported facets are `networking`, `filesystem`, and `process`; there is no

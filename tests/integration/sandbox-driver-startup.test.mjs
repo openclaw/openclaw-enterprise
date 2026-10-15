@@ -1954,6 +1954,155 @@ test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async 
   );
 });
 
+// OpenShell answers a controller identity it cannot authenticate (UNAUTHENTICATED) or that lacks
+// a permission (PERMISSION_DENIED) with a gRPC status the gateway client passes through raw. Read
+// as an HTTP status, it was retryable and logged "HTTP status 7" (finding 1390): the Namespace
+// work spent its attempts on a refusal only an operator can fix. The OpenShell Sandbox Driver now
+// names the refusal, and Compute fails the Namespace step at once with that reason.
+test("OpenShell Namespace steps fail at once when OpenShell refuses the controller identity", async () => {
+  const grpc = controllerRequire("@grpc/grpc-js");
+  // The grpc-js error shape unary() rejects with for these codes.
+  const grpcError = (code, details) =>
+    Object.assign(new Error(`${code} ${grpc.status[code]}: ${details}`), {
+      code,
+      details,
+      metadata: new grpc.Metadata(),
+    });
+  const sandboxDriver = (gatewayClient) =>
+    new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+    });
+  const refusal = (name) => `OpenShell refused the controller gateway identity with gRPC ${name}.`;
+
+  for (const [step, name] of [
+    ["health", "UNAUTHENTICATED"],
+    ["createWorkspace", "PERMISSION_DENIED"],
+  ]) {
+    const gatewayClient = workspaceGatewayClient();
+    const raw = grpcError(grpc.status[name], "refused");
+    gatewayClient[step] = async () => {
+      throw raw;
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()), {
+      name: "SandboxNamespaceRefusedError",
+      message: refusal(name),
+      cause: raw,
+    });
+  }
+  {
+    const context = namespaceContext();
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: context.namespace.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": context.namespace.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    gatewayClient.deleteWorkspace = async () => {
+      throw grpcError(grpc.status.PERMISSION_DENIED, "workspace:delete");
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).cleanup(context), {
+      name: "SandboxNamespaceRefusedError",
+      message: refusal("PERMISSION_DENIED"),
+    });
+  }
+  // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state,
+  // not the identity.
+  {
+    const gatewayClient = workspaceGatewayClient();
+    const precondition = grpcError(grpc.status.FAILED_PRECONDITION, "workspace is terminating");
+    gatewayClient.createWorkspace = async () => {
+      throw precondition;
+    };
+    await assert.rejects(
+      sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()),
+      (error) => {
+        assert.equal(error, precondition);
+        return true;
+      },
+    );
+  }
+
+  // Through Compute: the Kubernetes steps before the Sandbox Driver are stubbed, so the
+  // Namespace result comes from Compute's own classification of what the Sandbox Driver threw.
+  const tenant = namespaceContext().namespace;
+  const placement = { name: tenant.name, plane: "execution" };
+  const compute = (gatewayClient) => {
+    const driver = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
+      { sandboxDriver: sandboxDriver(gatewayClient) },
+    );
+    const observed = {
+      metadata: { name: tenant.name, uid: "namespace-uid", labels: {}, annotations: {} },
+      status: { phase: "Active" },
+    };
+    Object.assign(driver, {
+      apiClients: Promise.resolve({ objects: kubernetesObjectClient([]) }),
+      resolveNamespace: async () => ({ name: placement, external: false }),
+      reconcile: async () => {},
+      getNamespace: async () => structuredClone(observed),
+      verifyNamespaceOwnership: () => {},
+      prepareNamespaceInfrastructure: async () => {},
+      ensureGatewayNamespace: async () => true,
+    });
+    return driver;
+  };
+  for (const name of ["PERMISSION_DENIED", "UNAUTHENTICATED"]) {
+    const gatewayClient = workspaceGatewayClient();
+    gatewayClient.createWorkspace = async () => {
+      throw grpcError(grpc.status[name], "workspace:create");
+    };
+    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "permanent",
+      reason: refusal(name),
+    });
+  }
+  {
+    // Namespace deletion fails at once too, and keeps the Kubernetes namespace.
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: tenant.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": tenant.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    gatewayClient.deleteWorkspace = async () => {
+      throw grpcError(grpc.status.UNAUTHENTICATED, "token expired");
+    };
+    const driver = compute(gatewayClient);
+    driver.deleteGatewayNamespace = async () => assert.fail("cleanup must fail first");
+    assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: "permanent",
+    });
+  }
+  {
+    // A refusal Compute cannot classify stays retryable, with a fixed reason and no
+    // "HTTP status 9".
+    const gatewayClient = workspaceGatewayClient();
+    gatewayClient.createWorkspace = async () => {
+      throw grpcError(grpc.status.FAILED_PRECONDITION, "precondition");
+    };
+    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "retryable",
+      reason: "Namespace preparation failed.",
+    });
+  }
+});
+
 test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.unsupported = true;

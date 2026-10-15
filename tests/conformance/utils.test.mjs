@@ -82,6 +82,28 @@ test("numeric error status preserves SDK field precedence without interpreting s
   }
 });
 
+test("numeric error status reads only HTTP statuses, not DOMException or gRPC codes", () => {
+  // A DOMException keeps its legacy code (TIMEOUT_ERR 23, ABORT_ERR 20) and a grpc-js error its
+  // status (PERMISSION_DENIED 7, UNAUTHENTICATED 16) in `code`. Read as HTTP statuses, they named
+  // "HTTP status 7" in Namespace failure reasons (finding 1390).
+  for (const value of [
+    new DOMException("timed out", "TimeoutError"),
+    new DOMException("aborted", "AbortError"),
+    Object.assign(new Error("7 PERMISSION_DENIED: workspace:create"), { code: 7 }),
+    Object.assign(new Error("16 UNAUTHENTICATED: bad token"), { code: 16 }),
+    { code: 0 },
+    { code: 99 },
+    { code: 600 },
+    { code: 403.5 },
+  ]) {
+    assert.equal(numericErrorStatus(value), undefined);
+  }
+  // A non-HTTP number in `code` does not hide a real status in a later field.
+  assert.equal(numericErrorStatus({ code: 14, statusCode: 503 }), 503);
+  assert.equal(numericErrorStatus({ code: 100 }), 100);
+  assert.equal(numericErrorStatus({ code: 599 }), 599);
+});
+
 test("Cookie headers retain name-value pairs and discard Set-Cookie attributes", () => {
   assert.equal(cookieHeaderFromSetCookie(undefined), "");
   assert.equal(cookieHeaderFromSetCookie([]), "");

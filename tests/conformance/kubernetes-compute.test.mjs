@@ -52,6 +52,7 @@ import {
   DependencyUnavailableError,
   ResourceStateConflictError,
   ServiceAccountCredentialSecretExistsError,
+  TransientDependencyError,
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -17234,6 +17235,56 @@ test("Kubernetes preparation diagnostics name a request timeout and keep real AP
     );
     assert.equal(diagnostic.code, "KUBERNETES_PREPARATION_FAILED", name);
     assert.equal(Object.hasOwn(diagnostic, "status"), false, name);
+  }
+});
+
+// The Agent Gateway's transient failure is classified already, and its cause is the Gateway's
+// socket error: the diagnostic names the Gateway instead of walking on to that cause, which
+// once logged KUBERNETES_API_UNAVAILABLE "The Kubernetes API server is unreachable." for a
+// refused Gateway route (finding 1391). The pass still rethrows the same error, so the worker
+// keeps retrying it within the deadline.
+test("Kubernetes preparation diagnostics name the Agent Gateway for its own transient failure", async () => {
+  const refused = Object.assign(new Error("connect ECONNREFUSED 10.43.0.10:18789"), {
+    code: "ECONNREFUSED",
+  });
+  for (const [failure, message] of [
+    [
+      new TransientDependencyError(
+        "agent_gateway",
+        "unreachable",
+        "The Agent Gateway route was unreachable (ECONNREFUSED).",
+        { cause: refused },
+      ),
+      "The Agent Gateway route was unreachable (ECONNREFUSED).",
+    ],
+    [
+      new TransientDependencyError(
+        "agent_gateway",
+        "timeout",
+        "The Agent Gateway did not answer within its connection budget.",
+        { cause: new DOMException("The operation was aborted due to timeout", "TimeoutError") },
+      ),
+      "The Agent Gateway did not answer within its connection budget.",
+    ],
+  ]) {
+    const fixture = workspaceSetupFixture(false);
+    fixture.state.ready = true;
+    // The Deployment-backed Codex Harness enrolls its workspace node after the Gateway starts,
+    // outside any tagged preparation stage; enrollment throws what the Gateway client throws.
+    fixture.driver.nodeEnrollment.createSetup = async () => {
+      throw failure;
+    };
+    const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+      () => assert.fail("workspace node enrollment must fail"),
+      (rejected) => rejected,
+    );
+    assert.equal(error, failure);
+    assert.deepEqual(fixture.driver.describePrepareRevisionFailure(error), {
+      code: "AGENT_GATEWAY_UNAVAILABLE",
+      stage: "prepare_revision",
+      errorClass: "TransientDependencyError",
+      message,
+    });
   }
 });
 
