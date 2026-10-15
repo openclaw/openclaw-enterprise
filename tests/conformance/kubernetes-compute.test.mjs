@@ -17286,6 +17286,20 @@ test("Kubernetes preparation diagnostics name the Agent Gateway for its own tran
       message,
     });
   }
+  // OpenShell's admission limit names itself too. Its message exceeds the worker's 256-character
+  // bound, so the diagnostic leaves it out rather than have the worker drop the whole line.
+  const { OpenShellAdmissionLimitError } =
+    await import("../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts");
+  assert.deepEqual(
+    workspaceSetupFixture(false).driver.describePrepareRevisionFailure(
+      new OpenShellAdmissionLimitError("CreateSandbox", Object.assign(new Error("8"), { code: 8 })),
+    ),
+    {
+      code: "SANDBOX_ADMISSION_LIMIT_REACHED",
+      stage: "prepare_revision",
+      errorClass: "TransientDependencyError",
+    },
+  );
 });
 
 for (const embedded of [true, false]) {

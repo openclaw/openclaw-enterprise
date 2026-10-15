@@ -144,7 +144,9 @@ const GRPC_UNAUTHENTICATED = 16;
  * UNAVAILABLE and DEADLINE_EXCEEDED keep their retryable gateway failure.
  */
 function namespaceRefusal(error: unknown): unknown {
-  const code = asRecord(error)?.code;
+  const record = asRecord(error);
+  // grpc-js ServiceError: a numeric status code and a string details field.
+  const code = typeof record?.details === "string" ? record.code : undefined;
   const name =
     code === GRPC_PERMISSION_DENIED
       ? "PERMISSION_DENIED"

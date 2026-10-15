@@ -2011,6 +2011,20 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       message: refusal("PERMISSION_DENIED"),
     });
   }
+  // Revision cleanup keeps its raw error: the refusal classification is for Namespace steps only.
+  {
+    const gatewayClient = workspaceGatewayClient();
+    const raw = grpcError(grpc.status.PERMISSION_DENIED, "sandbox:delete");
+    gatewayClient.deleteSandbox = async () => {
+      throw raw;
+    };
+    const driver = sandboxDriver(gatewayClient);
+    const { context, revision } = codexSandboxFixture(driver);
+    await assert.rejects(driver.cleanup({ ...context, revision }), (error) => {
+      assert.equal(error, raw);
+      return true;
+    });
+  }
   // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state,
   // not the identity.
   {

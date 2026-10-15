@@ -6,6 +6,7 @@ import {
 import { compareResourceQuantities } from "./resource-quantities.ts";
 import {
   asRecord,
+  hasControlCharacter,
   isNonEmptyString,
   numericErrorStatus,
   readCappedBody,
@@ -684,18 +685,24 @@ function nonKubernetesTransientFailure(error: unknown): error is TransientDepend
   return error instanceof TransientDependencyError && error.dependency !== "kubernetes_api";
 }
 
+/** The worker's bound on a diagnostic message: at most 256 printable characters. */
+function diagnosticMessage(message: string): boolean {
+  return message.length <= 256 && !hasControlCharacter(message);
+}
+
 function preparationFailureDiagnostic(error: unknown): ComputePrepareRevisionFailureDiagnostic {
   const failure = preparationFailure(error);
   const cause = privateWriteEvidence(failure.error) ?? failure.error;
   const status = numericErrorStatus(cause);
   if (nonKubernetesTransientFailure(cause)) {
     // The code names the dependency (AGENT_GATEWAY_UNAVAILABLE); the message is the
-    // controller's own text, kept only while it fits the worker's diagnostic bound.
+    // controller's own text, kept only while the worker would accept it: a message it
+    // refuses would drop the whole diagnostic.
     return {
       code: cause.code,
       stage: failure.stage,
       errorClass: "TransientDependencyError",
-      ...(cause.message.length <= 256 ? { message: cause.message } : {}),
+      ...(diagnosticMessage(cause.message) ? { message: cause.message } : {}),
     };
   }
   if (cause instanceof ConfigurationFailure || cause instanceof ConfigurationHarnessError) {
