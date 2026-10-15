@@ -373,10 +373,9 @@ function nativeCodexConfiguration(gatewayAuth) {
       trustedProxies: gatewayAuth.trustedProxies,
     };
   }
-  configuration.tools = {
-    allow: ["read", "write", "edit", "exec"],
-    fs: { workspaceOnly: true },
-  };
+  // Native Codex tools are one capability; a narrow allowlist disables that surface.
+  // OpenShell supplies the filesystem and network boundaries verified below.
+  configuration.tools = { profile: "full" };
   return configuration;
 }
 
