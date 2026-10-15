@@ -279,8 +279,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
         ? document.activeElement
         : null;
-    // Within one load (held page, loading, then the page), focus the person moved to a sidebar
-    // control stays on it. reset() starts each navigation without one.
+    // Focus the person moved to a sidebar control during a load stays on it through the load's
+    // later renders (loading, then the page). reset() runs as each load starts, so the first
+    // render keeps none.
     const sidebarFocus =
       !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(document.activeElement)
         ? document.activeElement
