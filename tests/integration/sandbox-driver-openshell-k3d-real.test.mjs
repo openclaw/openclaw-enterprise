@@ -4467,6 +4467,16 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       )}).`,
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // The network supervisor runs outside the workload Pod. Match its boundary pair
+    // so this proof reads only the audit events for the Harness that executed the probe.
+    const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
+    assert.ok(boundaryPair, "the Harness must identify its OpenShell boundary pair.");
+    const supervisors = (await resources("pods", topology.placement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
+        pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
+    );
+    assert.equal(supervisors.length, 1, "the Harness must have exactly one network supervisor.");
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
     // must record its L7 denial of this exact native-Codex request. Unmatched paths
     // use the relay reason, not the generic HTTP policy-denial response text.
@@ -4475,7 +4485,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       async () => {
         const logs = await kubectl(
           "logs",
-          topology.harnessPod.metadata.name,
+          supervisors[0].metadata.name,
           "--namespace",
           topology.placement,
           "--all-containers=true",
