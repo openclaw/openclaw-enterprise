@@ -1556,6 +1556,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           controllerImage,
           kubectl,
           applyManifest,
+          waitFor,
         });
   if (publicGithubRead !== undefined) {
     workerConfiguration.drivers.compute.configuration.network.publicGithubRead =

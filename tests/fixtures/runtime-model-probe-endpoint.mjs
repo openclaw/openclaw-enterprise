@@ -136,7 +136,13 @@ function publicReadEvents(model, request) {
     (item) => item.type === "function_call_output" && item.call_id === "public-read-call",
   );
   if (output) {
-    const title = JSON.stringify(output.output).match(/public-pull-[0-9a-f-]{36}/u)?.[0];
+    const result = JSON.stringify(output.output);
+    const title = result.match(/public-pull-[0-9a-f-]{36}/u)?.[0];
+    const curlCode = result.match(/curl: \(([0-9]{1,3})\)/u)?.[1];
+    emit({
+      event: "public-read-tool-result",
+      result: title ? "title-returned" : curlCode ? `curl-${curlCode}` : "no-title",
+    });
     return answerEvents(model, title ?? "PUBLIC_READ_TOOL_FAILED");
   }
   if (!request.includes("OCE_PUBLIC_READ_JOURNEY")) {

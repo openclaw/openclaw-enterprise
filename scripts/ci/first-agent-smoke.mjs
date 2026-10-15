@@ -606,6 +606,8 @@ async function enablePublicReader(stack) {
     controllerImage: values.images.controller,
     kubectl: async (...args) => (await kubectl(stack, args)).stdout,
     applyManifest: (input) => kubectl(stack, ["apply", "-f", "-"], { input }),
+    waitFor: (description, operation, timeout) =>
+      waitFor(description, async () => ({ done: await operation() }), timeout),
     observeRequests: true,
   });
   const installationPath = join(stack.directory, "installation.yaml");

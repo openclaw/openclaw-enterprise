@@ -201,3 +201,81 @@ test(
     );
   },
 );
+
+test("reader fixture waits for a current ready endpoint owned by its Service", async (t) => {
+  const { chartTooling } = await import("../helpers/production-chart.mjs");
+  const tooling = await chartTooling();
+  if (tooling.skip) {
+    t.skip(tooling.skip);
+    return;
+  }
+  const { installPublicGithubReadFixture } = await import("../helpers/public-github-read-k3d.mjs");
+  const serviceUid = "reader-service-uid";
+  const podUid = "reader-pod-uid";
+  let selector;
+  let sliceReads = 0;
+  const slice = (ownerUid, targetUid, endpoints = true) => ({
+    metadata: { ownerReferences: [{ kind: "Service", uid: ownerUid }] },
+    endpoints: endpoints
+      ? [{ conditions: { ready: true }, targetRef: { kind: "Pod", uid: targetUid } }]
+      : [],
+  });
+  const observations = [
+    [],
+    [slice(serviceUid, podUid, false)],
+    [slice(serviceUid, "other-pod")],
+    [slice("other-service", podUid)],
+    [slice(serviceUid, podUid)],
+  ];
+  const applyManifest = async (raw) => {
+    const manifest = JSON.parse(raw);
+    if (manifest.kind === "Service") {
+      assert.equal(manifest.spec.selector, undefined, "reservation must not add a stale selector");
+    } else {
+      selector = manifest.items.find((item) => item.kind === "Service").spec.selector;
+    }
+  };
+  const kubectl = async (...args) => {
+    if (args[0] === "rollout") {
+      return "";
+    }
+    if (args[1] === "service") {
+      return JSON.stringify({
+        metadata: { uid: serviceUid },
+        spec: { clusterIP: "10.43.0.19", ...(selector && { selector }) },
+      });
+    }
+    if (args[1] === "pods") {
+      return JSON.stringify({
+        items: [
+          {
+            metadata: { uid: podUid },
+            status: { conditions: [{ type: "Ready", status: "True" }] },
+          },
+        ],
+      });
+    }
+    if (args[1] === "endpointslices") {
+      return JSON.stringify({ items: observations[sliceReads++] });
+    }
+    throw new Error(`unexpected kubectl operation ${args[0]} ${args[1]}`);
+  };
+  const waitFor = async (_description, observe) => {
+    for (let i = 0; i < observations.length; i++) {
+      if (await observe()) {
+        return;
+      }
+    }
+    throw new Error("reader endpoint remained unavailable");
+  };
+  const reader = await installPublicGithubReadFixture({
+    namespace: "oce-system",
+    controllerImage: `registry.example.invalid/controller@sha256:${digestA}`,
+    kubectl,
+    applyManifest,
+    waitFor,
+  });
+  assert.equal(sliceReads, observations.length);
+  assert.deepEqual(reader.peer.podLabels, selector);
+  assert.equal(reader.peer.address, "10.43.0.19");
+});
