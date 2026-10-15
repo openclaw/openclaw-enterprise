@@ -6,14 +6,14 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 
 ## Checks and gates
 
-| Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                   |
-| --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                   | Yes, through `CI Required` | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
-| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                 |
-| QA Matrix Advisory                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)        |
-| Full Integration                  | Manual                     | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)   |
-| Observability Demo                | [Every PR](#pr-exceptions) | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                     | No                         | [Runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)         |
+| Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                   | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#pr-exceptions) | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [Every PR](#pr-exceptions) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                     | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#pr-exceptions) | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                     | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 ### PR exceptions
 
