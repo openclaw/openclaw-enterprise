@@ -4468,7 +4468,8 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
-    // must record its L7 denial of this exact native-Codex request.
+    // must record its L7 denial of this exact native-Codex request. Unmatched paths
+    // use the relay reason, not the generic HTTP policy-denial response text.
     await waitFor(
       "OpenShell denial of an unrelated Codex backend path",
       async () => {
@@ -4485,7 +4486,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           .some(
             (line) =>
               line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
-              line.includes("not permitted by policy"),
+              line.includes("reason=no L7 endpoint path matched request"),
           );
       },
       30_000,
