@@ -107,11 +107,6 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
-/* Retained-view controls blocked only while access is rechecked keep their enabled look. */
-:disabled[data-admission-blocked] {
-  cursor: progress;
-  opacity: 1;
-}
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -1676,7 +1671,7 @@ summary:focus-visible {
   border-radius: 0;
   background: var(--accent);
 }
-.plugin-tool-switch:disabled:not([data-admission-blocked]) {
+.plugin-tool-switch:disabled {
   opacity: 0.5;
   cursor: default;
 }

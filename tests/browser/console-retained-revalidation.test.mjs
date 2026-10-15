@@ -2,9 +2,30 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
+import { detailUrl, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
 
-test("Returning to a loaded page keeps its header selection and controls steady while access is rechecked", async (t) => {
+// Holds the next session reads until release(); requested resolves when the first arrives.
+async function holdSession(t, page) {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let requestedResolve;
+  const requested = new Promise((resolve) => {
+    requestedResolve = resolve;
+  });
+  await page.route("**/api/auth/session", async (route) => {
+    requestedResolve();
+    await held;
+    await route.continue().catch(() => {});
+  });
+  t.after(() => release());
+  return { requested, release };
+}
+
+const activeView = '.content [aria-live="polite"]:not([inert])';
+
+test("Refocusing a loaded page keeps it steady while access is rechecked", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Steady return", { ready: true });
@@ -12,102 +33,124 @@ test("Returning to a loaded page keeps its header selection and controls steady 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Steady Agent" }).waitFor();
-  const view = page.locator('.content [aria-live="polite"]');
-  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await page.locator(activeView).waitFor();
   const selector = page.locator("#namespace-selector");
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   const create = page.getByRole("button", { name: "Create Agent" });
-  assert.equal(await create.isEnabled(), true);
   const lookOf = (node) => {
     const style = node.ownerDocument.defaultView.getComputedStyle(node);
     return { opacity: style.opacity, color: style.color, background: style.backgroundColor };
   };
   const createLook = await create.evaluate(lookOf);
 
-  let releaseSession;
-  const sessionHeld = new Promise((resolve) => {
-    releaseSession = resolve;
-  });
-  let sessionRequested;
-  const requested = new Promise((resolve) => {
-    sessionRequested = resolve;
-  });
-  await page.route("**/api/auth/session", async (route) => {
-    sessionRequested();
-    await sessionHeld;
-    await route.continue().catch(() => {});
-  });
-  t.after(() => releaseSession());
-  // Refocusing the window rechecks the session and Namespace access before the
-  // retained Agents view is reused.
+  const session = await holdSession(t, page);
+  // Refocusing the window rechecks the session and Namespace access before the page is reused.
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-  await requested;
+  await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
-
-  // Choices stay hidden and the selector stays disabled until access is confirmed ...
+  // The selector hides its choices until access is confirmed, but keeps naming the Namespace
+  // instead of flashing a placeholder, and the inert page keeps its look.
   assert.equal(await selector.isDisabled(), true);
   assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-  // ... but it keeps naming the Namespace the view shows instead of flashing a placeholder,
   assert.equal(
     await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
     "Steady return",
   );
-  // and the view's controls are blocked (inert and disabled) without being restyled as
-  // disabled, so an unchanged page does not dim and brighten on every return.
-  assert.equal(await view.evaluate((node) => node.inert), true);
-  assert.equal(await create.isDisabled(), true);
   assert.deepEqual(await create.evaluate(lookOf), createLook);
 
-  releaseSession();
-  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  session.release();
+  await page.locator(activeView).waitFor();
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   assert.equal(await selector.locator(`option[value="${namespace.id}"]`).count(), 1);
-  assert.equal(await create.isEnabled(), true);
-  assert.equal(await create.getAttribute("data-admission-blocked"), null);
   await create.click();
   await page.waitForURL("**/console/agents/new**");
 });
 
-test("Back after switching Namespace names the retained page's own Namespace while access is rechecked", async (t) => {
+test("Back after switching Namespace keeps the shown page and its own label until the return is admitted", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const first = await fixture.createNamespace("First scope", { ready: true });
   const second = await fixture.createNamespace("Second scope", { ready: true });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${first.id}`);
-  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await page.locator(activeView).waitFor();
   const selector = page.locator("#namespace-selector");
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   await selector.selectOption(second.id);
   await page.waitForURL(`**/console/agents?namespace=${second.id}`);
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await page.locator(activeView).waitFor();
 
-  let releaseSession;
-  const sessionHeld = new Promise((resolve) => {
-    releaseSession = resolve;
-  });
-  let sessionRequested;
-  const requested = new Promise((resolve) => {
-    sessionRequested = resolve;
-  });
-  await page.route("**/api/auth/session", async (route) => {
-    sessionRequested();
-    await sessionHeld;
-    await route.continue().catch(() => {});
-  });
-  t.after(() => releaseSession());
+  const session = await holdSession(t, page);
   await page.goBack();
-  await requested;
+  await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
-  assert.equal(await page.locator(".content .scope").textContent(), "Namespace · First scope");
+  assert.equal(await page.locator(".content .scope").textContent(), "Namespace · Second scope");
   assert.equal(
     await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
-    "First scope",
+    "Second scope",
   );
   assert.equal(await selector.locator('option:not([value=""])').count(), 0);
 
-  releaseSession();
+  session.release();
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   assert.equal(await selector.inputValue(), first.id);
+  assert.equal(await page.locator(".content .scope").textContent(), "Namespace · First scope");
+});
+
+test("Back to a retained Agent page after access was revoked never shows the cached page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked scope", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.waitFor();
+  await page.locator(activeView).waitFor();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
+  await page.locator(activeView).waitFor();
+
+  fixture.policy.restrictions.push({
+    id: "revoke-retained-agent-namespace",
+    namespaceId: namespace.id,
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+  // Record every DOM state and painted frame from Back until the refusal.
+  await page.evaluate((configurationId) => {
+    const seen = [];
+    globalThis.__cachedAgentSeen = seen;
+    const check = (when) => {
+      const document = globalThis.document;
+      if (
+        document.querySelector(".agent-current-summary, .deployment-status, .agent-tabs") ||
+        document.body.textContent.includes(configurationId)
+      ) {
+        seen.push(when);
+      }
+    };
+    new globalThis.MutationObserver(() => check("mutation")).observe(globalThis.document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+    const frame = () => {
+      check("frame");
+      globalThis.requestAnimationFrame(frame);
+    };
+    globalThis.requestAnimationFrame(frame);
+  }, agent.configurationId);
+  await page.goBack();
+  await page.getByRole("heading", { name: "Namespace unavailable" }).waitFor();
+  await page.locator(activeView).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => globalThis.__cachedAgentSeen.slice(0, 5)),
+    [],
+    "the retained Agent page was painted or mounted after its access was revoked",
+  );
+  assert.equal(await page.locator(".agent-current-summary").count(), 0);
 });

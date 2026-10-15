@@ -96,13 +96,13 @@
   width: auto;
 }
 
-.channel-field:has(input:disabled:not([data-admission-blocked])),
-.channel-check:has(input:disabled:not([data-admission-blocked])) {
+.channel-field:has(input:disabled),
+.channel-check:has(input:disabled) {
   opacity: 0.55;
 }
 
-.channel-field input:disabled:not([data-admission-blocked]),
-.channel-check input:disabled:not([data-admission-blocked]) {
+.channel-field input:disabled,
+.channel-check input:disabled {
   cursor: not-allowed;
 }
 

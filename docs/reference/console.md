@@ -47,8 +47,8 @@ the destination heading when the previous control disappears.
 **Open navigation** opens a mobile drawer; desktop closes it
 and releases page controls.
 
-When available, a retained view stays mounted and inert while a full-page return
-is revalidated: matching data reactivates it, changed data rebuilds it, and
+Signed-in navigation keeps the shown page inert until session, Namespace access,
+and destination reads pass; a retained view returns only if its reads match.
 Refresh always rebuilds. Agent-detail refocus revalidates access without
 rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
@@ -62,9 +62,9 @@ and **Logout**.
 Selection persists in `?namespace=<id>` across navigation, reload, and Back.
 An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
 namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks; retained-view reads do not.
-On a return, the disabled selector names the restored view's Namespace.
+Page load disables the selector and hides its choices during session and Namespace
+checks; admission-starting navigation and Refresh do so until the page renders,
+keeping its name.
 Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
 global pages remain available.
 

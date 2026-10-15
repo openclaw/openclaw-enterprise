@@ -119,11 +119,10 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` advances the request generation and requests `GET /api/auth/session`.
-First loads show loading. Return navigation and Refresh can restore one of at most
-16 document-local views keyed by route, Namespace, and session owner while reads
-run. Password fields and their derived discovery state clear before retention.
-Controls stay inert until admission succeeds, without dimming
-(`data-admission-blocked`); navigation remains available.
+First loads show loading. Later loads keep the shown page inert during admission
+and reads; navigation remains available. At most 16 document-local views, keyed by
+route, Namespace, and session owner, are retained; password fields and derived
+discovery state clear first.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,
@@ -133,7 +132,7 @@ errors; a failed body never causes an automatic replay.
 
 Completed views retain DOM, handlers, and draft capture callbacks. On return,
 `loadPage` rereads GET dependencies and compares data and user identity. Unchanged
-views reactivate; changed data or the first readable Namespace for a view without
+views remount; changed data or the first readable Namespace for a view without
 a selection rebuilds them.
 Pending or failed reads, password input, and mutations prevent reuse; read-only
 catalog and diagnostic POSTs do not. Refresh always rebuilds. Debug runtime
@@ -167,9 +166,9 @@ After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
-Namespace checks for loads, Refresh, and admission-starting navigation;
-retained-view reads do not extend this.
+`shell.mjs:namespaceSelector` disables and hides choices through first-load session
+and Namespace checks; `holdShownView` keeps the held selector disabled, still naming
+its selection.
 `shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
 Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
@@ -375,7 +374,7 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-15 19:30: Keep restored views' controls and selector label steady during admission. (public-pr/2523)
+- 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 

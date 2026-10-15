@@ -474,8 +474,6 @@ function retainMountedView() {
     state: mountedViewState?.reusable && mountedViewState.pending === 0 ? mountedViewState : null,
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
-    // The rendered selection, not a choice the user just made to leave this view.
-    selection: app.querySelector("#namespace-selector option[selected]")?.textContent ?? null,
     scrollY: window.scrollY,
   });
   while (retainedViews.size > 16) {
@@ -484,7 +482,7 @@ function retainMountedView() {
   mountedRouteKey = null;
 }
 
-function restoreRetainedView(current) {
+function takeRetainedView(current) {
   const owner = sessionOwnerKey(session);
   const key = routeKey(current);
   const retained = key && retainedViews.get(key);
@@ -492,46 +490,54 @@ function restoreRetainedView(current) {
     return null;
   }
   retainedViews.delete(key);
-  const shell = renderShell(current.feature, true);
+  return retained;
+}
+
+// Keeps the page already on screen while the next route's admission and reads run, so a
+// retained view is never painted before it revalidates (finding 1412) and nothing flashes
+// a loading state (finding 1415). The held page is inert and its selector hides its choices.
+function holdShownView() {
+  const view = app.querySelector('.content [aria-live="polite"]');
+  if (!view) {
+    return false;
+  }
+  view.inert = true;
+  view.setAttribute("aria-busy", "true");
+  const diagnostics = app.querySelector(".runtime-debug");
+  if (diagnostics) {
+    diagnostics.inert = true;
+  }
+  const selector = app.querySelector("#namespace-selector");
+  if (selector) {
+    const label = selector.querySelector("option[selected]")?.textContent ?? "";
+    selector.disabled = true;
+    selector.setAttribute("aria-busy", "true");
+    selector.replaceChildren(
+      element("option", { value: "", disabled: true, selected: true }, label),
+    );
+  }
+  return true;
+}
+
+// Mounts a retained view that revalidated unchanged, active at once.
+function mountRetainedView(current, retained) {
+  const shell = renderShell(current.feature, false);
   if (retained.title) {
     app.querySelector(".content h1").textContent = retained.title;
   }
   if (retained.scope) {
     app.querySelector(".content .scope").textContent = retained.scope;
   }
-  // The pending selector hides its choices, but it keeps naming the selection the retained
-  // view was read in (the view shows that Namespace anyway) instead of flashing "Checking
-  // access…" on every return or refocus.
-  const pendingSelection = app.querySelector("#namespace-selector option");
-  if (retained.selection && pendingSelection) {
-    pendingSelection.textContent = retained.selection;
-  }
+  retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
-  shell.retained = retained;
   if (shell.diagnostics && retained.state?.diagnostics) {
+    retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
     shell.diagnostics = retained.state.diagnostics;
-    shell.diagnostics.inert = true;
   }
-  shell.view.setAttribute("aria-busy", "true");
-  shell.view.setAttribute("inert", "");
-  shell.blockedControls = [
-    ...shell.view.querySelectorAll("button, input, select, textarea"),
-  ].filter((control) => !control.disabled);
-  for (const control of shell.blockedControls) {
-    control.disabled = true;
-    // Styled as enabled (console.css): an unchanged view would otherwise dim and brighten
-    // on every return while access is rechecked.
-    control.dataset.admissionBlocked = "";
-  }
-  mountedRouteKey = key;
-  const active = lifetime.capture();
-  requestAnimationFrame(() => {
-    if (lifetime.isCurrent(active) && mountedRouteKey === key) {
-      window.scrollTo({ top: retained.scrollY, left: 0 });
-    }
-  });
+  mountedRouteKey = routeKey(current);
+  window.scrollTo({ top: retained.scrollY, left: 0 });
   return shell;
 }
 
@@ -834,9 +840,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     retainedViews.delete(previousMountedRouteKey);
     discardCreationOnExit = null;
   }
-  let shell = knownPrivateState ? restoreRetainedView(current) : null;
-  let retained = shell !== null;
-  if (!retained) {
+  const retainedView = knownPrivateState ? takeRetainedView(current) : null;
+  let retained = retainedView !== null;
+  let held = knownPrivateState && holdShownView();
+  let shell = null;
+  if (!held) {
     publicPanel("Loading…", "Checking your session.");
   }
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -845,7 +853,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     return;
   }
-  if (current.feature !== "login" && !retained) {
+  if (current.feature !== "login" && !held) {
     shell = renderShell(current.feature, true);
     panel(shell.view, "Loading…", "Checking your session and Namespace access.");
   }
@@ -932,9 +940,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityOwner = null;
       installationAdmin = null;
       draftUserId = owner;
-      if (retained) {
+      if (held) {
+        // Another account's page must not stay on screen.
         retained = false;
-        shell = null;
+        held = false;
         publicPanel("Loading…", "Checking your session.");
       }
     }
@@ -986,16 +995,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
-    if (retained && current.namespace !== null) {
-      // Namespace admission is done, so the header selector is usable while the retained
-      // view revalidates, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the shell has none; the full render below picks the default.
-      shellUI.updateNamespaces(namespaces);
-    }
+    // While a page is held, read the destination's own resource too, so it renders complete.
     let retainedItems = null;
     let retainedAgent = null;
     if (
-      retained &&
+      held &&
       !agentsNamespaceUnavailable &&
       current.feature !== "settings" &&
       !current.creating
@@ -1018,7 +1022,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         return;
       }
     }
-    const retainedState = shell?.retained?.state;
+    const retainedState = retainedView?.state;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (retainedAgent) {
@@ -1058,6 +1062,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
       if (unchanged) {
+        shell = mountRetainedView(current, retainedView);
         mountedViewState = retainedState;
         retainedState.active = active;
         retainedState.resumeDrafts?.();
@@ -1067,15 +1072,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         }
         navigateAgentTab = retainedState.tabNavigation;
         mountedAgent = retainedState.agent;
-        for (const control of shell.blockedControls) {
-          control.disabled = false;
-          delete control.dataset.admissionBlocked;
-        }
-        shell.view.removeAttribute("inert");
-        if (shell.diagnostics) {
-          shell.diagnostics.inert = false;
-        }
-        shellUI.updateNamespaces(namespaces);
         markMountedRoute(current);
         return;
       }
