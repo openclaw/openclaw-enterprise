@@ -255,6 +255,7 @@ import {
   provisioningEffectReceipt as readProvisioningEffectReceipt,
   provisioningPendingEffect,
   settleProvisioningEffect as buildProvisioningEffectSettlement,
+  withoutProvisioningEffect,
   type ProvisioningEffectReceipt,
   type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
@@ -800,6 +801,11 @@ export type AgentProvisioningWorkerOutcome =
       readonly code: string;
       /** A Compute refusal's reason for the operator log; status keeps the fixed text. */
       readonly reason?: string;
+      /**
+       * For the operator log: a Configuration the refused job wrote but never recorded, which
+       * its Driver could not delete. Nothing references it any more.
+       */
+      readonly orphanedConfigurationId?: string;
     };
 
 export interface AgentProvisioningWorkerOptions {
@@ -2816,17 +2822,23 @@ export class OpenClawController {
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
-      await this.mutate(async (state) => {
+      const unrecorded = await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
           throw new WorkClaimLostError();
         }
+        const unrecorded =
+          disposition === "permanent"
+            ? await this.unrecordedProvisioningConfiguration(state, current)
+            : undefined;
         record = await state.provisioning.recordFailure(
           claim,
           {
             completedPhase: current.completedPhase,
             progress: {
-              ...current.progress,
+              ...(unrecorded === undefined
+                ? current.progress
+                : withoutProvisioningEffect(current.progress)),
               error: { code, message },
             },
           },
@@ -2859,11 +2871,17 @@ export class OpenClawController {
             : {}),
           details: { workId: current.workId, phase: current.completedPhase, code },
         });
+        return unrecorded;
       });
+      const orphanedConfigurationId =
+        unrecorded === undefined
+          ? undefined
+          : await this.deleteUnrecordedProvisioningConfiguration(unrecorded);
       return Object.freeze({
         outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
         ...(error instanceof ComputeProvisioningRefusedError ? { reason: error.reason } : {}),
+        ...(orphanedConfigurationId === undefined ? {} : { orphanedConfigurationId }),
       });
     }
   }
@@ -9078,6 +9096,58 @@ export class OpenClawController {
       }
       return this.settleProvisioningEffect(workId, record, effect);
     });
+  }
+
+  /**
+   * The Configuration a failing job wrote through its Driver but never recorded (finding 1395).
+   * The write settled, then the Configuration step's transaction refused (a duplicate Agent name,
+   * for example) and rolled back the record, or a later fence refused the job before that step
+   * ran again. Nothing else deletes that document. A write that has not settled, a job past its
+   * Configuration step, a Configuration record with the ID, or a write made through a Driver the
+   * Installation no longer selects leaves it alone.
+   */
+  private async unrecordedProvisioningConfiguration(
+    state: PlatformUnitOfWork,
+    record: Readonly<AgentProvisioningRecord>,
+  ): Promise<Readonly<{ id: string; namespaceId: string }> | undefined> {
+    if (!this.provisioningBefore(record, "configuration") || record.configurationId !== undefined) {
+      return undefined;
+    }
+    const receipt = readProvisioningEffectReceipt(record);
+    const pending = provisioningPendingEffect(record);
+    if (
+      receipt?.kind !== "configuration" ||
+      pending?.kind !== "configuration" ||
+      pending.owner !== receipt.owner ||
+      pending.targetId !== receipt.targetId ||
+      !this.selections.has("configuration") ||
+      asRecord(record.plan.drivers)?.configuration !== this.configurationDriver().id
+    ) {
+      return undefined;
+    }
+    if (
+      (await state.configurations.findConfiguration(record.namespaceId, receipt.targetId)) !==
+      undefined
+    ) {
+      return undefined;
+    }
+    return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
+  }
+
+  /**
+   * Deletes the Configuration a refused job wrote but never recorded, after the failure that
+   * forgets it committed, as Configuration deletion deletes it. A failed delete keeps the
+   * refusal as it is and returns the ID for the operator log.
+   */
+  private async deleteUnrecordedProvisioningConfiguration(
+    reference: Readonly<{ id: string; namespaceId: string }>,
+  ): Promise<string | undefined> {
+    try {
+      await this.driverOperation(() => this.configurationDriver().delete(reference));
+      return undefined;
+    } catch {
+      return reference.id;
+    }
   }
 
   /** The Configuration that provisioning writes through the Configuration Driver. */
