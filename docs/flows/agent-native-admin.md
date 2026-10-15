@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-14"
-last_updated_session: "authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083"
+updated: 2026-10-15
+last_updated_session: authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3
 ---
 
 # Agent Native Admin UI Flow
@@ -140,7 +140,7 @@ validates native configuration support before proxying. Attributable IAM denials
 during proxy admission preserve an IAM denial audit for the human session and
 exact Agent instead of becoming unaudited dependency failures.
 
-For a top-level browser navigation to `/chat/main` or its 32-hex session path with an invalid session, the Agent host returns a `403` HTML page with the configured console link and the HTTP request ID. It carries the opaque host key in a fragment without an Agent lookup or session. The authenticated console return endpoint checks exact Agent access; unknown and unauthorized keys return `404`.
+An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. The console resolves it after authentication and exact Agent authorization; unknown and unauthorized keys get `404`.
 
 Admission reads Better Auth once and returns the verified session metadata with
 the caller identity. The status and proxy paths reuse that result to check
@@ -218,6 +218,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
 - 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)

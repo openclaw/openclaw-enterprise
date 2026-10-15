@@ -640,6 +640,12 @@ function renderShell(feature, namespaceAdmissionPending = false) {
   });
 }
 
+function renderPendingNamespaceShell(feature) {
+  const shell = renderShell(feature, true);
+  panel(shell.view, "Loading…", "Checking Namespace access.");
+  return shell;
+}
+
 function clearPrivate() {
   session = null;
   namespaces = [];
@@ -876,6 +882,21 @@ function showLogin(message = "", destination = null) {
     });
 }
 
+function showCheckingSession() {
+  // Destination recovery can continue in another loadPage without restarting this status.
+  if (app.firstElementChild?.classList.contains("startup")) {
+    return;
+  }
+  const status = element("p", { className: "startup", role: "status" });
+  app.replaceChildren(status);
+  // Delay the announcement, never the session check or the view that replaces it.
+  setTimeout(() => {
+    if (status.isConnected) {
+      status.textContent = "Checking session…";
+    }
+  }, 300);
+}
+
 async function loadPage({ fromNavigation = false, reuseView = fromNavigation } = {}) {
   if (loggingOut) {
     return;
@@ -917,18 +938,18 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   // A return keeps the shown page until the retained view revalidates; other loads show loading.
   let shell = retained ? holdShownView(current) : null;
   let held = shell !== null;
-  if (!held) {
-    publicPanel("Loading…", "Checking your session.");
-  }
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
     return;
   }
-  if (current.feature !== "login" && !held) {
-    shell = renderShell(current.feature, true);
-    panel(shell.view, "Loading…", "Checking your session and Namespace access.");
+  if (!held) {
+    if (knownPrivateState) {
+      shell = renderPendingNamespaceShell(current.feature);
+    } else {
+      showCheckingSession();
+    }
   }
   let sessionResolved = false;
   let accessResolved = false;
@@ -1019,7 +1040,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         // Another account's page must not stay on screen.
         held = false;
         shell = null;
-        publicPanel("Loading…", "Checking your session.");
+        showCheckingSession();
       }
     }
     const destination = pendingIntent;
@@ -1054,6 +1075,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       void loadPage();
       return;
     }
+    shell ??= renderPendingNamespaceShell(current.feature);
     // Read the admin-only destination once per session owner. Non-administrators
     // get 403, which the API audits as a denial, so do not repeat it per navigation
     // or, within this tab, per page load.

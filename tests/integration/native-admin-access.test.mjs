@@ -589,7 +589,7 @@ test("native admin shared session configuration validates cookie scope and rejec
   }
 });
 
-test("a copied Agent chat link directs a browser to the configured console without granting access", async (t) => {
+test("a copied Agent chat link redirects an activated browser navigation to the configured console without granting access", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const context = await createNativeAdminFixture(t, { auditSink });
   const status = await nativeStatus(context);
@@ -599,21 +599,18 @@ test("a copied Agent chat link directs a browser to the configured console witho
     accept: "text/html,application/xhtml+xml",
     "sec-fetch-mode": "navigate",
     "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
   };
   const page = await injectJson(context.fixture, "GET", "/chat/main", {
     headers: { ...navigation, "x-forwarded-host": "attacker.example.test" },
   });
-  assert.equal(page.statusCode, 403);
-  assert.match(page.headers["content-type"], /^text\/html/);
-  assert.equal(page.headers["cache-control"], "no-store");
-  assert.match(page.body, /Open the team console/);
   const key = status.data.host.match(/^agent-([a-f0-9]{32})\./)[1];
-  assert.match(
-    page.body,
-    new RegExp(`href="https://console\\.oce\\.example\\.test/console/#native-agent=${key}"`),
-  );
-  assert.doesNotMatch(page.body, /attacker\.example\.test/);
-  assert.match(page.body, new RegExp(page.headers["x-request-id"]));
+  const destination = `${publicOrigin}/console/#native-agent=${key}`;
+  assert.equal(page.statusCode, 302);
+  assert.equal(page.headers.location, destination);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.ok(page.headers["x-request-id"]);
   assert.equal(page.headers["set-cookie"], undefined);
   const sessionSuffix = "a".repeat(32);
   const sessionPage = await injectJson(
@@ -622,10 +619,8 @@ test("a copied Agent chat link directs a browser to the configured console witho
     `/chat/main/${sessionSuffix}?private=omitted`,
     { headers: navigation },
   );
-  assert.equal(sessionPage.statusCode, 403);
-  assert.match(sessionPage.headers["content-type"], /^text\/html/);
-  assert.match(sessionPage.body, new RegExp(`/console/#native-agent=${key}`));
-  assert.doesNotMatch(sessionPage.body, new RegExp(`${sessionSuffix}|private=omitted`));
+  assert.equal(sessionPage.statusCode, 302);
+  assert.equal(sessionPage.headers.location, destination);
   const inventedKey = "f".repeat(32);
   const invented = await injectJson(context.fixture, "GET", "/chat/main", {
     headers: {
@@ -634,12 +629,14 @@ test("a copied Agent chat link directs a browser to the configured console witho
       "x-forwarded-host": "attacker.example.test",
     },
   });
-  assert.equal(invented.statusCode, 403);
-  assert.match(invented.body, new RegExp(`/console/#native-agent=${inventedKey}`));
-  assert.doesNotMatch(invented.body, /attacker\.example\.test/);
+  assert.equal(invented.statusCode, 302);
+  assert.equal(invented.headers.location, destination.replace(key, inventedKey));
 
   for (const [method, path, headers] of [
     ["GET", "/chat/main", { host, accept: "application/json" }],
+    ["GET", "/chat/main", { host, accept: "text/html", "user-agent": "Slackbot-LinkExpanding" }],
+    ["GET", "/chat/main", { ...navigation, "sec-fetch-user": undefined }],
+    ["GET", "/chat/main", { ...navigation, host: `agent-${key}.other.${nativeDomain}` }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-dest": "iframe" }],
     ["GET", "/chat/main", { ...navigation, "sec-fetch-mode": "cors" }],
     ["GET", "/chat/main", { ...navigation, accept: "text/html;q=0,application/json" }],
@@ -649,6 +646,7 @@ test("a copied Agent chat link directs a browser to the configured console witho
   ]) {
     const denied = await injectJson(context.fixture, method, path, { headers });
     assert.equal(denied.statusCode, 403, `${method} ${path}`);
+    assert.equal(denied.headers.location, undefined);
     assert.match(denied.headers["content-type"], /^application\/json/);
     assert.equal(denied.json().error.code, "FORBIDDEN");
   }
@@ -657,6 +655,7 @@ test("a copied Agent chat link directs a browser to the configured console witho
     headers: { ...navigation, cookie: limited.cookie },
   });
   assert.equal(unauthorized.statusCode, 403);
+  assert.equal(unauthorized.headers.location, undefined);
   assert.match(unauthorized.headers["content-type"], /^application\/json/);
   const endpoint = `/native-admin/return/${key}`;
   const found = await injectJson(context.fixture, "GET", endpoint, {
