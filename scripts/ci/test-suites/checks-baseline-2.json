@@ -30,6 +30,7 @@
     "tests/integration/password-sign-in-admission.test.mjs",
     "tests/integration/google-login-transport.test.mjs",
     "tests/conformance/slack-channel-directory.test.mjs",
+    "tests/conformance/bounded-response-reads.test.mjs",
     "tests/conformance/repository-credentials-github.test.mjs",
     "tests/integration/repository-credentials-driver.test.mjs",
     "tests/integration/known-device-cookie.test.mjs",
@@ -111,14 +112,19 @@
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
     },
     {
+      "path": "tests/integration/github-app-observer.test.mjs"
+    },
+    {
       "path": "tests/integration/dev-codex-seccomp-failure.test.mjs"
     },
     {
       "path": "tests/integration/first-agent-startup.test.mjs",
       "expectedTests": [
+        "first-Agent starts without installed workspace dependencies",
         "first-Agent accepts current Compose-backed Kubernetes development state",
         "first-Agent requires dedicated Codex for OpenShell before external calls",
         "first-Agent admits dedicated Codex with OpenShell development state",
+        "first-Agent control UI requires the launcher-owned native admin endpoint",
         "first-Agent runs psql through the k3d PostgreSQL StatefulSet"
       ]
     },
@@ -242,6 +248,9 @@
     },
     {
       "path": "tests/conformance/slack-channel-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/bounded-response-reads.test.mjs"
     },
     {
       "path": "tests/conformance/slack-proxy-reset.test.mjs"

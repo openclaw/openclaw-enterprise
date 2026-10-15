@@ -9,6 +9,7 @@ import {
   isNonEmptyString,
   isPositiveSafeInteger,
   numericErrorStatus,
+  numericLastLabel,
   sha256Hex,
 } from "../../packages/utils/src/index.ts";
 import { hasControlCharacter as clientHasControlCharacter } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
@@ -81,6 +82,28 @@ test("numeric error status preserves SDK field precedence without interpreting s
   }
 });
 
+test("numeric error status reads only HTTP statuses, not DOMException or gRPC codes", () => {
+  // A DOMException keeps its legacy code (TIMEOUT_ERR 23, ABORT_ERR 20) and a grpc-js error its
+  // status (PERMISSION_DENIED 7, UNAUTHENTICATED 16) in `code`. Read as HTTP statuses, they named
+  // "HTTP status 7" in Namespace failure reasons (finding 1390).
+  for (const value of [
+    new DOMException("timed out", "TimeoutError"),
+    new DOMException("aborted", "AbortError"),
+    Object.assign(new Error("7 PERMISSION_DENIED: workspace:create"), { code: 7 }),
+    Object.assign(new Error("16 UNAUTHENTICATED: bad token"), { code: 16 }),
+    { code: 0 },
+    { code: 99 },
+    { code: 600 },
+    { code: 403.5 },
+  ]) {
+    assert.equal(numericErrorStatus(value), undefined);
+  }
+  // A non-HTTP number in `code` does not hide a real status in a later field.
+  assert.equal(numericErrorStatus({ code: 14, statusCode: 503 }), 503);
+  assert.equal(numericErrorStatus({ code: 100 }), 100);
+  assert.equal(numericErrorStatus({ code: 599 }), 599);
+});
+
 test("Cookie headers retain name-value pairs and discard Set-Cookie attributes", () => {
   assert.equal(cookieHeaderFromSetCookie(undefined), "");
   assert.equal(cookieHeaderFromSetCookie([]), "");
@@ -132,3 +155,42 @@ for (const [owner, check] of [
     assert.equal(check(""), false);
   });
 }
+
+test("numericLastLabel follows the URL parser's ends-in-a-number rule", () => {
+  for (const host of [
+    "0xa000005",
+    "0xa.0.0.5",
+    "10.0x0.0.5",
+    "0x7f.0x1",
+    "0X7F.0X1",
+    "example.123",
+    "example.123.",
+    // A one-label host keeps the rule: only the trailing dot is dropped.
+    "0x7f.",
+    "5.",
+    "example.0x",
+    "127.0.0.1",
+  ]) {
+    assert.equal(numericLastLabel(host), true, host);
+    // The WHATWG URL parser agrees: the host is an IPv4 address or the URL is invalid.
+    assert.equal(
+      !URL.canParse(`https://${host}/`) || /^[0-9.]+$/.test(new URL(`https://${host}/`).hostname),
+      true,
+      host,
+    );
+  }
+  for (const host of [
+    "api.example.com",
+    "a1.example.com",
+    "0xdead.example.com",
+    "123.example.com",
+    "example.0xg",
+    "example.1a",
+    "example.a1",
+    // Only one trailing dot is dropped: the last label here is empty, as the URL parser reads it.
+    "example.123..",
+    "",
+  ]) {
+    assert.equal(numericLastLabel(host), false, host);
+  }
+});

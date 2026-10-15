@@ -66,18 +66,48 @@ const disposeLimitsMs = {
 
 // A step left running can hold the process open (a socket, a child, a timer), so the file would
 // sit idle after its last test until the runner's file timeout killed it (finding 1223). Once the
-// file's own teardown is done, a process that had abandoned a step exits after this grace,
-// which leaves the test runner time to report. The timer is unref'd: a process with nothing
-// left to wait for exits on its own first. So `cleanup` must be the file's last root after hook,
-// and the file must run under `node --test`, whose parent process counts the file's results
-// (node:test sets a failing exit code only once the event loop drains).
+// file's teardown is done, a process that had abandoned a step exits after this grace, which
+// leaves the test runner time to report. The timer is unref'd: a process with nothing left to
+// wait for exits on its own first. The file must run under `node --test`, whose parent process
+// counts the file's results (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
 let abandonedSteps = 0;
+let exitTimer;
+let exitHookAdded = false;
 
 function exitIfAbandoned() {
   if (abandonedSteps > 0) {
     // process.exit() keeps the exit code; the test runner reads results from its reports.
-    setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+    exitTimer ??= setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+  }
+}
+
+// `cleanup` runs as a root after hook, with the root test's context. A timer it armed itself cut
+// off a root after hook registered after it (finding 1246), so it adds an after hook there:
+// node:test runs a hook added while its after hooks run after the ones already registered, and
+// that hook starts the grace if any step, in a test or a later hook, was abandoned. node:test
+// skips the after hooks after a failing one, so a failed `cleanup`, or one called without a
+// context, starts the grace at once. A later root after hook that fails skips that hook too
+// (finding 1258), so a step abandoned before or after `cleanup` also arms a backstop: an exit
+// 60 s later, unref'd too, well before the runner's file timeout. Normally the grace ends the
+// file first.
+const abandonedExitBackstopMs = 60_000;
+// Set once `cleanup` has run: the tests are done, so a step abandoned from then on is teardown's.
+let exitBackstopMs;
+let exitBackstopTimer;
+
+function exitAfterBackstop() {
+  if (abandonedSteps > 0 && exitBackstopMs !== undefined) {
+    exitBackstopTimer ??= setTimeout(() => process.exit(), exitBackstopMs).unref();
+  }
+}
+
+function exitAfterRootHooks(context) {
+  if (typeof context?.after !== "function") {
+    exitIfAbandoned();
+  } else if (!exitHookAdded) {
+    exitHookAdded = true;
+    context.after(exitIfAbandoned);
   }
 }
 
@@ -89,6 +119,7 @@ export async function disposeStep(step, limitMs, work) {
       new Promise((_, reject) => {
         timer = setTimeout(() => {
           abandonedSteps += 1;
+          exitAfterBackstop();
           const error = new Error(
             `revision fixture teardown: ${step} did not finish within ${limitMs} ms`,
           );
@@ -103,25 +134,17 @@ export async function disposeStep(step, limitMs, work) {
   }
 }
 
-// One template per owning test file; importing this helper registers no tests or hooks.
-export function createWorkerRevisionFixtures(testFile) {
-  // Each test owns a database (Work claims span one), copied from one migrated template
-  // per file rather than migrated again. Nothing connects to the template itself. A failed
-  // template preparation is not cached: the next test retries it, and cleanup ignores it.
-  let template;
-  // The owning file registers this as its last after hook.
-  async function cleanup() {
-    try {
-      const prepared = await template?.catch(() => undefined);
-      if (prepared !== undefined) {
-        const limitMs = disposeLimitsMs["drop database"];
-        await disposeStep("drop template database", limitMs, () =>
-          prepared.cleanup({ lockTimeoutMs: limitMs }),
-        );
-      }
-    } finally {
-      exitIfAbandoned();
-    }
+// Importing this helper registers no tests or hooks.
+// `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
+export function createWorkerRevisionFixtures(
+  testFile,
+  { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
+) {
+  // The owning file registers this as a root after hook: `after(cleanup)`.
+  function cleanup(context) {
+    exitBackstopMs ??= backstopMs;
+    exitAfterBackstop();
+    exitAfterRootHooks(context);
   }
 
   async function prepareDatabase(context, limitsMs = {}) {
@@ -130,18 +153,22 @@ export function createWorkerRevisionFixtures(testFile) {
       process.env.OPENCLAW_ENTERPRISE_CI_STATE,
       "Worker tests require an owned PostgreSQL fixture; see docs/testing/postgresql.md.",
     );
-    const fixture = {
+    // Each test owns a database (Work claims span one), a copy of the migrated database prepared
+    // for this file (OCC_TEST_DATABASE_URL), its template. Nothing in a revision file connects to
+    // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
+    // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
+    // CI state lock briefly, but a file's first test still waits for that lock while the runner
+    // migrates the files that start with it. Before, each file migrated a template of its own
+    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    assert.ok(
+      process.env.OCC_TEST_DATABASE_URL,
+      "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",
+    );
+    const prepared = await prepareFile({
       lane: "postgres-application",
       file: fileURLToPath(testFile),
       statePath: process.env.OPENCLAW_ENTERPRISE_CI_STATE,
-    };
-    template ??= prepareFile(fixture).catch((error) => {
-      template = undefined;
-      throw error;
-    });
-    const prepared = await prepareFile({
-      ...fixture,
-      template: (await template).env.OCC_TEST_DATABASE_URL,
+      template: process.env.OCC_TEST_DATABASE_URL,
     });
     const pools = new Set();
     const workers = new Set();

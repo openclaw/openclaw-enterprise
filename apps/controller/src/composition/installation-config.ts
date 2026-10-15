@@ -36,6 +36,7 @@ import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import { createExternalDriver, loadDriverPackage } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
@@ -275,6 +276,19 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
   ) {
     throw new Error(
       "observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.",
+    );
+  }
+  // URL parsing drops an empty user info (http://@host), which profile preflight refuses.
+  refuseWrittenUserinfo("observability.url", raw);
+  // Other IPv4 spellings parse as a different address, so startup must not store url.href.
+  refuseRewrittenIpv4Host("observability.url", raw, url);
+  // A tab or newline is deleted. A backslash before the query becomes a slash, so the stored
+  // href can name another host. A backslash in the query does not change the host.
+  const queryAt = raw.search(/[?#]/u);
+  const beforeQuery = queryAt === -1 ? raw : raw.slice(0, queryAt);
+  if (/[\t\n\r]/u.test(raw) || beforeQuery.includes("\\")) {
+    throw new Error(
+      "observability.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
     );
   }
   return Object.freeze({ url: url.href });

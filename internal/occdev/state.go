@@ -35,6 +35,8 @@ type developmentState struct {
 	PlatformNamespace string `json:"platformNamespace,omitempty"`
 	APIPort           int    `json:"apiPort,omitzero"`
 	BrowserPort       int    `json:"browserPort,omitzero"`
+	BrowserOrigin     string `json:"browserOrigin,omitempty"`
+	NativeAdminDomain string `json:"nativeAdminDomain,omitempty"`
 	ContainerEngine   string `json:"containerEngine"`
 	ComposeProject    string `json:"composeProject"`
 	Cluster           string `json:"cluster"`

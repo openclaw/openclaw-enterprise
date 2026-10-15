@@ -213,16 +213,16 @@ through the API or operator workflow.
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, review the effect on running work, and
+Open the Agent, select **Stop Agent**, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining revision history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
-Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically. After Stop, **Request Stop again** confirms
-a new stop intent, even without a selected version. That does not prove cleanup
-finished or diagnose a shutdown failure.
+Refresh before retrying an uncertain result. Denials remain visible; the console
+never repeats a stop automatically. After Stop, **Request Stop again** confirms
+a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
+finished.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the

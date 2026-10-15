@@ -79,7 +79,7 @@ deployment snapshots the current draft, not the previous active revision.
 
 A controller-only release does not deploy Agents, but the new worker can
 restart their Pods once
-([details](breaking-changes-archive.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
+([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
 Restarting the repository
 broker loses delivered sessions. Before a release,
 plan interruption and authorized replacement revisions for affected Agents;

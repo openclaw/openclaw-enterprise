@@ -1,8 +1,6 @@
 {{- $collector := .Values.logging.collector -}}
 {{- if $collector.enabled -}}
-{{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $collector.image) -}}
-{{- fail "logging.collector.image must be an approved immutable SHA-256 image reference" -}}
-{{- end -}}
+{{- include "openclaw.validateImageReference" (dict "label" "logging.collector.image" "image" $collector.image) -}}
 {{- if or (not $collector.configSecretName) (not $collector.envSecretName) -}}
 {{- fail "logging.collector requires dedicated operator-created config and environment Secrets" -}}
 {{- end -}}

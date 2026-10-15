@@ -844,10 +844,10 @@ test("Deploy freezes public repository selection without exposing provider grant
   assert.equal(cleared.status, 200);
   const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
   assert.deepEqual(historical.data.repositoryCredentials, snapshot);
-  assert.deepEqual(
-    (await f.request("GET", `${path}/revisions`)).data[0].repositoryCredentials,
-    snapshot,
-  );
+  // The list names the revision without its saved settings; the snapshot stays on the GET.
+  const [listed] = (await f.request("GET", `${path}/revisions`)).data;
+  assert.equal(listed.id, deployed.data.id);
+  assert.equal(Object.hasOwn(listed, "repositoryCredentials"), false);
   const independent = await f.request("POST", `${path}/deploy`);
   assert.equal(independent.status, 202, JSON.stringify(independent));
   assert.equal(Object.hasOwn(independent.data, "repositoryCredentials"), false);

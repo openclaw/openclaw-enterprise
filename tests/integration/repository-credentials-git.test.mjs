@@ -4,6 +4,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   gatewayRequest,
+  eventually,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -33,7 +34,10 @@ test("real Git clones, fetches, switches and pushes using the cold gateway helpe
 // The host case runs every acceptance and fault case in the container.
 if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
   test("git-read clones, fetches and checks out while denying pushes and REST writes", async (t) => {
-    const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
+    const fixture = await startCredentialServiceFixture(t, {
+      profile: "git-read",
+      tokenLifetimeMs: 20 * 60 * 1000,
+    });
     const gitPath = new URL(fixture.opened.client.gitRemote).pathname;
     const gitAuthorization = `Basic ${Buffer.from(
       `${fixture.opened.client.gitUsername}:${fixture.opened.bearer}`,
@@ -202,5 +206,148 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
       fixture.git.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")).length,
       before + 1,
     );
+  });
+}
+
+if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  test("native Git clone respects a separate upload-pack response limit", async (t) => {
+    const { randomBytes } = await import("node:crypto");
+    const { temporaryDirectory } = await import("../fixtures/repository-credentials/process.mjs");
+    const { runPinnedClients } = await import("../fixtures/repository-credentials/clients.mjs");
+    const seed = join(await temporaryDirectory(t, "git-large-seed-"), "seed");
+    await run("git", ["init", "--initial-branch=main", seed]);
+    await run("git", ["config", "user.name", "Fixture"], { cwd: seed });
+    await run("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });
+    await writeFile(join(seed, "data.bin"), randomBytes(128 * 1024));
+    await run("git", ["add", "data.bin"], { cwd: seed });
+    await run("git", ["commit", "-m", "Add fixture data"], { cwd: seed });
+    for (const limited of [false, true]) {
+      await t.test(
+        limited ? "rejects a pack above its configured cap" : "streams beyond the ordinary Git cap",
+        async (t) => {
+          const fixture = await startCredentialServiceFixture(t, {
+            limits: limited
+              ? { gitFetchResponseBytes: 4096 }
+              : { gitResponseBytes: 4096, gitFetchResponseBytes: 200000 },
+            profile: "git-read",
+          });
+          await run("git", ["push", fixture.git.bare, "HEAD:refs/heads/large-fixture"], {
+            cwd: seed,
+          });
+          await run("git", ["symbolic-ref", "HEAD", "refs/heads/large-fixture"], {
+            cwd: fixture.git.bare,
+          });
+          const client = await runPinnedClients(t, fixture);
+          const checkout = join(client.directory, "checkout");
+          const clone = await client.git(["clone", fixture.opened.client.gitRemote, checkout], {
+            allowFailure: limited,
+          });
+          if (limited) {
+            assert.notEqual(clone.code, 0);
+          } else {
+            assert.equal(
+              (await run("git", ["rev-parse", "HEAD"], { cwd: checkout })).stdout.trim(),
+              await fixture.git.ref("refs/heads/large-fixture"),
+            );
+            await run("git", ["fsck", "--full"], { cwd: checkout });
+          }
+          assert.ok(fixture.git.trace.some((entry) => entry.path.endsWith("/git-upload-pack")));
+        },
+      );
+    }
+  });
+}
+
+if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  test("native Git clone survives a quiet upload-pack response and session closure still cancels it", async (t) => {
+    const { runPinnedClients } = await import("../fixtures/repository-credentials/clients.mjs");
+    const fixture = await startCredentialServiceFixture(t, {
+      profile: "git-read",
+      limits: { gitFetchStallMs: 8000, gitFetchFirstHeaderMs: 20000 },
+    });
+    const client = await runPinnedClients(t, fixture);
+    const hold = fixture.git.holdNextFetch();
+    t.after(hold.release);
+    const clone = client.git([
+      "clone",
+      fixture.opened.client.gitRemote,
+      join(client.directory, "quiet"),
+    ]);
+    await hold.observed;
+    // Wait until the upstream header deadline has been replaced by the response
+    // stall watchdog; the old route arms 5 seconds, the configured route 8.
+    await eventually(() => {
+      const deadlines = fixture.clock.deadlines();
+      return (
+        (deadlines.includes(5000) || deadlines.includes(8000)) &&
+        !deadlines.includes(20000) &&
+        !deadlines.includes(30000)
+      );
+    });
+    await fixture.clock.advance(6000);
+    hold.release();
+    await clone;
+
+    const cancelled = fixture.git.holdNextFetch();
+    t.after(cancelled.release);
+    const interrupted = client.git(
+      ["clone", fixture.opened.client.gitRemote, join(client.directory, "closed")],
+      { allowFailure: true },
+    );
+    await cancelled.observed;
+    fixture.service.close(fixture.opened.session.sessionId);
+    assert.notEqual((await interrupted).code, 0);
+    cancelled.release();
+  });
+}
+
+if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  test("native Git clone can wait for upload-pack response headers", async (t) => {
+    const { runPinnedClients } = await import("../fixtures/repository-credentials/clients.mjs");
+    const fixture = await startCredentialServiceFixture(t, {
+      profile: "git-read",
+      limits: { gitFetchFirstHeaderMs: 40000 },
+    });
+    const client = await runPinnedClients(t, fixture);
+    const hold = fixture.git.holdNextFetch({ beforeHeaders: true });
+    t.after(hold.release);
+    const clone = client.git([
+      "clone",
+      fixture.opened.client.gitRemote,
+      join(client.directory, "headers"),
+    ]);
+    await hold.observed;
+    await eventually(() =>
+      fixture.clock.deadlines().some((deadline) => deadline === 30000 || deadline === 40000),
+    );
+    await fixture.clock.advance(31000);
+    hold.release();
+    await clone;
+    assert.ok(fixture.git.trace.some((entry) => entry.path.endsWith("/git-upload-pack")));
+  });
+}
+
+if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD === "1") {
+  test("native Git fails when a held upload-pack exceeds its configured timeout", async (t) => {
+    const { runPinnedClients } = await import("../fixtures/repository-credentials/clients.mjs");
+    for (const beforeHeaders of [true, false]) {
+      await t.test(beforeHeaders ? "response headers" : "response progress", async (t) => {
+        const fixture = await startCredentialServiceFixture(t, { profile: "git-read" });
+        const client = await runPinnedClients(t, fixture);
+        const hold = fixture.git.holdNextFetch({ beforeHeaders });
+        t.after(hold.release);
+        const clone = client.git(
+          ["clone", fixture.opened.client.gitRemote, join(client.directory, "timeout")],
+          { allowFailure: true },
+        );
+        await hold.observed;
+        const timeout = beforeHeaders ? 30000 : 5000;
+        await eventually(() => fixture.clock.deadlines().includes(timeout));
+        await fixture.clock.advance(timeout + 1);
+        // Git must fail while the fixture still holds the response.
+        assert.notEqual((await clone).code, 0);
+        hold.release();
+      });
+    }
   });
 }

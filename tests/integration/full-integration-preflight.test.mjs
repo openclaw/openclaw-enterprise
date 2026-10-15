@@ -14,6 +14,7 @@ import {
   validateEnvironmentPolicy,
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.mjs";
+import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
 test("full integration workflow carries QA job outcomes into targeted aggregation only", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
@@ -87,10 +88,8 @@ test("qa-matrix repository fixture dispatch keeps default and isolated credentia
     isolatedStep,
     /QA_ISOLATED_REPOSITORY_FULL_NAME: \$\{\{ vars\.QA_ISOLATED_REPOSITORY_FULL_NAME \}\}/,
   );
-  assert.match(
-    isolatedStep,
-    /REPOSITORY_OBSERVER_TOKEN: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN \}\}/,
-  );
+  assert.doesNotMatch(isolatedStep, /REPOSITORY_OBSERVER_TOKEN/);
+  assert.doesNotMatch(isolatedStep, /QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN/);
   assert.match(
     isolatedStep,
     /REPOSITORY_REGISTRY_JSON: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_REGISTRY_JSON \}\}/,
@@ -174,9 +173,34 @@ test("QA credential materializer validates isolated repository fixture target", 
     REPOSITORY_REGISTRY_JSON: qaRegistry([target]),
   });
   assert.equal(success.status, 0, success.stderr);
-  assert.match(
-    await readFile(success.githubEnv, "utf8"),
-    /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/,
+  const exported = await readFile(success.githubEnv, "utf8");
+  assert.match(exported, /OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY=/);
+  assert.match(exported, /OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY=/);
+  assert.match(exported, /QA_REPOSITORY_FIXTURE=isolated/);
+  assert.doesNotMatch(exported, /OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE=/);
+  assert.doesNotMatch(exported, /synthetic-observer-token/);
+  const runnerEnv = Object.fromEntries(
+    exported
+      .trim()
+      .split("\n")
+      .map((line) => line.split(/=(.*)/s).slice(0, 2)),
+  );
+  const runnerSelection = selectQaMatrix({
+    ...runnerEnv,
+    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
+    OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/static-token",
+  });
+  assert.ok(
+    runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY"),
+  );
+  assert.ok(!runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_BINARY"));
+  assert.ok(!runnerSelection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
+  assert.doesNotThrow(() =>
+    validateQaInputs(runnerSelection, {
+      ...runnerEnv,
+      OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
+    }),
   );
 
   const missingTarget = await runQaCredentialMaterializer(t, {
@@ -226,13 +250,7 @@ function providerEnvironment(patch = {}) {
 function protectedEnvironment(patch = {}) {
   return {
     name: "integration-model",
-    protection_rules: [
-      {
-        type: "required_reviewers",
-        prevent_self_review: true,
-        reviewers: [{ type: "User", reviewer: { login: "reviewer" } }],
-      },
-    ],
+    protection_rules: [],
     deployment_branch_policy: {
       custom_branch_policies: false,
       protected_branches: true,
@@ -331,30 +349,34 @@ test("provider-account environment policy is main-only without required reviewer
   }
 });
 
-test("non-provider integration environments still require reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy("integration-model", protectedEnvironment(), undefined),
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({ protection_rules: [] }),
-        undefined,
-      ),
-    /has no required reviewers/,
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
-        }),
-        undefined,
-      ),
-    /does not prevent self-review/,
-  );
+test("credentialed integration environments run without approval and retain branch restrictions", () => {
+  for (const name of requiredEnvironmentsForLane("all")
+    .filter((name) => name !== "integration-provider-account")
+    .concat("integration-qa")) {
+    assert.doesNotThrow(() => validateEnvironmentPolicy(name, protectedEnvironment(), undefined));
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "Team" }] }],
+          }),
+          undefined,
+        ),
+      /must not require reviewers/,
+    );
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            deployment_branch_policy: null,
+          }),
+          undefined,
+        ),
+      /not restricted/,
+    );
+  }
 });
 
 test("preflight fetches only the provider environment for manual provider runs", async () => {
@@ -414,7 +436,7 @@ test("preflight rejects non-main sources before fetching environment metadata", 
   assert.deepEqual(fetched, []);
 });
 
-test("manual protected branch runs require an exact environment grant and independent review", async () => {
+test("manual protected branch runs require an exact environment grant without per-run approval", async () => {
   for (const { lane, environmentName, branch } of [
     {
       lane: "k3d-model",
@@ -475,17 +497,14 @@ test("manual protected branch runs require an exact environment grant and indepe
       );
     }
     await assert.rejects(() => run(env, protectedEnvironment()), /exact branch/);
-    await assert.rejects(
-      () => run(env, { ...environment, protection_rules: [] }),
-      /has no required reviewers/,
-    );
+    // Reintroducing a reviewer gate would prevent a maintainer from starting this run directly.
     await assert.rejects(
       () =>
         run(env, {
           ...environment,
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
+          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
         }),
-      /does not prevent self-review/,
+      /must not require reviewers/,
     );
     assert.deepEqual(await run(), { selectedLane: lane, runAll: false });
   }

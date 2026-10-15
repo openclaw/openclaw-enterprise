@@ -14,6 +14,12 @@ const DESCRIPTION_REFRESH_DELAY = 2_000;
 const DESCRIPTION_REFRESH_MAX_DELAY = 30_000;
 const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
 
+// Search casing that does not follow the browser locale (#2317): en-US lower case, where the
+// Turkish capital İ lowers to i and a combining dot above, so the dot is dropped, and the
+// dotless ı reads as i, so a query of İstanbul or ıstanbul finds istanbul (finding 1252).
+const searchCase = (value) =>
+  value.toLocaleLowerCase("en-US").replaceAll("ı", "i").replaceAll("i\u0307", "i");
+
 function recentRepositories(key) {
   if (!key) {
     return [];
@@ -31,10 +37,10 @@ function recentRepositories(key) {
 
 function repositoryResults(options, recent, { query: queryText, browsing, page: requestedPage }) {
   const small = options.length <= 5;
-  const query = queryText.trim().toLocaleLowerCase("en-US");
+  const query = searchCase(queryText.trim());
   const rank = (entry) => {
     const names = [entry.displayName, entry.repositoryRef].flatMap((value) => {
-      const name = value.toLocaleLowerCase("en-US");
+      const name = searchCase(value);
       return [name, name.split("/").at(-1)];
     });
     if (names.includes(query)) {
@@ -56,9 +62,7 @@ function repositoryResults(options, recent, { query: queryText, browsing, page: 
     .filter(
       (entry) =>
         !query ||
-        [entry.displayName, entry.repositoryRef].some((v) =>
-          v.toLocaleLowerCase("en-US").includes(query),
-        ),
+        [entry.displayName, entry.repositoryRef].some((v) => searchCase(v).includes(query)),
     )
     .sort(
       (a, b) =>
@@ -454,8 +458,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     const list = element("ul", { className: "repository-results-list" });
     for (const entry of visible) {
       const selected = state.selected.has(entry.repositoryRef);
-      const displayName = entry.displayName.toLocaleLowerCase("en-US");
-      const reference = entry.repositoryRef.toLocaleLowerCase("en-US");
+      const displayName = searchCase(entry.displayName);
+      const reference = searchCase(entry.repositoryRef);
       const showReference =
         reference !== displayName && reference !== displayName.split("/").at(-1);
       const readOnly = entry.allowedProfiles.every((profile) => profile === "git-read");

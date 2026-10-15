@@ -10,6 +10,21 @@ Prepare the resources for the already-selected source revision and test lane. Se
 
 The preparation CLI records run-owned resources in a private state file before creating them. GitHub Actions passes that file under `RUNNER_TEMP`; it is available to later steps in the same job and is not uploaded as an artifact. Database tests receive a fresh migrated database per file and use the limited application role; the revision-worker suite also gives each test a copy of a migrated template (`prepareFile({ template })`). Failure and Kubernetes database names satisfy the existing test admission guards. An ordinary cluster lane selects an explicit loopback k3d context and asks the pinned k3d binary to resolve its current `v1.35` K3s image. After node readiness, preparation reads the real server version and rejects a cluster outside the Kubernetes 1.35 family. OpenShell retains its separately pinned K3s image. External images are pulled by their approved registry digest and exported for the selected platform; built and external images receive a run-owned reference at the imported platform manifest digest. Preparation records the original source image and checks Kubernetes CRI resolution before passing the immutable runtime reference to tests. The CLI-only installed repository lane is temporarily refused in `validateLaneInputsBeforeSideEffects`, before its input checks and before any state or resource is created, until its remote cleanup is safe; its image and seccomp preparation below is unreachable at this revision. When either production TUI upgrade candidate is selected, preparation requires both candidate and baseline controller/runtime digests before allocating resources. It imports the four supplied sources, rejects a candidate resolving to the same local image as its baseline, and records their source and imported identities in private state. Per-file preparation checks the same selection against that state and passes the imported references to the test. Without candidate images, the lane builds the current source as before. Preparation failures still enter job cleanup. Cluster cleanup reads k3d inventory before and after deletion, then checks for matching Docker containers, networks, and volumes. An invalid inventory or possible surviving resource retains cleanup state.
 
+For hosted `qa-matrix` jobs, `scripts/ci/lane-images.mjs:imageInventory`
+records tagged or digest-pinned image references and their IDs in private
+`lane-images` state before tests. If the inventory fails, preparation warns and
+records no baseline. Workstation runs record none. During cleanup,
+`restoreLaneImages` attempts to restore changed or missing baseline tags matching
+the QA launcher patterns and remove newly observed matching tags. Cleanup does
+not target other references. A successful final inventory reports added, changed,
+and missing references. If the first cleanup inventory fails, cleanup warns and
+skips both restoration and removal. If the final inventory fails, cleanup warns
+and reports `added`, `changed`, and `missing` as `null`: the final store
+state is unknown. Tag and inventory failures warn rather than fail the job.
+A returned resource is removed from state; invalid state or ownership still
+fails cleanup. These results do not prove
+the runner accepted a shared-store commit.
+
 For each Kubernetes fixture lane, `scripts/ci/prepare.mjs` creates one server and one worker with a shared task-owned local-path mount. It reads the worker Pod CIDR and the server route to that network, validates the route source, and exports its single-address `/32` as `OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS`. Image preparation registers and checks the imported digest alias on both nodes. A minimal DaemonSet keeps that local-only image active on each node for the lane so kubelet image garbage collection cannot remove it between fixture tests. The DaemonSet exposes no Service and is removed with the disposable cluster. The status suite schedules the runtime on the worker so a node-local bypass cannot conceal a missing proxy ingress rule.
 
 Preparation checks the storage controller before fixture setup, then restarts it

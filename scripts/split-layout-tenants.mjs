@@ -138,13 +138,19 @@ export async function exportTenants(api, { log = () => {} } = {}) {
       const { data } = await api.expect("GET", `${base}/configurations/${id}`);
       configurations.push(data);
     }
+    // The Preset list carries summaries; each template is on the exact Preset read.
+    const presets = [];
+    for (const { id } of await list(api, `${base}/presets`)) {
+      const { data } = await api.expect("GET", `${base}/presets/${encodeURIComponent(id)}`);
+      presets.push(data);
+    }
     namespaces.push({
       id: namespace.id,
       name: namespace.name,
       secrets: (await list(api, `${base}/secrets`)).map(({ id, name }) => ({ id, name })),
       credentialSources: await list(api, `${base}/credential-sources`),
       configurations,
-      presets: await list(api, `${base}/presets`),
+      presets,
       roles: await list(api, `${base}/iam/roles`),
       accessBindings: await list(api, `${base}/iam/access-bindings`),
       serviceAccounts: (await list(api, `${base}/service-accounts`)).map(({ id, name }) => ({

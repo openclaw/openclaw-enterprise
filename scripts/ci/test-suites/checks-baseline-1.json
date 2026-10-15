@@ -6,13 +6,17 @@
   "parallelFiles": [
     "tests/integration/dev-up.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
@@ -82,7 +86,8 @@
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
-    "tests/conformance/split-layout-adopt.test.mjs"
+    "tests/conformance/split-layout-adopt.test.mjs",
+    "tests/conformance/url-authority.test.mjs"
   ],
   "files": [
     {
@@ -138,6 +143,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
     },
     {
       "path": "tests/conformance/node-enrollment-client.test.mjs"
@@ -277,6 +285,12 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/stored-document-serialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/list-summaries.test.mjs"
+    },
+    {
       "path": "tests/integration/production-controller-security.test.mjs"
     },
     {
@@ -293,6 +307,9 @@
     },
     {
       "path": "tests/integration/secret-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/credential-source-api.test.mjs"
     },
     {
       "path": "tests/integration/plugin-discovery-api.test.mjs"
@@ -340,10 +357,16 @@
       "path": "tests/conformance/plugin-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-native-startup.test.mjs"
+    },
+    {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
     },
     {
       "path": "tests/conformance/split-layout-adopt.test.mjs"
+    },
+    {
+      "path": "tests/conformance/url-authority.test.mjs"
     }
   ]
 }
