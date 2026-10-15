@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
 updated: 2026-10-15
-last_updated_session: authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8
+last_updated_session: authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208
 ---
 
 # Gateway Outbound Flow
@@ -74,17 +74,17 @@ invariants. The normal mutation audit names the actor and exact Agent.
 
 ### 2. Freeze requirements at deployment
 
-`packages/occ/src/index.ts:OpenClawController.deployAgent` reads the admitted Configuration and asks the
-selected Channel Driver for `gatewayNetworkRequirements`. The Slack Driver
-supplies requirements only for enabled supported accounts. Caller-authored
-native settings cannot supply this trusted declaration.
+`packages/occ/src/index.ts:OpenClawController.deployAgent` reads the admitted
+Configuration and applies the composed pure channel network declaration. The
+Slack Driver supplies requirements only for enabled supported accounts;
+caller-authored native settings cannot supply this trusted declaration.
 
-For provisioning, `apps/controller/src/worker.ts:ControllerWorker.start` injects
-only the pure declaration from
-`apps/controller/src/composition/channel.ts:createBundledChannelNetworkRequirements`.
-The worker freezes these requirements during transactional revision admission;
-it receives no provider validation or directory methods. API credential validation
-still runs before enqueueing provisioning, outside the write transaction.
+`apps/controller/src/composition/channel.ts:createBundledChannelCapabilities`
+supplies the same declaration to API and worker composition. The API also
+registers the provider Driver. `apps/controller/src/worker.ts:ControllerWorker.start`
+gives provisioning admission only the pure declaration; provider validation and
+directory methods stay outside the worker transaction. API credential validation
+runs before enqueueing provisioning.
 
 `KubernetesComputeDriver.admitGatewayOutbound` enforces the Installation ceiling
 and produces the snapshot. OCC validates it and `freezeAgentRevision` copies
@@ -136,7 +136,9 @@ required runtime retirement. The next pass finishes only
 `KubernetesComputeDriver.withdrawGatewayOutbound`, validating ownership and waiting
 for exact proxy Pods and tunnels to terminate. Restored permissions cannot repair
 the old route during this wait; a new authorized revision restores service.
-Queue retries and stale-lease recovery preserve the pending withdrawal.
+Retries carry one typed pending withdrawal, keeping its refusal and cleanup
+obligations together. Stale-lease recovery copies the same evidence fields,
+including nested null values, into the next attempt.
 
 ### 6. Reconcile tightening and tear down after drain
 
@@ -171,6 +173,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-15 15:46: Unify channel capability composition and carry withdrawal state through retries. (authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208 - b0c299f7e8a9cdb992500fa39d32dddea9271ed0)
 
 - 2026-10-15 10:01: Preserve Channel Driver requirements during worker provisioning admission. (authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8 - 313a70262e432192306a2db431bf0b6f0459a957)
 

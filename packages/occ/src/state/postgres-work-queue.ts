@@ -447,12 +447,13 @@ const RECOVERING_REFUSED_STOPS_SQL = `
 // preserves its removal-only phase even after IAM restoration or an attempt-limit change.
 const RECOVERING_GATEWAY_OUTBOUND_SQL = `
     recovering_gateway_outbound AS MATERIALIZED (
-      SELECT work.idempotency_key, latest.refusal, latest.refusal_data, latest.cleanup_failed_preparation
+      SELECT work.idempotency_key,
+        (SELECT jsonb_object_agg(key, value) FROM jsonb_each(latest.details)
+         WHERE key IN ('refusal', 'refusalData', 'cleanupFailedPreparation')) AS evidence
       FROM occ.controller_work AS work
       JOIN candidates AS candidate ON candidate.idempotency_key = work.idempotency_key
       CROSS JOIN LATERAL (
-        SELECT prior.details->>'refusal' AS refusal, prior.details->'refusalData' AS refusal_data,
-          prior.details->'cleanupFailedPreparation' AS cleanup_failed_preparation
+        SELECT prior.details
         FROM occ.audit_events AS prior
         WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
           AND prior.resource_kind = 'agent_revision'
@@ -469,7 +470,7 @@ const RECOVERING_GATEWAY_OUTBOUND_SQL = `
         AND (work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
           OR work.idempotency_key ~
             ('^agent_revision:' || work.revision_id || ':maintenance:(0|[1-9][0-9]*)$'))
-        AND latest.refusal IS NOT NULL
+        AND latest.details->>'refusal' IS NOT NULL
     ),`;
 
 // Work bound evidence of `work` with reason `code` (the lookup matches
@@ -1560,12 +1561,7 @@ export class PostgresWorkQueue {
             THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
             THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_build_object('refusal', withdrawal.refusal)
-              || CASE WHEN withdrawal.refusal_data IS NULL THEN '{}'::jsonb
-                ELSE jsonb_build_object('refusalData', withdrawal.refusal_data) END
-              || CASE WHEN withdrawal.cleanup_failed_preparation IS NULL THEN '{}'::jsonb
-                ELSE jsonb_build_object('cleanupFailedPreparation', withdrawal.cleanup_failed_preparation) END
-            FROM recovering_gateway_outbound AS withdrawal
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_gateway_outbound AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key),
            (SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
@@ -1620,12 +1616,7 @@ export class PostgresWorkQueue {
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_gateway_outbound)
             THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
             WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_build_object('refusal', withdrawal.refusal)
-              || CASE WHEN withdrawal.refusal_data IS NULL THEN '{}'::jsonb
-                ELSE jsonb_build_object('refusalData', withdrawal.refusal_data) END
-              || CASE WHEN withdrawal.cleanup_failed_preparation IS NULL THEN '{}'::jsonb
-                ELSE jsonb_build_object('cleanupFailedPreparation', withdrawal.cleanup_failed_preparation) END
-            FROM recovering_gateway_outbound AS withdrawal
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_gateway_outbound AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
        )}
        SELECT transitioned.* FROM transitioned`,

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-14
-last_updated_session: authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0
+updated: 2026-10-15
+last_updated_session: authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -63,7 +63,7 @@ platform state. A missing or foreign target is rejected before provider I/O.
 
 `packages/occ/src/index.ts:OpenClawController.lookupChannelDirectory`
 
-`apps/controller/src/composition/channel.ts:createBundledChannelDriver`
+`apps/controller/src/composition/channel.ts:createBundledChannelCapabilities`
 selects the bundled Slack ChannelDriver for production API calls. With
 `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL`, the Driver tunnels management requests
 to `slack.com:443` through that endpoint. Without it, the Driver uses the process
@@ -173,6 +173,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 15:46: Select provider operations and network requirements through shared composition. (authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208 - b0c299f7e8a9cdb992500fa39d32dddea9271ed0)
 
 - 2026-10-14 16:02: Trace the accompanying generic API-only proxy and trusted Driver requirements. (authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0 - bd8fe1f7b0b798dca84d6f90b7377ddda79d88a6)
 

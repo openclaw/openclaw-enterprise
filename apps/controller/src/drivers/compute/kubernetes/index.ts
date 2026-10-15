@@ -12337,23 +12337,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       // A tightened installation exclusion requires a new immutable policy and closes old sockets first.
       await this.removeGatewayOutbound(revision, namespace);
     }
-    await this.reconcile(
-      {
-        ...this.manifest("v1", "ConfigMap", name, ownership, namespace),
-        immutable: true,
-        data: { "policy.json": policy },
-      },
-      ownership,
-      namespace,
-    );
-    await this.reconcile(
-      {
-        ...this.manifest("v1", "ServiceAccount", name, ownership, namespace),
-        automountServiceAccountToken: false,
-      },
-      ownership,
-      namespace,
-    );
     const gatewayLabels = ordinaryNetworkPolicySelector({
       "openclaw.dev/namespace": revision.namespaceId,
       "openclaw.dev/agent": revision.agentId,
@@ -12411,8 +12394,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ],
       },
     };
-    await this.reconcile(proxyRule, ownership, namespace);
-    await this.reconcile(
+    const resources: ManagedKubernetesObject[] = [
+      {
+        ...this.manifest("v1", "ConfigMap", name, ownership, namespace),
+        immutable: true,
+        data: { "policy.json": policy },
+      },
+      {
+        ...this.manifest("v1", "ServiceAccount", name, ownership, namespace),
+        automountServiceAccountToken: false,
+      },
+      proxyRule,
       {
         ...this.manifest(
           "networking.k8s.io/v1",
@@ -12427,10 +12419,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           egress: [{ to: [proxyPeer], ports: [{ protocol: "TCP", port: GATEWAY_OUTBOUND_PORT }] }],
         },
       },
-      ownership,
-      namespace,
-    );
-    await this.reconcile(
       {
         ...this.manifest("apps/v1", "Deployment", name, ownership, namespace),
         spec: {
@@ -12490,10 +12478,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           },
         },
       },
-      ownership,
-      namespace,
-    );
-    await this.reconcile(
       {
         ...this.manifest("v1", "Service", name, ownership, namespace),
         spec: {
@@ -12509,9 +12493,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ],
         },
       },
-      ownership,
-      namespace,
-    );
+    ];
+    for (const resource of resources) {
+      await this.reconcile(resource, ownership, namespace);
+    }
     const deployment = await this.getOwned("Deployment", name, namespace, ownership);
     return deployment !== undefined && this.deploymentReady(deployment, false);
   }

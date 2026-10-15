@@ -83,7 +83,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
-import { createBundledChannelNetworkRequirements } from "./composition/channel.ts";
+import { createBundledChannelCapabilities } from "./composition/channel.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import {
   ComputeStopYieldedError,
@@ -372,6 +372,13 @@ interface DispatchResult {
   readonly observation?: Observation;
   readonly decision?: AuthorizationDecision;
   readonly authorization?: AuthorizationRequest;
+}
+
+interface GatewayOutboundWithdrawal {
+  readonly code: typeof GATEWAY_OUTBOUND_WITHDRAWAL_PENDING;
+  readonly refusal: string;
+  readonly refusalData?: Readonly<Record<string, unknown>>;
+  readonly cleanupFailedPreparation?: true;
 }
 
 interface RevisionDispatchResult extends DispatchResult {
@@ -1121,7 +1128,7 @@ export class ControllerWorker {
       state: this.state,
       backends: this.backends,
       recordOperations: true,
-      channelNetworkRequirements: createBundledChannelNetworkRequirements(),
+      channelNetworkRequirements: createBundledChannelCapabilities().channelNetworkRequirements,
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}
         : { configuredServiceAccountDriverId: this.configuredServiceAccountDriverId }),
@@ -3385,12 +3392,11 @@ export class ControllerWorker {
         GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
       );
       if (outboundWait?.refusal !== undefined) {
-        await this.finishGatewayOutboundWithdrawal(
-          claim,
-          outboundWait.refusal,
-          outboundWait.refusalData,
-          outboundWait.cleanupFailedPreparation,
-        );
+        await this.finishGatewayOutboundWithdrawal(claim, {
+          ...outboundWait,
+          code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+          refusal: outboundWait.refusal,
+        });
         return;
       }
       outboundWaitRead = true;
@@ -4839,6 +4845,12 @@ export class ControllerWorker {
     ) {
       return false;
     }
+    const pending: GatewayOutboundWithdrawal = {
+      code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+      refusal: result.code,
+      ...(result.data === undefined ? {} : { refusalData: result.data }),
+      ...(result.cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
+    };
     let recorded = false;
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
@@ -4867,16 +4879,10 @@ export class ControllerWorker {
       // Commit the irreversible removal decision before attempting deletion. Deferral
       // refunds the claim's attempt; withdrawal has neither a deployment deadline nor
       // an attempt limit while its old authority may still be live.
-      await queue.defer(
-        claim,
-        {
-          code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
-          refusal: result.code,
-          ...(result.data === undefined ? {} : { refusalData: result.data }),
-          ...(result.cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
-        },
-        { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
-      );
+      await queue.defer(claim, pending, {
+        delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS,
+        repeatEvidence: true,
+      });
       recorded = true;
     }, this.queueOptions);
     if (recorded) {
@@ -4904,10 +4910,9 @@ export class ControllerWorker {
 
   private async finishGatewayOutboundWithdrawal(
     claim: ClaimedWork,
-    refusal: string,
-    refusalData?: Readonly<Record<string, unknown>>,
-    cleanupFailedPreparation?: true,
+    pending: GatewayOutboundWithdrawal,
   ): Promise<void> {
+    const { refusal, refusalData, cleanupFailedPreparation } = pending;
     try {
       const { namespace, agent, revision } = await this.state.read(async (view) => ({
         namespace: await view.namespaces.findNamespace(claim.namespaceId),
@@ -4950,16 +4955,10 @@ export class ControllerWorker {
         if ((await queue.heartbeat(claim)) === undefined) {
           throw new WorkClaimLostError();
         }
-        await queue.defer(
-          claim,
-          {
-            code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
-            refusal,
-            ...(refusalData === undefined ? {} : { refusalData }),
-            ...(cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
-          },
-          { delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS, repeatEvidence: true },
-        );
+        await queue.defer(claim, pending, {
+          delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS,
+          repeatEvidence: true,
+        });
       }, this.queueOptions);
       this.emitGatewayOutboundWithdrawalWait(claim, refusal, revisionFailureLogFields(error));
     }

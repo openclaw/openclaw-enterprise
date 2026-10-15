@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createBundledChannelDriver } from "../composition/channel.ts";
+import { createBundledChannelCapabilities } from "../composition/channel.ts";
 import { runOutboundProxy } from "./outbound-proxy.mjs";
 import { readProxyConfiguration } from "./proxy-configuration.mjs";
 
@@ -16,7 +16,7 @@ export function controlPlaneOutboundPolicy(configuration) {
   ) {
     throw new Error("Control-plane outbound proxy configuration requires only denyCidrs.");
   }
-  const requirements = createBundledChannelDriver().controlPlaneNetworkRequirements();
+  const requirements = createBundledChannelCapabilities().driver.controlPlaneNetworkRequirements();
   return {
     mode: "restricted",
     destinations: requirements.flatMap(({ destinations }) => destinations),
