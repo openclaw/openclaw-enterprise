@@ -2914,6 +2914,10 @@ export const scenarios = {
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+    steps: [
+      "Tab to Refresh deployment and leave focus there through the next automatic update. The focus ring should stay on the same button, without a flash of Refreshing text.",
+      "Activate Refresh deployment to request an update yourself. The fixture stays in progress; it does not claim that the Agent is serving.",
+    ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",

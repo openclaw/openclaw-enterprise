@@ -106,6 +106,7 @@ test("Deployment activity follows pending work until it records a result", async
     },
   );
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
@@ -114,12 +115,29 @@ test("Deployment activity follows pending work until it records a result", async
   await activity.getByText("Recorded status: running").waitFor();
   await record.getByText("Recorded outcome: running").waitFor();
 
+  await waitForIdleFetches(page);
+
+  // An unchanged background read must keep focus on the same usable refresh control.
+  const refresh = await activity
+    .getByRole("button", { name: "Refresh deployment" })
+    .elementHandle();
+  await refresh.focus();
+  const readsBeforePoll = statusReads;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await waitForIdleFetches(page);
+  assert.ok(statusReads > readsBeforePoll);
+  assert.equal(await refresh.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  assert.equal(await refresh.textContent(), "Refresh deployment");
+  assert.equal(await refresh.isEnabled(), true);
+
   // Pending work is reread on its own; the reader does not have to press Refresh deployment.
   status = "failed";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await activity.getByText("Recorded status: failed").waitFor();
   await record.getByText("Recorded outcome: failed").waitFor();
   await page.getByText("v1 · Failed", { exact: true }).waitFor();
+
+  await waitForIdleFetches(page);
 
   // A recorded result ends the follow-up reads.
   const readsAtResult = statusReads;

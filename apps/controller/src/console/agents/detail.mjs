@@ -364,7 +364,34 @@ function createDeploymentStatusPanel(
 ) {
   const section = element("section", { className: "agent-card deployment-status" });
   const state = { loading: false, status: null, error: null, overviewError: false };
+  const refreshButton = button("Refresh deployment", () => void loadStatus(true));
+  const content = element("div");
   let pollTimer = null;
+  let refreshAfterPoll = false;
+
+  section.append(
+    element(
+      "div",
+      { className: "deployment-heading" },
+      element(
+        "div",
+        {},
+        element("h2", {}, "Deployment activity"),
+        element(
+          "p",
+          { className: "muted" },
+          `Most recent visible deployment · v${revision.revision}`,
+        ),
+      ),
+      refreshButton,
+    ),
+    element(
+      "p",
+      { className: "muted" },
+      "Progress comes from the persisted deployment record. It does not check live serving or model access.",
+    ),
+    content,
+  );
 
   // A poll that fired while the view was retained stopped; restoring the view re-arms it.
   context.onResume?.(() => {
@@ -394,7 +421,14 @@ function createDeploymentStatusPanel(
   }
 
   async function loadStatus(refreshAgent = false, poll = false) {
-    if (state.loading || !context.isCurrent()) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    if (state.loading) {
+      // A manual refresh also reads the version overview; don't lose it to an in-flight poll.
+      if (refreshAgent && !poll) {
+        refreshAfterPoll = true;
+      }
       return;
     }
     clearTimeout(pollTimer);
@@ -403,7 +437,10 @@ function createDeploymentStatusPanel(
     state.loading = true;
     state.error = null;
     state.overviewError = false;
-    render();
+    if (!poll) {
+      refreshButton.textContent = "Refreshing...";
+      refreshButton.disabled = true;
+    }
     try {
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
         context.request(`${path}/deployments/${encodeURIComponent(revision.id)}`),
@@ -454,14 +491,17 @@ function createDeploymentStatusPanel(
           state.status?.error?.code ?? null,
           state.status,
         );
-        if (
+        if (refreshAfterPoll) {
+          refreshAfterPoll = false;
+          void loadStatus(true);
+        } else if (
           poll &&
           PENDING_DEPLOYMENT_STATUSES.has(previousStatus) &&
           !state.error &&
           !PENDING_DEPLOYMENT_STATUSES.has(state.status?.status)
         ) {
           // A recorded result can change the current version; reread it once.
-          void loadStatus(true);
+          void loadStatus(true, true);
         } else {
           schedulePoll();
         }
@@ -549,33 +589,11 @@ function createDeploymentStatusPanel(
   }
 
   function render() {
-    section.replaceChildren(
-      element(
-        "div",
-        { className: "deployment-heading" },
-        element(
-          "div",
-          {},
-          element("h2", {}, "Deployment activity"),
-          element(
-            "p",
-            { className: "muted" },
-            `Most recent visible deployment · v${revision.revision}`,
-          ),
-        ),
-        button(
-          state.loading ? "Refreshing..." : "Refresh deployment",
-          () => void loadStatus(true),
-          {
-            disabled: state.loading,
-          },
-        ),
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        "Progress comes from the persisted deployment record. It does not check live serving or model access.",
-      ),
+    if (refreshButton.disabled) {
+      refreshButton.textContent = "Refresh deployment";
+      refreshButton.disabled = false;
+    }
+    content.replaceChildren(
       renderStatus(),
       ...(state.overviewError
         ? [
