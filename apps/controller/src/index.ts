@@ -4105,9 +4105,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 

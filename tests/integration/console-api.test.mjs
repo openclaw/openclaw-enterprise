@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
@@ -329,6 +330,86 @@ test("console static routes expose only public assets and preserve API JSON fail
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(JSON.parse(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const host = new URL(fixture.origin).host;
+  const consoleFile = (path) =>
+    readFile(new URL(`../../apps/controller/src/console/${path}`, import.meta.url));
+  const fetchRaw = (url, headers = {}, method = "GET") =>
+    fixture.app.inject({ method, url, headers: { host, ...headers } });
+
+  const script = await consoleFile("agents/detail.mjs");
+  const plain = await fetchRaw("/console/agents/detail.mjs");
+  assert.equal(plain.statusCode, 200);
+  assert.equal(plain.headers["content-encoding"], undefined);
+  assert.equal(plain.headers.vary, "Accept-Encoding");
+  assert.deepEqual(plain.rawPayload, script);
+  const csp = plain.headers["content-security-policy"];
+  assert.match(csp, /script-src 'self'/);
+
+  for (const [acceptEncoding, encoding, decode] of [
+    ["gzip", "gzip", gunzipSync],
+    ["gzip, deflate, br, zstd", "br", brotliDecompressSync],
+    ["br;q=0.5, gzip;q=1", "gzip", gunzipSync],
+    ["*", "br", brotliDecompressSync],
+  ]) {
+    const result = await fetchRaw("/console/agents/detail.mjs", {
+      "accept-encoding": acceptEncoding,
+    });
+    assert.equal(result.statusCode, 200, acceptEncoding);
+    assert.equal(result.headers["content-encoding"], encoding, acceptEncoding);
+    assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
+    assert.match(result.headers["content-type"], /javascript/, acceptEncoding);
+    assert.equal(Number(result.headers["content-length"]), result.rawPayload.length);
+    assert.ok(result.rawPayload.length < script.length / 3, acceptEncoding);
+    assert.deepEqual(decode(result.rawPayload), script, acceptEncoding);
+    // Compression changes neither the CSP nor the API headers that keep assets uncached.
+    assert.equal(result.headers["content-security-policy"], csp);
+    assert.equal(result.headers["cache-control"], "no-store");
+    assert.equal(result.headers["x-content-type-options"], "nosniff");
+  }
+
+  for (const acceptEncoding of ["identity", "br;q=0, gzip;q=0", "deflate", "*;q=0"]) {
+    const result = await fetchRaw("/console/console.css", { "accept-encoding": acceptEncoding });
+    assert.equal(result.headers["content-encoding"], undefined, acceptEncoding);
+    assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
+    assert.deepEqual(result.rawPayload, await consoleFile("console.css"), acceptEncoding);
+  }
+
+  // HEAD reports the GET representation. Range is unsupported: it must keep returning the whole
+  // encoded body, never a slice of it, until someone adds range support on purpose.
+  const gzipGet = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" });
+  const head = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" }, "HEAD");
+  assert.equal(head.statusCode, 200);
+  assert.equal(head.headers["content-encoding"], "gzip");
+  assert.equal(head.headers["content-length"], gzipGet.headers["content-length"]);
+  assert.equal(head.rawPayload.length, 0);
+  const ranged = await fetchRaw("/console/console.css", {
+    "accept-encoding": "gzip",
+    range: "bytes=0-9",
+  });
+  assert.equal(ranged.statusCode, 200);
+  assert.deepEqual(ranged.rawPayload, gzipGet.rawPayload);
+
+  // The generated preset module is compressed like the files beside it.
+  const preset = await fetchRaw("/console/default-codex-preset.mjs", { "accept-encoding": "gzip" });
+  assert.equal(preset.headers["content-encoding"], "gzip");
+  assert.match(gunzipSync(preset.rawPayload).toString("utf8"), /^export default \{/);
+
+  // The shell also answers the sign-in route; it and binary assets are always identity.
+  for (const path of ["/console/login", "/console/", "/console/missing.css"]) {
+    const result = await fetchRaw(path, { "accept-encoding": "gzip, br" });
+    assert.equal(result.headers["content-encoding"], undefined, path);
+    assert.equal(result.headers.vary, undefined, path);
+    assert.deepEqual(result.rawPayload, await consoleFile("index.html"), path);
+  }
+  for (const path of ["/console/oce-mascot.png", "/console/fonts/instrument-sans-latin.woff2"]) {
+    const result = await fetchRaw(path, { "accept-encoding": "gzip, br" });
+    assert.equal(result.statusCode, 200, path);
+    assert.equal(result.headers["content-encoding"], undefined, path);
+  }
 });
 
 test("console auth routes reject untrusted browser origins and issue production session cookies", async (t) => {
