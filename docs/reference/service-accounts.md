@@ -216,7 +216,7 @@ provider, not IAM, Compute, OCC, or the Harness.
   hex digits of the account ID's SHA-256, in the Namespace's control namespace
   (omitted when that name is long). An operator deletes it, for example
   `kubectl delete secret -n <namespace> <name>`, then retries. Deleting the
-  account also removes it.
+  account with the ChatGPT Backend configured also removes it.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 

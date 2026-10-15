@@ -1186,6 +1186,7 @@ const MODEL_API_KEY = "OPENAI_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
 const SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION = "openclaw.dev/provider-credential-id";
+const SERVICE_ACCOUNT_CREDENTIAL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const CODEX_ACCESS_TOKEN = "CODEX_ACCESS_TOKEN";
 const MAX_RUNTIME_CREDENTIAL_BYTES = 65_536;
 const MAX_RUNTIME_STATUS_RESPONSE_BYTES = 65_536;
@@ -1487,13 +1488,13 @@ function required(value: unknown, description: string): string {
 
 /**
  * The provider credential ID an account Secret records, or undefined when it records none or
- * an invalid one (the same shape the binding's `external_credential_id` column admits).
+ * one outside a conservative identifier shape. Anyone with Secret write can edit the
+ * annotation, and the ID becomes a provider URL path segment, so a value like `..` must never
+ * reach a revocation (it would resolve to the provider account itself).
  */
 function serviceAccountCredentialId(secret: ManagedKubernetesObject<"Secret">): string | undefined {
   const value = secret.metadata.annotations?.[SERVICE_ACCOUNT_CREDENTIAL_ID_ANNOTATION];
-  return isNonEmptyString(value) && value.length <= 200 && value === value.trim()
-    ? value
-    : undefined;
+  return typeof value === "string" && SERVICE_ACCOUNT_CREDENTIAL_ID.test(value) ? value : undefined;
 }
 
 /** Whether an account's credential Secret holds exactly this token (constant-time compare). */
@@ -4545,8 +4546,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const existing = await this.getOwned("Secret", name, namespace, ownership);
     if (existing !== undefined) {
       // OCC records no credential for this account, so this is a leftover of an earlier
-      // issuance. The ServiceAccount Driver already reclaimed any leftover naming its provider
-      // credential, so name this one so the operator can delete it (findings 935 and 1397).
+      // issuance that appeared after the ServiceAccount Driver's reclaim; name it so the
+      // operator can delete it (findings 935 and 1397).
       throw new ServiceAccountCredentialSecretExistsError(namespace.name, name);
     }
 
@@ -4659,6 +4660,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     readonly serviceAccountId: string;
   }): Promise<
     | {
+        readonly secretNamespace: string;
         readonly secretRef: { readonly name: string; readonly key: string };
         readonly credentialId: string | undefined;
       }
@@ -4683,6 +4685,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     return {
+      secretNamespace: namespace.name,
       secretRef: { name, key: SERVICE_ACCOUNT_TOKEN_KEY },
       credentialId: serviceAccountCredentialId(existing),
     };

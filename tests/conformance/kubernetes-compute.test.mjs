@@ -50,6 +50,7 @@ import {
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  ResourceConflictError,
   ResourceStateConflictError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -6053,30 +6054,67 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
   );
 
   await t.test(
-    "a leftover naming no credential still blocks issuance and goes with the account",
+    "a reclaim whose lock was lost while reading the Secret touches nothing a later issuance committed",
     async () => {
+      const { account, binding, crashedIssuance, driver, objects, key, request, revoked } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      // The request's PostgreSQL session ends during the Kubernetes read, releasing the account
+      // lock; another issuance records the Secret it now holds before the read returns. The
+      // binding reread after the read sees that record, so nothing is revoked or deleted.
+      const { core } = await driver.apiClients;
+      const read = core.readNamespacedSecret;
+      core.readNamespacedSecret = async (request) => {
+        const result = await read(request);
+        binding.externalCredentialId = "cred-1";
+        return result;
+      };
+      await assert.rejects(
+        request().driver.createCredential(account),
+        (error) =>
+          error instanceof ResourceConflictError &&
+          error.message === "The service account credential changed during cleanup.",
+      );
+      assert.deepEqual(revoked, []);
+      assert.equal(objects.has(key), true);
+    },
+  );
+
+  for (const [label, recorded] of [
+    ["names no credential", undefined],
+    // Anyone with Secret write can edit the annotation. `..` as a provider path segment would
+    // resolve to the provider account itself, so it must never reach a revocation.
+    ["names a path segment instead of a credential", ".."],
+  ]) {
+    await t.test(`a leftover that ${label} blocks issuance and goes with the account`, async () => {
       const { account, crashedIssuance, objects, key, request, revoked, storedToken } =
         await chatgptIssuanceFixture();
       await crashedIssuance(account);
-      delete objects.get(key).metadata.annotations["openclaw.dev/provider-credential-id"];
+      const { annotations } = objects.get(key).metadata;
+      if (recorded === undefined) {
+        delete annotations["openclaw.dev/provider-credential-id"];
+      } else {
+        annotations["openclaw.dev/provider-credential-id"] = recorded;
+      }
 
-      // Without a recorded credential nothing proves which provider credential is the leftover's,
-      // so issuance keeps the 409 that names the Secret for an operator, and revokes only the
-      // credential it issued itself.
+      // Nothing proves which provider credential is the leftover's, so issuance answers the
+      // 409 that names the Secret for an operator before issuing or revoking anything.
       const blocked = request();
       await assert.rejects(
         blocked.driver.createCredential(account),
         ServiceAccountCredentialSecretExistsError,
       );
       await blocked.rollBack();
-      assert.deepEqual(revoked, ["cred-2"]);
+      assert.deepEqual(revoked, []);
       assert.equal(storedToken(), "at-request-fixture-1");
 
-      // Deleting the account removes the Secret anyway: the provider account goes with it.
+      // Deleting the account removes the Secret anyway, without a revocation it cannot name:
+      // the provider account goes with it.
       await request().driver.delete(account);
       assert.equal(objects.has(key), false);
-    },
-  );
+      assert.deepEqual(revoked, []);
+    });
+  }
 });
 
 test("a ServiceAccount credential rollback deletes only the Secret holding its own token", async (t) => {
