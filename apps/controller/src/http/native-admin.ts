@@ -48,6 +48,7 @@ import {
   isDependencyUnavailable,
   requestFailure,
 } from "./errors.ts";
+import { RequestRateLimiter } from "./request-rate-limiter.ts";
 import type { RequestContext } from "./types.ts";
 
 interface NativeAdminOptions {
@@ -169,7 +170,49 @@ export const nativeAdminStatusSchema = {
     404: { description: "Not Found", ...nativeAdminErrorSchema },
     503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
   },
+};
+
+export const nativeAdminReturnSchema = {
+  operationId: nativeAdminReturnOperation.operationId,
+  summary: nativeAdminReturnOperation.summary,
+  description:
+    "Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
+  tags: [...nativeAdminReturnOperation.tags],
+  security: [{ sessionCookie: [] }],
+  "x-openclaw-permissions": [{ action: "administer", resourceKind: "agent", scope: "requested" }],
+  params: {
+    type: "object",
+    required: ["agentKey"],
+    properties: { agentKey: { type: "string", pattern: "^[0-9a-f]{32}$" } },
+  },
+  response: {
+    ...nativeAdminStatusSchema.response,
+    200: {
+      description: "OK",
+      type: "object",
+      required: ["data", "meta"],
+      properties: { data: nativeAdminParamsSchema, meta: nativeAdminMetaSchema },
+    },
+    400: { description: "Invalid Agent key", ...nativeAdminErrorSchema },
+    429: { description: "Too many requests; wait for Retry-After", ...nativeAdminErrorSchema },
+  },
 } as FastifySchema;
+
+export function limitNativeAdminReturn(
+  rateLimit: RequestRateLimiter,
+  key: string,
+  reply: FastifyReply,
+) {
+  const retryAfter = rateLimit.consume(key);
+  if (retryAfter !== undefined) {
+    reply.header("retry-after", String(retryAfter));
+    throw failure(
+      429,
+      "NATIVE_ADMIN_RETURN_RATE_LIMITED",
+      "Too many Agent return requests. Wait before retrying.",
+    );
+  }
+}
 
 function acceptsHtml(accept: string | undefined): boolean {
   return (accept ?? "").split(",").some((entry) => {
@@ -725,6 +768,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     return availability;
   }
 
+  // The lookup visits Agent references, so bound its cost per principal, independent of the key.
+  const returnRateLimit = new RequestRateLimiter(6, 0.25);
   async function resolveNativeAdminReturn(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -734,11 +779,11 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       throw dependencyUnavailable();
     }
     requireNativeAdminHumanSession(request, context);
+    limitNativeAdminReturn(returnRateLimit, context.actorId, reply);
     const missing = () =>
       failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     const key = (request.params as { agentKey: string }).agentKey;
     if (
-      !/^[0-9a-f]{32}$/.test(key) ||
       options.nativeAdmin?.enabled !== true ||
       nativeAdminDomain === undefined ||
       publicOrigin === undefined ||

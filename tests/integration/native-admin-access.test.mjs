@@ -697,7 +697,7 @@ test("a copied Agent chat link directs a browser to the configured console witho
   const invalid = await injectJson(context.fixture, "GET", "/native-admin/return/not-a-key", {
     headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
   });
-  assert.equal(invalid.statusCode, 404, invalid.body);
+  assert.equal(invalid.statusCode, 400, invalid.body);
   const forwarded = await injectJson(context.fixture, "GET", endpoint, {
     headers: {
       host: new URL(publicOrigin).host,
@@ -725,6 +725,32 @@ test("a copied Agent chat link directs a browser to the configured console witho
   });
   assert.equal(stoppedReturn.statusCode, 200, stoppedReturn.body);
   assert.deepEqual(stoppedReturn.json().data, found.json().data);
+
+  // Changing the key must not buy more lookups; another administrator keeps their own budget.
+  const burst = await Promise.all(
+    Array.from({ length: 7 }, (_, index) =>
+      injectJson(
+        context.fixture,
+        "GET",
+        endpoint.replace(key, index.toString(16).padStart(32, "0")),
+        {
+          headers: { host: new URL(publicOrigin).host, cookie: limited.cookie },
+        },
+      ),
+    ),
+  );
+  const throttled = burst.find((response) => response.statusCode === 429);
+  assert.ok(
+    throttled,
+    "expected repeated return lookups to be limited; got " +
+      burst.map((response) => response.statusCode).join(", "),
+  );
+  assert.equal(throttled.json().error.code, "NATIVE_ADMIN_RETURN_RATE_LIMITED");
+  assert.ok(Number(throttled.headers["retry-after"]) > 0);
+  const independent = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
+  });
+  assert.equal(independent.statusCode, 200, independent.body);
   assert.equal(context.upstream.requests.length, 0);
 });
 
