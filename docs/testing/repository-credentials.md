@@ -48,6 +48,20 @@ require explicit security review: identify the authority, caller, scope and
 protecting negative test. Never substitute wildcard allowances. The [guard regression test](../../tests/conformance/repository-credentials-source-boundary.test.mjs)
 adds forbidden capabilities to a disposable copy of the real source tree.
 
+The separate [public GitHub reader](../reference/public-github-reads.md) owns an
+HTTP listener and anonymous, fixed-origin HTTPS GET. The source guard forbids
+loading credential owners from that reader and forbids the reverse edge. Its
+boundary test uses a local TLS provider. Ordinary PR CI's Image Runtime Startup
+lane requires stock Codex to read the projected skill with its limited native
+proxy, local binding off, and return a random title present only at a TLS provider.
+This command-level proof needs neither model nor repository credentials.
+The separate Full Integration, Gateway
+Routing journey exercises the ordinary dedicated Agent, managed skill and native
+network path; it substitutes the external provider and requires the Agent to
+return a pull title absent from the prompt. Record a pass with no skips on the
+reviewed source. The hosted lane is restricted to approved main revisions; qualify
+the full conversation and cluster policy there or in an authorized equivalent environment.
+
 Only credential-service configuration may use the GitHub metadata sender: one
 bounded HTTPS GET per approved repository with a metadata-only token, checking the
 returned repository ID. Metadata tests cover filtering, routes, retirement and

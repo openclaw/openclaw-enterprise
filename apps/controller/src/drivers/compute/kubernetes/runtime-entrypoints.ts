@@ -1095,8 +1095,7 @@ function openClawPluginConfiguration(runtime, failures = [], base) {
     return pluginRuntimeTranslator.codexOpenClawConfiguration(
       runtime.manifest.selections ?? {},
       failures,
-      runtime.manifest.repositoryBrokerNetworkPolicy,
-      runtime.manifest.pluginApprovers,
+      runtime.manifest,
     );
   }
   return undefined;

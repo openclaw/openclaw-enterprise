@@ -8,6 +8,7 @@ import {
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 function repositoryClient(gatewayOrigin = "https://git.credentials.svc.cluster.local") {
@@ -113,6 +114,9 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
           podLabels: { app: "credentials" },
           port: 8443,
         },
+        ...(options.publicGithubRead === undefined
+          ? {}
+          : { publicGithubRead: options.publicGithubRead }),
       },
       ...(nodeEnrollment === undefined
         ? {}
@@ -1324,6 +1328,163 @@ test("Dedicated Codex without repository bindings does not receive broker policy
   assert.equal(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, undefined);
 });
 
+const publicReader = {
+  namespace: "control",
+  podLabels: { app: "read-public-github" },
+  address: "10.43.0.19",
+};
+
+function publicReaderPolicies(f) {
+  return [...f.objects.values()].filter(
+    ({ kind, spec }) =>
+      kind === "NetworkPolicy" &&
+      spec.egress?.some(({ to }) =>
+        to?.some(({ podSelector }) => podSelector?.matchLabels?.app === publicReader.podLabels.app),
+      ),
+  );
+}
+
+test("ordinary dedicated revision gets only the public reader peer and skill; a disabled proxy or deny removes both", async () => {
+  const { address } = publicReader;
+  for (const [proxy, allowed] of [
+    [
+      {
+        enabled: true,
+        mode: "limited",
+        allowLocalBinding: false,
+        domains: { "example.org": "deny", [address]: "allow" },
+      },
+      true,
+    ],
+    [{ enabled: true }, false],
+    [{ enabled: false, domains: { [address]: "allow" } }, false],
+    [{ enabled: true, domains: { [address]: "allow", "10.43.0.*": "deny" } }, false],
+    [{ enabled: true, domains: { [address]: "allow", [`[${address}]:8080`]: "deny" } }, false],
+  ]) {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = proxy;
+    await f.driver.prepareRevision(f.revision, f.context(undefined));
+    f.markReady();
+    await f.driver.activateRevision(f.revision, f.context(undefined));
+
+    // Inspect the mounts and policies that the kubelet and CNI actually consume,
+    // then run the Gateway's generated translator on this revision's real artifacts.
+    const agent = f.consumer().spec.template.spec;
+    const mounts = agent.containers[0].volumeMounts;
+    const skill = mounts.find(({ mountPath }) => mountPath.endsWith("public-github-read/SKILL.md"));
+    assert.equal(Boolean(skill), allowed, JSON.stringify(proxy));
+    // Prepare the private parent as the runtime user before projecting a read-only
+    // file there. A root-owned .openclaw would break the node's existing skill publication.
+    const prepareHome = agent.initContainers.find(({ name }) => name === "prepare-private-state");
+    assert.equal(
+      prepareHome.args[0].includes("/runtime-state/home/.openclaw/skills/public-github-read"),
+      allowed,
+    );
+    const policies = publicReaderPolicies(f);
+    assert.equal(policies.length, allowed ? 1 : 0, JSON.stringify(proxy));
+    const manifest = preparedCodexManifest(f);
+    assert.equal(manifest.repositoryBrokerNetworkPolicy, undefined);
+    const { files } = runOpenClawRuntimeHelper({ manifest }, [], {
+      baseConfig: JSON.parse(preparedNativeDocument(f)),
+    });
+    const config = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+    const effective = config.plugins.entries.codex.config.appServer.networkProxy;
+    if (allowed) {
+      assert.deepEqual(policies[0].spec.egress, [
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { "kubernetes.io/metadata.name": publicReader.namespace },
+              },
+              podSelector: { matchLabels: publicReader.podLabels },
+            },
+          ],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ]);
+      assert.equal(skill.readOnly, true);
+      assert.deepEqual(effective.domains, { "example.org": "deny", [address]: "allow" });
+      assert.equal(effective.allowLocalBinding, false);
+      assert.equal(effective.mode, "limited");
+      assert.deepEqual(effective.readOnlyPaths, ["/app/node_modules/openclaw", skill.mountPath]);
+      const runtime = [...f.objects.values()].find(({ data }) => data?.[skill.subPath]);
+      assert.ok(runtime.data[skill.subPath].includes("http://" + address + ":8080/repos/"));
+    } else {
+      assert.equal(manifest.publicGithubRead, undefined);
+      assert.deepEqual(effective.domains, proxy.domains);
+      assert.deepEqual(effective.readOnlyPaths, ["/app/node_modules/openclaw"]);
+    }
+  }
+});
+
+for (const [change, previouslySelected] of [
+  ["selects", false],
+  ["deselects", true],
+]) {
+  test(`successor that ${change} the public reader changes only its own grant, through exact retirement`, async () => {
+    const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+    delete f.revision.repositoryCredentials;
+    const context = f.context(undefined);
+    const prepare = (revision, selected) => {
+      revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+        enabled: true,
+        domains: selected ? { [publicReader.address]: "allow" } : {},
+      };
+      return f.driver.prepareRevision(revision, context);
+    };
+    const deployment = (revision) =>
+      f
+        .deployments()
+        .find(
+          ({ spec }) =>
+            spec.template.metadata.labels["openclaw.dev/workload-role"] === "agent" &&
+            spec.template.metadata.labels["openclaw.dev/revision"] === revision.id,
+        );
+    const assertAccess = (revision, selected) => {
+      const { labels } = deployment(revision).spec.template.metadata;
+      const grants = publicReaderPolicies(f).filter(({ spec }) =>
+        Object.entries(spec.podSelector.matchLabels).every(([key, value]) => labels[key] === value),
+      );
+      assert.equal(grants.length, selected ? 1 : 0, revision.id + ": public reader egress");
+    };
+
+    const current = f.revision;
+    await prepare(current, previouslySelected);
+    f.markReady();
+    await f.driver.activateRevision(current, context);
+    const next = { ...structuredClone(current), id: "revision-public-read-successor", revision: 2 };
+    f.enroll(next);
+
+    // Compute must preserve the serving revision's choice even when its worker
+    // has not stopped it before preparing a successor with the opposite choice.
+    assert.equal((await prepare(next, !previouslySelected)).ready, false);
+    assertAccess(current, previouslySelected);
+    assertAccess(next, !previouslySelected);
+    f.markReady();
+    assert.equal((await f.driver.prepareRevision(next, context)).ready, true);
+    await assert.rejects(f.driver.activateRevision(next, context), /gateway is not ready/);
+    f.markReady();
+    await f.driver.activateRevision(next, context);
+    assertAccess(current, previouslySelected);
+    assertAccess(next, !previouslySelected);
+
+    // Kubernetes has terminated the predecessor's Pods. The successor still serves.
+    f.setPods([workloadPod(deployment(next), f.namespace, "serving-successor")]);
+    await f.driver.retireRevision(current);
+    assert.deepEqual(
+      publicReaderPolicies(f).map(
+        ({ spec }) => spec.podSelector.matchLabels["openclaw.dev/revision"],
+      ),
+      previouslySelected ? [] : [next.id],
+    );
+    f.setPods([]);
+    await f.driver.retireRevision(next);
+    assert.equal(publicReaderPolicies(f).length, 0);
+  });
+}
+
 test("Embedded OpenClaw repository bindings without Codex plugins do not receive broker policy", async () => {
   const f = await fixture("embedded");
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
@@ -1346,12 +1507,25 @@ test("Embedded OpenClaw plugin runtime does not receive Codex broker policy", as
 });
 
 test("Embedded Codex plugin runtime receives broker network policy centrally", async () => {
-  const f = await fixture("embedded");
+  const address = "10.43.0.19";
+  const f = await fixture("embedded", undefined, {
+    publicGithubRead: { namespace: "control", podLabels: { app: "read-public-github" }, address },
+  });
   f.revision.plugins = codexPluginState();
+  const networkProxy = { enabled: true, domains: { [address]: "allow" } };
+  f.revision.configuration.plugins = {
+    entries: { codex: { config: { appServer: { networkProxy } } } },
+  };
   await f.driver.prepareRevision(f.revision, f.context([runtimeBinding()]));
-  assert.deepEqual(preparedCodexManifest(f).repositoryBrokerNetworkPolicy, {
+  const manifest = preparedCodexManifest(f);
+  assert.equal(
+    manifest.publicGithubRead,
+    undefined,
+    "the public reader is scoped to ordinary dedicated Codex",
+  );
+  assert.deepEqual(manifest.repositoryBrokerNetworkPolicy, {
     host: "git.credentials.svc.cluster.local",
-    domains: {},
+    domains: { [address]: "allow" },
   });
 });
 

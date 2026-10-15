@@ -167,6 +167,24 @@ test("credential source boundary rejects new raw capabilities in the real source
       "composition/repository-credentials/protected-file.ts",
     ],
     [
+      "the anonymous reader cannot load token custody",
+      'import "../credentials/material.js";',
+      /public GitHub reader and repository credential owners cannot load one another/,
+      "drivers/repo/github/public-read/server.ts",
+    ],
+    [
+      "credential owners cannot delegate to the anonymous listener",
+      'import "../public-read/server.js";',
+      /public GitHub reader and repository credential owners cannot load one another/,
+      "drivers/repo/github/credentials/descriptions.ts",
+    ],
+    [
+      "the anonymous reader cannot read credential files",
+      'import { readFile } from "node:fs/promises";',
+      /unreviewed runtime import from node:fs\/promises/,
+      "drivers/repo/github/public-read/server.ts",
+    ],
+    [
       "new composition source is scanned",
       'import { request } from "node:http";',
       /unreviewed runtime import from node:http/,

@@ -1346,6 +1346,59 @@ test("renderer rejects the removed default profile", () => {
   assert.throws(() => render("default", baseInput()), /--profile must be one of: openclaw, codex/);
 });
 
+test(
+  "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer",
+  { skip: helmSkip },
+  () => {
+    const clusterIP = "10.43.0.19";
+    const output = render(
+      "codex",
+      codexInput({
+        publicGithubRead: { enabled: true, clusterIP, upstreamCidrs: ["192.0.2.20/32"] },
+      }),
+    );
+    const compute = loadYaml(output.installation).drivers.compute.configuration;
+    assert.equal(compute.network.publicGithubRead.address, clusterIP);
+    assert.match(output.values, /publicGithubRead:\n {2}enabled: true/);
+    assert.doesNotMatch(output.installation, /repositoryCredentials:|registryPath:|controlSocket:/);
+    KubernetesComputeDriver.validateConfiguration(compute);
+    const name = "openclaw-enterprise-public-github-read";
+    const objects = helmTemplate(output)
+      .split(/\n---\n/)
+      .map((doc) => JSON.parse(JSON.stringify(loadYaml(doc))))
+      .filter((doc) => doc.metadata?.name === name);
+    const reader = objects.find(({ kind }) => kind === "Deployment").spec.template;
+    const service = objects.find(({ kind }) => kind === "Service").spec;
+    const policy = objects.find(({ kind }) => kind === "NetworkPolicy").spec;
+    assert.equal(service.clusterIP, clusterIP);
+    assert.equal(service.type, "ClusterIP");
+    assert.deepEqual(service.selector, reader.metadata.labels);
+    assert.deepEqual(policy.podSelector.matchLabels, service.selector);
+    for (const [key, label] of Object.entries(compute.network.publicGithubRead.podLabels)) {
+      assert.equal(
+        reader.metadata.labels[key],
+        label,
+        "the Agent peer must select the actual reader",
+      );
+    }
+    assert.equal(reader.spec.automountServiceAccountToken, false);
+    assert.equal(reader.spec.volumes, undefined);
+    assert.equal(reader.spec.containers[0].securityContext.readOnlyRootFilesystem, true);
+    assert.deepEqual(policy.egress.at(-1).to, [{ ipBlock: { cidr: "192.0.2.20/32" } }]);
+    assert.deepEqual(policy.ingress[0].ports, [{ port: 8080, protocol: "TCP" }]);
+
+    const ordinary = render("codex", codexInput(), output.directory);
+    assert.equal(
+      loadYaml(ordinary.installation).drivers.compute.configuration.network.publicGithubRead,
+      undefined,
+    );
+    assert.ok(
+      !helmTemplate(ordinary).includes(name),
+      "the reader must not be installed by default",
+    );
+  },
+);
+
 test("repository opt-in is explicit and keeps the two-stage placeholders separate", () => {
   const output = render(
     "codex",

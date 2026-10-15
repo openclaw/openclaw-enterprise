@@ -82,6 +82,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
 - `drivers/repo/github/credentials/`: GitHub policy, backend and closed Git/gh client bundle.
+- `drivers/repo/github/public-read/`: credential-free public GitHub reader and its Agent skill.
 - `backends/repository-credentials/control-client.ts`: configured private-service
   connection and complete response validation.
 - `composition/repository-credentials/`: registry and protected-file loading,

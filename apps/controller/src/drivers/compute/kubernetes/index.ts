@@ -198,6 +198,11 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../plugin-runtime.ts";
 import {
+  codexPublicGithubRead,
+  PUBLIC_GITHUB_READ_PORT,
+  PUBLIC_GITHUB_READ_SKILL,
+} from "../../repo/github/public-read/codex.ts";
+import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT,
@@ -486,6 +491,8 @@ export interface KubernetesComputeDriverOptions {
     readonly gatewayClients?: readonly KubernetesWorkloadPeer[];
     readonly pluginStatusProxySourceCidrs?: readonly string[];
     readonly repositoryCredentials?: KubernetesWorkloadPeer & { readonly port: number };
+    /** Private ClusterIP of the credential-free reader in this execution cluster. */
+    readonly publicGithubRead?: KubernetesWorkloadPeer & { readonly address: string };
     /** Exact provider ingress used only when the selected Sandbox owns Harness transport. */
     readonly providerHarness?: KubernetesWorkloadPeer & {
       readonly address: string;
@@ -2955,6 +2962,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
               port: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
+          publicGithubRead: {
+            type: "object",
+            required: ["namespace", "podLabels", "address"],
+            additionalProperties: false,
+            properties: {
+              ...WORKLOAD_PEER_SCHEMA.properties,
+              address: { type: "string", minLength: 1 },
+            },
+          },
           providerHarness: {
             type: "object",
             required: ["namespace", "podLabels", "address", "port"],
@@ -3189,6 +3205,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         options.network.repositoryCredentials.port,
         "Repository credential gateway port",
       );
+    }
+    if (options.network.publicGithubRead !== undefined) {
+      const reader = options.network.publicGithubRead;
+      validatePeer(reader, "Public GitHub reader");
+      if (isIP(reader.address) !== 4 || options.executionCluster !== undefined) {
+        throw new ConfigurationFailure(
+          "Public GitHub reader requires an IPv4 ClusterIP in single-cluster execution.",
+        );
+      }
     }
     if (options.network.providerHarness !== undefined) {
       validatePeer(options.network.providerHarness, "Provider Harness gateway");
@@ -5835,6 +5860,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             namespace,
           );
         }
+        await this.reconcilePublicGithubReadNetworkPolicy(revision, namespace, pluginRuntime);
       }
       if (!providerOwnsHarnessEndpoint) {
         await this.reconcileHarnessRoute(revision, namespace);
@@ -6623,6 +6649,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     for (const { resource: policy, namespace: target } of policies) {
       await this.reconcile(policy, gatewayOwnership, target);
     }
+    await this.reconcilePublicGithubReadNetworkPolicy(revision, namespace, pluginRuntime);
     await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
     if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
       throw new Error("The exact AgentRevision gateway is not ready.");
@@ -7216,6 +7243,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    await this.deleteOwnedNamespacedResource(
+      "NetworkPolicy",
+      this.publicGithubReadNetworkPolicyName(revision),
+      this.pluginRuntimeOwnership(revision),
+      namespace,
+    );
     await this.deleteOwnedNamespacedResource(
       "ConfigMap",
       `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
@@ -11849,6 +11882,71 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       domains,
     };
   }
+
+  private publicGithubReadForRevision(revision: AgentRevision) {
+    const reader = this.options.network.publicGithubRead;
+    if (
+      reader === undefined ||
+      this.options.runtime === undefined ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      this.harnessNetworkProfile(revision) !== ORDINARY_NETWORK_PROFILE
+    ) {
+      return undefined;
+    }
+    const config = asRecord(
+      asRecord(asRecord(revision.configuration.plugins)?.entries)?.codex,
+    )?.config;
+    const proxy = asRecord(asRecord(asRecord(config)?.appServer)?.networkProxy);
+    return codexPublicGithubRead(reader.address, proxy);
+  }
+
+  private publicGithubReadNetworkPolicyName(revision: AgentRevision): string {
+    return `allow-public-github-read-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+  }
+
+  private async reconcilePublicGithubReadNetworkPolicy(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    pluginRuntime: PluginRuntimeSnapshot | undefined,
+  ): Promise<void> {
+    const reader = this.options.network.publicGithubRead;
+    const runtime = pluginRuntime?.runtime;
+    if (
+      reader === undefined ||
+      runtime?.kind !== "codex" ||
+      runtime.publicGithubRead === undefined
+    ) {
+      return;
+    }
+    // The serving and preparing revisions can make opposite choices. Give the
+    // revision that mounted the skill its own grant, removed only with its artifacts.
+    const ownership = this.pluginRuntimeOwnership(revision);
+    await this.reconcile(
+      {
+        ...this.manifest(
+          "networking.k8s.io/v1",
+          "NetworkPolicy",
+          this.publicGithubReadNetworkPolicyName(revision),
+          ownership,
+          namespace,
+        ),
+        spec: {
+          podSelector: { matchLabels: this.agentServiceSelector(revision) },
+          policyTypes: ["Egress"],
+          egress: [
+            {
+              to: [this.peer(reader)],
+              ports: [{ protocol: "TCP", port: PUBLIC_GITHUB_READ_PORT }],
+            },
+          ],
+        },
+      },
+      ownership,
+      namespace,
+    );
+  }
+
   private pluginRuntimeSnapshot(
     revision: AgentRevision,
     repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
@@ -11880,6 +11978,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         revision,
         repositoryBrokerNetworkPolicy,
         openaiBaseUrl,
+        this.publicGithubReadForRevision(revision),
       );
     } catch (error) {
       throw new ConfigurationFailure(
@@ -12047,14 +12146,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return mounts;
   }
 
-  private privateStateDirectories(role: WorkspaceRole): string[] {
+  private privateStateDirectories(role: WorkspaceRole, projectedSkillPath?: string): string[] {
     const paths =
       role === "gateway"
         ? [
             ...GATEWAY_PRIVATE_STATE_CATEGORIES.map(([, mountPath]) => mountPath),
             GATEWAY_SESSION_DIRECTORY,
           ]
-        : HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath);
+        : [
+            ...HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath),
+            // Prepare the skill's parents as the runtime user before the read-only
+            // file mount. Otherwise the runtime can get a root-owned .openclaw.
+            ...(projectedSkillPath === undefined ? [] : [projectedSkillPath]),
+          ];
     return [
       "/runtime-state/home",
       "/runtime-temporary/tmp",
@@ -12069,8 +12173,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     image: string,
     embedded: boolean,
     writableConfiguration = false,
+    projectedSkillPath?: string,
   ): KubernetesRecord {
-    const directories = this.privateStateDirectories(role);
+    const directories = this.privateStateDirectories(role, projectedSkillPath);
     const volumeMounts: V1VolumeMount[] = [
       { name: "runtime-state", mountPath: "/runtime-state" },
       { name: "runtime-temporary", mountPath: "/runtime-temporary" },
@@ -13893,8 +13998,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       providerEndpoint === undefined
         ? undefined
         : providerHarnessUrl(providerEndpoint, providerNetwork!);
+    const publicGithubRead =
+      pluginRuntime?.runtime.kind === "codex" && role === "agent"
+        ? pluginRuntime.runtime.publicGithubRead
+        : undefined;
     const initContainers = privateHome
-      ? [this.privateStateInitContainer(role, image, embedded, writableConfiguration)]
+      ? [
+          this.privateStateInitContainer(
+            role,
+            image,
+            embedded,
+            writableConfiguration,
+            publicGithubRead?.skillPath,
+          ),
+        ]
       : [];
     if (configuration !== undefined) {
       volumes.push({
@@ -13989,6 +14106,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           name: pluginRuntime.name,
           items: [
             { key: PLUGIN_RUNTIME_MANIFEST, path: PLUGIN_RUNTIME_MANIFEST },
+            ...(publicGithubRead === undefined
+              ? []
+              : [{ key: PUBLIC_GITHUB_READ_SKILL, path: PUBLIC_GITHUB_READ_SKILL }]),
             ...(pluginRuntime.runtime.kind === "codex" && role === "agent"
               ? [{ key: PLUGIN_RUNTIME_CODEX_CONFIG, path: PLUGIN_RUNTIME_CODEX_CONFIG }]
               : []),
@@ -14001,6 +14121,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         mountPath: PLUGIN_RUNTIME_DIRECTORY,
         readOnly: true,
       });
+      if (publicGithubRead !== undefined) {
+        // A regular read-only file in the node's managed skill root. Do not write
+        // the Agent's durable workspace or create personal native Codex skills.
+        volumeMounts.push({
+          name: PLUGIN_RUNTIME_VOLUME,
+          mountPath: publicGithubRead.skillPath,
+          subPath: PUBLIC_GITHUB_READ_SKILL,
+          readOnly: true,
+        });
+      }
       variables.push({
         name: PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
         value: `${PLUGIN_RUNTIME_DIRECTORY}/${PLUGIN_RUNTIME_MANIFEST}`,
