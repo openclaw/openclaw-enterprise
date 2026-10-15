@@ -301,6 +301,23 @@ test("development admission fails closed outside explicit loopback-only developm
       cidr,
     );
   }
+  for (const browserOrigin of [
+    "https://public.example.com",
+    "ftp://127.0.0.1:3000",
+    "http://x.localhost",
+    "https://.localhost",
+    "http://localhost:3000/auth",
+  ]) {
+    await assert.rejects(
+      createFixture({ development: { browserOrigin } }),
+      /HTTPS localhost subdomain/,
+    );
+  }
+  // Outside development even a valid loopback origin is refused, not admitted.
+  await assert.rejects(
+    createFixture({ development: { enabled: false, browserOrigin: "http://127.0.0.1:3000" } }),
+    /HTTPS localhost subdomain/,
+  );
 
   const fixture = await createFixture();
   const remote = await request(fixture.app, "/installation/bootstrap", {
@@ -360,6 +377,65 @@ test("a trusted development CIDR admits its own range and nothing else", async (
     const response = await list(refused);
     assert.equal(response.statusCode, 403, refused);
     assert.match(response.json().error.message, /restricted to direct loopback requests/, refused);
+  }
+});
+
+test("an exact development browser origin admits only its trusted proxy", async (t) => {
+  const browserOrigin = "https://console.occ-dev-example.oce.localhost:8443";
+  const development = {
+    browserOrigin,
+    trustedCidrs: ["10.89.0.0/16"],
+  };
+  const fixture = await createFixture({ development });
+  await bootstrap(fixture);
+  const app = fixture.createApp(fixture.administrator, { development }, createFastifyApp);
+  t.after(() => app.close());
+  const list = ({ host, origin, remoteAddress }) => {
+    const authentication = authenticatedHeaders(fixture.app.defaultSession);
+    delete authentication.origin;
+    return app.inject({
+      url: "/namespaces",
+      remoteAddress,
+      headers: {
+        ...authentication,
+        host,
+        ...(origin === undefined ? {} : { origin }),
+      },
+    });
+  };
+
+  for (const headers of [
+    { host: new URL(browserOrigin).host, remoteAddress: "10.89.3.4" },
+    {
+      host: new URL(browserOrigin).host,
+      origin: browserOrigin,
+      remoteAddress: "10.89.3.4",
+    },
+  ]) {
+    const response = await list(headers);
+    assert.equal(response.statusCode, 200, response.body);
+  }
+
+  for (const headers of [
+    {
+      host: "other.occ-dev-example.oce.localhost:8443",
+      origin: browserOrigin,
+      remoteAddress: "10.89.3.4",
+    },
+    {
+      host: new URL(browserOrigin).host,
+      origin: "https://other.occ-dev-example.oce.localhost:8443",
+      remoteAddress: "10.89.3.4",
+    },
+    {
+      host: new URL(browserOrigin).host,
+      origin: browserOrigin,
+      remoteAddress: "10.90.3.4",
+    },
+  ]) {
+    const response = await list(headers);
+    assert.equal(response.statusCode, 403);
+    assert.match(response.json().error.message, /restricted to direct loopback requests/);
   }
 });
 

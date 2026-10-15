@@ -1268,12 +1268,17 @@ test("Agent detail saves plugin changes for the next revision without changing a
   );
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 2);
+  // The list carries summaries; each revision's plugin snapshot is on its exact read.
+  const pluginSnapshot = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.plugins?.plugins;
+  assert.deepEqual(await pluginSnapshot(first.revision.id), originalPlugins);
   assert.deepEqual(
-    revisions.data.find(({ id }) => id === first.revision.id)?.plugins?.plugins,
-    originalPlugins,
-  );
-  assert.deepEqual(
-    revisions.data.find(({ id }) => id !== first.revision.id)?.plugins?.plugins,
+    await pluginSnapshot(revisions.data.find(({ id }) => id !== first.revision.id).id),
     editedPlugins,
   );
 
@@ -2211,6 +2216,35 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(running.data.desiredRuntimeState, "running");
   assert.equal(running.data.configurationId, agent.configurationId);
   assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
+});
+
+// An Agent created through the API starts with desiredRuntimeState stopped and no version,
+// so no stop was ever requested and nothing runs to stop (finding 1394). The panel says how
+// to start it and offers no stop controls until a deploy creates a version.
+test("Agent stop offers no controls for an Agent that was never deployed", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Never deployed");
+  const agent = await fixture.createAgent(namespace.id, "Never Deployed", nativeValues("never"), {
+    harnessAuth: { method: "runtime" },
+  });
+  assert.equal(agent.desiredRuntimeState, "stopped");
+  assert.equal(agent.activeRevisionId, undefined);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Never Deployed" }).waitFor();
+  // The version list loaded empty, so the console knows there is no version to stop.
+  await page.getByText(/^No readable versions\. Creating an Agent alone does not create/).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await stopRegion.getByRole("button").count(), 0);
+
+  // The first deploy creates a version and requests the Agent running, so Stop returns.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).waitFor();
+  assert.equal(await stopRegion.getByText("No version is selected.").count(), 0);
 });
 
 test("Agent stop uncertainty requires refresh before another stop request", async (t) => {

@@ -2767,6 +2767,10 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
       /api.channelDirectoryProxyUrl/,
     );
   }
+  await assert.rejects(
+    render({ "api.channelDirectoryProxyUrl": "http://0.0.0.0:3128" }),
+    /api\.channelDirectoryProxyUrl must not use host 0\.0\.0\.0, which names no proxy address/,
+  );
 });
 
 test(

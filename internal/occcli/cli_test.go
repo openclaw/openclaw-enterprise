@@ -399,7 +399,8 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 // A first deploy that fails leaves no active revision; the failed version is
 // the one an operator needs to inspect, so runtime and logs default to it.
 func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *testing.T) {
-	revisions := `[{"id":"rev_1","revision":1},{"id":"rev_2","revision":2}]`
+	// OCC lists revisions newest first.
+	revisions := `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`
 	stub := &runtimeLogStub{t: t, revisions: revisions, pages: []func(http.ResponseWriter, url.Values){
 		logPage("", logLine(1, "error", "startup failed")),
 	}}
@@ -429,7 +430,8 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 // stopped while the newer revision's Pods hold the failure: read the newer one
 // while it has Pods, and always say which revision was read.
 func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T) {
-	revisions := `[{"id":"rev_1","revision":1},{"id":"rev_2","revision":2}]`
+	// OCC lists revisions newest first.
+	revisions := `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`
 	for _, test := range []struct {
 		name      string
 		podless   []string

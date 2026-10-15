@@ -196,9 +196,10 @@ test("runtime placeholders, SecretRefs, escaped tokens, and unrelated template s
   });
 });
 
-test("Preset defaults name only the text a placeholder was inserted into", () => {
+test("Preset defaults locate only the text a placeholder was inserted into", () => {
   // Finding 1214: an escaped token, or a default that reads like one, renders to the same text
   // as a placeholder but stays literal once filled, so admission must check it as written.
+  // Finding 1220: text is located by its path, so the same text elsewhere is not a placeholder.
   const template = {
     variables: {
       h: { type: "string" },
@@ -219,13 +220,17 @@ test("Preset defaults name only the text a placeholder was inserted into", () =>
           "{{ vars.literal }}-x": "default that reads like a token",
         },
         baseUrl: "https://{{ vars.url }}/v1",
+        url: "{{ vars.url }}",
         escapedUrl: "\\{{ vars.url }}",
+        api: "{{ vars.literal }}",
+        models: [{ baseUrl: "{{ vars.url }}:{{ vars.h }}" }],
       },
     },
   };
-  const { settings, placeholders } = presetTemplateDefaultsWithPlaceholders(template);
+  const { settings, unresolved } = presetTemplateDefaultsWithPlaceholders(template);
   assert.deepEqual(settings, presetTemplateDefaults(template));
-  assert.deepEqual(Object.keys(settings.configuration.values.headers), [
+  const { values } = settings.configuration;
+  assert.deepEqual(Object.keys(values.headers), [
     "{{ vars.h }}",
     "Authorization-{{ vars.h }}",
     "{{ vars.url }}",
@@ -234,17 +239,27 @@ test("Preset defaults name only the text a placeholder was inserted into", () =>
     "{{ vars.url }}-{{ vars.h }}",
     "{{ vars.h }}-x",
   ]);
-  assert.deepEqual(
-    [...placeholders].sort(),
-    [
-      "Authorization-{{ vars.h }}",
-      // Beside a variable an escaped token waits on it too, as before (a URL path may hold one).
-      "{{ vars.url }}-{{ vars.h }}",
-      "https://{{ vars.url }}/v1",
-      "{{ vars.h }}",
-    ].sort(),
-  );
-  // Filled, only the named text changes; the rest renders exactly as admission saw it.
+  // The literal text around each placeholder; an escaped token beside one is part of it.
+  const located = {
+    "{{ vars.h }}": ["", ""],
+    "Authorization-{{ vars.h }}": ["Authorization-", ""],
+    "{{ vars.url }}-{{ vars.h }}": ["{{ vars.url }}-", ""],
+  };
+  for (const name of Object.keys(values.headers)) {
+    assert.deepEqual(unresolved(["headers", name], true), located[name], name);
+    // A header value at the same path is not its key.
+    assert.equal(unresolved(["headers", name]), undefined, name);
+  }
+  assert.deepEqual(unresolved(["baseUrl"]), ["https://", "/v1"]);
+  assert.deepEqual(unresolved(["url"]), ["", ""]);
+  assert.deepEqual(unresolved(["models", 0, "baseUrl"]), ["", ":", ""]);
+  // The same text as a located placeholder, elsewhere, is literal.
+  assert.equal(values.escapedUrl, values.url);
+  assert.equal(unresolved(["escapedUrl"]), undefined);
+  assert.equal(values.api, "{{ vars.h }}");
+  assert.equal(unresolved(["api"]), undefined);
+  assert.equal(unresolved(["models", "0", "baseUrl"]), undefined);
+  // Filled, only the located text changes; the rest renders exactly as admission saw it.
   const filled = renderPresetTemplate(template, { h: "X-Real", url: "models.example.test" });
   assert.deepEqual(Object.keys(filled.configuration.values.headers), [
     "X-Real",
@@ -256,6 +271,7 @@ test("Preset defaults name only the text a placeholder was inserted into", () =>
     "{{ vars.h }}-x",
   ]);
   assert.equal(filled.configuration.values.escapedUrl, "{{ vars.url }}");
+  assert.equal(filled.configuration.values.api, "{{ vars.h }}");
 });
 
 test("invalid variable programs and inputs fail before producing launch settings", () => {

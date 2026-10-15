@@ -377,7 +377,14 @@
       "idx": 53,
       "version": "7",
       "when": 1787000000054,
-      "tag": "0054_held_authentication_session",
+      "tag": "0054_credential_source_pat",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1787000000055,
+      "tag": "0055_held_authentication_session",
       "breakpoints": true
     }
   ]

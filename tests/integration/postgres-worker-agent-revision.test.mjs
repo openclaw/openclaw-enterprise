@@ -1682,7 +1682,8 @@ revisionTest(
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
-      message: "Deployment convergence deadline exceeded.",
+      message:
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 1, runtimeFailure },
     });
     assert.deepEqual(status.warnings, []);
@@ -1729,7 +1730,8 @@ revisionTest(
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
-      message: "Deployment convergence deadline exceeded.",
+      message:
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 1 },
     });
     assert.notEqual(status.cleanup, null);
@@ -2029,7 +2031,8 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_AUTHENTICATION_FAILED",
-        message: "Deployment runtime credentials were rejected.",
+        message:
+          "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
       },
     },
   },
@@ -2048,7 +2051,8 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_CPU_STARVED",
-        message: "Deployment runtime did not get enough CPU to start.",
+        message:
+          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
       },
     },
   },
@@ -2101,7 +2105,8 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-            message: "Deployment runtime startup model check timed out.",
+            message:
+              "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
           },
         },
       },
@@ -2113,7 +2118,8 @@ revisionTest(
           resultData: { runtimeFailure: probeStatusFailure },
           error: {
             code: "RUNTIME_MODEL_PROBE_FAILED",
-            message: "Deployment runtime startup model check failed.",
+            message:
+              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
             data: { runtimeFailure: probeStatusFailure },
           },
         },
@@ -2125,7 +2131,8 @@ revisionTest(
           resultData: { runtimeFailure: wrapperFailure },
           error: {
             code: "RUNTIME_MODEL_PROBE_FAILED",
-            message: "Deployment runtime startup model check failed.",
+            message:
+              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
             data: { runtimeFailure: wrapperFailure },
           },
         },
@@ -2141,7 +2148,8 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_LOGIN_FAILED",
-            message: "Deployment runtime could not sign in to the model provider.",
+            message:
+              "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
           },
         },
       },
@@ -2156,7 +2164,8 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_STARTUP_FAILED",
-            message: "Deployment runtime failed a startup check.",
+            message:
+              "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
           },
         },
       },

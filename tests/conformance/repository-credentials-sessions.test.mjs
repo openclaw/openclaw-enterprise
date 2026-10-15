@@ -22,6 +22,7 @@ const config = () => ({
     exchanges: 32,
     exchangesPerSession: 4,
     exchangeMs: 300000,
+    maxExchangeMs: 300000,
   },
 });
 const head = (clock) =>

@@ -8,6 +8,18 @@ import { chromium } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
+
+// The in-memory fixture has no worker records. A test that supplies a failed deployment
+// record builds its error with the API's own code, so the console shows the exact code,
+// message and data that the API and occ return for that failure.
+export function persistedDeploymentError(code, data) {
+  return deploymentErrorForWork({
+    state: "failed_permanent",
+    reasonCode: code,
+    ...(data === undefined ? {} : { resultData: data }),
+  });
+}
 
 export function apiRequests(page, origin) {
   const requests = [];

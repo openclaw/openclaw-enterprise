@@ -36,7 +36,7 @@ publishes the API port itself. The k3d fixture, Image Runtime Startup,
 Repository Credentials Platform and Production Observability lanes also start
 K3s without Traefik, ServiceLB and metrics-server, which their tests don't use.
 Lanes that set up gateway routing keep Traefik, because K3s installs the Gateway
-API CRDs with it.
+API CRDs with it; routing preparation refuses a cluster created without it.
 
 `k3d cluster create` times out after two minutes, and its retry after five
 (hosted runners take under a minute, node image pull included;
@@ -99,7 +99,8 @@ whichever older image a job happened to leave behind.
 
 That workflow builds and loads each image first, then exports its cache in a
 second build that reuses those steps (`--output type=cacheonly`). The export
-has five minutes (`OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` overrides it). A
+has 20 minutes (`OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS` overrides it): a
+change to the OpenClaw layers uploads them all again, which took 9-14 min. A
 failed or stalled export only logs a warning and a `<role>-cache-export` line:
 the image is kept, and lanes restore the previous cache, which is slower but
 still correct.

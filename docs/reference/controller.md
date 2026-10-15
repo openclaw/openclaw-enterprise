@@ -165,7 +165,9 @@ Startup failures write `startup-error`, `worker.startup-error`,
 or processing work. Log sanitization keeps only reviewed scalar fields and drops
 credentials, provider payloads, request objects, and unbounded error values. The
 worker does not expose an HTTP health endpoint. A startup Installation with an
-invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`.
+invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`; a
+Compute gateway or Agent image without a required digest, or with an uppercase
+repository path, emits `RUNTIME_IMAGE_INVALID`.
 
 ## Failures and diagnostics
 

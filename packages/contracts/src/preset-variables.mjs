@@ -123,7 +123,9 @@ function tokens(text, definitions, path) {
   return parts;
 }
 
-function substitute(text, definitions, inputs, path, key, partial, placeholders) {
+// `located(literals, text, type)` receives the literal text around the placeholders left in
+// `text`, and the declared type of a variable that is the whole value.
+function substitute(text, definitions, inputs, path, key, partial, located) {
   const parts = tokens(text, definitions, path);
   const refs = parts.filter((part) => typeof part !== "string");
   if (!refs.length) {
@@ -146,30 +148,75 @@ function substitute(text, definitions, inputs, path, key, partial, placeholders)
       return definitions[name].default;
     }
     if (partial) {
-      inserted = true;
-      return `{{ vars.${name} }}`;
+      return undefined;
     }
     fail(path, `variable ${name} requires a value.`);
   };
-  let inserted = false;
-  const result = whole
-    ? resolve(refs[0])
-    : parts.map((part) => (typeof part === "string" ? part : resolve(part))).join("");
-  // Only text a placeholder went into waits on a variable. An escaped token renders to the same
-  // text but stays literal once filled, so a string with no placeholder is never named.
-  if (inserted && placeholders) {
-    placeholders.add(result);
+  if (whole) {
+    const value = resolve(refs[0]);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  // The literal text around each placeholder left for a variable without a value. An escaped
+  // token renders to the same text as a placeholder but stays literal once filled, so it is part
+  // of the literal text, and a string with no placeholder is never named.
+  const literals = [""];
+  let result = "";
+  for (const part of parts) {
+    const value = typeof part === "string" ? part : resolve(part);
+    if (value === undefined) {
+      literals.push("");
+      result += `{{ vars.${part.name} }}`;
+    } else {
+      literals[literals.length - 1] += value;
+      result += value;
+    }
+  }
+  if (literals.length > 1) {
+    located?.(literals, result, whole ? definitions[refs[0].name].type : undefined);
   }
   return result;
 }
 
-function walk(value, definitions, inputs, path, keys, partial, placeholders) {
+// Admission names a configuration.values string by its path there, so the same text elsewhere
+// is not mistaken for it; an object key's path ends in the rendered key, unique in its object.
+function placeholderLocation(path, key) {
+  return JSON.stringify([key ? "key" : "value", ...path]);
+}
+
+// Where admission finds the declared type of a variable without a value that is a whole value.
+function wholeVariableLocation(path) {
+  return JSON.stringify(["type", ...path]);
+}
+
+// `placeholders` collects admission's placeholder locations; `at` is the path in
+// configuration.values (undefined outside it).
+function walk(value, definitions, inputs, path, keys, partial, placeholders, at) {
+  const located = (key) =>
+    placeholders && at
+      ? (literals, text, type) => {
+          placeholders.set(placeholderLocation(key ? [...at, text] : at, key), literals);
+          if (type !== undefined) {
+            placeholders.set(wholeVariableLocation(at), type);
+          }
+        }
+      : undefined;
   if (typeof value === "string") {
-    return substitute(value, definitions, inputs, path, false, partial, placeholders);
+    return substitute(value, definitions, inputs, path, false, partial, located(false));
   }
   if (Array.isArray(value)) {
     return value.map((child, index) =>
-      walk(child, definitions, inputs, `${path}[${index}]`, keys, partial, placeholders),
+      walk(
+        child,
+        definitions,
+        inputs,
+        `${path}[${index}]`,
+        keys,
+        partial,
+        placeholders,
+        placeholders && at && [...at, index],
+      ),
     );
   }
   if (!record(value)) {
@@ -179,7 +226,7 @@ function walk(value, definitions, inputs, path, keys, partial, placeholders) {
   const seen = new Set();
   for (const [key, child] of Object.entries(value)) {
     const nextKey = keys
-      ? substitute(key, definitions, inputs, `${path} key`, true, partial, placeholders)
+      ? substitute(key, definitions, inputs, `${path} key`, true, partial, located(true))
       : key;
     if (!keys && RESERVED.test(key)) {
       fail(path, "variable field names are only supported in configuration.values.");
@@ -188,6 +235,7 @@ function walk(value, definitions, inputs, path, keys, partial, placeholders) {
       fail(path, "variable substitution produces duplicate object keys.");
     }
     seen.add(nextKey);
+    const values = path === "configuration" && key === "values";
     entries.push([
       nextKey,
       walk(
@@ -195,9 +243,10 @@ function walk(value, definitions, inputs, path, keys, partial, placeholders) {
         definitions,
         inputs,
         `${path}.${key}`,
-        keys || (path === "configuration" && key === "values"),
+        keys || values,
         partial,
         placeholders,
+        placeholders && (values ? [] : at && [...at, nextKey]),
       ),
     ]);
   }
@@ -285,16 +334,29 @@ export function presetTemplateDefaults(template) {
   return render(template, {}, true);
 }
 
-/** Like presetTemplateDefaults, and also name the rendered configuration strings (values and keys)
- * a placeholder for a variable without a value went into, which admission checks once filled.
- * Escaped tokens and defaults that read like tokens are literal text, checked as written unless
- * a placeholder went into the same string.
+/** Like presetTemplateDefaults, and also locate the configuration.values strings (values and
+ * object keys) a placeholder for a variable without a value went into, which admission checks
+ * once filled. `unresolved(path, key)` returns the literal text around the placeholders of the
+ * string at `path` (an object key: `key` true, `path` ending in the rendered key), or undefined.
+ * Escaped tokens and defaults that read like tokens are literal text: elsewhere they are checked
+ * as written, and beside a placeholder they are part of its literal text. `unresolvedType(path)`
+ * returns the declared type of such a variable that is the whole value at `path`: a number or
+ * boolean variable fills it with no string (finding 1257).
  * @param {import('./presets.ts').PresetTemplate} template
- * @returns {{ settings: import('./presets.ts').PresetLaunchSettings, placeholders: ReadonlySet<string> }}
+ * @returns {{
+ *   settings: import('./presets.ts').PresetLaunchSettings,
+ *   unresolved: (path: readonly (string | number)[], key?: boolean) => readonly string[] | undefined,
+ *   unresolvedType: (path: readonly (string | number)[]) => import('./presets.ts').PresetVariable['type'] | undefined,
+ * }}
  */
 export function presetTemplateDefaultsWithPlaceholders(template) {
-  const placeholders = new Set();
-  return { settings: render(template, {}, true, placeholders), placeholders };
+  const placeholders = new Map();
+  const settings = render(template, {}, true, placeholders);
+  return {
+    settings,
+    unresolved: (path, key = false) => placeholders.get(placeholderLocation(path, key)),
+    unresolvedType: (path) => placeholders.get(wholeVariableLocation(path)),
+  };
 }
 
 function render(template, inputs, partial, placeholders) {
@@ -325,8 +387,9 @@ function render(template, inputs, partial, placeholders) {
           section,
           false,
           partial,
-          // Admission checks configuration values only, so agent text never names one.
-          section === "configuration" ? placeholders : undefined,
+          placeholders,
+          // Admission checks configuration values only, so agent text is never located.
+          undefined,
         ),
       ]),
   );

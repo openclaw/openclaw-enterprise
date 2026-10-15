@@ -1,0 +1,56 @@
+services:
+  controller:
+    environment:
+      OCC_AUTH_BASE_URL: ${OCC_DEVELOPMENT_BROWSER_ORIGIN:?Browser origin is required}
+      OCC_AGENT_NATIVE_ADMIN_ENABLED: "true"
+      OCC_AGENT_NATIVE_ADMIN_DOMAIN: ${OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN:?Agent native admin domain is required}
+      OCC_AUTH_COOKIE_DOMAIN: ${OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN:?Shared cookie domain is required}
+
+  browser-proxy:
+    build:
+      context: .
+      target: development
+      args:
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-docker.io/library/node:24-bookworm}
+    command:
+      - -e
+      - >-
+        const fs=require('node:fs');
+        const net=require('node:net');
+        const tls=require('node:tls');
+        const close=(left,right)=>()=>{left.destroy();right.destroy()};
+        tls.createServer({
+          key:fs.readFileSync('/run/openclaw-development/tls.key'),
+          cert:fs.readFileSync('/run/openclaw-development/tls.crt'),
+          minVersion:'TLSv1.2'
+        },client=>{
+          const upstream=net.connect(3000,'controller');
+          client.pipe(upstream);
+          upstream.pipe(client);
+          client.on('error',close(client,upstream));
+          upstream.on('error',close(client,upstream));
+        }).listen(8443,'0.0.0.0');
+    ports:
+      - "127.0.0.1:${OCC_DEVELOPMENT_BROWSER_PORT:?Browser port is required}:8443"
+    volumes:
+      - ${OCC_DEVELOPMENT_BROWSER_TLS_CERT:?Browser TLS certificate is required}:/run/openclaw-development/tls.crt:ro,z
+      - ${OCC_DEVELOPMENT_BROWSER_TLS_KEY:?Browser TLS key is required}:/run/openclaw-development/tls.key:ro,z
+    depends_on:
+      controller:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'node -e "const tls=require(''node:tls'');const socket=tls.connect({host:''127.0.0.1'',port:8443,rejectUnauthorized:false},()=>socket.end());socket.on(''error'',()=>process.exit(1))"',
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      development:

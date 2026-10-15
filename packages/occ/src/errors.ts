@@ -394,6 +394,32 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
+const MEBIBYTE = 1024 * 1024;
+
+const byteSize = (bytes: number): string =>
+  bytes % MEBIBYTE === 0
+    ? `${bytes / MEBIBYTE} MiB`
+    : bytes % 1024 === 0
+      ? `${bytes / 1024} KiB`
+      : `${bytes} bytes`;
+
+/**
+ * Configuration values whose stored JSON reaches the Configuration Driver's size limit. The
+ * message names the limit and never the content, so HTTP returns it.
+ */
+export class ConfigurationSizeError extends Error {
+  readonly limitBytes: number;
+
+  /** `limitBytes` is the first refused size: stored JSON must be smaller. */
+  constructor(limitBytes: number) {
+    super(
+      `Configuration values are too large: stored as JSON they must be smaller than ${byteSize(limitBytes)}. Remove or shorten settings, then save again.`,
+    );
+    this.name = "ConfigurationSizeError";
+    this.limitBytes = limitBytes;
+  }
+}
+
 const inlineCredentialMessage =
   (instead: string) =>
   (path: string): string =>
@@ -430,6 +456,12 @@ export class GatewayPasswordValueError extends ModelCredentialValueError {
 const modelProviderSettingMessages = {
   baseUrl: (path: string): string =>
     `Configuration field ${path} must be an absolute http or https URL.`,
+  // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
+  baseUrlSlashes: (path: string): string =>
+    `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
+  // A host with a numeric or 0x last label, which the URL parser reads as IPv4 (finding 1346).
+  baseUrlNumericHost: (path: string): string =>
+    `Configuration field ${path} must be an absolute http or https URL. A numeric or 0x last label parses as IPv4; use four decimal octets from 0 to 255 without leading zeros.`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;
@@ -700,6 +732,19 @@ export class TransientDependencyError extends Error {
   }
 }
 
+/**
+ * A Sandbox Driver's provider refused a Namespace step because the controller's own
+ * identity is unauthenticated or lacks a permission there. Retrying cannot help until an
+ * operator fixes that identity or grant, so Compute fails the Namespace step at once.
+ * The message names only the provider's refusal code, never provider text.
+ */
+export class SandboxNamespaceRefusedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SandboxNamespaceRefusedError";
+  }
+}
+
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode = "WORKSPACE_NODE_PENDING" | "WORKSPACE_NODE_BINDING_PENDING";
 
@@ -885,6 +930,17 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/** A Driver rejected nonsecret source configuration before registration. */
+export class CredentialSourceConfigError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceConfigError";
+    this.field = field;
   }
 }
 

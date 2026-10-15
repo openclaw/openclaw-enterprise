@@ -12,6 +12,7 @@ import {
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { memoryAdapter } = await import(require.resolve("better-auth/adapters/memory"));
+const { APIError } = await import(require.resolve("better-auth"));
 
 const baseURL = "http://127.0.0.1";
 const email = "audited@example.test";
@@ -117,6 +118,73 @@ test("a sign-in whose audit cannot be written is refused and its session revoked
   assert.equal(response.headers["set-cookie"], undefined);
   assert.equal(memoryDatabase.session.length, 0);
 });
+
+for (const status of [500, 503, 599]) {
+  test(`a dependency APIError ${status} is unavailable without spending the password budget`, async () => {
+    const outcomes = [];
+    const { auth, memoryDatabase } = controller({
+      accepted: async (userId) => outcomes.push(["accepted", userId]),
+      refused: async () => outcomes.push(["refused"]),
+    });
+    const account = await auth.createAccount({ email, password });
+    const users = memoryDatabase.user;
+    let unavailable = true;
+    Object.defineProperty(memoryDatabase, "user", {
+      get() {
+        if (unavailable) {
+          throw new APIError(status, { message: "synthetic dependency failure" });
+        }
+        return users;
+      },
+    });
+    // Eleven admitted failures distinguish an outage from the ten-failure email budget.
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      const response = await signIn(auth, { email, password });
+      assert.equal(response.status, 503);
+      assert.equal(response.payload.error.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(response.headers["set-cookie"], undefined);
+    }
+    assert.deepEqual(outcomes, []);
+    assert.equal(memoryDatabase.session.length, 0);
+    unavailable = false;
+    assert.equal((await signIn(auth, { email, password })).status, 200);
+    assert.deepEqual(outcomes, [["accepted", account.id]]);
+  });
+}
+
+for (const [status, expectedStatus, expectedCode] of [
+  [400, 400, "FORBIDDEN"],
+  [401, 401, "UNAUTHENTICATED"],
+  [409, 409, "RESOURCE_CONFLICT"],
+  [429, 429, "RATE_LIMITED"],
+  [499, 499, "FORBIDDEN"],
+  [399, 401, "UNAUTHENTICATED"],
+  [600, 401, "UNAUTHENTICATED"],
+  [500.5, 401, "UNAUTHENTICATED"],
+  ["500", 401, "UNAUTHENTICATED"],
+]) {
+  test(`dependency APIError ${JSON.stringify(status)} preserves its non-5xx classification`, async () => {
+    let refusals = 0;
+    const { auth, memoryDatabase } = controller({
+      accepted: async () => assert.fail("a failed dependency cannot sign in"),
+      refused: async () => {
+        refusals += 1;
+      },
+    });
+    await auth.createAccount({ email, password });
+    Object.defineProperty(memoryDatabase, "user", {
+      get() {
+        throw new APIError(status, { message: "synthetic dependency failure" });
+      },
+    });
+    const response = await signIn(auth, { email, password });
+    assert.equal(response.status, expectedStatus);
+    assert.equal(response.payload.error.code, expectedCode);
+    assert.equal(response.headers["set-cookie"], undefined);
+    assert.equal(refusals, 1);
+    assert.equal(memoryDatabase.session.length, 0);
+  });
+}
 
 test("a wrong password whose denial audit fails is 503 and still spends the budget", async () => {
   let refusals = 0;

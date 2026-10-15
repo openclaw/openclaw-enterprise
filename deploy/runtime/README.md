@@ -30,6 +30,10 @@ an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
+The build applies `openclaw-codex-preserve-on-request.patch` because the pinned
+OpenClaw converts `on-request` to a granular policy when a plugin uses MCP
+elicitation. Codex rejects the turn if managed requirements allow only
+`on-request`. Remove the patch when OpenClaw preserves that named policy.
 The build also applies `openclaw-connect-ephemeral-expired-setup.patch`. Upstream
 `connect --ephemeral` rejects an expired setup code before it checks saved node
 credentials, so a dedicated native worker that restarts more than ten minutes
@@ -38,6 +42,12 @@ code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
 The source archive and patch hashes identify the resulting custom build.
+
+The Codex adapter preserves namespaced IDs with an explicit native
+provider. For a custom endpoint, OCE compiles its private Gateway model references
+to include that provider while keeping the admitted Configuration unchanged.
+See
+[native runtime selection](../../docs/reference/harness-execution.md#native-runtime-selection).
 
 Dedicated native OpenClaw requires both required worker placement
 (`cloudWorkers.requiredProfile`) and node-local inference from canonical

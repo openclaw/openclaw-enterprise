@@ -84,7 +84,7 @@ cluster, matched kubectl, the selected RuntimeClass bound to the cluster's
 `runc` handler, a successful RuntimeClass smoke Pod, Agent Sandbox
 CRDs/controller, Helm, the OpenShell chart source, imported immutable OpenShell
 gateway, sandbox runtime, and supervisor images, real gateway/Codex images, the
-Kubernetes test database, `openssl`, and `OPENAI_API_KEY`. The standard k3d recipe alone is
+Kubernetes test database, `openssl`, and `CODEX_ACCESS_TOKEN` for Codex (`OPENAI_API_KEY` for native OpenClaw). The standard k3d recipe alone is
 insufficient because it does not install the CI-owned admission config,
 RuntimeClass, Agent Sandbox, or OpenShell assets.
 
@@ -116,38 +116,10 @@ OCC_TEST_OPENSHELL_K3D_REAL=1 \
 ```
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential
-Gateway Drivers. They register an `openai` credential source through the
-production API from an OCC Secret holding `OPENAI_API_KEY`, check its live
-`ready` status, and bind the Agent with `credential_source`. The Agent service
-principal receives `operate` on the source only, not on the Secret.
-
-The default Codex scenario uses the production Driver path. Compute sends only
-`APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
-one-shot node setup credential through a revision-owned provider. The test
-checks that the raw app-server token and model key are absent from Pod specs and
-nonsecret provider data. It then verifies missing, incorrect, and correct bearer
-requests through the exposed route and runs the real model and tool turns from
-the Agent Gateway. Exact workload identity, approved mounts and privileges,
-source withdrawal, denied egress, replacement, and cleanup remain required.
-Missing prerequisites fail rather than skip.
-
-After the tool-source turns, the Codex scenario deploys a second Agent that
-attaches one of the tool sources. When the first Agent withdraws that source,
-the second Agent still receives its token. The scenario then checks that:
-
-- no Pod of the Agent mounts or references the stored source Secret;
-- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
-  files hold no upstream credential. Files are matched outside the Pod, so no
-  credential-derived value enters it;
-- deployment diagnostics, runtime status and logs, and the Namespace's audit
-  events hold neither a credential nor an OpenShell placeholder.
-
-The Codex scenario then updates the source through the API, withdraws it from
-the running Agent, waits for `revoked`, and expects the next model turn in the
-same process to fail. It accepts any turn failure, so it does not yet tell a
-credential rejection from a transport error or a restarted process. Full
-integration lanes run only from `main`, so this proof runs after a withdrawal
-change lands, not on its pull request.
+Gateway Drivers. They register a `codex-pat` source for dedicated Codex, or an
+`openai` source for native OpenClaw, through the production API and run real model
+turns. See [What the OpenShell Sandbox suite proves](openshell-coverage.md) for
+each check.
 
 `OCC_TEST_OPENSHELL_HARNESS` defaults to `codex`. Select `openclaw` to verify
 that the native Harness requests no inbound OpenShell service exposure and
@@ -317,26 +289,28 @@ image, database, or OpenShell-specific prerequisite. If any of those variables
 is present while the flag is not `1`, prerequisite validation still fails; use a
 scoped environment file for this suite.
 
-| Variable                                  | Requirement or default                                                                                                                              |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OCC_TEST_OPENSHELL_K3D_REAL`             | Set to `1` to explicitly opt into the real OpenShell integration.                                                                                   |
-| `OPENAI_API_KEY`                          | Existing authorized provider credential, registered as a credential source for the required real model turn.                                        |
-| `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                 |
-| `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                               |
-| `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                  |
-| `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                        |
-| `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`       | Imported immutable real OpenClaw gateway image; `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` is accepted as a fallback.                                      |
-| `OCC_TEST_KUBERNETES_AGENT_IMAGE`         | Imported immutable Harness image; Codex and runtime-image fallbacks are accepted. The native selector uses the OpenClaw source image.               |
-| `OCC_TEST_DATABASE_URL`                   | Migrated disposable loopback PostgreSQL database named `openclaw_k8s_*`.                                                                            |
-| `OCC_TEST_OPENSHELL_HELM`                 | Helm binary used to install the namespace-scoped OpenShell gateway.                                                                                 |
-| `OCC_TEST_OPENSHELL_HELM_CHART`           | OpenShell Helm chart path or chart archive.                                                                                                         |
-| `OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART` | OpenShell workspace Helm chart path or chart archive used for operator-mode namespace RBAC.                                                         |
-| `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`        | Imported immutable OpenShell gateway image pinned by SHA-256 digest.                                                                                |
-| `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`        | Imported immutable OpenShell sandbox runtime image pinned by SHA-256 digest.                                                                        |
-| `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`     | Imported immutable OpenShell supervisor image pinned by SHA-256 digest.                                                                             |
-| `OCC_TEST_OPENSHELL_CHART_VERSION`        | Optional OpenShell chart version; defaults to `0.1.3-pre.2`.                                                                                        |
-| `OCC_TEST_KEYCLOAK_IMAGE`                 | Optional digest-pinned Keycloak image for the OAuth2 refresh proof; defaults to `tests/fixtures/keycloak/image.json`. CI imports it into k3d.       |
-| `OCC_TEST_OPENSHELL_RUNTIME_CLASS`        | Existing RuntimeClass used by Agent Sandbox Pods; CI creates the selected RuntimeClass, defaulting to `openshell-sandbox`, with the `runc` handler. |
+| Variable                                  | Requirement or default                                                                                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `OCC_TEST_OPENSHELL_K3D_REAL`             | Set to `1` for real OpenShell integration.                                                                                                                                                             |
+| `CODEX_ACCESS_TOKEN`                      | Existing authorized personal access token, including a service-account token, for the Codex source and first-Agent scenarios. The automatic QA lane uses the existing environment secret of this name. |
+| `OPENAI_API_KEY`                          | Authorized API key for native OpenClaw or custom-endpoint Codex.                                                                                                                                       |
+| `OCC_TEST_OPENSHELL_HARNESS`              | `codex` (default) selects the app-server proof; `openclaw` selects the dedicated native worker without an inbound Harness exposure.                                                                    |
+| `OCC_TEST_OPENAI_MODEL`                   | Authorized provider model; defaults to `gpt-6-astra`.                                                                                                                                                  |
+| `OCC_TEST_KUBERNETES_KUBECONFIG`          | Absolute kubeconfig path for the dedicated disposable k3d cluster.                                                                                                                                     |
+| `OCC_TEST_KUBERNETES_CONTEXT`             | Explicit `k3d-*` context with a verified loopback HTTPS API.                                                                                                                                           |
+| `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`       | Imported immutable real OpenClaw gateway image; `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` is accepted as a fallback.                                                                                         |
+| `OCC_TEST_KUBERNETES_AGENT_IMAGE`         | Imported immutable Harness image; Codex and runtime-image fallbacks are accepted. The native selector uses the OpenClaw source image.                                                                  |
+| `OCC_TEST_DATABASE_URL`                   | Migrated disposable loopback PostgreSQL database named `openclaw_k8s_*`.                                                                                                                               |
+| `OCC_TEST_OPENSHELL_HELM`                 | Helm binary used to install the namespace-scoped OpenShell gateway.                                                                                                                                    |
+| `OCC_TEST_OPENSHELL_HELM_CHART`           | OpenShell Helm chart path or chart archive.                                                                                                                                                            |
+| `OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART` | OpenShell workspace Helm chart path or chart archive used for operator-mode namespace RBAC.                                                                                                            |
+| `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`        | Imported immutable OpenShell gateway image pinned by SHA-256 digest.                                                                                                                                   |
+| `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`        | Imported immutable OpenShell sandbox runtime image pinned by SHA-256 digest.                                                                                                                           |
+| `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`     | Imported immutable OpenShell supervisor image pinned by SHA-256 digest.                                                                                                                                |
+| `OCC_TEST_OPENSHELL_CHART_VERSION`        | Optional OpenShell chart version; defaults to `0.1.3-pre.2`.                                                                                                                                           |
+| `OCC_TEST_KEYCLOAK_IMAGE`                 | Optional digest-pinned Keycloak image for the OAuth2 refresh proof; defaults to `tests/fixtures/keycloak/image.json`. CI imports it into k3d.                                                          |
+| `OCC_TEST_OPENSHELL_RUNTIME_CLASS`        | Existing RuntimeClass used by Agent Sandbox Pods; CI creates the selected RuntimeClass, defaulting to `openshell-sandbox`, with the `runc` handler.                                                    |
+| `OCC_TEST_OPENSHELL_MODEL_BASE_URL`       | Optional HTTPS Responses-compatible `/v1` endpoint; selects the API-key Codex source instead of PAT.                                                                                                   |
 
 The selected cluster must already expose the Agent Sandbox CRD and a ready Agent
 Sandbox controller. See the
