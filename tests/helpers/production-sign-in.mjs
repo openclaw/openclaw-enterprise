@@ -318,8 +318,9 @@ export async function loginDenialCount(state, reason, provider) {
 /**
  * Asserts that an external provider's callback was refused: a redirect to the Console with
  * `authError=<provider>`, no session cookie, no new user, method or session row, and one more
- * login denial with `reason`. `signIn()` resolves to `{ callback }`; `denials(reason)` resolves
- * to the number of matching denials so far (usually `loginDenialCount`).
+ * login denial with `reason`. `signIn()` resolves to `{ callback, attemptId }`; `denials(reason)`
+ * resolves to the number of matching denials so far (usually `loginDenialCount`).
+ * Returns that attempt ID so callers can check which sign-in the audit event describes.
  */
 export async function assertExternalSignInRefused(
   { pool, provider, denials, signIn },
@@ -329,7 +330,7 @@ export async function assertExternalSignInRefused(
 ) {
   const before = await authRowCounts(pool);
   const deniedBefore = await denials(reason);
-  const { callback } = await signIn();
+  const { callback, attemptId } = await signIn();
   assert.equal(callback.statusCode, 302, message);
   assert.equal(
     callback.headers.location,
@@ -345,6 +346,7 @@ export async function assertExternalSignInRefused(
   );
   assert.deepEqual(await authRowCounts(pool), before, `${message}: no user, method or session`);
   assert.equal(await denials(reason), deniedBefore + 1, `${message}: the denial is audited`);
+  return attemptId;
 }
 
 /**
