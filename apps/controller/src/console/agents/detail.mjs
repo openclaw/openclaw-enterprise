@@ -594,11 +594,20 @@ function createDeploymentStatusPanel(
   return section;
 }
 
-function createVersionDeploymentRecord(context, path, revisionId, onChange = () => {}) {
+// With shared, Deployment activity is reading this version's record, so the panel waits for
+// show() instead of reading it again; release() reads here if that read fails (finding 1417).
+function createVersionDeploymentRecord(
+  context,
+  path,
+  revisionId,
+  onChange = () => {},
+  { shared = false } = {},
+) {
   const section = element("section", { className: "agent-card version-deployment-record" });
   let status = null;
   let error = null;
   let loading = false;
+  let awaitingShared = shared;
   // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
   let generation = 0;
 
@@ -606,6 +615,7 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     if (loading || !context.isCurrent()) {
       return;
     }
+    awaitingShared = false;
     loading = true;
     error = null;
     const started = generation;
@@ -641,6 +651,7 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     if (!context.isCurrent() || !next) {
       return;
     }
+    awaitingShared = false;
     generation += 1;
     status = next;
     error = null;
@@ -685,9 +696,17 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
     );
   }
 
+  function release() {
+    if (awaitingShared) {
+      void load();
+    }
+  }
+
   render();
-  void load();
-  return { section, show, current: () => status };
+  if (!shared) {
+    void load();
+  }
+  return { section, show, release, current: () => status };
 }
 
 function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus = () => null) {
@@ -1540,6 +1559,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
+      // The version's record panel no longer gets this panel's reads.
+      versionRecord?.release();
       latestDeploymentStatus = null;
       latestDeploymentRecord = null;
       latestDeploymentError = false;
@@ -1576,8 +1597,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               latestDeploymentRecord = record
                 ? { revisionId: mostRecent.id, status: record }
                 : null;
-              if (record && mostRecent.id === selected) {
-                versionRecord?.show(record);
+              if (mostRecent.id === selected) {
+                // After a failed read, the version's record panel reads its record itself.
+                if (record) {
+                  versionRecord?.show(record);
+                } else {
+                  versionRecord?.release();
+                }
               }
               renderLatestDeployment();
               refreshDeployControls();
@@ -1693,8 +1719,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const executionMode = draft ? agent.executionMode : snapshot.harness.mode;
     if (!draft) {
       let diagnosticsPanel = null;
-      versionRecord = createVersionDeploymentRecord(context, path, selected, () =>
-        diagnosticsPanel?.render(),
+      versionRecord = createVersionDeploymentRecord(
+        context,
+        path,
+        selected,
+        () => diagnosticsPanel?.render(),
+        { shared: activityRevisionId === selected && !latestDeploymentError },
       );
       diagnosticsPanel = createVersionDiagnosticsPanel(context, path, selected, () =>
         versionRecord.current(),

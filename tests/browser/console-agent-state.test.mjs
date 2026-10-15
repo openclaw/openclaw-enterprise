@@ -941,3 +941,51 @@ test("Deployment activity appears once with its recorded status, not as an empty
   await summary.getByText("Recorded status: running").waitFor();
   assert.equal(await page.locator(".deployment-status").count(), 1);
 });
+
+test("Agent detail reads the selected version's deployment record once on load", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Single record read", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Single read Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let recordReads = 0;
+  let failNext = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) => {
+      recordReads += 1;
+      if (failNext) {
+        failNext = false;
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "Try again." } }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      });
+    },
+  );
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  await login(page, fixture, url);
+  const activity = page.locator(".deployment-status");
+  const record = page.locator(".version-deployment-record");
+  await activity.getByText("Recorded status: succeeded").waitFor();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  // Deployment activity and the version's record panel show the same record.
+  assert.equal(recordReads, 1);
+
+  // When the shared read fails, the version's record panel reads the record itself.
+  recordReads = 0;
+  failNext = true;
+  await page.reload();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(recordReads, 2);
+});
