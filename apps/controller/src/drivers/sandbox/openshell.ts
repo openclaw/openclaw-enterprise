@@ -2266,6 +2266,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       url: harnessWebSocketUrl(service.advertisedUrl),
       workspaceRoot: "/sandbox/enterprise",
+      codexPermissionProfile: ":danger-full-access",
     });
   }
 

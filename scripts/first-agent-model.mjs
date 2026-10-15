@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
 
 export function selectFirstAgentModel(configuredModel, existing) {
@@ -15,6 +16,32 @@ export function selectFirstAgentModel(configuredModel, existing) {
     );
   }
   return model;
+}
+
+export function firstAgentRevisionValuesMatch(
+  values,
+  configured,
+  record,
+  revisionId,
+  priorRevisionId,
+) {
+  if (record.sandboxDriver !== "openshell" || record.harness !== "codex") {
+    return isDeepStrictEqual(values, configured);
+  }
+
+  // Only a prior PAT revision identified by the helper can have the former workspace-write
+  // policy. Reconstruct the expected snapshot; never change the revision or ignore other drift.
+  const saved = values.plugins?.entries?.codex?.config?.appServer;
+  const priorPatPolicy =
+    priorRevisionId !== undefined &&
+    revisionId === priorRevisionId &&
+    record.authMethod === "codex_pat" &&
+    saved?.sandbox === "workspace-write";
+  const expected = structuredClone(configured);
+  const appServer = expected.plugins.entries.codex.config.appServer;
+  appServer.sandbox = priorPatPolicy ? "workspace-write" : "danger-full-access";
+  appServer.approvalsReviewer = "user";
+  return isDeepStrictEqual(values, expected);
 }
 
 const readinessTimeout = 8 * 60_000;

@@ -4364,6 +4364,13 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     "/sandbox/enterprise",
     "the Agent Gateway must receive the OpenShell provider workspace contract.",
   );
+  assert.equal(
+    topology.gatewayPod.spec.containers
+      .flatMap(({ env = [] }) => env)
+      .find(({ name }) => name === "OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE")?.value,
+    ":danger-full-access",
+    "OpenShell must explicitly select the native Codex permission profile.",
+  );
   const providerWorkspace = providerWorkspaceVariable.value;
   const harnessWorkspaceVariable = topology.harnessPod.spec.containers
     .flatMap(({ env = [] }) => env)

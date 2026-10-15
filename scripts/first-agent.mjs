@@ -11,7 +11,11 @@ import { isDeepStrictEqual } from "node:util";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
 import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
-import { selectFirstAgentModel, verifyFirstAgentModel } from "./first-agent-model.mjs";
+import {
+  firstAgentRevisionValuesMatch,
+  selectFirstAgentModel,
+  verifyFirstAgentModel,
+} from "./first-agent-model.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -651,21 +655,16 @@ function assertManagedConfiguration(configuration, record, expected) {
   }
 }
 
-function assertManagedRevision(revision, record, expected) {
-  const frozen = structuredClone(expected);
-  if (record.sandboxDriver === "openshell" && record.harness === "codex") {
-    frozen.values.plugins.entries.codex.config.appServer.sandbox = "danger-full-access";
-    frozen.values.plugins.entries.codex.config.appServer.approvalsReviewer = "user";
-  }
+function assertManagedRevision(revision, record, expected, priorRevisionId) {
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
   const level = logging?.level;
   if (
     revision.agentId !== record.agentId ||
     revision.namespaceId !== record.namespaceId ||
     revision.configurationId !== record.configurationId ||
-    revision.configurationKind !== frozen.kind ||
+    revision.configurationKind !== expected.kind ||
     revision.configurationGeneration !== record.configurationGeneration ||
-    !isDeepStrictEqual(values, frozen.values) ||
+    !firstAgentRevisionValuesMatch(values, expected.values, record, revision.id, priorRevisionId) ||
     !["debug", "info", "warn", "error"].includes(level) ||
     !isDeepStrictEqual(logging, { level, consoleLevel: level, consoleStyle: "json" }) ||
     !isDeepStrictEqual(diagnostics, { otel: { logs: false } }) ||
@@ -966,7 +965,7 @@ async function main(options) {
           "GET",
           `${base}/agents/${agent.id}/revisions/${revisionId}`,
         );
-        assertManagedRevision(storedRevision, record, expectedConfiguration);
+        assertManagedRevision(storedRevision, record, expectedConfiguration, revisionId);
       }
     }
 
@@ -1084,7 +1083,7 @@ async function main(options) {
         ? await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`)
         : undefined;
       if (latest) {
-        assertManagedRevision(latest, record, expectedConfiguration);
+        assertManagedRevision(latest, record, expectedConfiguration, record.previousRevisionId);
       }
       if (latest && latest.id !== record.previousRevisionId) {
         record.revisionId = latest.id;
