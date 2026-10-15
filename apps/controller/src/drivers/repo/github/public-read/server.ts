@@ -186,16 +186,28 @@ function contents(bytes: Buffer): Result {
   return { status: 200, body: JSON.stringify(body) };
 }
 
+function retryAfter(milliseconds: number) {
+  return { "retry-after": String(Math.max(1, Math.ceil(milliseconds / 1000))) };
+}
+
+/**
+ * Fair share of the reader's provider slots. Every Agent Pod is a separate
+ * client address: the reader policy admits Agent Pods directly, so the peer
+ * address is the caller's Pod IP, not a shared proxy or node address. One read
+ * in flight per caller keeps one slow caller from holding every slot; GitHub's
+ * own quota, shared at the egress address, is the only request-volume limit.
+ */
 export function createPublicGithubReadServer() {
   const agent = new Agent({ keepAlive: true, maxSockets: maxConcurrent });
   const pending = new Map<string, Promise<Result>>();
+  const reading = new Set<string>();
   let retryAt = 0;
 
   function limited(): Result {
     return message(
       429,
-      "GitHub anonymous reads are rate limited. Retry after the indicated seconds.",
-      { "retry-after": String(Math.max(1, Math.ceil((retryAt - Date.now()) / 1000))) },
+      "GitHub anonymous reads are rate limited for every caller. Retry after the indicated seconds.",
+      retryAfter(retryAt - Date.now()),
     );
   }
 
@@ -240,10 +252,10 @@ export function createPublicGithubReadServer() {
             /rate limit|abuse detection/i.test(bytes.subarray(0, 4096).toString())));
       if (throttled || (status === 200 && exhausted)) {
         const now = Date.now();
-        const seconds =
-          Number(headers["retry-after"]) ||
-          (exhausted && Number(headers["x-ratelimit-reset"]) - now / 1000) ||
-          60;
+        // GitHub's anonymous quota belongs to the egress address, so the park is
+        // shared. Report the later of its retry and reset times, or a minute.
+        const reset = exhausted ? Number(headers["x-ratelimit-reset"]) - now / 1000 : 0;
+        const seconds = Math.max(Number(headers["retry-after"]) || 0, reset || 0) || 60;
         retryAt = Math.max(retryAt, now + Math.min(86400, Math.max(1, seconds)) * 1000);
       }
       if (throttled) {
@@ -303,19 +315,34 @@ export function createPublicGithubReadServer() {
       } else if (Date.now() < retryAt) {
         result = limited();
       } else {
-        const sameRead = pending.get(route.target);
-        if (sameRead) {
-          result = await sameRead;
-        } else if (pending.size >= maxConcurrent) {
-          result = message(503, "Public GitHub reader is busy. Retry shortly.", {
-            "retry-after": "2",
-          });
+        // A socket that already closed has no address; its reply goes nowhere.
+        const address = req.socket.remoteAddress ?? "";
+        if (reading.has(address)) {
+          result = message(
+            429,
+            "This caller already has a public GitHub read in progress. Wait for it, then retry.",
+            { "retry-after": "2" },
+          );
         } else {
-          const reading = read(route).finally(() => {
-            pending.delete(route.target);
-          });
-          pending.set(route.target, reading);
-          result = await reading;
+          reading.add(address);
+          try {
+            const sameRead = pending.get(route.target);
+            if (sameRead) {
+              result = await sameRead;
+            } else if (pending.size >= maxConcurrent) {
+              result = message(503, "Public GitHub reader is busy. Retry shortly.", {
+                "retry-after": "2",
+              });
+            } else {
+              const started = read(route).finally(() => {
+                pending.delete(route.target);
+              });
+              pending.set(route.target, started);
+              result = await started;
+            }
+          } finally {
+            reading.delete(address);
+          }
         }
       }
       res.writeHead(result.status, {

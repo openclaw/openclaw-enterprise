@@ -64,7 +64,10 @@ bypasses private addresses.
 
 `apps/controller/src/drivers/repo/github/public-read/server.ts:createPublicGithubReadServer`
 accepts only approved GET paths. The fixed anonymous provider request carries
-neither caller headers nor credentials. In-flight work and rate-limit backoff are process-local;
+neither caller headers nor credentials. Each caller Pod address gets one read in flight,
+so one Agent cannot hold every provider slot. A GitHub rate limit parks every caller; an
+exhausted quota parks until the later of GitHub's retry and reset times. In-flight work and
+rate-limit backoff are process-local;
 no completed representation, bearer, repository session or durable state is kept.
 List links retain the original local path and filters; issue links carry a validated
 provider cursor. An unsafe or out-of-range next link reports an incomplete listing.
