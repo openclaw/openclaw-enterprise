@@ -66,7 +66,6 @@ test("the console shell paints a neutral status before any script runs and keeps
   }
 });
 
-
 // The web font is fetched alongside the stylesheet, so it is ready before the console's first
 // view renders instead of arriving 1.6-2 s after first paint and reflowing text (finding 1448).
 test("the console web font is ready before the entry script runs, fetched once", async (t) => {

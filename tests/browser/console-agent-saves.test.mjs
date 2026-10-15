@@ -189,7 +189,9 @@ test("Refresh sharing, editor Cancel and the Create Agent shortcuts keep keyboar
   for (const shortcut of ["Start with default Preset", "Start without Preset"]) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     const start = page.getByRole("button", { name: shortcut });
-    await page.getByRole("button", { name: "Start with default Preset", disabled: false }).waitFor();
+    await page
+      .getByRole("button", { name: "Start with default Preset", disabled: false })
+      .waitFor();
     await start.focus();
     await page.keyboard.press("Enter");
     await page.getByLabel("Agent name").waitFor();
