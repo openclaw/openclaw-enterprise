@@ -51,12 +51,11 @@ still block initial workspace files and Secret-backed environment projection.
    a new selection when returning. Other settings are preserved.
    No model is preselected.
 4. Confirm the Installation, credential, and runtime support the chosen model. Primary and fallback
-   models must use the same supported provider and Harness. For custom settings,
-   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
+   models must use the same supported provider and Harness. Customize under **Advanced settings**. Selections preserve unrelated JSON;
    **Reset template** replaces them. Harness switches preserve native `plugins.allow`
    and `plugins.deny`; only Codex's runtime entry changes. Missing or empty allowlists
-   remain unrestricted. If the policy blocks Codex, explicitly edit **Configuration JSON**
-   or select OpenClaw. Native Configuration is separate from Agent plugin policies.
+   remain unrestricted. If policy blocks the required runtime or provider plugin,
+   edit **Configuration JSON** or choose a compatible Harness/provider. Native Configuration differs from Agent policies.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their access levels. Kubernetes supports Codex (Dedicated) or OpenClaw
    (Embedded), without a Sandbox Driver. Dedicated OpenClaw requires a Sandbox
@@ -242,13 +241,13 @@ approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-Select model authentication and bind Slack tokens as Namespace Secrets. When
-Compute requires them, OCC creates missing transport credentials before first
-revision admission; supported Dedicated provisioning does so during creation.
+Select model authentication and bind Slack Namespace Secrets. OCC creates required
+transport credentials before first revision admission; Dedicated provisioning
+creates them during creation.
 Neither path creates the selected `harnessAuth` model credential or channel tokens.
 
 The Kubernetes Driver generates an app-server token and local gateway password,
-which the API never returns; gateway authentication is trusted-proxy only. Generation checks for Agent runtime Deployments before writing
+never returned by the API; gateway authentication requires trusted-proxy. Generation checks for Agent runtime Deployments before writing
 so it cannot change values after startup.
 
 The credential API retains `GET` and explicit initial `POST {}` on

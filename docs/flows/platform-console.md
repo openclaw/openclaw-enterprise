@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-13
-last_updated_session: authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de
+updated: 2026-10-15
+last_updated_session: authoring-run/5b16e286-0433-48fc-bd50-db5195cf9c98
 ---
 
 # Platform console request flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de
 ## Overview
 
 `/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior;
+The [console reference](../reference/console.md) owns behavior;
 API and IAM authorize access.
 
 ## Entry Points
@@ -182,7 +182,7 @@ to Agents; global pages remain open; recovered warnings disappear.
 
 Agents use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
-Installation-wide collection. No readable selection means no Agent request.
+Installation-wide collection. No readable selection skips Agent requests.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
@@ -190,7 +190,7 @@ missing wiring or failed dependencies return errors.
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes the form.
 Provider/Harness changes reset incompatible credentials and models.
 `updateModelConfiguration` preserves allow/deny policy, changing only
-Codex's runtime entry. The form rejects conflicts before writes;
+Codex's runtime entry. `harnessPluginPolicyConflict` rejects blocked runtime/provider plugins before writes;
 Kubernetes Compute's `validateHarnessAuth` enforces this for API callers.
 See [creation](../reference/console/create-and-deploy.md) for supported combinations.
 
@@ -211,16 +211,13 @@ Secret server-side. Pagination is upstream; filtering is local. Selecting a plug
 Credential, provider, and Harness changes clear results and invalidate pending reads.
 
 `create.mjs:MODEL_CHOICES` supplies static unauthenticated lists and manual entry.
-`renderAgentForm` switches `manualModel`, calls `updateModelConfiguration` and
-`updateControls`, and focuses the required input. Manual mode retains `model.value`
-and clears the hidden dropdown. `resetModelChoices` rebuilds the current provider's
+`renderAgentForm` switches `manualModel`, updates configuration/controls and focuses the input. Manual mode retains `model.value` and clears the dropdown. `resetModelChoices` rebuilds the current provider's
 list after JSON provider edits, retaining listed models or clearing both inputs.
 Provider/authentication changes reset without retention. Submission requires primary
-model equality with `model.value`. Both directions retain credentials, unrelated
-Configuration, and saved-Configuration/pending-request locks.
+model equality with `model.value`. Both retain credentials, unrelated Configuration and save/request locks.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
-Compute supplies gateway authentication; Presets replace the starter unchanged.
+Compute supplies authentication; Presets replace the starter.
 [Native admin access](agent-native-admin.md) owns HTTPS isolation.
 
 `createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
@@ -239,7 +236,7 @@ Ordinary drafts post `{kind: "agent", values, secretBindings}` to
 `POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
 `initialWorkspaceFiles`, and `workspaceDefaultsId` to
 `POST /namespaces/:namespaceId/agents`. Success opens `revision=draft`.
-OCC stages all four workspace textareas, including unchanged/empty values, outside
+OCC stages all four workspace textareas, including empty values, outside
 Agent/Configuration for [workspace setup](workspace-files.md).
 
 `create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
@@ -372,6 +369,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 13:32: Reject blocked OpenClaw providers. (authoring-run/5b16e286-0433-48fc-bd50-db5195cf9c98 - 1a5de45c2)
 
 - 2026-10-13 15:53: Preserve plugin permissions; reject conflicts. (authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de - 438103e91)
 

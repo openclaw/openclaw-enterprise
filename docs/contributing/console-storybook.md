@@ -137,8 +137,8 @@ simulated Admin UI, connected to no gateway, Slack, credential, or model.
 **Choose provider, harness, and authentication** covers supported combinations.
 **Enter another model ID** allows unverified models. Harness sets execution;
 tokens require Codex. **Experimental Dedicated OpenClaw** shows the runtime
-warning. **Native plugins** preserve allow/deny policy. **Codex allowlist
-round-trip** preserves preset restrictions; **Native plugins with an allowlist**
+warning. **Native plugins** preserve policy. **Codex allowlist
+round-trip** preserves restrictions and rejects blocked OpenClaw; **Native plugins with an allowlist**
 and **Codex denied by native policy** require explicit JSON edits before creation.
 
 In **Enter another model ID**, switch to **Choose a model from the list** and

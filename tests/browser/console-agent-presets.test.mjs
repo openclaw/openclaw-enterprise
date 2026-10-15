@@ -1360,6 +1360,22 @@ test("Harness switches preserve unrestricted and explicit native plugin allowlis
     await harness.selectOption("openclaw");
     assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
 
+    if (allow?.length && !allow.includes("openai")) {
+      const requests = apiRequests(page, fixture.origin);
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: /plugins.allow must include openai/ })
+        .waitFor();
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);
+      // The preserved policy must be repaired explicitly before OpenClaw can use its provider.
+      values.plugins.allow = [...allow, "openai"];
+      const repaired = JSON.parse(await configuration.inputValue());
+      repaired.plugins.allow = values.plugins.allow;
+      await configuration.fill(JSON.stringify(repaired));
+    }
+
     // Save through the ordinary Agent form and read its owned Configuration back from the API.
     const createdResponse = page.waitForResponse(
       (response) =>

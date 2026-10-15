@@ -2147,7 +2147,7 @@ export const scenarios = {
     name: "Native plugins with an allowlist",
     path: create,
     standardOpenclawPreset: true,
-    nativePluginSettings: { ...nativePlugins, allow: ["knowledge"] },
+    nativePluginSettings: { ...nativePlugins, allow: ["knowledge", "openai"] },
     actions: nativePluginForm,
     description:
       "A restrictive allowlist is preserved. Selecting Codex reports the conflict rather than granting permission.",
@@ -2172,9 +2172,9 @@ export const scenarios = {
     standardCodexPreset: true,
     actions: [...passwordPresetForm, { selector: ".launch-advanced summary", click: true }],
     description:
-      "The shipped Codex Preset keeps its codex-only allowlist when switching to OpenClaw and back.",
+      "The shipped Codex Preset keeps its codex-only allowlist. OpenClaw reports its blocked OpenAI provider.",
     steps: [
-      "Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout.",
+      "Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout. Try Create Agent with OpenClaw: explicitly add openai to the allowlist before saving.",
     ],
     gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },

@@ -40,7 +40,7 @@ history.
 
 ## Native runtime selection
 
-The selected native model uses a `provider/model` name. The first slash separates
+Native models use `provider/model`. The first slash separates
 the provider; the complete remaining model ID may contain slashes, as in
 `openai/vendor/model`. Provider catalog IDs may use that complete model ID
 or the full provider-prefixed name. Its supported
@@ -49,28 +49,26 @@ Agent-entry, and provider policy, and rejects conflicting explicit policies
 rather than choosing one. All configured Agent entries must resolve to the same
 primary model and Harness.
 
-For dedicated Codex with a custom endpoint, OCE compiles the private Gateway
-configuration using an explicit native provider. For example, the admitted
+For dedicated Codex custom endpoints, OCE compiles Gateway configuration with an
+explicit native provider. The admitted
 `codex/vendor/organization/model` becomes
 `codex/openai-compatible/vendor/organization/model` in the generated Gateway
-configuration. OpenClaw resolves that to provider `openai-compatible` and
+configuration. OpenClaw resolves provider `openai-compatible` and
 the complete native ID `vendor/organization/model`. Primary and fallback order,
-catalog metadata, and runtime policies are preserved. The stored Configuration,
-AgentRevision, and Harness probe model remain unchanged.
+catalog metadata, and runtime policies are preserved. Stored Configuration, AgentRevision and probe model remain unchanged.
 
-The resolver selects OpenClaw when there is no model candidate, or when an
+The resolver selects OpenClaw without a model candidate, or when an
 unambiguous built-in provider without custom provider or plugin routing has no
 runtime policy. The `openai` and `codex` providers,
-explicitly configured providers, and plugin-routed providers require an explicit
-supported runtime policy.
+configured and plugin-routed providers require explicit runtime policy.
 
-Dedicated Codex accepts only the native `codex` provider, or `openai` when the
+Dedicated Codex accepts `codex`, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
-Kubernetes Compute rejects Agent create/update, provisioning, and deployment when
-native policy blocks its required Codex plugin: `plugins.enabled` or
-`plugins.entries.codex.enabled` is false, `plugins.deny` lists `codex`, or a
-nonempty `plugins.allow` excludes it. Missing or empty allowlists are unrestricted.
-Configuration can be staged separately; admission never rewrites these permissions.
+Kubernetes Compute rejects Agent save, provisioning and deployment when native
+policy blocks the required plugin: `codex` for Codex; `openai` or `anthropic` for
+OpenClaw's selected model provider. It rejects `plugins.enabled: false`, disabled
+required entries, denial, or exclusion from a nonempty allowlist. Missing or empty
+allowlists are unrestricted. Configuration can be staged; admission preserves policy.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an
@@ -107,8 +105,7 @@ revoked authority, or a missing required Driver fail closed; see
 
 ## Harness authentication
 
-The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
-model-auth selector. Kubernetes supports these combinations:
+The Agent's [harnessAuth binding](agents.md#harness-authentication) selects model authentication. Kubernetes supports:
 
 | Binding                           | Topology                           | Credential consumer                                                                                               |
 | --------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
@@ -137,17 +134,14 @@ outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
-Before app-server startup, Codex rejects missing/conflicting runtime inputs and
-requires a successful bounded native model turn after login; stored credentials
-do not prove provider acceptance. API-key/PAT state stays in its bounded ephemeral
-home, separate from transport/workload identity. Dedicated Gateways get no model
-credentials. Configuration `secretBindings` and the initial runtime credential API
-own Gateway transport/channel setup, not model auth.
+Before startup, Codex rejects missing/conflicting inputs and requires a bounded
+model turn after login. API-key/PAT state stays in its bounded ephemeral home,
+separate from transport/workload identity. Dedicated Gateways receive no model
+credentials. `secretBindings` and the runtime credential API own Gateway
+transport/channel setup.
 
-For initial and replacement deployments, Kubernetes OpenClaw runs one native
-model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
-in the process that owns model access, with temporary state beneath the
-runtime's selected `TMPDIR`. Embedded activation uses the shared gateway's
+Kubernetes OpenClaw runs one native model probe per deployment (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
+in the model-access process, with temporary state beneath its `TMPDIR`. Embedded activation uses the shared gateway's
 `Recreate` strategy: cutover can stop the working gateway before the
 replacement validates its credentials. Invalid credentials or a provider
 failure leave the replacement unready and the Agent unavailable until repair

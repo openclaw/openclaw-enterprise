@@ -4644,10 +4644,6 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
 test("agent provisioning validation reuses native trusted-proxy admission before cluster access", () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
-  // Provisioning checks the selected Harness, so the plan carries its required native model policy.
-  revision.configuration.agents.defaults.models = {
-    "codex/gpt-5": { agentRuntime: { id: "codex" } },
-  };
   assert.deepEqual(driver.agentProvisioning.executionModes, ["dedicated"]);
 
   assert.doesNotThrow(() =>
@@ -6655,14 +6651,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const provisioning = { id: "codex", version: "provisioning", mode: "dedicated" };
   const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
-  const base = {
-    agents: {
-      defaults: {
-        model: "codex/gpt-5",
-        models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
-      },
-    },
-  };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
   const embeddedBase = { agents: { defaults: { model: "openai/gpt-5" } } };
   const named = (setting, requirement) => (error) =>
     error instanceof ConfigurationHarnessError &&

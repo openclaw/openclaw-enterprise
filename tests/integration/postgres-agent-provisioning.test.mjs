@@ -3119,6 +3119,81 @@ test(
 );
 
 test(
+  "stored provisioning native plugin conflicts reject replay, worker admission and retry before effects",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-native-policy",
+    });
+    const writes = [];
+    const createExact = configurationDriver.createExact;
+    configurationDriver.createExact = async (configuration) => {
+      writes.push(configuration.id);
+      return createExact(configuration);
+    };
+    const fixture = await createFixture(context, { computeDriver, configurationDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    body.configuration.values.plugins = { allow: ["knowledge"] };
+    // The previous Driver admitted this stored plan. Switching its admission to production
+    // Kubernetes rules must refuse it without creating resources or projecting credentials.
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const kubernetes = createTestKubernetesComputeDriver("native-policy-admission", {
+      channelRuntime: true,
+    });
+    computeDriver.validateHarnessAuth = (...args) => kubernetes.validateHarnessAuth(...args);
+    const message = "Configuration setting plugins.allow must include codex for the Codex Harness.";
+    const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(replay.status, 400, JSON.stringify(replay.body));
+    assert.equal(replay.body.error.message, message);
+    await fixture.startWorker();
+    const failed = await waitFor("native policy refusal before provisioning effects", async () => {
+      const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      return row.status === "failed" ? row : undefined;
+    });
+    await fixture.stopWorker();
+    assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message });
+    const workBefore = await fixture.pool.query(
+      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(workBefore.rows, [{ state: "failed_permanent", attempt_count: 1 }]);
+    const retry = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retry.status, 400, JSON.stringify(retry.body));
+    assert.equal(retry.body.error.message, message);
+    const status = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 200);
+    assert.equal(status.data.status, "failed");
+    assert.equal(failed.agent_id, null);
+    assert.equal(failed.configuration_id, null);
+    assert.deepEqual(
+      computeDriver.calls,
+      [],
+      "no runtime credential or deployment effect was attempted",
+    );
+    const workAfter = await fixture.pool.query(
+      "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [admitted.data.provisioning.workId],
+    );
+    assert.deepEqual(workAfter.rows, workBefore.rows, "a refused retry queues nothing");
+    // Fresh requests use the same production policy rule, before any Configuration write.
+    const fresh = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: { ...body, requestId: requestId() },
+    });
+    assert.equal(fresh.status, 400, JSON.stringify(fresh.body));
+    assert.equal(fresh.body.error.message, message);
+    assert.deepEqual(writes, [], "no external Configuration creation was attempted");
+  },
+);
+
+test(
   "a Compute gateway change before the worker runs rejects the provisioning work without retrying",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {

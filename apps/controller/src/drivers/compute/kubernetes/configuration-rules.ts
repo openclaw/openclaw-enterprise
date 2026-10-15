@@ -26,13 +26,14 @@ import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
  */
 type SettingError = (setting: string, requirement: string) => Error;
 
-/** Codex's Gateway requires its native plugin; admission must not widen the caller's policy. */
-export function requireCodexPluginPolicy(
+/** The selected runtime needs its plugin; admission must not widen the caller's policy. */
+export function requireHarnessPluginPolicy(
   configuration: Readonly<OpenClawConfigurationDocument>,
+  pluginId: string,
+  requirement: string,
   createError: SettingError,
 ): void {
   const plugins = asRecord(configuration.plugins);
-  const requirement = "for the Codex Harness";
   if (plugins?.enabled === false) {
     throw createError("plugins.enabled", `must not be false ${requirement}`);
   }
@@ -46,15 +47,15 @@ export function requireCodexPluginPolicy(
     }
     return (list as string[]).map((id) => id.trim().toLowerCase()).filter(Boolean);
   };
-  if (ids("deny").includes("codex")) {
-    throw createError("plugins.deny", `must not list codex ${requirement}`);
+  if (ids("deny").includes(pluginId)) {
+    throw createError("plugins.deny", `must not list ${pluginId} ${requirement}`);
   }
   const allow = ids("allow");
-  if (allow.length > 0 && !allow.includes("codex")) {
-    throw createError("plugins.allow", `must include codex ${requirement}`);
+  if (allow.length > 0 && !allow.includes(pluginId)) {
+    throw createError("plugins.allow", `must include ${pluginId} ${requirement}`);
   }
-  if (asRecord(asRecord(plugins?.entries)?.codex)?.enabled === false) {
-    throw createError("plugins.entries.codex.enabled", `must not be false ${requirement}`);
+  if (asRecord(asRecord(plugins?.entries)?.[pluginId])?.enabled === false) {
+    throw createError(`plugins.entries.${pluginId}.enabled`, `must not be false ${requirement}`);
   }
 }
 
