@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -14,6 +15,7 @@ import {
   login,
   nativeValues,
   newPage,
+  settlePageRequests,
   nonAuthWriteRequests,
   pathRequests,
   revealNativeConfiguration,
@@ -27,6 +29,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   openAdvancedSettings,
+  withholdPermissionSummary,
   assertRevisionUrl,
   agentStopRequests,
   configurationPatchRequests,
@@ -1268,12 +1271,17 @@ test("Agent detail saves plugin changes for the next revision without changing a
   );
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 2);
+  // The list carries summaries; each revision's plugin snapshot is on its exact read.
+  const pluginSnapshot = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.plugins?.plugins;
+  assert.deepEqual(await pluginSnapshot(first.revision.id), originalPlugins);
   assert.deepEqual(
-    revisions.data.find(({ id }) => id === first.revision.id)?.plugins?.plugins,
-    originalPlugins,
-  );
-  assert.deepEqual(
-    revisions.data.find(({ id }) => id !== first.revision.id)?.plugins?.plugins,
+    await pluginSnapshot(revisions.data.find(({ id }) => id !== first.revision.id).id),
     editedPlugins,
   );
 
@@ -2213,6 +2221,35 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
 });
 
+// An Agent created through the API starts with desiredRuntimeState stopped and no version,
+// so no stop was ever requested and nothing runs to stop (finding 1394). The panel says how
+// to start it and offers no stop controls until a deploy creates a version.
+test("Agent stop offers no controls for an Agent that was never deployed", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Never deployed");
+  const agent = await fixture.createAgent(namespace.id, "Never Deployed", nativeValues("never"), {
+    harnessAuth: { method: "runtime" },
+  });
+  assert.equal(agent.desiredRuntimeState, "stopped");
+  assert.equal(agent.activeRevisionId, undefined);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Never Deployed" }).waitFor();
+  // The version list loaded empty, so the console knows there is no version to stop.
+  await page.getByText(/^No readable versions\. Creating an Agent alone does not create/).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion
+    .getByText("No version is selected. Deploy a new version to start this Agent.")
+    .waitFor();
+  assert.equal(await stopRegion.getByRole("button").count(), 0);
+
+  // The first deploy creates a version and requests the Agent running, so Stop returns.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).waitFor();
+  assert.equal(await stopRegion.getByText("No version is selected.").count(), 0);
+});
+
 test("Agent stop uncertainty requires refresh before another stop request", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Stop uncertainty");
   const agent = await fixture.createAgent(
@@ -2312,6 +2349,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
   await login(
     page,
     fixture,
@@ -2339,4 +2377,225 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);
+});
+
+test("a read-only principal sees Agent mutation controls disabled before any denial", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Read-only controls", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Read-only Agent", nativeValues("ro"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const viewer = await fixture.createAccountWithPolicy("agent-controls-viewer", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-console-agent-controls-viewer",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "read", resourceKind: "agent_revision" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-console-agent-controls-viewer",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-console-agent-controls-viewer",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`, viewer.credentials);
+  await page.getByText("Your access does not include creating Agents in this Namespace.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+
+  const current = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  await page.goto(current.href);
+  await page.getByRole("heading", { name: "Read-only Agent" }).waitFor();
+  const openDraft = page
+    .locator(".agent-toolbar-actions")
+    .getByRole("button", { name: "Open version draft" });
+  await openDraft.waitFor();
+  assert.equal(await openDraft.isEnabled(), true);
+  await page.getByText("Your access does not include stopping this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  await page.getByText("Your access does not include deleting this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+
+  const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await page.goto(draft.href);
+  await page.getByText("Your access does not include deploying this Agent.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+
+  // The summary is a probe, not an attempted operation: no write was sent and nothing was
+  // audited as a denial for the summary or the gated operations.
+  assert.equal(nonAuthWriteRequests(requests).length, 0);
+  const deniedActions = auditSink
+    .list()
+    .filter((event) => event.kind === "authorization_denial")
+    .map((event) => event.action);
+  for (const action of [
+    "openclaw.namespaces.permissions.read",
+    "openclaw.agents.permissions.read",
+    "openclaw.agents.delete",
+    "openclaw.agents.stop",
+    "openclaw.agents.deploy",
+  ]) {
+    assert.equal(deniedActions.includes(action), false, action);
+  }
+});
+
+test("a version editor without Agent update can open the draft, save it, and deploy", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Version editor");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Version editor Agent",
+    nativeValues("v1"),
+    {
+      harnessAuth: { method: "runtime" },
+    },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const editor = await fixture.createAccountWithPolicy("version-editor", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-version-editor",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "deploy", resourceKind: "agent" },
+        { action: "read", resourceKind: "agent_revision" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "update", resourceKind: "configuration" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-version-editor",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-version-editor",
+    });
+  });
+  const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const { page } = await newPage(t, fixture);
+  const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    editor.credentials,
+  );
+  const response = await summary;
+  assert.equal(response.status(), 200);
+  assert.deepEqual((await response.json()).data, {
+    update: false,
+    deploy: true,
+    operate: false,
+    delete: false,
+  });
+
+  // This button in the header opens the draft. It is not an Agent update.
+  const openDraft = page
+    .locator(".agent-toolbar-actions")
+    .getByRole("button", { name: "Open version draft" });
+  await openDraft.click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
+  const saving = page.waitForResponse(
+    (r) =>
+      r.request().method() === "PATCH" &&
+      r.url().endsWith("/configurations/" + agent.configurationId),
+  );
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  const saved = await saving;
+  assert.equal(saved.status(), 200);
+  assert.deepEqual((await saved.json()).data.values, nativeValues("edited"));
+
+  const deploying = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().endsWith(path + "/deploy"),
+  );
+  await page.getByRole("button", { name: "Deploy new version" }).click();
+  const deployed = await deploying;
+  assert.equal(deployed.status(), 202);
+  assert.equal((await deployed.json()).data.agentId, agent.id);
+});
+
+test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Open confirmation");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Confirmation race Agent",
+    nativeValues("race"),
+    {
+      harnessAuth: { method: "runtime" },
+    },
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const viewer = await fixture.createAccountWithPolicy("confirmation-viewer", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-confirmation-viewer",
+      namespaceId: namespace.id,
+      permissions: ["namespace", "agent", "agent_revision", "configuration"].map(
+        (resourceKind) => ({ action: "read", resourceKind }),
+      ),
+    });
+    fixture.policy.bindings.push({
+      id: "binding-confirmation-viewer",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-confirmation-viewer",
+    });
+  });
+  const url = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  const permissionPath =
+    fixture.origin + "/namespaces/" + namespace.id + "/agents/" + agent.id + "/permissions";
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  for (const action of ["Stop", "Delete"]) {
+    const received = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route(permissionPath, async (route) => {
+      const response = await route.fetch();
+      received.resolve({ status: response.status(), data: (await response.json()).data });
+      // Delay delivery, not authorization: these are the controller's actual flags for this viewer.
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    if (action === "Stop") {
+      await login(page, fixture, url, viewer.credentials);
+    } else {
+      await page.goto(url.href);
+    }
+    assert.deepEqual(await received.promise, {
+      status: 200,
+      data: { update: false, deploy: false, operate: false, delete: false },
+    });
+
+    await page.getByRole("button", { name: action + " Agent", exact: true }).click();
+    const dialog = page.getByRole("dialog");
+    const confirm = dialog.getByRole("button", {
+      name: action === "Stop" ? "Stop Agent" : "Permanently delete Agent",
+    });
+    await confirm.focus();
+    release.resolve();
+    await dialog.getByText(/Your access does not include/).waitFor();
+    assert.equal(await confirm.isDisabled(), true);
+    assert.equal(
+      await page.evaluate(() => globalThis.document.activeElement.textContent),
+      "Cancel",
+    );
+    // Exercise the submit guard separately from the button's disabled behavior.
+    await confirm.dispatchEvent("click");
+    await settlePageRequests(page);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await page.locator("dialog[open]").waitFor({ state: "detached" });
+    await page.unroute(permissionPath);
+  }
 });

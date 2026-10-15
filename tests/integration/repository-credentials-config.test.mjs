@@ -366,6 +366,46 @@ test("service admission bounds are finite and retain an explicit long-task polic
     },
   };
   assert.equal(validateServiceConfig(input).sessionPolicy.maximumDurationSeconds, 172800);
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000 } }).limits.maxExchangeMs,
+    1000,
+  );
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000, maxExchangeMs: 2000 } }).limits
+      .maxExchangeMs,
+    2000,
+  );
+  const defaults = validateServiceConfig(input).limits;
+  assert.equal(defaults.gitFetchResponseBytes, 256 * 1024 * 1024);
+  assert.equal(defaults.gitFetchFirstHeaderMs, 30000);
+  assert.equal(defaults.gitFetchStallMs, 5000);
+  assert.equal(defaults.gitFetchExchangeMs, 300000);
+  assert.equal(defaults.maxExchangeMs, 300000);
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000 } }).limits.gitFetchExchangeMs,
+    1000,
+  );
+  const existing = validateServiceConfig({
+    ...input,
+    limits: { gitResponseBytes: 4096, stallMs: 2000, firstHeaderMs: 3000 },
+  }).limits;
+  assert.equal(existing.gitFetchResponseBytes, 4096);
+  assert.equal(existing.gitFetchStallMs, 2000);
+  assert.equal(existing.gitFetchFirstHeaderMs, 3000);
+  const specific = validateServiceConfig({
+    ...input,
+    limits: {
+      gitResponseBytes: 4096,
+      gitFetchResponseBytes: 8192,
+      stallMs: 2000,
+      gitFetchStallMs: 4000,
+      firstHeaderMs: 3000,
+      gitFetchFirstHeaderMs: 6000,
+    },
+  }).limits;
+  assert.equal(specific.gitFetchResponseBytes, 8192);
+  assert.equal(specific.gitFetchStallMs, 4000);
+  assert.equal(specific.gitFetchFirstHeaderMs, 6000);
   // The control socket limit is 103 bytes, matching the control client and the Driver schema.
   const socketPath = (bytes) => `/run/${"s".repeat(bytes - "/run/.sock".length)}.sock`;
   const longest = socketPath(103);

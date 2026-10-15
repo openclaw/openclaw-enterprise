@@ -108,7 +108,7 @@ smoke and publish actual Enterprise images.
 It checks public package identity and rejects conflicting repository metadata.
 When GitHub omits repository metadata, it accepts the omission without querying
 approval history. Package linkage is configured during
-[operator setup](../../.github/containers.md#confirm-package-linkage).
+[operator setup](../release/containers.md#confirm-package-linkage).
 
 ### 4. Recover retained publication bytes after a partial failure
 
@@ -138,7 +138,7 @@ separating original image provenance from the current publishing run. The
 operator retains that receipt and uses digest references from it. The current
 Docker Hub promotion workflow does not consume recovery receipts. A failed
 recovery can leave one image published; follow the
-[recovery procedure](../../.github/containers.md#recover-a-partial-publication)
+[recovery procedure](../release/containers.md#recover-a-partial-publication)
 without deleting the original archives or rerunning their producer.
 
 ## Debugging and Verification
@@ -160,7 +160,7 @@ without deleting the original archives or rerunning their producer.
 
 ## Related docs
 
-- [Container publication procedure](../../.github/containers.md)
+- [Container publication procedure](../release/containers.md)
 - [First container release specification](../../specs/plans/32-first-container-release.md)
 - [CI execution flow](github-actions-testing.md)
 

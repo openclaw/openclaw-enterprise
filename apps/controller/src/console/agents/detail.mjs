@@ -25,6 +25,9 @@ import {
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
+  NEUTRAL_DEPLOYMENT_NOTES,
+  deploymentOutcome,
+  neutralDeploymentOutcome,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -32,6 +35,16 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
+
+// One page of revision summaries, newest first (finding 1323). Summaries carry no saved
+// settings; read the exact revision for those.
+async function readRevisionPage(request, path, cursor = null) {
+  const page = await request(
+    cursor ? `${path}/revisions?cursor=${encodeURIComponent(cursor)}` : `${path}/revisions`,
+    { includeMeta: true },
+  );
+  return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
+}
 
 function deployFailureText(error, submitted) {
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
@@ -122,31 +135,16 @@ function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// Next steps for failure codes whose cause the operator can act on directly, and the
-// page that holds the setting to change. Model-probe codes come from the runtime
-// wrapper's startup model check (`runtime-entrypoints.ts`). OpenClaw classifies
-// transport errors (refused connection, DNS failure, "fetch failed") as a timeout, so
-// there an unreachable provider reports RUNTIME_MODEL_PROBE_TIMEOUT; Codex reports the
-// same failure as RUNTIME_MODEL_PROBE_FAILED unless the connection hangs until its cap.
-const DEPLOYMENT_FAILURE_GUIDANCE = {
-  RUNTIME_AUTHENTICATION_FAILED: {
-    text: "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key is valid and can use the selected model, update or replace the model credential Secret, then deploy a new version.",
-    link: "credentials",
-  },
-  RUNTIME_MODEL_PROBE_FAILED: {
-    text: "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-    link: "configuration",
-  },
-  RUNTIME_MODEL_PROBE_TIMEOUT: {
-    text: "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
-    link: "configuration",
-  },
+// The page that holds the setting to change for failure codes whose cause the operator can
+// act on directly. The API's error message already states the next step (finding 1393), so
+// the console adds only the link.
+const DEPLOYMENT_FAILURE_LINKS = {
+  RUNTIME_AUTHENTICATION_FAILED: "credentials",
+  RUNTIME_MODEL_PROBE_FAILED: "configuration",
+  RUNTIME_MODEL_PROBE_TIMEOUT: "configuration",
   // Kubernetes Compute fails activation at once when the Gateway refuses its own in-Pod
   // CLI (#1128); the Configuration's gateway password reference is what lets it in.
-  AGENT_GATEWAY_UNAUTHORIZED: {
-    text: "The Agent Gateway refused its own in-Pod CLI, so the version never finished starting. In the Configuration, select Enable gateway password access if it is not already enabled, save, then deploy a new version.",
-    link: "configuration",
-  },
+  AGENT_GATEWAY_UNAUTHORIZED: "configuration",
 };
 
 // The runtime classifies a failed startup model check into one of these kinds and
@@ -187,23 +185,19 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
   }
   const runtimeFailure = error.data?.runtimeFailure;
   const preparation = error.data?.preparation;
-  const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_GUIDANCE, error.code)
-    ? DEPLOYMENT_FAILURE_GUIDANCE[error.code]
+  const guidanceLink = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, error.code)
+    ? DEPLOYMENT_FAILURE_LINKS[error.code]
     : null;
-  const guidanceHref = guidance ? (hrefs[guidance.link] ?? null) : null;
+  const guidanceHref = guidanceLink ? (hrefs[guidanceLink] ?? null) : null;
   return element(
     "div",
     {},
     element("p", { className: "error", role: "alert" }, `${error.code}: ${error.message}`),
-    guidance
+    guidanceHref
       ? element(
           "p",
           { className: "hint deployment-failure-guidance" },
-          guidance.text,
-          guidanceHref ? " " : null,
-          guidanceHref
-            ? element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidance.link])
-            : null,
+          element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidanceLink]),
         )
       : null,
     preparation
@@ -274,13 +268,38 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
   );
 }
 
-function deploymentProgress(status, progress) {
+// A recorded result: the failure, or a neutral note when a newer version superseded this one
+// or the owner stopped the Agent during its deployment.
+function deploymentResult(record, hrefs = {}, logsLink = null) {
+  const neutral = neutralDeploymentOutcome(record);
+  if (neutral === "superseded") {
+    return element(
+      "p",
+      { className: "muted deployment-superseded" },
+      `${NEUTRAL_DEPLOYMENT_NOTES.superseded} before this one became current (${record.error.code}). This version did not fail; no action is needed.`,
+    );
+  }
+  if (neutral === "stopped") {
+    return element(
+      "p",
+      { className: "muted deployment-stopped" },
+      `The Agent was stopped before this deployment finished (${record.error.code}). This version did not fail; deploy a new version when you want it running.`,
+    );
+  }
+  return deploymentFailure(record.error, hrefs, logsLink);
+}
+
+function deploymentProgress(record) {
+  const status = deploymentOutcome(record);
+  const progress = record.progress;
   const workDescriptions = {
     queued: progress?.lastAttempt
       ? "Waiting to continue deployment."
       : "Waiting for a worker claim.",
     running: "A worker claim is active.",
     failed: "Deployment work failed; check the recorded error and current version.",
+    superseded: "Deployment work stopped because a newer version superseded this one.",
+    stopped: "Deployment work ended because the Agent was stopped.",
     succeeded: "Work completed or the version was already active.",
   };
   const stages = [
@@ -294,16 +313,26 @@ function deploymentProgress(status, progress) {
           ? "active"
           : status === "succeeded"
             ? "complete"
-            : "failed",
+            : status === "superseded" || status === "stopped"
+              ? status
+              : "failed",
     ],
     [
       "Completion recorded",
       status === "succeeded"
         ? "This deployment completed activation or was already active."
-        : status === "failed"
-          ? "Successful completion was not recorded for this deployment."
-          : "Successful completion is not recorded yet.",
-      status === "succeeded" ? "complete" : "waiting",
+        : status === "superseded"
+          ? "Not needed: this version did not become current."
+          : status === "stopped"
+            ? "Not recorded: the Agent was stopped first. Deploy a new version when you want it running."
+            : status === "failed"
+              ? "Successful completion was not recorded for this deployment."
+              : "Successful completion is not recorded yet.",
+      status === "succeeded"
+        ? "complete"
+        : status === "superseded" || status === "stopped"
+          ? status
+          : "waiting",
     ],
   ];
   return element(
@@ -379,7 +408,7 @@ function createDeploymentStatusPanel(
       const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
         context.request(`${path}/deployments/${encodeURIComponent(revision.id)}`),
         refreshAgent ? context.request(path) : Promise.resolve(null),
-        refreshAgent ? context.request(`${path}/revisions`) : Promise.resolve(null),
+        refreshAgent ? readRevisionPage(context.request, path) : Promise.resolve(null),
       ]);
       if (!context.isCurrent()) {
         return;
@@ -420,7 +449,7 @@ function createDeploymentStatusPanel(
         state.loading = false;
         render();
         onStatusChange(
-          state.status?.status ?? null,
+          state.status ? deploymentOutcome(state.status) : null,
           state.error !== null,
           state.status?.error?.code ?? null,
           state.status,
@@ -450,7 +479,7 @@ function createDeploymentStatusPanel(
     return element(
       "div",
       {},
-      deploymentProgress(state.status.status, state.status.progress),
+      deploymentProgress(state.status),
       state.status.cleanup
         ? element(
             "p",
@@ -492,9 +521,13 @@ function createDeploymentStatusPanel(
               : null,
           )
         : null,
-      element("p", { className: "deployment-outcome" }, `Recorded status: ${state.status.status}`),
-      deploymentFailure(
-        state.status.error,
+      element(
+        "p",
+        { className: "deployment-outcome" },
+        `Recorded status: ${deploymentOutcome(state.status)}`,
+      ),
+      deploymentResult(
+        state.status,
         { credentials: credentialsHref, configuration: configurationHref },
         logsLink,
       ),
@@ -631,8 +664,8 @@ function createVersionDeploymentRecord(context, path, revisionId, onChange = () 
           ? element(
               "div",
               {},
-              element("p", {}, `Recorded outcome: ${status.status}`),
-              deploymentFailure(status.error),
+              element("p", {}, `Recorded outcome: ${deploymentOutcome(status)}`),
+              deploymentResult(status),
               status.warnings?.length
                 ? element(
                     "div",
@@ -741,7 +774,8 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         check.code === "NOT_CONFIGURED",
     );
     const recorded = recordedStatus();
-    const failure = recorded?.status === "failed" ? recorded.error : null;
+    const failure =
+      recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) ? recorded.error : null;
     const hints = [];
     if (unreachable) {
       hints.push(
@@ -820,6 +854,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return;
   }
   context.setTitle(agent.name);
+  // A missing summary leaves each control on its usual path. The API authorizes the actual request.
+  let callerPermissions = null;
+  const callerPermissionsRead = request(`${path}/permissions`).then(
+    (permissions) => (callerPermissions = permissions),
+    () => null,
+  );
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   let currentRuntimeState = agent.desiredRuntimeState;
@@ -849,15 +889,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     context.navigate(target(revision, tab));
   };
-  const headerActions = element(
-    "div",
-    { className: "agent-toolbar-actions" },
+  const headerNewVersion =
     selected !== "draft"
       ? button("Create new version", () => change("draft", "configuration"), {
           className: "primary",
         })
-      : null,
-  );
+      : null;
+  const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   const header = element(
     "div",
     { className: "agent-toolbar" },
@@ -899,8 +937,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
   function revisionHidden(revisionId) {
+    // Until every page is loaded, an unlisted version may simply be older than those shown.
     return (
       visibleRevisionsLoaded &&
+      olderCursor === null &&
       Boolean(revisionId) &&
       revisionId !== "draft" &&
       !visibleRevisions.some((revision) => revision.id === revisionId)
@@ -926,10 +966,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   renderCurrentVersion();
   const identity = element("p", { className: "resource-id" }, agent.id);
-  const stopPanel = createAgentStop(context, path, agent, showDeleting, () =>
-    context.navigate(target(selected, selectedTab), namespaceId, true),
+  const stopPanel = createAgentStop(
+    context,
+    path,
+    agent,
+    showDeleting,
+    () => context.navigate(target(selected, selectedTab), namespaceId, true),
+    callerPermissionsRead.then((permissions) => permissions?.operate),
   );
-  const deletion = createAgentDeletion(context, path, agent, showDeleting);
+  const deletion = createAgentDeletion(
+    context,
+    path,
+    agent,
+    showDeleting,
+    callerPermissionsRead.then((permissions) => permissions?.delete),
+  );
   function showDeleting() {
     deleting = true;
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
@@ -1062,7 +1113,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let latestDeploymentErrorCode = null;
   let latestDeploymentRecord = null;
   let versionRecord = null;
-  const revisionsPromise = request(`${path}/revisions`);
+  const revisionsPromise = readRevisionPage(request, path);
+  // Every revision summary listed so far, from the newest page and from older pages the viewer
+  // asked for. Summaries never change, and a revision appears once however pages shift.
+  const listedRevisions = new Map();
+  // Whether an older page was loaded, and the cursor for the next one (null once complete).
+  let olderPageLoaded = false;
+  let olderCursor = null;
+  let olderLoading = false;
+  let olderError = null;
+  // The newest revision with its saved settings, read only when a check needs them.
+  let latestRevisionDetail = null;
+  let latestRevisionDetailReading = null;
 
   function versionNotice() {
     return selected === "draft"
@@ -1138,10 +1200,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   function renderVersions(revisions, snapshot, historyError = null) {
     revisionControls.clear();
-    const newVersion = button("Create new version", () => change("draft", "configuration"), {
-      className: "revision-create",
-      ...(selected === "draft" ? { "aria-current": "page" } : {}),
-    });
+    // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
+    const newVersion = button(
+      callerPermissions?.update === false ? "Open version draft" : "Create new version",
+      () => change("draft", "configuration"),
+      {
+        className: "revision-create",
+        ...(selected === "draft" ? { "aria-current": "page" } : {}),
+      },
+    );
     trackRevisionControl(newVersion);
     const list = element("div", { className: "version-list" });
     for (const revision of revisions) {
@@ -1156,9 +1223,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       );
       if (revision.id === currentRevisionId) {
         control.append(element("span", { className: "version-current" }, "Current version"));
-      }
-      if (revision.configurationReadError) {
-        control.append(element("small", {}, "Saved configuration unreadable"));
       }
       trackRevisionControl(control);
       list.append(control);
@@ -1185,6 +1249,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ),
         );
       }
+    }
+    // Versions list one page at a time, newest first; older pages load on request.
+    if (olderCursor && !historyError) {
+      const older = button(
+        olderLoading ? "Loading older versions…" : "Show older versions",
+        () => void loadOlderRevisions(),
+        { className: "version-item version-older", disabled: olderLoading },
+      );
+      trackRevisionControl(older);
+      list.append(older);
     }
     const chooser = element(
       "select",
@@ -1224,6 +1298,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         element("p", { className: "muted" }, "Choose a version to inspect its saved details."),
         newVersion,
         list,
+        olderError
+          ? element(
+              "p",
+              { className: "error", role: "alert" },
+              `Older versions unavailable. ${message(olderError)}`,
+            )
+          : null,
         revisions.length || selected !== "draft"
           ? element("label", { for: "revision-selector" }, "Available versions")
           : null,
@@ -1303,13 +1384,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       running: "In progress",
       succeeded: "Succeeded",
       failed: "Failed",
+      superseded: "Superseded",
+      stopped: "Stopped",
     }[latestDeploymentStatus];
+    // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
+    // serving.
+    const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
     latestDeploymentValue.textContent = `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`;
-    latestDeploymentNote.textContent = latestDeploymentStatus
-      ? `Recorded status: ${latestDeploymentStatus}`
-      : latestDeploymentError
-        ? "Recorded deployment status could not be read."
-        : "Reading recorded deployment status.";
+    latestDeploymentNote.textContent = neutral
+      ? latestDeploymentStatus === "stopped"
+        ? `${NEUTRAL_DEPLOYMENT_NOTES.stopped}. Deploy a new version when you want it running.`
+        : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`
+      : latestDeploymentStatus
+        ? `Recorded status: ${latestDeploymentStatus}`
+        : latestDeploymentError
+          ? "Recorded deployment status could not be read."
+          : "Reading recorded deployment status.";
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
     // A succeeded deployment becomes current, so a different current version is newer.
@@ -1343,7 +1433,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       liveServingValue.textContent = "Not verified";
       liveServingNote.textContent = "Serving version and model access are unknown.";
     }
-    statusLine.hidden = !latestDeploymentStatus && !requestedHidden;
+    statusLine.hidden = (!latestDeploymentStatus || neutral) && !requestedHidden;
     if (requestedHidden || newerHidden) {
       statusLine.textContent = [
         requestedHidden
@@ -1360,7 +1450,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       statusLine.textContent = `v${latest.revision} deployment failed. ${currentLabel} is still recorded as current, but deploying a dedicated Agent stops the previous version first, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
     } else if (selectedFailed) {
       statusLine.textContent = `${currentLabel} deployment failed. ${currentLabel} is still selected because its runtime already replaced the previous version, so this Agent is probably not serving: expect no answers in its channels or anywhere else until a new version deploys. Fix the failure, then deploy a new version.`;
-    } else if (latestDeploymentStatus) {
+    } else if (latestDeploymentStatus && !neutral) {
       const selection = currentRevisionId
         ? `${currentLabel} is selected.`
         : "No version is selected.";
@@ -1368,14 +1458,80 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
 
+  // List summaries omit the credential binding a revision was admitted with, so the
+  // rejected-credential hint reads the newest revision once.
+  async function readLatestRevisionDetail(revision) {
+    if (latestRevisionDetail?.id === revision.id || latestRevisionDetailReading === revision.id) {
+      return;
+    }
+    latestRevisionDetailReading = revision.id;
+    try {
+      const detail =
+        viewedSnapshot?.id === revision.id
+          ? viewedSnapshot
+          : await request(`${path}/revisions/${encodeURIComponent(revision.id)}`);
+      if (!context.isCurrent() || deleting || visibleRevisions[0]?.id !== revision.id) {
+        return;
+      }
+      latestRevisionDetail = detail;
+      refreshDeployControls();
+    } catch {
+      // Without the detail the hint stays generic; the deployment status still shows.
+    } finally {
+      if (latestRevisionDetailReading === revision.id) {
+        latestRevisionDetailReading = null;
+      }
+    }
+  }
+
+  async function loadOlderRevisions() {
+    if (olderLoading || !olderCursor) {
+      return;
+    }
+    olderLoading = true;
+    olderError = null;
+    renderOverview(latestRevisionResult, viewedSnapshot);
+    try {
+      const page = await readRevisionPage(request, path, olderCursor);
+      if (!context.isCurrent() || deleting) {
+        return;
+      }
+      for (const revision of page.revisions) {
+        listedRevisions.set(revision.id, revision);
+      }
+      olderPageLoaded = true;
+      olderCursor = page.nextCursor;
+    } catch (error) {
+      if (!context.isCurrent() || deleting) {
+        return;
+      }
+      if (error.status === 401) {
+        context.onExpired();
+        return;
+      }
+      olderError = error;
+    } finally {
+      olderLoading = false;
+    }
+    renderOverview(latestRevisionResult, viewedSnapshot);
+    renderDetailHeading();
+  }
+
   function renderOverview(revisionResult, snapshot) {
     latestRevisionResult = revisionResult;
-    const revisions =
-      revisionResult.status === "fulfilled"
-        ? [...revisionResult.value].sort((a, b) => b.revision - a.revision)
-        : [];
+    const newest = revisionResult.status === "fulfilled" ? revisionResult.value.revisions : [];
+    // Until an older page is loaded, the newest page's cursor says whether older ones exist.
+    // After that the older pages' own cursor continues, so a refresh never loses the place.
+    if (!olderPageLoaded && revisionResult.status === "fulfilled") {
+      olderCursor = revisionResult.value.nextCursor;
+    }
+    for (const revision of newest) {
+      listedRevisions.set(revision.id, revision);
+    }
+    const revisions = [...listedRevisions.values()].sort((a, b) => b.revision - a.revision);
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
+    stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
     renderCurrentVersion();
     renderVersions(
       revisions,
@@ -1388,6 +1544,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
+      // On first load the newest version's panel replaces the loading placeholder once its
+      // first status read settles, in the same frame as the summary and status line, so the
+      // page below moves once instead of once for an empty panel and again for the status.
+      // A newer version found later replaces the shown (older) panel at once.
+      const firstLoad = activityPanel === deploymentStatus;
+      const showPanel = (panel) => {
+        if (activityPanel !== panel) {
+          activityPanel.replaceWith(panel);
+          activityPanel = panel;
+        }
+      };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
             context,
@@ -1399,9 +1566,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
+              showPanel(nextPanel);
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
+              if (errorCode === "RUNTIME_AUTHENTICATION_FAILED") {
+                void readLatestRevisionDetail(mostRecent);
+              }
               latestDeploymentRecord = record
                 ? { revisionId: mostRecent.id, status: record }
                 : null;
@@ -1429,8 +1600,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 : "No readable deployment records.",
             ),
           );
-      activityPanel.replaceWith(nextPanel);
-      activityPanel = nextPanel;
+      if (!mostRecent || !firstLoad) {
+        showPanel(nextPanel);
+      }
       activityRevisionId = mostRecent?.id ?? null;
     }
     renderLatestDeployment();
@@ -1450,6 +1622,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     renderDetailHeading();
   }
   let refreshDeployControls = () => {};
+  void callerPermissionsRead.then((permissions) => {
+    if (!context.isCurrent() || !permissions) {
+      return;
+    }
+    if (permissions.update === false) {
+      // This opens the draft; Configuration update and Agent deploy are independent grants.
+      if (headerNewVersion) {
+        headerNewVersion.textContent = "Open version draft";
+      }
+      for (const control of selector.querySelectorAll(".revision-create")) {
+        control.textContent = "Open version draft";
+      }
+    }
+    refreshDeployControls();
+  });
 
   const snapshotPath =
     selected === "draft"
@@ -1589,6 +1776,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        callerPermissions?.deploy === false ||
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
@@ -1625,7 +1813,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
       if (!deployPending) {
-        if (deployReloadMessage) {
+        if (callerPermissions?.deploy === false) {
+          deployStatus.textContent = "Your access does not include deploying this Agent.";
+        } else if (deployReloadMessage) {
           deployStatus.textContent = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
           deployStatus.textContent = "Wait for the authentication save to finish before deploying.";
@@ -1676,7 +1866,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           // Secret values can be updated in place, so a rejected credential warns instead of blocking.
           deployStatus.textContent =
             latestDeploymentErrorCode === "RUNTIME_AUTHENTICATION_FAILED" &&
-            JSON.stringify(visibleRevisions[0]?.harnessAuth) === JSON.stringify(agent.harnessAuth)
+            latestRevisionDetail !== null &&
+            latestRevisionDetail.id === visibleRevisions[0]?.id &&
+            JSON.stringify(latestRevisionDetail.harnessAuth) === JSON.stringify(agent.harnessAuth)
               ? `${gate} The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.`
               : gate;
         }

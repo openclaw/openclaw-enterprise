@@ -192,13 +192,13 @@ Account login modes and other Harnesses keep their endpoints; only the Harness h
 
 For custom endpoints, `gatewayConfigurationDocument` calls
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
-to clone the admitted document. It qualifies parent and `subagents.model` selectors
-under defaults and Agent entries, including primary/fallback objects, plus policy
-keys and catalog IDs. Subagent-only selections enter the projected catalog; aliases
-and omitted selectors retain their meaning. Full declared refs preserve native ID
-namespaces, including `codex/`. OpenClaw separates the explicit provider for thread
-start, resume, and turns; the Harness probe keeps the native ID. The admitted
-Configuration remains unchanged.
+to clone the admitted document. It qualifies every chat selection the Harness model rule
+checks (`configuration-rules.ts:rewriteModelSelections`), including allowlists,
+primary/fallback objects and catalog IDs, then drops an `openai` source's provider block. Selections enter the
+projected catalog; aliases and omitted selectors retain their meaning. Full declared
+refs preserve native ID namespaces, including `codex/`. OpenClaw separates the
+explicit provider for thread start, resume, and turns; the Harness probe keeps the
+native ID.
 
 Kubelet probes private `/readyz` on runtime-backed workloads. Gates remain:
 Gateway plugin/native status, Codex plugin state and authenticated app-server

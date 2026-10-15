@@ -661,9 +661,9 @@ export const scenarios = {
       },
     ],
     description:
-      "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
+      "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access and reads are rechecked before a retained page is shown. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
-      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
+      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. Create Agent stays shown, inactive, while access and reads are rechecked; then the loaded list and search return unchanged. Refocusing the window rechecks the same way, without a loading state.",
       "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
@@ -778,6 +778,15 @@ export const scenarios = {
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
+  },
+  agentsCreateRestricted: {
+    group: "Pages/Agents",
+    name: "Create Agent unavailable for this caller",
+    readOnlyPermissionSummary: true,
+    description: "The permission summary says this caller cannot create an Agent here.",
+    steps: [
+      "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
+    ],
   },
   agentsDenied: {
     group: "Pages/Agents",
@@ -1134,11 +1143,26 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
-      { selector: '[aria-label="Default plugin approvers people"]', focus: true },
     ],
     description:
-      "New Agents inherit OpenClaw's existing approval routing until an operator selects a default. The directory explains that a Slack bot Secret must be selected under Channels before names can be resolved.",
+      "Choose a Slack bot Secret here to search by name, or enter exact IDs. The search choice does not bind the Secret to the Agent.",
     gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
+  },
+  createPluginApproversLookup: {
+    group: "Pages/Create Agent",
+    name: "Search for plugin approvers",
+    path: create,
+    pluginCapabilities,
+    actions: [
+      ...form,
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      { selector: "#approver-directory-secret", value: "Slack bot token (simulated)" },
+      { selector: '[aria-label="Default plugin approvers people"]', value: "Alex" },
+      { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
+    ],
+    description:
+      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select a result to add its workspace-qualified user ID.",
+    gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
@@ -1526,6 +1550,33 @@ export const scenarios = {
     steps: [
       "Click Create Agent and wait for the credential initialization failure.",
       "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
+    ],
+  },
+  createProvisioningStopped: {
+    group: "Pages/Create Agent",
+    name: "Stopped before the first deployment",
+    path: create,
+    actions: readyForm,
+    provisioningCancelledByStop: true,
+    description:
+      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent.",
+    steps: [
+      "Click Create Agent and wait for the cancelled provisioning.",
+      "Confirm the page says Provisioning stopped, asks for no new Agent, and links the kept Agent.",
+    ],
+  },
+  createDeploymentStopped: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment stopped",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentStopped: true,
+    description:
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair.",
+    steps: [
+      "Click Create Agent and wait for the stopped first deployment.",
+      "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",
     ],
   },
   createUnsupportedProvisioning: {
@@ -2266,7 +2317,11 @@ export const scenarios = {
       ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
-      "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Authentication method stays clickable with Anthropic API key as its only option. Its fixed model list is available before credential entry and starts without a selection.",
+    steps: [
+      "Open Authentication method and select Anthropic API key. It remains clickable even though it is the only available method.",
+      "Confirm the selected model credential Secret stays selected after choosing the authentication method.",
+    ],
   },
   createCodexPat: {
     group: "Pages/Create Agent",
@@ -2527,6 +2582,21 @@ export const scenarios = {
       "Inspect the admitted version and its deployment activity.",
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
+  },
+  longVersionHistory: {
+    group: "Pages/Agent detail",
+    name: "Long version history",
+    path: draft,
+    deployed: true,
+    revisionHistory: 8,
+    revisionPageSize: 3,
+    description:
+      "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
+    steps: [
+      "Check that v8, v7, and v6 are listed with Show older versions below them.",
+      "Select Show older versions until v1 is listed and the button is gone.",
+    ],
+    gap: "The fixture uses three versions per page; the API default is 50.",
   },
   draftAutomaticCredentials: {
     group: "Pages/Agent detail",
@@ -3030,7 +3100,7 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     description:
-      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
+      "v7 failed its startup model check; the recorded error states the next step, the record names the runtime's classified cause (the provider rejected the model or request format), and Open Configuration links the draft.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -3042,6 +3112,29 @@ export const scenarios = {
     description:
       "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
   },
+  deploymentStopped: {
+    group: "Pages/Agent detail",
+    name: "Deployment stopped by the owner",
+    path: candidateVersion,
+    deployed: true,
+    stopped: true,
+    candidateDeploymentStatus: "failed",
+    candidateStopped: true,
+    description:
+      "The owner stopped the Agent while v7 was deploying. Latest visible deployment reads v7 · Stopped with neutral stages, no failure banner, and a deploy-again next step.",
+    gap: "The stopped record is simulated UI evidence; it does not verify a live deployment.",
+  },
+  deploymentSuperseded: {
+    group: "Pages/Agent detail",
+    name: "Deployment superseded by a newer version",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSuperseded: true,
+    description:
+      "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
+    gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",
@@ -3050,6 +3143,25 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+  },
+  deploymentActivityLoading: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity loading",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        prefix:
+          "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/",
+        delayMs: 4000,
+      },
+    ],
+    description:
+      "Deployment status reads take 4 s. Deployment activity keeps its loading placeholder until the newest version's status arrives, then shows it in one step.",
+    steps: [
+      "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
+    ],
   },
   deploymentUnavailable: {
     group: "Pages/Agent detail",
@@ -4238,6 +4350,20 @@ export const scenarios = {
     description:
       "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
   },
+  deletionPermissionDuringConfirmation: {
+    group: "Components/Deletion",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Delete Agent")],
+    description: "The story opens Delete before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+    ],
+  },
   deletionConfirm: {
     group: "Components/Deletion",
     name: "Confirmation",
@@ -4251,6 +4377,11 @@ export const scenarios = {
     name: "Cleanup in progress",
     path: draft,
     deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1300 }],
+    steps: [
+      "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
+    ],
     description:
       "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
   },
@@ -4288,6 +4419,7 @@ export const scenarios = {
     name: "Permission denied",
     path: draft,
     rules: [
+      { suffix: "/permissions", status: 503 },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -4296,7 +4428,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "A denied deletion leaves the Agent available and explains the missing permission.",
+      "Permission advice is unavailable. The attempted deletion is denied and the Console explains the missing access.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -4599,6 +4731,20 @@ export const scenarios = {
     ],
     gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
   },
+  stopPermissionDuringConfirmation: {
+    group: "Components/Stop Agent",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Stop Agent")],
+    description: "The story opens Stop before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+    ],
+  },
   stopConfirm: {
     group: "Components/Stop Agent",
     name: "Confirmation",
@@ -4613,6 +4759,11 @@ export const scenarios = {
     path: revision,
     deployed: true,
     stopped: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1800 }],
+    steps: [
+      "Focus Refresh stop status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
+    ],
     description:
       "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
   },
@@ -4636,6 +4787,13 @@ export const scenarios = {
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
   },
+  stopNeverDeployed: {
+    group: "Components/Stop Agent",
+    name: "Never deployed",
+    path: draft,
+    description:
+      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
+  },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
     name: "Repeated Stop outcome unknown",
@@ -4654,10 +4812,13 @@ export const scenarios = {
     name: "Permission denied",
     path: revision,
     deployed: true,
-    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    rules: [
+      { suffix: "/permissions", status: 503 },
+      { suffix: "/stop", method: "POST", status: 403 },
+    ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "An authorization denial keeps the Agent running and explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",

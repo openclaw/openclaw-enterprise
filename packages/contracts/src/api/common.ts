@@ -231,6 +231,31 @@ export const AgentRuntimeLogsQuery = Type.Object(
   { additionalProperties: false },
 );
 
+/**
+ * Query strings are not coerced; `limit` is exact decimal text. The cursor holds only the
+ * revision number the next page starts below (at most 15 digits, so always a safe integer). It
+ * needs no signature: every listed revision is still authorized one by one, and the server only
+ * issues a cursor naming a revision the caller can read.
+ */
+export const AgentRevisionListQuery = Type.Object(
+  {
+    limit: Type.Optional(
+      Type.String({
+        pattern: "^(?:[1-9][0-9]?|100)$",
+        description: "Revisions per page, 1 to 100; default 50.",
+      }),
+    ),
+    cursor: Type.Optional(
+      Type.String({
+        maxLength: 32,
+        pattern: "^v1\\.[1-9][0-9]{0,14}$",
+        description: "Opaque cursor from `meta.nextCursor` of the previous page.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
 export const WORKSPACE_FILE_NAMES = Object.freeze([
   "AGENTS.md",
   "SOUL.md",
@@ -848,6 +873,7 @@ export const ERROR_CODES = Object.freeze([
   "RUNTIME_LOGS_CURSOR_INVALID",
   "RUNTIME_LOGS_POD_INVALID",
   "RUNTIME_LOGS_SOURCE_UNAVAILABLE",
+  "NATIVE_ADMIN_RETURN_RATE_LIMITED",
   "RUNTIME_LOGS_RATE_LIMITED",
   "RUNTIME_LOGS_CLUSTER_RBAC",
   "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
@@ -933,6 +959,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_LOGS_CURSOR_INVALID"),
           Type.Literal("RUNTIME_LOGS_POD_INVALID"),
           Type.Literal("RUNTIME_LOGS_SOURCE_UNAVAILABLE"),
+          Type.Literal("NATIVE_ADMIN_RETURN_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_CLUSTER_RBAC"),
           Type.Literal("RUNTIME_LOGS_SANDBOX_NOT_FOUND"),
@@ -982,6 +1009,7 @@ export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
 export type ServiceAccountDeleteQuery = Type.Static<typeof ServiceAccountDeleteQuery>;
 export type AgentRuntimeLogsQuery = Type.Static<typeof AgentRuntimeLogsQuery>;
+export type AgentRevisionListQuery = Type.Static<typeof AgentRevisionListQuery>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;

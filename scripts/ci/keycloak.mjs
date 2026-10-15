@@ -368,7 +368,7 @@ export async function prepareKeycloak({
 
   await step("hosts", async () => {
     // A `::1`-first answer against a loopback-only publication would flake. The log records
-    // each runner image's resolver behaviour (docs/testing/keycloak.md).
+    // each runner image's resolver behaviour (docs/testing/kubernetes.md#keycloak-oidc-tests).
     const answer = await resolverAnswer(lookupAll);
     if (answer.loopbackOnly) {
       log(`Keycloak hosts: ${keycloakHost} resolves to 127.0.0.1; no /etc/hosts line added.`);

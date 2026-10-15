@@ -163,8 +163,8 @@ indefinitely; drafts, active revisions, and pending deployments block source del
 One workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
-from the immutable native model Configuration; admission requires all selected
-models and fallbacks to use the same supported provider. Dedicated Codex receives
+from the immutable native model Configuration; admission requires every model
+selection, fallbacks included, to use the same supported provider. Dedicated Codex receives
 the key or account token through a revision-owned DP projection. Both
 imported and managed PATs deliver only `CODEX_ACCESS_TOKEN` as the
 model credential; its separate Gateway receives none.
@@ -292,7 +292,7 @@ Token brokerage remains deferred. Consumed markers and source seals prevent OCE 
   `OCC_TEST_HARNESS_K3D_REAL=1` exercises the API binding/deploy path with
   disposable Kubernetes/PostgreSQL, genuine images, and an authorized API key,
   requiring a provider-backed turn from both dedicated Codex and embedded OpenClaw.
-- [Managed-account testing](../testing/service-accounts.md) separately requires
+- [Managed-account testing](../testing/slack.md#chatgpt-service-accounts) separately requires
   provider authorization, an issued ChatGPT credential, and a real Codex turn;
   API fixtures prove only admission or persistence.
 - Verify Secret projections only on intended consumers, source-deletion guards,

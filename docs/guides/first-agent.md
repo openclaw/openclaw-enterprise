@@ -2,7 +2,7 @@
 
 Create your own Agent in the Kubernetes installation from [Local setup](quickstart.md),
 deploy it, and get a real response from an OpenAI model. You choose the Agent
-name and supply your own OpenAI API key. The Agent stays in your installation
+name and supply an OpenAI API key or, for dedicated Codex with OpenShell, a personal access token. The Agent stays in your installation
 after the command exits.
 
 ## Before you start
@@ -25,6 +25,12 @@ after the command exits.
   fails. The command prompts for the key without echoing it only when neither
   is set. An exported key is used as is, so clear a stale one with
   `env -u OPENAI_API_KEY` to be prompted instead.
+
+For dedicated Codex with OpenShell, a personal access token (including a service-account token)
+can replace the API key. Supply `CODEX_ACCESS_TOKEN` through your secret manager
+or set `CODEX_ACCESS_TOKEN_FILE` to its private file. Select one credential input;
+do not also set an API-key input. The helper records the authentication method
+for later reuse and credential replacement.
 
 The walkthrough runs from the repository root on your own development
 installation. If you followed [Kubernetes Setup](kubernetes-setup.md) on an
@@ -66,11 +72,12 @@ Agent access to its Secret, and requests the first deployment. It then waits
 for the gateway and sends a verification prompt before sending your own. Initial
 startup can take several minutes.
 
-This starter answers model prompts only. Tools and the native admin UI are
-disabled. The command refuses to reuse it if you change its Configuration
-elsewhere. For an Agent that can use tools or the native admin UI, create a
-separate console-managed Agent; see [Agent Configuration](../reference/configuration.md),
-[Plugins](../reference/agent-plugins.md), and [local native admin setup](quickstart.md#open-an-agents-native-admin-ui).
+This starter answers model prompts only, and tools remain disabled. Native
+admin UI is disabled unless you select the supported local option below. The
+command refuses to reuse the Agent if you change its Configuration elsewhere.
+For other policy changes, create a separate console-managed Agent; see
+[Agent Configuration](../reference/configuration.md) and
+[Plugins](../reference/agent-plugins.md).
 
 If Local setup selected OpenShell, add `--harness codex`:
 
@@ -78,16 +85,31 @@ If Local setup selected OpenShell, add `--harness codex`:
 node scripts/first-agent.mjs my-agent --harness codex --prompt 'What is 2 + 2?'
 ```
 
-That path stores the key in the same platform Secret, registers an OpenAI
-CredentialSource, and grants the Agent access to the source—not the Secret. It
+That path stores the credential in a platform Secret and registers an `openai`
+API-key source or a `codex-pat` token source. It grants the Agent access to the source—not the Secret. It
 uses OpenShell's experimental provider-file and bearer-passthrough APIs, so it
 is a development workflow rather than production qualification. Reuse the same
 `--harness` selection with that Agent name.
 
+When Local setup runs OCC in Compose with both Kubernetes Compute and OpenShell,
+you can also expose this Agent's native Control UI through OCC:
+
+```bash
+node scripts/first-agent.mjs my-agent --harness codex --control-ui --prompt 'What is 2 + 2?'
+```
+
+Use a new Agent name when adding or removing `--control-ui`; the choice is part
+of the helper-owned Agent record. The helper creates the Agent first, derives
+its exact HTTPS origin, and saves a second Configuration generation with that
+origin in `controlUi.allowedOrigins`. It also configures native trusted-proxy
+authentication for the OCC identity. The allowed origin is required: do not
+replace it with the console origin or a wildcard.
+
 Keep the command running until it prints `Model response verified:` followed by
 the phrase it asked the model to repeat. Under `Agent response:`, it then prints
 the model's answer to your question. It also prints the Agent ID, active
-revision, and console URL. These returned responses complete the model check; see
+revision, and console URL. With `--control-ui`, it also prints the Control UI
+URL. These returned responses complete the model check; see
 [what each check establishes](operate/model-verification.md#what-each-check-establishes).
 
 <span id="4-check-what-actually-deployed"></span>
@@ -101,6 +123,12 @@ shows the revision selected by OCC; **Deployment activity** shows persisted
 deployment progress. Use the terminal command for further model prompts. For
 browser access to the Agent's files, follow
 [workspace verification](deploy/workspace-routing.md#verify-routing-and-file-access).
+
+For `--control-ui`, first trust the browser CA certificate printed by Local
+setup, sign in at the HTTPS console link, and then open the printed Control UI
+link. Both hosts are installation-specific `.localhost` names on the same
+loopback-only HTTPS port. Native edits are Pod-local; keep durable changes in
+the OCE Configuration.
 
 The Agent remains available after the command exits. Run the same command with
 the same Agent name and a different `--prompt` to ask another question; you do
@@ -164,5 +192,5 @@ remembers the Agent name; use a new name for the next run.
 - **OpenShell rejects the default Harness:** rerun with `--harness codex` and a
   new Agent name. Embedded OpenClaw remains unsupported with OpenShell.
   Contributors reproducing the Compose-plus-k3d path can use the
-  [OpenShell first-Agent handoff](../testing/openshell-first-agent.md) for exact
+  [OpenShell first-Agent handoff](../testing/openshell.md#first-agent-proof) for exact
   setup and recovery checks.

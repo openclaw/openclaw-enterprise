@@ -1,11 +1,12 @@
 # Understand the Agent detail page
 
-Open **Agents**, then select an Agent to inspect its versions, saved settings,
-and workspace. For initial setup, use
+Open **Agents**, then select an Agent. For setup, see
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
+Saved settings don’t establish Agent or Slack connection health.
 
-Available actions depend on your Installation and permissions. Stored settings
-do not confirm that an Agent or its Slack connection is currently healthy.
+The Console can explain why Deploy, Stop, or Delete is unavailable. Reload if your access changes.
+The API checks every request, even when the Console can’t check ahead. Opening a version draft
+doesn’t require Agent update permission; saving and deploying have separate access checks.
 
 ## Navigation and Agent identity
 
@@ -40,17 +41,15 @@ another version or the draft. Its milestones use the persisted record:
 | **Deployment work**     | `queued` awaits an initial or subsequent claim; `running` records a worker claim. |
 | **Completion recorded** | `succeeded` means the original work completed activation or was already active.   |
 
-A `failed` result shows the stored error. Select **Open vN Logs** to open that
+Work ended by a newer version (`REVISION_SUPERSEDED` or
+`REPOSITORY_REVISION_SUPERSEDED`) or a Stop (`REVISION_STOPPED`) shows as a
+neutral `superseded` or `stopped` result, not a failure; after a Stop, deploy a
+new version to run the Agent again. A `failed` result shows the stored error. Select **Open vN Logs** to open that
 version's [Logs tab](../topics/agent-logs.md) and bring the panel into view,
 even from the draft or another version. If logs are unavailable, the panel
 shows an access or availability message.
-For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
-`RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` it also states
-the next step and links **Credentials** or the draft **Configuration** (for
-`AGENT_GATEWAY_UNAUTHORIZED`, select **Enable gateway password access** there). A provider the runtime cannot
-reach (refused connection, unknown host) usually reports
-`RUNTIME_MODEL_PROBE_TIMEOUT` with OpenClaw and `RUNTIME_MODEL_PROBE_FAILED`
-with Codex.
+For most codes the error states the next step, as in `occ`. For `RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_MODEL_PROBE_FAILED`,
+`RUNTIME_MODEL_PROBE_TIMEOUT` and `AGENT_GATEWAY_UNAUTHORIZED` the panel also links **Credentials** or the draft **Configuration**.
 Startup evidence may identify the runtime component, failed check, code, and
 check time. A failed startup model check may also show its **Cause**, such as
 the provider reporting a rate limit or the check process exiting with an error
@@ -78,7 +77,8 @@ Verify the runtime and a real response with
 An **AgentRevision** is an immutable version created by deployment. A
 **Configuration** is the reusable, mutable input for the next version.
 
-**Versions** marks the current version. **View version vN** shows creation time,
+**Versions** lists the newest 50 versions and marks the current one; **Show
+older versions** loads the next 50. **View version vN** shows creation time,
 Configuration generation, deployment status, and read-only settings, including
 native JSON. Activity follows the latest visible deployment. **Available versions**
 jumps to readable versions; `rev_…` identifies the version for API calls and
@@ -274,7 +274,9 @@ viewed revision or tab.
 
 An accepted stop requests shutdown; it does not prove the runtime
 finished. **Refresh stop status** reads the desired state and selected revision.
-An uncertain result blocks another stop until a successful refresh. To resume,
+An uncertain result blocks another stop until a successful refresh. With no
+selected version and none you can read, as before a first deploy, it shows no
+stop controls. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 

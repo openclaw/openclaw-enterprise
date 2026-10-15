@@ -31,6 +31,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -897,12 +898,13 @@ function imageCache(role) {
 }
 
 // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change, in order and never cancelled, so the newest commit's export
-// lands last. CI lanes only restore: a lane export on main could land after a
-// newer commit's warm export and replace it, and on a pull request it cost about
-// 40 s and filled only the merge ref's scope. The warm job exports in a second
-// build after the image is built and loaded: the same arguments without --load or
-// the tag, so BuildKit reuses the steps it just ran and only uploads the cache.
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
 function imageCacheExportArgs(role, buildArgs) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
@@ -926,13 +928,17 @@ function imageCacheExportArgs(role, buildArgs) {
   ];
 }
 
-// The warm job's limit for one image's cache export. Healthy exports took 25-65 s;
-// one stalled on a single layer upload for 17 minutes, past BuildKit's own
-// timeout=10m (finding 1219). Tests shorten it.
+// The warm job's limit for one image's cache export. Exports that reuse the
+// OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
+// or install step) uploads them all again, one at a time: 513-817 s on the warm
+// runner. Those layers are not byte-reproducible, so a cut-off export's uploads
+// never help the next run, and a 5 min limit left the image lanes rebuilding
+// them on every run (finding 1275). One upload once stalled for 17 min (finding
+// 1219); this still bounds that. Tests shorten it.
 const imageCacheExportTimeoutMs =
   Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS) > 0
     ? Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS)
-    : 5 * 60_000;
+    : 20 * 60_000;
 
 function imageBuildArgs(state, role, localStore) {
   if (process.env.OCC_CI_IMAGE_CACHE === "1") {
@@ -3007,6 +3013,30 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     }
+    case "qa-matrix":
+      // On a hosted runner, record the starting images so cleanup can return the
+      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // launcher tags are the developer's own and stay as the run leaves them. A
+      // failed inventory only skips that: the QA run itself does not need it.
+      if (process.env.GITHUB_ACTIONS === "true") {
+        let images;
+        try {
+          images = await imageInventory({
+            execFile: (command, args) =>
+              execFile(command, args, { timeoutMs: imageCommandTimeoutMs }),
+            docker: process.env.OCC_DOCKER_BIN ?? "docker",
+          });
+        } catch (error) {
+          console.log(
+            `::warning::QA image baseline skipped: ${String(error.message).split("\n")[0]}`,
+          );
+        }
+        if (images) {
+          addResource(state, laneImagesResourceKind, { name, images, status: "ready" });
+          await writeState(resolvedStatePath, state);
+        }
+      }
+      break;
     case "helper-timeout":
       break;
   }
@@ -3218,9 +3248,9 @@ const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 async function warmImageCache({ statePath }) {
   if (
     process.env.GITHUB_REF !== "refs/heads/main" ||
-    !["push", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
+    !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
   ) {
-    throw new Error("Only a push or dispatch on main may warm the image cache.");
+    throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
   }
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);

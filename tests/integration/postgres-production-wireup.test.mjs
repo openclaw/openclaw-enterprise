@@ -500,8 +500,15 @@ test(
         "Standard OpenClaw",
         "default-codex",
       ]);
-      const copied = defaults.data.find((preset) => preset.name === "Standard Codex");
-      const copiedOpenClaw = defaults.data.find((preset) => preset.name === "Standard OpenClaw");
+      // The list returns summaries; the exact read carries each template.
+      const exactPreset = async (summary) =>
+        summary && (await request("GET", `${presetPath}/${summary.id}`)).data;
+      const copied = await exactPreset(
+        defaults.data.find((preset) => preset.name === "Standard Codex"),
+      );
+      const copiedOpenClaw = await exactPreset(
+        defaults.data.find((preset) => preset.name === "Standard OpenClaw"),
+      );
       assert.ok(copied, "missing Standard Codex");
       assert.ok(copiedOpenClaw, "missing Standard OpenClaw");
       const worker = createControllerWorker({
@@ -608,12 +615,12 @@ test(
         "default-codex",
       ]);
       assert.deepEqual(
-        afterRestart.data.find((preset) => preset.name === "Standard Codex"),
+        await exactPreset(afterRestart.data.find((preset) => preset.name === "Standard Codex")),
         customized.data,
       );
       // Refreshed from the stored JSONB: same ID, current template. The edit above stays.
       assert.deepEqual(
-        afterRestart.data.find((preset) => preset.name === "Standard OpenClaw"),
+        await exactPreset(afterRestart.data.find((preset) => preset.name === "Standard OpenClaw")),
         copiedOpenClaw,
       );
       // A Restriction freezing the Namespace's Presets keeps an earlier copy, and startup
@@ -682,7 +689,9 @@ test(
         JSON.stringify({ name: "default-codex", template: operatorCodexTemplate }),
       );
       const bundledCodexCopy = async () =>
-        (await request("GET", presetPath)).data.find((preset) => preset.name === "default-codex");
+        exactPreset(
+          (await request("GET", presetPath)).data.find((preset) => preset.name === "default-codex"),
+        );
       const seededCodex = await bundledCodexCopy();
       const shadowLog = memoryLog();
       await restart({ includeDefaults: true, files: [operatorCodexPath] }, shadowLog.logger);
@@ -704,11 +713,14 @@ test(
         "Standard OpenClaw",
         "default-codex",
       ]);
-      // A new Namespace receives the operator's template, not the bundled one.
-      assert.equal(
-        newPresets.data.find((preset) => preset.name === "default-codex").template.agent.name,
-        operatorCodexTemplate.agent.name,
+      // A new Namespace receives the operator's template, not the bundled one. The list
+      // returns summaries, so read the exact Preset for its template.
+      const newCodex = newPresets.data.find((preset) => preset.name === "default-codex");
+      const newCodexPreset = await request(
+        "GET",
+        `/namespaces/${newNamespace.data.id}/presets/${newCodex.id}`,
       );
+      assert.equal(newCodexPreset.data.template.agent.name, operatorCodexTemplate.agent.name);
       assert.notEqual(
         newPresets.data.find((preset) => preset.name === "Standard Codex").id,
         copied.id,

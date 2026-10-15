@@ -66,14 +66,14 @@ function workerStartupFailureCode(error) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
   if (
-    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must be an absolute HTTP)/.test(
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
       message,
     )
   ) {
     return "OBSERVABILITY_URL_INVALID";
   }
   if (
-    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase)/.test(
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
       message,
     )
   ) {

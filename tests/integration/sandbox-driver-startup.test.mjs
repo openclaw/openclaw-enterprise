@@ -459,7 +459,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
   const staticOnly = await loadInstallationFile(t, withoutRefresh);
   assert.deepEqual(
     (await staticOnly.credentialGatewayDriver.listSourceTypes({ signal })).map(({ type }) => type),
-    ["openai", "bearer-token"],
+    ["openai", "codex-pat", "bearer-token"],
   );
 
   // Refresh state lives on the gateway's provider records, so the roles cannot be split.
@@ -566,7 +566,7 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     mode: "dedicated",
   });
   assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
-    sandbox: "danger-full-access",
+    sandbox: "workspace-write",
     approvalsReviewer: "user",
   });
   assert.throws(
@@ -580,44 +580,43 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
   );
 });
 
-test("OpenShell keeps dedicated Codex turns out of Codex's own sandbox (finding 1026)", () => {
+test("OpenShell selects Codex isolation from the admitted credential source", () => {
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: backendFor(workspaceGatewayClient()),
   });
   const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  // The documented OpenShell Configuration's guardian app-server, plus a member's model-backed
-  // reviewer. On a model the Gateway cannot verify for review, both make the pinned Gateway
-  // force a user reviewer, and with it a workspace-write turn sandbox that bwrap cannot start
-  // inside OpenShell. The explicit user reviewer keeps the frozen danger-full-access.
-  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
-    const appServer = {
-      mode: "guardian",
-      approvalPolicy: "on-request",
-      sandbox: "read-only",
-      transport: "websocket",
-      url: "${APP_SERVER_URL}",
-      authToken: "${APP_SERVER_TOKEN}",
-      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
-    };
-    const configuration = {
-      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
-    };
-    const configured = driver.configureAgent(configuration, harness);
-    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
-      mode: "guardian",
-      approvalPolicy: "on-request",
-      sandbox: "danger-full-access",
-      transport: "websocket",
-      url: "${APP_SERVER_URL}",
-      authToken: "${APP_SERVER_TOKEN}",
-      approvalsReviewer: "user",
-    });
-    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
-    assert.equal(appServer.sandbox, "read-only");
-    // Status reads rerun the hook on stored work, so the pin must be idempotent.
-    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  // API keys preserve outer-only isolation; PAT and unresolved sources retain native policy.
+  for (const loginMode of [undefined, "codex_pat", "api_key"]) {
+    for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+      const appServer = {
+        mode: "guardian",
+        approvalPolicy: "on-request",
+        sandbox: "read-only",
+        transport: "websocket",
+        url: "${APP_SERVER_URL}",
+        authToken: "${APP_SERVER_TOKEN}",
+        ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+      };
+      const configuration = {
+        plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+      };
+      const configured = driver.configureAgent(configuration, harness, loginMode);
+      assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+        mode: "guardian",
+        approvalPolicy: "on-request",
+        sandbox: loginMode === "api_key" ? "danger-full-access" : "workspace-write",
+        transport: "websocket",
+        url: "${APP_SERVER_URL}",
+        authToken: "${APP_SERVER_TOKEN}",
+        approvalsReviewer: "user",
+      });
+      assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+      assert.equal(appServer.sandbox, "read-only");
+      // Status reads rerun the hook on stored work, so the pin must be idempotent.
+      assert.deepEqual(driver.configureAgent(configured, harness, loginMode), configured);
+    }
   }
 });
 
@@ -1954,6 +1953,192 @@ test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async 
   );
 });
 
+// OpenShell answers a controller identity it cannot authenticate (UNAUTHENTICATED) or that lacks
+// a permission (PERMISSION_DENIED) with a gRPC status the gateway client passes through raw. Read
+// as an HTTP status, it was retryable and logged "HTTP status 7" (finding 1390): the Namespace
+// work spent its attempts on a refusal only an operator can fix. The OpenShell Sandbox Driver now
+// names the refusal, and Compute fails the Namespace step at once with that reason.
+test("OpenShell Namespace steps fail at once when OpenShell refuses the controller identity", async () => {
+  const grpc = controllerRequire("@grpc/grpc-js");
+  // The grpc-js error shape unary() rejects with for these codes.
+  const grpcError = (code, details) =>
+    Object.assign(new Error(`${code} ${grpc.status[code]}: ${details}`), {
+      code,
+      details,
+      metadata: new grpc.Metadata(),
+    });
+  const sandboxDriver = (gatewayClient) =>
+    new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+    });
+  const refusal = (name) => `OpenShell refused the controller gateway identity with gRPC ${name}.`;
+
+  for (const [step, name] of [
+    ["health", "UNAUTHENTICATED"],
+    ["createWorkspace", "PERMISSION_DENIED"],
+  ]) {
+    const gatewayClient = workspaceGatewayClient();
+    const raw = grpcError(grpc.status[name], "refused");
+    gatewayClient[step] = async () => {
+      throw raw;
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()), {
+      name: "SandboxNamespaceRefusedError",
+      message: refusal(name),
+      cause: raw,
+    });
+  }
+  {
+    const context = namespaceContext();
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: context.namespace.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": context.namespace.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    gatewayClient.deleteWorkspace = async () => {
+      throw grpcError(grpc.status.PERMISSION_DENIED, "workspace:delete");
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).cleanup(context), {
+      name: "SandboxNamespaceRefusedError",
+      message: refusal("PERMISSION_DENIED"),
+    });
+  }
+  // Revision cleanup keeps its raw error: the refusal classification is for Namespace steps only.
+  {
+    const gatewayClient = workspaceGatewayClient();
+    const raw = grpcError(grpc.status.PERMISSION_DENIED, "sandbox:delete");
+    gatewayClient.deleteSandbox = async () => {
+      throw raw;
+    };
+    const driver = sandboxDriver(gatewayClient);
+    const { context, revision } = codexSandboxFixture(driver);
+    await assert.rejects(driver.cleanup({ ...context, revision }), (error) => {
+      assert.equal(error, raw);
+      return true;
+    });
+  }
+  // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state and
+  // RESOURCE_EXHAUSTED a rate limit or busy admission workers, neither of them the identity.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"]) {
+    const gatewayClient = workspaceGatewayClient();
+    const passedThrough = grpcError(grpc.status[name], "not an identity refusal");
+    gatewayClient.createWorkspace = async () => {
+      throw passedThrough;
+    };
+    await assert.rejects(
+      sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()),
+      (error) => {
+        assert.equal(error, passedThrough, name);
+        return true;
+      },
+    );
+  }
+  // A Workspace removed between Namespace cleanup's read and its provider listing answers
+  // NOT_FOUND. Cleanup keeps that error: it names a missing Workspace, not the identity.
+  {
+    const context = namespaceContext();
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: context.namespace.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": context.namespace.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    const missing = grpcError(grpc.status.NOT_FOUND, "workspace not found");
+    gatewayClient.listProviders = async () => {
+      throw missing;
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).cleanup(context), (error) => {
+      assert.equal(error, missing);
+      return true;
+    });
+  }
+
+  // Through Compute: the Kubernetes steps before the Sandbox Driver are stubbed, so the
+  // Namespace result comes from Compute's own classification of what the Sandbox Driver threw.
+  const tenant = namespaceContext().namespace;
+  const placement = { name: tenant.name, plane: "execution" };
+  const compute = (gatewayClient) => {
+    const driver = new KubernetesComputeDriver(
+      conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] }),
+      { sandboxDriver: sandboxDriver(gatewayClient) },
+    );
+    const observed = {
+      metadata: { name: tenant.name, uid: "namespace-uid", labels: {}, annotations: {} },
+      status: { phase: "Active" },
+    };
+    Object.assign(driver, {
+      apiClients: Promise.resolve({ objects: kubernetesObjectClient([]) }),
+      resolveNamespace: async () => ({ name: placement, external: false }),
+      reconcile: async () => {},
+      getNamespace: async () => structuredClone(observed),
+      verifyNamespaceOwnership: () => {},
+      prepareNamespaceInfrastructure: async () => {},
+      ensureGatewayNamespace: async () => true,
+    });
+    return driver;
+  };
+  for (const name of ["PERMISSION_DENIED", "UNAUTHENTICATED"]) {
+    const gatewayClient = workspaceGatewayClient();
+    gatewayClient.createWorkspace = async () => {
+      throw grpcError(grpc.status[name], "workspace:create");
+    };
+    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "permanent",
+      reason: refusal(name),
+    });
+  }
+  {
+    // Namespace deletion fails at once too, and keeps the Kubernetes namespace.
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: tenant.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": tenant.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    gatewayClient.deleteWorkspace = async () => {
+      throw grpcError(grpc.status.UNAUTHENTICATED, "token expired");
+    };
+    const driver = compute(gatewayClient);
+    driver.deleteGatewayNamespace = async () => assert.fail("cleanup must fail first");
+    assert.deepEqual(await driver.deleteNamespace({ ...tenant, status: "deleting" }), {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: "permanent",
+    });
+  }
+  // A refusal Compute cannot classify stays retryable, with a fixed reason and no
+  // "HTTP status 9" or "HTTP status 8": a rate limit clears by itself.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"]) {
+    const gatewayClient = workspaceGatewayClient();
+    gatewayClient.createWorkspace = async () => {
+      throw grpcError(grpc.status[name], "not an identity refusal");
+    };
+    assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
+      namespaceId: tenant.id,
+      namespaceReady: false,
+      failure: "retryable",
+      reason: "Namespace preparation failed.",
+    });
+  }
+});
+
 test("startup rejects invalid bundled OpenShell configuration before invoking an injected factory", async (t) => {
   const configuration = sandboxInstallation();
   configuration.drivers.sandbox.configuration.unsupported = true;
@@ -2208,7 +2393,7 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
       {
         backend: {
           drivers: { credential_gateway: "credential-gateway-openshell" },
-          client: { clientForNamespace: () => client },
+          client: { clientForNamespace: () => client, placement: () => undefined },
         },
       },
     );
@@ -2249,6 +2434,32 @@ function credentialGatewayOverProviders({ keepDeleted = false, toolBinaries } = 
     }),
   };
 }
+
+test("Codex PAT profiles admit native startup without granting the whole backend", async () => {
+  const { context, driver, profiles } = credentialGatewayOverProviders();
+  const source = context("cs_00000000-0000-4000-8000-0000000000c1");
+  await driver.registerSource(
+    { ...source, source: { ...source.source, type: "codex-pat" } },
+    { type: "codex-pat", config: {}, secrets: { access_token: "synthetic-codex-pat" } },
+  );
+  const [profile] = profiles.values();
+  // These are the pinned Codex dependency's startup, turn and usage-recovery routes. A broader backend
+  // or WHAM wildcard would release this credential to unrelated account APIs.
+  assert.deepEqual(profile.endpoints, [
+    {
+      host: "auth.openai.com",
+      port: 443,
+      protocol: "rest",
+      path: "/api/accounts/v1/user-auth-credential/whoami",
+    },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/codex/**" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/config/bundle" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/accounts/check" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/settings/user" },
+    { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/wham/usage" },
+  ]);
+  assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
+});
 
 test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
   const {
@@ -2531,7 +2742,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
   const modelOnly = credentialGatewayOverProviders();
   assert.deepEqual(
     (await modelOnly.driver.listSourceTypes({})).map(({ type }) => type),
-    ["openai"],
+    ["openai", "codex-pat"],
   );
   const tokenInput = (config) => ({ type: "bearer-token", config, secrets: { token: "t0ken" } });
   const endpoint = { host: "api.example.com", env_var: "EXAMPLE_TOKEN" };
@@ -2560,7 +2771,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
     credentialGatewayOverProviders({ toolBinaries: ["/usr/bin/curl"] });
   assert.deepEqual(
     (await driver.listSourceTypes({})).map(({ type }) => type),
-    ["openai", "bearer-token"],
+    ["openai", "codex-pat", "bearer-token"],
   );
   // Every invalid endpoint or placeholder variable is refused before any gateway effect.
   for (const config of [
@@ -2993,6 +3204,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     ["gateway.example.test:65535", true],
     ["gateway.example.test:080", true],
     ["127.0.0.1:8080", true],
+    ["192.168.1.1:8080", true],
+    ["http://192.168.1.1:8080", true],
     ["[::1]:8080", true],
     ["gateway.example.test:0", false],
     ["gateway.example.test:00", false],
@@ -3042,6 +3255,25 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
     if (failing.length > 0) {
       assert.equal(admitted, false, `${endpoint}: ${failing.join(", ")} throws`);
     }
+  }
+  for (const endpoint of [
+    "http://192.168.1:8080",
+    "192.168.1:8080",
+    "2130706433:8080",
+    "http://0177.0.0.1:8080",
+    "http://127.1:8080",
+  ]) {
+    const configuration = sandboxInstallation();
+    configuration.backend[0].configuration = { endpoint, insecureTransport: "network-policy" };
+    await assert.rejects(
+      loadInstallationFile(t, configuration),
+      /configuration\.endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
+      endpoint,
+    );
+    const failing = Object.entries(consumers)
+      .filter(([, parse]) => throws(parse, endpoint))
+      .map(([name]) => name);
+    assert.deepEqual(failing.sort(), ["grpc", "service"], endpoint);
   }
 });
 

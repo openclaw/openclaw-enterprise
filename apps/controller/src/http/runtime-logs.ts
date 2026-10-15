@@ -8,6 +8,8 @@ import {
   type SanitizedRuntimeLogRecord,
 } from "@openclaw-enterprise/occ";
 
+import { RequestRateLimiter } from "./request-rate-limiter.ts";
+
 /** Operator switch and cursor key for the runtime status and log routes. */
 export interface AgentRuntimeLogsConfig {
   readonly enabled: boolean;
@@ -18,40 +20,25 @@ export interface AgentRuntimeLogsConfig {
 const RATE_PER_SECOND = 2;
 const RATE_BURST = 10;
 const MAX_CONCURRENT_READS = 16;
-const MAX_TRACKED_BUCKETS = 10_000;
 
 /**
  * Replica-local limits: a token bucket per principal per Agent (2 requests per second,
  * burst 10) and at most 16 concurrent Driver reads per API replica.
  */
 export class RuntimeLogLimiter {
-  private readonly buckets = new Map<string, { tokens: number; updatedAt: number }>();
+  private readonly rateLimit: RequestRateLimiter;
   private active = 0;
 
-  private readonly now: () => number;
-
   constructor(now: () => number = Date.now) {
-    this.now = now;
+    this.rateLimit = new RequestRateLimiter(RATE_BURST, RATE_PER_SECOND, now);
   }
 
   admit(principalId: string, agentId: string): void {
     const key = `${principalId}\0${agentId}`;
-    const now = this.now();
-    const bucket = this.buckets.get(key) ?? { tokens: RATE_BURST, updatedAt: now };
-    bucket.tokens = Math.min(
-      RATE_BURST,
-      bucket.tokens + ((now - bucket.updatedAt) / 1000) * RATE_PER_SECOND,
-    );
-    bucket.updatedAt = now;
-    if (bucket.tokens < 1) {
-      this.remember(key, bucket);
-      throw new RuntimeLogsError(
-        "RUNTIME_LOGS_RATE_LIMITED",
-        Math.max(1, Math.ceil((1 - bucket.tokens) / RATE_PER_SECOND)),
-      );
+    const retryAfter = this.rateLimit.consume(key);
+    if (retryAfter !== undefined) {
+      throw new RuntimeLogsError("RUNTIME_LOGS_RATE_LIMITED", retryAfter);
     }
-    bucket.tokens -= 1;
-    this.remember(key, bucket);
   }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
@@ -63,15 +50,6 @@ export class RuntimeLogLimiter {
       return await operation();
     } finally {
       this.active -= 1;
-    }
-  }
-
-  private remember(key: string, bucket: { tokens: number; updatedAt: number }): void {
-    this.buckets.delete(key);
-    this.buckets.set(key, bucket);
-    if (this.buckets.size > MAX_TRACKED_BUCKETS) {
-      // Oldest entries are full buckets by now; dropping them only resets idle callers.
-      this.buckets.delete(this.buckets.keys().next().value!);
     }
   }
 }

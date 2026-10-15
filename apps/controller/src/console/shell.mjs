@@ -191,7 +191,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaceSelect.disabled = namespaceAdmissionPending || !session || readable.length === 0;
     namespaceSelect.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
-      let placeholder = "Checking access…";
+      // Once this session knows the Namespace list, admission names the selection instead of
+      // flashing "Checking access…"; the choices stay hidden until access is confirmed.
+      let placeholder = namespaceAdmissionPending
+        ? (namespaces.find((item) => item.id === namespaceId)?.name ?? "Checking access…")
+        : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
       }
@@ -227,7 +231,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function updateNamespaces(readable) {
+  function updateNamespaces(readable, { preservePageScope = false } = {}) {
     if (!namespaceSelect?.isConnected) {
       return;
     }
@@ -243,6 +247,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaces = readable;
     namespaceAdmissionPending = false;
     updateNamespaceSelector();
+    if (preservePageScope) {
+      return;
+    }
     const scope = app.querySelector(".content .scope");
     if (scope && route().feature === "agents") {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;

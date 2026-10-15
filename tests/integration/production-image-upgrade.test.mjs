@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
@@ -473,6 +474,59 @@ test("production image upgrades refuse uppercase repository paths and bad digest
           new RegExp(`${flag} repository path must be lowercase`, "u"),
           image,
         );
+        return true;
+      },
+    );
+  }
+});
+
+// Each image flag takes exactly the references Kubernetes can pull with a lowercase SHA-256
+// digest, as profile preflight, the chart and Compute do. Image flags are checked before any
+// file access, so an accepted reference gets as far as the missing kubeconfig.
+test("production image upgrades give image references Kubernetes' verdict", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-references-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const kubeconfig = join(directory, "kubeconfig");
+  const required = [
+    "--kubeconfig",
+    kubeconfig,
+    "--context",
+    "fixture",
+    "--namespace",
+    "openclaw-system",
+    "--release",
+    "oce",
+    "--values",
+    join(directory, "values"),
+    "--installation",
+    join(directory, "installation"),
+    "--source-revision",
+    "d".repeat(40),
+    "--evidence-dir",
+    join(directory, "evidence"),
+  ];
+  const flags = ["--controller-image", "--broker-image", "--runtime-image"];
+  for (const [index, [label, reference, problem]] of imageReferenceCases.entries()) {
+    // Rotate the flag so every flag sees every kind of reference across the table.
+    const flag = flags[index % flags.length];
+    await assert.rejects(
+      execute(upgradeScript, [...required, flag, reference], { cwd: repository }),
+      (error) => {
+        if (immutableImageAccepted(reference, problem)) {
+          assert.doesNotMatch(error.stderr, new RegExp(flag, "u"), `${flag} ${label}`);
+          assert.match(error.stderr, new RegExp(kubeconfig, "u"), `${flag} ${label}`);
+        } else {
+          assert.match(
+            error.stderr,
+            new RegExp(
+              problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/u.test(reference)
+                ? `${flag} repository path must be lowercase`
+                : `${flag} must be an approved immutable SHA-256 image reference`,
+              "u",
+            ),
+            `${flag} ${label}`,
+          );
+        }
         return true;
       },
     );

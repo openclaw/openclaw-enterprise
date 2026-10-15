@@ -18,6 +18,46 @@
 {{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
 {{- end -}}
 {{- end -}}
+{{- /* Image references follow Kubernetes' parser (distribution/reference ParseNormalizedNamed), which refuses any other reference as InvalidImageName at pull time. Profile preflight, Compute and the image tools share the same rule (packages/occ/src/image-reference.ts). A registry host is a DNS-like name or a bracketed IPv6 address, with an optional port. */ -}}
+{{- define "openclaw.imageDomain" -}}(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))*|\[[a-fA-F0-9:]+\])(?::[0-9]+)?{{- end -}}
+{{- /* Lowercase path components separated by one period, one or two underscores, or hyphens. */ -}}
+{{- define "openclaw.imageRemoteName" -}}[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*{{- end -}}
+{{- /* An image the chart renders: a reference Kubernetes can pull, pinned to a lowercase SHA-256 digest. */ -}}
+{{- define "openclaw.validateImageReference" -}}
+{{- $image := toString .image -}}
+{{- $label := .label -}}
+{{- if not (regexMatch "@sha256:[a-f0-9]{64}$" $image) -}}
+{{- fail (printf "%s must be an approved immutable SHA-256 image reference" $label) -}}
+{{- end -}}
+{{- /* The first component is the registry host only when it is localhost or has a dot, a colon or an uppercase letter. Otherwise the image is on docker.io, under library/ when it has one component. */ -}}
+{{- $domain := "docker.io" -}}
+{{- $remainder := $image -}}
+{{- if contains "/" $image -}}
+{{- $first := index (splitn "/" 2 $image) "_0" -}}
+{{- if or (eq $first "localhost") (regexMatch "[.:]" $first) (ne (lower $first) $first) -}}
+{{- $domain = ternary "docker.io" $first (eq $first "index.docker.io") -}}
+{{- $remainder = index (splitn "/" 2 $image) "_1" -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq $domain "docker.io") (not (contains "/" $remainder)) -}}
+{{- $remainder = printf "library/%s" $remainder -}}
+{{- end -}}
+{{- /* Only the registry host and the tag may use uppercase. */ -}}
+{{- $remote := index (splitn ":" 2 $remainder) "_0" -}}
+{{- if ne (lower $remote) $remote -}}
+{{- fail (printf "%s repository path must be lowercase; Kubernetes refuses to pull an uppercase one" $label) -}}
+{{- end -}}
+{{- $reference := printf "^((?:%s/)?%s)(?::[\\w][\\w.-]{0,127})?@sha256:[a-f0-9]{64}$" (include "openclaw.imageDomain" .) (include "openclaw.imageRemoteName" .) -}}
+{{- $normalized := printf "%s/%s" $domain $remainder -}}
+{{- if not (regexMatch $reference $normalized) -}}
+{{- fail (printf "%s must be an approved immutable SHA-256 image reference" $label) -}}
+{{- end -}}
+{{- /* Kubernetes limits the repository path, without the registry host, to 255 characters. */ -}}
+{{- $path := regexReplaceAll (printf "^%s/" (include "openclaw.imageDomain" .)) (regexReplaceAll $reference $normalized "${1}") "" -}}
+{{- if gt (len $path) 255 -}}
+{{- fail (printf "%s must be an approved immutable SHA-256 image reference" $label) -}}
+{{- end -}}
+{{- end -}}
 {{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
 {{- define "openclaw.validateResourceName" -}}
 {{- $value := toString .value -}}
@@ -32,14 +72,7 @@
 {{- if hasKey .Values "integrations" -}}{{- fail "integrations is retired; configure ChatGPT packaging under backend.chatgpt" -}}{{- end -}}
 {{- if hasKey .Values "workspaceFiles" -}}{{- fail "workspaceFiles is retired; configure private Envoy Gateway routing under gatewayRouting" -}}{{- end -}}
 {{- range $name, $image := .Values.images -}}
-{{- /* prepare-bootstrap-volume --image: a letter or digit, then letters, digits, dot, underscore, colon, slash, or hyphen, and a lowercase sha256 digest. */ -}}
-{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $image) -}}
-{{- fail (printf "images.%s must be an approved immutable SHA-256 image reference" $name) -}}
-{{- end -}}
-{{- /* Kubernetes refuses to pull an image whose repository path has an uppercase letter (InvalidImageName). Only the registry host (the first component, when a / follows it) and the tag may use uppercase; the profile renderer applies the same rule. */ -}}
-{{- if regexMatch "^(?:[^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)" $image -}}
-{{- fail (printf "images.%s repository path must be lowercase; Kubernetes refuses to pull an uppercase one" $name) -}}
-{{- end -}}
+{{- include "openclaw.validateImageReference" (dict "label" (printf "images.%s" $name) "image" $image) -}}
 {{- end -}}
 {{- if not .Values.auth.baseUrl -}}{{- fail "auth.baseUrl must identify the public Better Auth base URL" -}}{{- end -}}
 {{- /* URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces and invisible characters there (NBSP, U+3000, U+FEFF, U+200B) reach the API's parser, which refuses most of them. Both ends must be a letter, mark, number, punctuation or symbol (not Z or C, including unassigned code points). */ -}}
@@ -426,12 +459,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
-{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$" $credentials.image) -}}
-{{- fail "repositoryCredentials.image must be an approved immutable SHA-256 image reference" -}}
-{{- end -}}
-{{- if regexMatch "^(?:[^/@]*/[^:@]*[A-Z]|[^/:@]*[A-Z][^/@]*@)" $credentials.image -}}
-{{- fail "repositoryCredentials.image repository path must be lowercase; Kubernetes refuses to pull an uppercase one" -}}
-{{- end -}}
+{{- include "openclaw.validateImageReference" (dict "label" "repositoryCredentials.image" "image" $credentials.image) -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
 {{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}
 {{- fail "repositoryCredentials.serviceName must be explicit during upgrades; keep the current Service name until active repository sessions drain, then switch deliberately" -}}

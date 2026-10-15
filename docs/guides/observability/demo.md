@@ -175,7 +175,7 @@ Grafana stops working until you start it again.
 `"010"` used to install, and Kubernetes applied port 8. Upgrade now rejects that
 spelling before it changes the policy. Set the field to the applied decimal,
 `8` in that example, and rerun the block; the NetworkPolicy port stays 8. See
-the [port notice](../deploy/breaking-changes-archive.md#2026-10-12-demo-networkpolicy-ports-must-be-canonical-decimals).
+the [port notice](../deploy/breaking-changes-before-2026-10-13.md#2026-10-12-demo-networkpolicy-ports-must-be-canonical-decimals).
 
 For a custom release, read its generated Service names with
 `helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
@@ -428,4 +428,4 @@ Except for a demo install wait timeout (see above), do not rerun failed or inter
 
 Redirect external Collectors away from Loki first. [Remove only the demo](demo-cleanup.md#remove-only-the-demo) restores the saved OCC revision and verifies the Collector state.
 
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

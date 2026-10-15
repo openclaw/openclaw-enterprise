@@ -30,6 +30,10 @@ an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
+The build applies `openclaw-codex-preserve-on-request.patch` because the pinned
+OpenClaw converts `on-request` to a granular policy when a plugin uses MCP
+elicitation. Codex rejects the turn if managed requirements allow only
+`on-request`. Remove the patch when OpenClaw preserves that named policy.
 The build also applies `openclaw-connect-ephemeral-expired-setup.patch`. Upstream
 `connect --ephemeral` rejects an expired setup code before it checks saved node
 credentials, so a dedicated native worker that restarts more than ten minutes
@@ -185,11 +189,10 @@ Dispatch **Check Native Container Images** (`container-check.yml`) on the branch
 to build and smoke controller and runtime on native AMD64 and ARM64 runners without
 publishing. It uses the same reusable preparation jobs as Enterprise Containers.
 Manual `CI` dispatches also call this native verification workflow, including on
-a branch before its first merge. The default Blacksmith runner labels can be overridden with repository
-variables `CONTAINER_AMD64_RUNNER` and `CONTAINER_ARM64_RUNNER`. Each override must
-name a provisioned Linux runner with the matching architecture, at least four
-CPUs and 12 GiB RAM, and sufficient disk. The workflow installs checksum-pinned
-kubectl, k3d, Helm, and yq for both Linux architectures before runtime verification.
+a branch before its first merge. See
+[shared CI settings](../../docs/release/configuration.md#build-settings) for native runner
+requirements and overrides. The workflow installs checksum-pinned kubectl, k3d,
+Helm, and yq for both Linux architectures before runtime verification.
 
 ## Verify the local image
 
@@ -203,7 +206,7 @@ docker run --rm openclaw-enterprise-runtime:quickstart \
 
 Then run the runtime startup smoke from the repository root with host Node.js
 24+. The image test environment and Docker fixture requirements are documented in
-[Image and Helm tests](../../docs/testing/images.md#runtime-image-startup-test-environment):
+[Image and Helm tests](../../docs/testing/docker.md#runtime-image-startup-test-environment):
 
 ```bash
 node scripts/ci/prepare.mjs --lane images-runtime-startup --state /tmp/images-runtime-startup.json --github-env /tmp/images-runtime-startup.env

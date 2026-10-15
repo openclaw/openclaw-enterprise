@@ -38,8 +38,19 @@ const externalAttemptStorageKeys = {
 // The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
 // reloads the Console before discovery answers, name the provider the person chose.
 const oidcLabelStorageKey = "occ.console.oidcLabel";
+const loginIntentStorageKey = "occ.console.loginIntent";
+const loginIntentLifetimeMs = 10 * 60 * 1000;
+let pendingIntent = null;
 // Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
 // GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
+// A retained view revalidates each read it made. A paged read keeps its cursor, so it compares
+// data and meta, without the request ID that differs on every call.
+function readSignature(result, includeMeta = false) {
+  return JSON.stringify(
+    includeMeta ? { data: result.data, meta: { ...result.meta, requestId: undefined } } : result,
+  );
+}
+
 function providerIcon(provider) {
   if (provider !== "github" && provider !== "google") {
     return null;
@@ -362,13 +373,69 @@ const navigation = createNavigation({
   isLoggingOut: () => loggingOut,
   loadPage,
 });
-const { route, pageUrl, safeReturn, navigate } = navigation;
+const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate } = navigation;
+function forgetLoginIntent() {
+  try {
+    sessionStorage.removeItem(loginIntentStorageKey);
+  } catch {
+    // Tab storage is optional; no destination survives the external round trip.
+  }
+}
+
+function rememberLoginIntent(intent, attemptId) {
+  forgetLoginIntent();
+  if (!validIntent(intent)) {
+    return;
+  }
+  try {
+    sessionStorage.setItem(
+      loginIntentStorageKey,
+      JSON.stringify({ intent, attemptId, time: Date.now() }),
+    );
+  } catch {
+    // Sign-in still works without tab storage.
+  }
+}
+
+function takeLoginIntent(attemptId) {
+  let stored;
+  try {
+    stored = JSON.parse(sessionStorage.getItem(loginIntentStorageKey) ?? "null");
+  } catch {
+    // Invalid or unavailable storage cannot supply a destination.
+  }
+  forgetLoginIntent();
+  const age = Date.now() - stored?.time;
+  return attemptId &&
+    stored?.attemptId === attemptId &&
+    Number.isFinite(age) &&
+    age >= 0 &&
+    age <= loginIntentLifetimeMs &&
+    validIntent(stored.intent)
+    ? stored.intent
+    : null;
+}
+
+// The recovery fragment contains an opaque key, not an address or authority. Remove it
+// before any sign-in redirect and resolve it only after this tab has a confirmed session.
+function takeNativeFragment(current) {
+  if (
+    (current.url.pathname !== "/console" && current.url.pathname !== "/console/") ||
+    !current.url.hash
+  ) {
+    return null;
+  }
+  const match = /^#native-agent=([0-9a-f]{32})$/.exec(current.url.hash);
+  history.replaceState(history.state, "", current.url.pathname + current.url.search);
+  return match ? { kind: "native", key: match[1] } : null;
+}
+
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
-  onExpired: () => showLogin("Your session has expired.", location.pathname + location.search),
+  onExpired: () => showLogin("Your session has expired."),
   sessionKey: () => pinnedSessionKey,
 });
 const retainedViews = new Map();
@@ -474,7 +541,7 @@ function retainMountedView() {
   mountedRouteKey = null;
 }
 
-function restoreRetainedView(current) {
+function takeRetainedView(current) {
   const owner = sessionOwnerKey(session);
   const key = routeKey(current);
   const retained = key && retainedViews.get(key);
@@ -482,36 +549,61 @@ function restoreRetainedView(current) {
     return null;
   }
   retainedViews.delete(key);
+  return retained;
+}
+
+// On a return, keeps the page already on screen, inert, in a fresh pending shell while the
+// retained route's admission and reads run. A retained view is then never painted before it revalidates
+// (finding 1412), and returns do not flash a loading state (finding 1415). Returns null when
+// no page is shown.
+function holdShownView(current) {
+  const view = app.querySelector('.content [aria-live="polite"]');
+  if (!view) {
+    return null;
+  }
+  const title = app.querySelector(".content h1")?.textContent;
+  const scope = app.querySelector(".content .scope")?.textContent;
+  const diagnostics = app.querySelector(".runtime-debug");
+  const scrollY = window.scrollY;
   const shell = renderShell(current.feature, true);
+  if (title) {
+    app.querySelector(".content h1").textContent = title;
+  }
+  if (scope) {
+    app.querySelector(".content .scope").textContent = scope;
+  }
+  view.inert = true;
+  view.setAttribute("aria-busy", "true");
+  shell.view.replaceWith(view);
+  shell.view = view;
+  if (shell.diagnostics && diagnostics) {
+    diagnostics.inert = true;
+    shell.diagnostics.replaceWith(diagnostics);
+    shell.diagnostics = diagnostics;
+  }
+  window.scrollTo({ top: scrollY, left: 0 });
+  return shell;
+}
+
+// Mounts a retained view that revalidated unchanged, active at once.
+function mountRetainedView(current, retained) {
+  const shell = renderShell(current.feature, false);
   if (retained.title) {
     app.querySelector(".content h1").textContent = retained.title;
   }
   if (retained.scope) {
     app.querySelector(".content .scope").textContent = retained.scope;
   }
+  retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
-  shell.retained = retained;
   if (shell.diagnostics && retained.state?.diagnostics) {
+    retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
     shell.diagnostics = retained.state.diagnostics;
-    shell.diagnostics.inert = true;
   }
-  shell.view.setAttribute("aria-busy", "true");
-  shell.view.setAttribute("inert", "");
-  shell.blockedControls = [
-    ...shell.view.querySelectorAll("button, input, select, textarea"),
-  ].filter((control) => !control.disabled);
-  for (const control of shell.blockedControls) {
-    control.disabled = true;
-  }
-  mountedRouteKey = key;
-  const active = lifetime.capture();
-  requestAnimationFrame(() => {
-    if (lifetime.isCurrent(active) && mountedRouteKey === key) {
-      window.scrollTo({ top: retained.scrollY, left: 0 });
-    }
-  });
+  mountedRouteKey = routeKey(current);
+  window.scrollTo({ top: retained.scrollY, left: 0 });
   return shell;
 }
 
@@ -565,7 +657,7 @@ function clearDrafts() {
   draftUserId = null;
 }
 
-function showLogin(message = "", returnPath = null) {
+function showLogin(message = "", destination = null) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
   clearDrafts();
@@ -575,12 +667,9 @@ function showLogin(message = "", returnPath = null) {
   // A pending exchange runs before any login view; an abandoned attempt must not
   // turn a later password sign-in into a provider failure.
   takeExternalAttempt();
-  const url = new URL("/console/login", location.origin);
-  const destination = safeReturn(returnPath);
-  if (destination) {
-    url.searchParams.set("return", destination);
-  }
-  history.replaceState(null, "", `${url.pathname}${url.search}`);
+  pendingIntent = null;
+  forgetLoginIntent();
+  history.replaceState(null, "", "/console/login");
   const username = element("input", {
     id: "username",
     name: "username",
@@ -641,6 +730,7 @@ function showLogin(message = "", returnPath = null) {
         }
         if (externalSessionBinding) {
           rememberExternalAttempt(provider, result.attemptId);
+          rememberLoginIntent(destination, result.attemptId);
         }
         location.assign(authorization.href);
       } catch (error) {
@@ -708,7 +798,8 @@ function showLogin(message = "", returnPath = null) {
       }
       pinSessionKey(signedIn?.sessionKey);
       password.value = "";
-      history.replaceState(null, "", destination ?? "/console/agents");
+      pendingIntent = destination;
+      history.replaceState(null, "", "/console/agents");
       await loadPage();
     } catch (error) {
       if (!lifetime.isCurrent(active)) {
@@ -790,6 +881,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     return;
   }
   const current = route();
+  const nativeIntent = takeNativeFragment(current);
+  if (fromNavigation && nativeIntent === null) {
+    pendingIntent = null;
+  }
+  if (nativeIntent !== null) {
+    pendingIntent = nativeIntent;
+  }
   if (fromNavigation && navigateAgentTab?.(current.url)) {
     // The tab handler can reject navigation and restore the previous URL.
     markMountedRoute(route());
@@ -814,9 +912,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     retainedViews.delete(previousMountedRouteKey);
     discardCreationOnExit = null;
   }
-  let shell = knownPrivateState ? restoreRetainedView(current) : null;
-  let retained = shell !== null;
-  if (!retained) {
+  const retainedView = knownPrivateState ? takeRetainedView(current) : null;
+  let retained = retainedView !== null;
+  // A return keeps the shown page until the retained view revalidates; other loads show loading.
+  let shell = retained ? holdShownView(current) : null;
+  let held = shell !== null;
+  if (!held) {
     publicPanel("Loading…", "Checking your session.");
   }
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -825,7 +926,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     return;
   }
-  if (current.feature !== "login" && !retained) {
+  if (current.feature !== "login" && !held) {
     shell = renderShell(current.feature, true);
     panel(shell.view, "Loading…", "Checking your session and Namespace access.");
   }
@@ -849,6 +950,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               ? githubMembershipFailures[authReason]
               : null;
   const externalAttempt = takeExternalAttempt();
+  const externalIntent = takeLoginIntent(externalAttempt?.attemptId);
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
     try {
@@ -859,18 +961,20 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       if (!lifetime.isCurrent(active)) {
         return;
       }
-      pinSessionKey(confirmed?.sessionKey);
+      if (typeof confirmed?.sessionKey !== "string" || confirmed.sessionKey.length === 0) {
+        throw new Error("Missing session binding");
+      }
+      pinSessionKey(confirmed.sessionKey);
+      pendingIntent = externalIntent;
     } catch {
       if (lifetime.isCurrent(active)) {
-        showLogin(
-          providerFailure(externalProviders[externalAttempt.provider].label),
-          "/console/agents",
-        );
+        showLogin(providerFailure(externalProviders[externalAttempt.provider].label));
       }
       return;
     }
   }
   try {
+    const hadSession = session !== null || pinnedSessionKey !== null;
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -880,17 +984,15 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       pinSessionKey(resolvedSession.sessionKey);
     } else if (resolvedSession !== null && resolvedSession.sessionKey !== pinnedSessionKey) {
       // The controller rejects a mismatched key; never act on another session regardless.
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     session = resolvedSession;
     if (session === null) {
       const destination =
-        providerError !== null
-          ? "/console/agents"
-          : current.feature === "login"
-            ? current.url.searchParams.get("return")
-            : pageUrl(current.target, current.namespace);
+        providerError !== null || current.feature === "login" || hadSession
+          ? null
+          : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
@@ -912,18 +1014,43 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityOwner = null;
       installationAdmin = null;
       draftUserId = owner;
-      if (retained) {
-        retained = false;
+      retained = false;
+      if (held) {
+        // Another account's page must not stay on screen.
+        held = false;
         shell = null;
         publicPanel("Loading…", "Checking your session.");
       }
     }
-    if (current.feature === "login") {
-      history.replaceState(
-        null,
-        "",
-        safeReturn(current.url.searchParams.get("return")) ?? "/console/agents",
-      );
+    const destination = pendingIntent;
+    if (destination?.kind === "native" && validIntent(destination)) {
+      try {
+        const resolved = await request(`/native-admin/return/${destination.key}`);
+        if (!lifetime.isCurrent(active)) {
+          return;
+        }
+        const target = {
+          kind: "console",
+          feature: `agents/${resolved?.agentId}`,
+          namespaceId: resolved?.namespaceId,
+          revision: null,
+          tab: null,
+        };
+        pendingIntent = null;
+        history.replaceState(null, "", intentUrl(target) ?? "/console/agents");
+      } catch {
+        if (!lifetime.isCurrent(active)) {
+          return;
+        }
+        pendingIntent = null;
+        history.replaceState(null, "", "/console/agents");
+      }
+      void loadPage();
+      return;
+    }
+    if (destination || current.feature === "login") {
+      pendingIntent = null;
+      history.replaceState(null, "", intentUrl(destination) ?? "/console/agents");
       void loadPage();
       return;
     }
@@ -967,10 +1094,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (retained && current.namespace !== null) {
-      // Namespace admission is done, so the header selector is usable while the retained
-      // view revalidates, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the shell has none; the full render below picks the default.
-      shellUI.updateNamespaces(namespaces);
+      // Namespace admission is done, so the header selector is usable while the destination's
+      // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
+      // Without a URL selection the full render below picks the default. A held page keeps
+      // the scope beside its rows until the destination replaces them.
+      shellUI.updateNamespaces(namespaces, { preservePageScope: held });
     }
     let retainedItems = null;
     let retainedAgent = null;
@@ -998,7 +1126,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         return;
       }
     }
-    const retainedState = shell?.retained?.state;
+    const retainedState = retainedView?.state;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (retainedAgent) {
@@ -1017,7 +1145,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       const validations = await Promise.allSettled(
         [...retainedState.reads.keys()].map(async (path) => {
           if (!fresh.has(path)) {
-            fresh.set(path, await request(path));
+            fresh.set(
+              path,
+              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+            );
           }
         }),
       );
@@ -1031,9 +1162,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
-          ([path, value]) => JSON.stringify(fresh.get(path)) === value,
+          ([path, value]) =>
+            readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
       if (unchanged) {
+        shell = mountRetainedView(current, retainedView);
         mountedViewState = retainedState;
         retainedState.active = active;
         retainedState.resumeDrafts?.();
@@ -1043,14 +1176,6 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         }
         navigateAgentTab = retainedState.tabNavigation;
         mountedAgent = retainedState.agent;
-        for (const control of shell.blockedControls) {
-          control.disabled = false;
-        }
-        shell.view.removeAttribute("inert");
-        if (shell.diagnostics) {
-          shell.diagnostics.inert = false;
-        }
-        shellUI.updateNamespaces(namespaces);
         markMountedRoute(current);
         return;
       }
@@ -1062,6 +1187,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       reusable: true,
       mutations: 0,
       reads: new Map(),
+      metaReads: new Set(),
       resumeHandlers: new Set(),
       user: session.user,
     };
@@ -1078,7 +1204,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, JSON.stringify(result));
+          viewState.reads.set(path, readSignature(result, options.includeMeta));
+          if (options.includeMeta) {
+            viewState.metaReads.add(path);
+          }
         }
         return result;
       } catch (error) {
@@ -1146,7 +1275,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       onResume: (handler) => viewState.resumeHandlers.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
-          showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+          showLogin("Your session has expired.");
         }
       },
       setTitle: (title) => {
@@ -1236,7 +1365,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       return;
     }
     if (error.status === 401) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     if (!accessResolved) {
@@ -1244,6 +1373,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       clearDrafts();
       resetReads();
       clearPrivate();
+      shell = null;
       publicPanel(
         sessionResolved ? "Namespace access unavailable" : "Session unavailable",
         sessionResolved
@@ -1400,7 +1530,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (resolvedSession === null) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     if (sessionOwnerKey(resolvedSession) !== owner) {
@@ -1458,7 +1588,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (error.status === 401) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     resetReads();
@@ -1494,7 +1624,8 @@ async function revalidateMountedAgent(current) {
       error.requestId,
     );
   } finally {
-    if (view.isConnected) {
+    // A newer load may hold this same node on screen; only this check's lifetime releases it.
+    if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
       if (
         isCurrent() &&
@@ -1512,7 +1643,13 @@ async function revalidateMountedAgent(current) {
 }
 
 function resumePage() {
-  if (document.hidden || !session || loggingOut || app.querySelector("dialog[open]")) {
+  if (
+    document.hidden ||
+    !session ||
+    loggingOut ||
+    pendingIntent ||
+    app.querySelector("dialog[open]")
+  ) {
     return;
   }
   if (resumePending) {
@@ -1536,6 +1673,9 @@ function resumePage() {
 
 async function logout() {
   loggingOut = true;
+  pendingIntent = null;
+  forgetLoginIntent();
+  takeExternalAttempt();
   clearDrafts();
   const active = resetReads();
   clearPrivate();

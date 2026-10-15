@@ -11,7 +11,7 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -726,6 +726,11 @@ function normalizeEndpoint(endpoint: string): {
   readonly secure: boolean;
 } {
   const value = nonempty(endpoint, "OpenShell gateway endpoint");
+  if (gatewayEndpointRewritesIpv4(value)) {
+    throw new OpenShellGatewayFailure(
+      "OpenShell gateway endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
   if (!value.includes("://")) {
     return { target: value, secure: false };
   }

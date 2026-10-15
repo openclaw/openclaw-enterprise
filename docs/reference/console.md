@@ -22,6 +22,7 @@ Installation, see the
 The console uses the [email/password session contract](authentication.md) with
 same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
+See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Identify the control-plane build
 
@@ -47,10 +48,9 @@ the destination heading when the previous control disappears.
 **Open navigation** opens a mobile drawer; desktop closes it
 and releases page controls.
 
-When available, a retained view stays mounted and inert while a full-page return
-is revalidated: matching data reactivates it, changed data rebuilds it, and
-Refresh always rebuilds. Agent-detail refocus revalidates access without
-rebuilding, preserving editors, form input, open Slack searches, and the enabled
+A return keeps the shown page inert until session, Namespace access, and the
+retained view's reads pass; only matching views reappear. Refresh always
+rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
 Namespace; sign-out, session changes, exit, or Backend denial clear them.
 
@@ -59,13 +59,14 @@ mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offe
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
-Selection persists in `?namespace=<id>` across navigation, reload, and Back.
-An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
-namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks; retained-view reads do not.
-Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
-global pages remain available.
+The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
+ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
+updates the URL in place.
+
+During session and Namespace checks, the selector is disabled and hides its choices.
+Once the list is known, it names the destination's Namespace. On returns,
+later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
+get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
 scope; global pages stay open. The selector cannot broaden API authorization.
@@ -213,16 +214,16 @@ through the API or operator workflow.
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, review the effect on running work, and
+Open the Agent, select **Stop Agent**, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining revision history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
-Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically. After Stop, **Request Stop again** confirms
-a new stop intent, even without a selected version. That does not prove cleanup
-finished or diagnose a shutdown failure.
+Refresh before retrying an uncertain result. Denials remain visible; the console
+never repeats a stop automatically. After Stop, **Request Stop again** confirms
+a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
+finished.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the

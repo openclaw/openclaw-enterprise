@@ -3,10 +3,14 @@ package occdev
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +59,25 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	state := &developmentState{Repository: opts.Repository, Version: 3, ComputeDriver: "kubernetes", SandboxDriver: sandboxDriver, ComposeProject: r.setting("OCC_DEVELOPMENT_COMPOSE_PROJECT", "openclaw-enterprise-development-kubernetes"), Cluster: r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])), directory: directory, KeyPath: opts.KeyOutput, KeyOwned: opts.KeyOutput == ""}
+	if sandboxDriver == "openshell" {
+		browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
+		if err != nil {
+			return err
+		}
+		if browserPort == port {
+			return fmt.Errorf("browser and Kubernetes API ports must differ")
+		}
+		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+		state.BrowserPort = browserPort
+		state.BrowserOrigin = fmt.Sprintf("https://%s:%d", consoleHost, browserPort)
+		state.NativeAdminDomain = agentDomain
+		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
+		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin
+		r.env["OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN"] = agentDomain
+		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
+		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
+		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
+	}
 
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
@@ -100,6 +123,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
 	r.env["OCC_DEVELOPMENT_NETWORK_NAME"] = state.ComposeProject + "_development"
 	args := []string{"compose", "--project-name", state.ComposeProject, "-f", "compose.yaml", "-f", "compose.kubernetes.yaml"}
+	if state.BrowserPort != 0 {
+		args = append(args, "-f", "compose.native-admin.yaml")
+	}
 	args = append(args, opts.ComposeArgs...)
 	args = append(args, "config")
 	config, err := r.output(ctx, r.engine, args...)
@@ -115,6 +141,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	if sandboxDriver == "openshell" {
 		if err := addComposeGatewayRouting(rendered, state); err != nil {
+			return err
+		}
+		if err := validateComposeNativeAdmin(rendered, state); err != nil {
 			return err
 		}
 	}
@@ -133,6 +162,15 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return fmt.Errorf("Compose analysis returned no API URL")
 	}
 	apiURL := analysis[0]
+	if state.BrowserPort != 0 {
+		parsedAPI, err := url.Parse(apiURL)
+		if err != nil {
+			return fmt.Errorf("invalid analyzed API URL: %w", err)
+		}
+		if parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
+			return fmt.Errorf("browser and controller API ports must differ")
+		}
+	}
 	snapshot, err := yaml.Marshal(escapeInterpolation(rendered))
 	if err != nil {
 		return err
@@ -223,17 +261,19 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.writeKubeconfigs(ctx, state); err != nil {
 		return err
 	}
+	reference, err := r.importRuntime(ctx, state)
+	if err != nil {
+		return err
+	}
 	var openShellAssets *openShellDevelopmentAssets
 	if sandboxDriver == "openshell" {
+		// Import the large runtime first so image garbage collection cannot evict
+		// idle OpenShell images before their workloads are installed.
 		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
 		openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}
-	}
-	reference, err := r.importRuntime(ctx, state)
-	if err != nil {
-		return err
 	}
 	if sandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
@@ -244,7 +284,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 	var routing *composeDevelopmentRouting
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
-		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, apiURL, time.Duration(timeout)*time.Second)
+		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}
@@ -274,9 +314,24 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := configureDevelopmentRouting(state, routing.trustedProxyCIDRs, routing.endpoint); err != nil {
 			return err
 		}
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
-	if err := r.compose(ctx, state, "up", "--build", "-d", "controller", "worker-kubernetes"); err != nil {
+	buildOption := "--build"
+	if routing != nil {
+		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
+			return err
+		}
+		buildOption = "--no-build"
+	}
+	services := []string{"up", buildOption, "-d", "controller", "worker-kubernetes"}
+	if state.BrowserPort != 0 {
+		services = append(services, "browser-proxy")
+	}
+	if err := r.compose(ctx, state, services...); err != nil {
 		return err
 	}
 	if routing != nil {
@@ -286,6 +341,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	if err := r.waitReady(ctx, state, apiURL, time.Duration(timeout)*time.Second); err != nil {
 		return err
+	}
+	if state.BrowserPort != 0 {
+		if err := waitBrowserReady(ctx, state, time.Duration(timeout)*time.Second); err != nil {
+			return err
+		}
 	}
 	installation, client, err := r.copyAndVerifyKey(ctx, state, apiURL)
 	if err != nil {
@@ -300,6 +360,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if err := waitForDevelopmentNamespace(ctx, client, namespaceID, time.Duration(timeout)*time.Second); err != nil {
 			return err
 		}
+	}
+	if state.BrowserPort != 0 {
+		fmt.Fprintf(r.opts.Out, "Browser console: %s/console/\nBrowser CA certificate: %s\n", state.BrowserOrigin, filepath.Join(directory, "browser-ca.crt"))
 	}
 	cleanupSandbox := ""
 	if sandboxDriver == "openshell" {
@@ -485,6 +548,52 @@ func (r *runner) waitReady(ctx context.Context, s *developmentState, url string,
 		}
 		_, err = r.composeOutput(ctx, s, "exec", "-T", "worker-kubernetes", "node", "scripts/production-healthcheck.mjs", "worker", "ready")
 		return err == nil, nil
+	})
+}
+
+func waitBrowserReady(ctx context.Context, state *developmentState, timeout time.Duration) error {
+	caData, err := os.ReadFile(filepath.Join(state.directory, "browser-ca.crt"))
+	if err != nil {
+		return err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caData) {
+		return fmt.Errorf("development browser CA is invalid")
+	}
+	origin, err := url.Parse(state.BrowserOrigin)
+	if err != nil {
+		return fmt.Errorf("development browser origin is invalid: %w", err)
+	}
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    roots,
+			ServerName: origin.Hostname(),
+		},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, net.JoinHostPort("127.0.0.1", strconv.Itoa(state.BrowserPort)))
+		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   3 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, state.BrowserOrigin+"/api/auth/session", nil)
+		if err != nil {
+			return false, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			return false, nil
+		}
+		response.Body.Close()
+		return response.StatusCode >= 200 && response.StatusCode < 300, nil
 	})
 }
 func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, *occclient.Client, error) {

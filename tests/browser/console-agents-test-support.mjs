@@ -310,3 +310,21 @@ export function nativeAdminValues(marker, origin) {
     },
   };
 }
+
+// Without a caller-permission summary the console keeps controls enabled, so the API's own
+// denial is what the reader sees.
+export async function withholdPermissionSummary(page, fixture, namespaceId, agentId) {
+  await page.route(
+    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/permissions`,
+    async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
+          meta: { requestId: "req_test_permissions" },
+        }),
+      });
+    },
+  );
+}

@@ -3,12 +3,14 @@ import { KubernetesObjectApi, type KubernetesObject, PatchStrategy } from "@kube
 import {
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
+  SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
+  CredentialSourceLoginMode,
   Backend,
   HarnessWorkloadRequirements,
   KubernetesNamespacedResource,
@@ -135,6 +137,31 @@ const GRPC_NOT_FOUND = 5;
 const GRPC_PERMISSION_DENIED = 7;
 const GRPC_UNAUTHENTICATED = 16;
 
+/**
+ * OpenShell's refusal of OCC's own gateway identity during a Namespace step, which the
+ * gateway client passes through as the raw gRPC error: retrying cannot help until an
+ * operator fixes the identity's token or permissions, so Compute fails the step at once
+ * instead of spending attempts on it, and its reason names the gRPC code (finding 1390).
+ * UNAVAILABLE and DEADLINE_EXCEEDED keep their retryable gateway failure.
+ */
+function namespaceRefusal(error: unknown): unknown {
+  const record = asRecord(error);
+  // grpc-js ServiceError: a numeric status code and a string details field.
+  const code = typeof record?.details === "string" ? record.code : undefined;
+  const name =
+    code === GRPC_PERMISSION_DENIED
+      ? "PERMISSION_DENIED"
+      : code === GRPC_UNAUTHENTICATED
+        ? "UNAUTHENTICATED"
+        : undefined;
+  return name === undefined
+    ? error
+    : new SandboxNamespaceRefusedError(
+        `OpenShell refused the controller gateway identity with gRPC ${name}.`,
+        { cause: error },
+      );
+}
+
 const NETWORK_TLS_MODES = Object.freeze({
   skip: "NETWORK_TLS_MODE_SKIP",
   terminate: "NETWORK_TLS_MODE_TERMINATE",
@@ -183,20 +210,13 @@ const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
 // OpenShell probes TMPDIR before the Harness entrypoint can create a nested directory.
 const OPENSHELL_TEMPORARY = "/tmp";
 /**
- * The Codex app-server policy every OpenShell dedicated Codex revision freezes. OpenShell is
- * the outer containment boundary, and Codex's own sandbox (bwrap) cannot create a user
- * namespace inside it, so every command would fail. The pinned OpenClaw Gateway sends each
- * turn `workspace-write`, whatever `sandbox` says, when it forces a user reviewer: guardian
- * mode without an explicit `user` reviewer, or an explicit model-backed reviewer, on a model
- * it cannot verify for model-backed review (the documented `codex/<model>` Configuration is
- * one). An explicit `user` reviewer keeps the configured sandbox, and approvals still go to a
- * person. OpenClaw `tools.exec` settings other than the default or `mode: full` still make
- * every command fail (Codex's own sandbox, or a refusal).
- * Source: `extensions/codex/src/app-server/config-options.ts` at the `OPENCLAW_COMMIT` in
- * `deploy/runtime/Dockerfile`; recheck when that pin changes.
+ * Default PAT and unresolved sources to managed Codex workspace restrictions. OpenShell owns
+ * the outer filesystem, network and credential boundary; native sandbox failures remain
+ * failures. The explicit user reviewer preserves human approval instead of selecting a
+ * model-backed reviewer. Recheck against the pinned OpenClaw config-options.ts on upgrades.
  */
 export const OPENSHELL_CODEX_APP_SERVER_POLICY = Object.freeze({
-  sandbox: "danger-full-access",
+  sandbox: "workspace-write",
   approvalsReviewer: "user",
 } as const);
 const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([
@@ -1953,6 +1973,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   configureAgent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<AgentRevision["harness"]>,
+    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument {
     if (harness.mode !== "dedicated") {
       throw new OpenShellSandboxConfigurationFailure(
@@ -2015,6 +2036,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               appServer: {
                 ...appServer,
                 ...OPENSHELL_CODEX_APP_SERVER_POLICY,
+                // API-key login has no managed Codex policy; OpenShell owns its isolation.
+                // PAT and unresolved sources retain native restrictions until admission.
+                sandbox:
+                  credentialSourceLoginMode === "api_key"
+                    ? "danger-full-access"
+                    : "workspace-write",
               },
             },
           },
@@ -2024,6 +2051,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async ensureNamespace(context: SandboxNamespaceContext): Promise<void> {
+    try {
+      await this.ensureNamespaceWorkspace(context);
+    } catch (error) {
+      throw namespaceRefusal(error);
+    }
+  }
+
+  private async ensureNamespaceWorkspace(context: SandboxNamespaceContext): Promise<void> {
     this.requireOperatorWorkspaceMode("ensure a Namespace");
     const namespace = namespaceName(context.namespace);
     await applyOperatorNamespaceLabels(context, this.options.gateway.operatorNamespaceLabels);
@@ -2311,6 +2346,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async cleanup(
+    context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
+  ): Promise<void> {
+    try {
+      await this.cleanupResources(context);
+    } catch (error) {
+      // Revision cleanup keeps its errors: only the Namespace steps classify a refusal.
+      throw context.revision === undefined ? namespaceRefusal(error) : error;
+    }
+  }
+
+  private async cleanupResources(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
   ): Promise<void> {
     if (context.revision !== undefined) {

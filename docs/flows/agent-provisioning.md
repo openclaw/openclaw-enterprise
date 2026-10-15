@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-12
-last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
+updated: 2026-10-14
+last_updated_session: fix-1375-1377
 ---
 
 # Agent provisioning flow
@@ -90,7 +90,7 @@ Kubernetes Configuration requests inherit the provisioning claim cancellation si
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for repair and a new deployment. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
+The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. A Stop during the first rollout records `REVISION_STOPPED`. A Stop or deletion before handoff records `PROVISIONING_CANCELLED`, and its message names which one; the status keeps the Agent's ID. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for a new deployment, asking for repair only for other failures. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime lacks that support;
@@ -108,16 +108,16 @@ describes the upstream delivery limits and verification-only path.
 
 `packages/occ/src/state/postgres-state.ts:provisioning`
 
-Safe failed steps can retry under a fresh claim and authorization check. Completed resources are retained and reused. An unresolved external write keeps its exact target and ownership evidence; lease expiry or a not-found response alone does not justify dispatching it again, except a Configuration create still absent 90 seconds after it began, which is [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers). No provisioning rollback or Secret deletion runs.
+Safe failed steps can retry under a fresh claim and authorization check. Completed resources are retained and reused. An unresolved external write keeps its exact target and ownership evidence; lease expiry or a not-found response alone does not justify dispatching it again, except a Configuration create still absent 90 seconds after it began, which is [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers). Only a refusal before the Configuration record exists rolls back: it deletes the written Configuration, or marks it for a later attempt.
 
-While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. Because a cancelled provisioning never runs again, Agent deletion resolves an effect it left unsettled: it waits one worker lease after the cancellation, removes runtime credentials, and records the effect receipt in the same transaction as the finalizer. The wait is deferred and does not use deletion attempts. Namespace deletion waits for queued or running work and for any effect without a matching receipt; a settled effect on failed or cancelled work does not keep the Namespace occupied. Namespace Secrets and completed Configurations remain available through their existing resource APIs.
+While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. A cancelled provisioning never runs again. Agent deletion settles an effect it left pending one worker lease after cancellation: it removes runtime credentials and records the receipt with its finalizer, deferring without spending attempts. Deploy, Agent update and runtime-credential requests settle it once the cancelled claim's stored lease expires, returning `409` until then. Namespace deletion waits for queued or running work and for any effect without a matching receipt, not for settled effects on terminal work. Namespace Secrets and completed Configurations remain available.
 
 No API deletes a provisioning request. Agent deletion removes the Agent's requests; a request that never created an Agent stays. To clear one that blocks migration `0049`, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 ## Debugging and Verification
 
 - Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry additionally revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules and error provenance. Match the request ID in `agent_provisioning.compute_refused` or the worker’s `worker.completed` record. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work.
-- Status does not repeat plugin policy, runtime-image support, Compute plan validation, or Harness authentication checks; retry can therefore refuse an otherwise readable record. Missing accepted Secrets or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Named caller-owned Configuration refusals preserve their setting name without its value; other Compute refusals use fixed public text. A worker refusal permanently fails that attempt with `PROVISIONING_REJECTED`, after inspecting any earlier unsettled external write; an unobservable write still retries. Provisioning supports only execution modes admitted by Compute: Kubernetes requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the selected ChatGPT Backend. A Configuration create still absent after 90 seconds is resent. These checks apply independently of the initial deployment outcome.
+- Status does not repeat plugin policy, runtime-image support, Compute plan validation, or Harness authentication checks; retry can therefore refuse an otherwise readable record. Missing accepted Secrets or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Named caller-owned Configuration refusals preserve their setting name without its value; other Compute refusals use fixed public text. A worker refusal permanently fails that attempt with `PROVISIONING_REJECTED`, after inspecting any earlier unsettled external write; an unobservable write still retries. Provisioning supports only execution modes admitted by Compute: Kubernetes requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the selected ChatGPT Backend. These checks apply independently of the initial deployment outcome.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
 - Use Console browser coverage for channel Secret creation before provisioning, reference reuse after failure and job-to-deployment navigation. The disposable Kubernetes fixture proves actual Driver handoff, not native enrollment, model execution or Slack replies.
@@ -137,6 +137,10 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
+- 2026-10-15 07:00: A later attempt retries a failed unrecorded-Configuration delete. (fix-1399)
+- 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
+- 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
+- 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
 - 2026-10-12 22:30: Provisioning refuses undeliverable repository bindings and Sandbox workspace files before queueing. (fix-1144-1145b - d34b4a8f7)
 
 - 2026-10-12 11:55: Follow the initial deployment on the original provisioning handle and retain its failure identity. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)

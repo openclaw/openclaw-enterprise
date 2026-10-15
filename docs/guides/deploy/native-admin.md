@@ -28,9 +28,10 @@ Agent into native admin access:
    **Native admin UI** on the Agent detail page. For stale drafts or uncertain
    saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
 
-The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
-disabled and refuses to reuse it after outside Configuration edits. Create a
-console-managed Agent for this native admin walkthrough.
+For the Compose control plane with Kubernetes Compute and OpenShell, the
+[first-Agent command](../first-agent.md) can perform these per-Agent steps with
+`--control-ui`. Other local profiles still require the console-managed workflow
+above. The helper refuses to reuse its Agent after outside Configuration edits.
 
 <a id="requirements"></a>
 
@@ -275,6 +276,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Symptom                                             | Check                                                                                                                                                                                 |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                         |
+| A copied Agent chat link asks for the console       | Open the configured console, sign in, and launch the Agent from its detail page. Give the page's request ID to the operator when investigating the initial request.                   |
 | Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                            |
 | API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                      |
 | API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                |
