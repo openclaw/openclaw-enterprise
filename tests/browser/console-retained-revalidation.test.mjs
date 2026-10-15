@@ -684,8 +684,9 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   // Until the reveal, the detail shows only its toolbar.
   const pendingDetail = page.locator(".agent-detail-pending");
   const shownDetail = page.locator(`${activeView}.agent-detail-pending`);
-  // The first Deployment activity read is held, so the page shows only its summary.
-  const firstRecord = await holdRead(t, page, record, { once: true });
+  // Deployment record reads are held (Deployment activity's and the version panel's, in either
+  // order), so the page shows only its toolbar until the 1 s reveal.
+  const firstRecord = await holdRead(t, page, record);
   await page.getByRole("link", { name: "Revealed Agent" }).click();
   await shownDetail.waitFor({ state: "attached" });
   await firstRecord.requested;
@@ -697,7 +698,7 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   firstRecord.release();
 
   // Forward rebuilds the page, held again on its record read; it reveals at 1 s as on a first visit.
-  const returnRecord = await holdRead(t, page, record, { once: true });
+  const returnRecord = await holdRead(t, page, record);
   await page.goForward();
   await returnRecord.requested;
   await shownDetail.waitFor({ state: "attached" });
