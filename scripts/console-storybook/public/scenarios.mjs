@@ -4737,6 +4737,10 @@ export const scenarios = {
     deployed: true,
     actions: [click("Stop Agent")],
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
+    steps: [
+      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
+      "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
+    ],
   },
   stopRequested: {
     group: "Components/Stop Agent",
@@ -4818,17 +4822,20 @@ export const scenarios = {
   stopFlow: {
     group: "Flows",
     name: "Stop an Agent",
-    path: revision,
+    path: `${revision}&tab=workspace`,
     deployed: true,
+    clearRevisionOnStopReadback: true,
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
       "Open Stop Agent and review the confirmation copy.",
-      "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "With Workspace files open, confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
+      "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
+      "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Create new version and Deploy new version to request running again.",
     ],
-    gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
+    gap: "The fixture separates Stop acceptance from the next read clearing the selected revision. Neither establishes that a live gateway shut down. Disabling a channel does not stop the Agent; deletion is destructive.",
   },
   deleteFlow: {
     group: "Flows",

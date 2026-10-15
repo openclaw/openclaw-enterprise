@@ -2225,7 +2225,14 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
 // regions in place. Reloading the page for it collapsed the version detail to its loading state,
 // scrolled the Stop result away and dropped focus to the page (finding 1419).
 test("Agent stop and Refresh stop status update the page in place and keep focus", async (t) => {
-  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop in place");
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop in place", {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }) {
+        return { status: "ok", file: { name: filename, content: `Saved ${filename}` } };
+      },
+    },
+  });
   const agent = await fixture.createAgent(namespace.id, "In Place Stop", nativeValues("in-place"), {
     harnessAuth: { method: "runtime" },
   });
@@ -2260,6 +2267,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
       }
     }).observe(doc.body, { childList: true, subtree: true });
   });
+  const requests = apiRequests(page, fixture.origin);
   const scrollBefore = await page.evaluate(() => globalThis.scrollY);
   assert.ok(scrollBefore > 0);
   const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
@@ -2282,6 +2290,15 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   // The page did not jump back up to rebuild above the reader.
   assert.ok((await page.evaluate(() => globalThis.scrollY)) >= scrollBefore - 1);
 
+  // Stop acceptance does not clear the current version. Open Workspace in the interval
+  // before the worker clears it, and keep an unsaved edit in the mounted editor.
+  const workspace = page.getByRole("button", { name: "Workspace files", exact: true });
+  const file = page.getByLabel("AGENTS.md", { exact: true });
+  const draft = "Unsaved workspace edit during Stop";
+  await workspace.click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await file.fill(draft);
+
   // The worker clears the current version; Refresh stop status shows it without a reload too.
   await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -2295,15 +2312,34 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(), "Refresh stop status");
   // The viewed version is no longer current, and tabs built from the old state are rebuilt.
+  const unavailable = page.getByText(
+    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+    { exact: true },
+  );
+  assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
+  await unavailable.waitFor();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
     await page.locator('.revision-selector [aria-label$=", current version"]').count(),
     0,
   );
-  await page.getByRole("button", { name: "Workspace files" }).click();
+  await workspace.click();
+  await unavailable.waitFor();
+  assert.equal(await file.count(), 0, "returning must not resurrect the old editor");
+
+  // Files are live Agent data, not a revision snapshot. A later serving revision restores
+  // the unsaved draft, but must not silently write it to the workspace.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
   await page
-    .getByText("Workspace files require a deployed Agent with a current version", { exact: false })
+    .getByText("Unsaved edits restored. Reload replaces them with the current file.")
     .waitFor();
+  assert.equal(await file.inputValue(), draft);
+  assert.equal(
+    requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
+    0,
+  );
 });
 
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,

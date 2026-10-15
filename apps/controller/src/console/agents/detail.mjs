@@ -1345,16 +1345,23 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       showDeleting();
       return;
     }
+    const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const servingChanged =
-      freshAgent.activeRevisionId !== currentRevisionId ||
-      freshAgent.desiredRuntimeState !== currentRuntimeState;
+      revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
     currentRuntimeState = freshAgent.desiredRuntimeState;
     currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
-      // Cached tabs show the old current version; the next visit rebuilds them.
       retainedTabs.clear();
+      if (mountedTab) {
+        // Leaving must not put a tab built for the old serving state back in the cache.
+        mountedTab.reusable = false;
+        if (revisionChanged && mountedTab.id === "workspace") {
+          // Capture drafts and retire the old file controls now, not on the next tab visit.
+          void renderTab();
+        }
+      }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
       nativeAdmin.refresh();
     }

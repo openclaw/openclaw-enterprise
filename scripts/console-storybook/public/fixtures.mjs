@@ -192,6 +192,7 @@ export function installFixture(scenario, evidence) {
   const roles = [];
   const bindings = [];
   const deleted = new Set();
+  const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -1149,6 +1150,9 @@ export function installFixture(scenario, evidence) {
               agents.delete(id);
               return error(404);
             }
+            if (clearRevisionOnRead.delete(id)) {
+              saved.activeRevisionId = null;
+            }
             return response(saved);
           }
           if (method === "PATCH") {
@@ -1168,6 +1172,9 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
+          if (scenario.clearRevisionOnStopReadback) {
+            clearRevisionOnRead.add(id);
+          }
           return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {
