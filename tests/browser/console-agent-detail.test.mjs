@@ -2218,6 +2218,81 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
 });
 
+// Stop changes only the Agent's runtime state and current version, so the page updates those
+// regions in place. Reloading the page for it collapsed the version detail to its loading state,
+// scrolled the Stop result away and dropped focus to the page (finding 1419).
+test("Agent stop and Refresh stop status update the page in place and keep focus", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop in place");
+  const agent = await fixture.createAgent(namespace.id, "In Place Stop", nativeValues("in-place"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1280, height: 720 } },
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.waitForFunction(
+    () => !globalThis.document.body.textContent.includes("Loading configuration…"),
+  );
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
+  await stop.scrollIntoViewIfNeeded();
+  // Mark the rendered version detail and record any loading state the page shows again.
+  await page.evaluate(() => {
+    const doc = globalThis.document;
+    doc.querySelector(".agent-version-detail").dataset.stopMarker = "kept";
+    globalThis.reloadedText = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
+            globalThis.reloadedText.push(node.textContent);
+          }
+        }
+      }
+    }).observe(doc.body, { childList: true, subtree: true });
+  });
+  const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrollBefore > 0);
+  const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
+  const keptInPlace = () =>
+    page.evaluate(() => ({
+      marker: globalThis.document.querySelector(".agent-version-detail")?.dataset.stopMarker,
+      reloadedText: globalThis.reloadedText,
+    }));
+
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop In Place Stop?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
+  // A closed dialog has no dialog role, so wait for its close handler to remove the element.
+  await page.locator("dialog.agent-stop-dialog").waitFor({ state: "detached" });
+  assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
+  assert.equal(await focusedText(), "Refresh stop status");
+  // The page did not jump back up to rebuild above the reader.
+  assert.ok((await page.evaluate(() => globalThis.scrollY)) >= scrollBefore - 1);
+
+  // The worker clears the current version; Refresh stop status shows it without a reload too.
+  await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+  await stopRegion.getByText("No current version", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("None", { exact: true })
+    .waitFor();
+  assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
+  assert.equal(await focusedText(), "Refresh stop status");
+});
+
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
 // so no stop was ever requested and nothing runs to stop (finding 1394). The panel says how
 // to start it and offers no stop controls until a deploy creates a version.

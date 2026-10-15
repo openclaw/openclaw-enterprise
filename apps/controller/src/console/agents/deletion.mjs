@@ -289,7 +289,10 @@ export function createAgentDeletion(context, path, agent, onDeleting) {
       "close",
       () => {
         dialog.remove();
-        if (context.isCurrent() && !state.pending) {
+        // The close event comes after a sent request has already placed focus on its outcome
+        // (finding 1421: it moved back to "Request deletion again"), and after Cancel the browser
+        // returns focus to the invoker. Only take focus that was dropped to the page.
+        if (context.isCurrent() && !state.pending && document.activeElement === document.body) {
           (state.needsRefresh ? refresh : remove).focus();
         }
       },
