@@ -74,9 +74,19 @@ immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
 sufficient. See the [CI lane guide](ci.md#manual-full-integration-lanes) for the hosted run.
 
 To run the same lane locally, export the key and model through your approved
-credential workflow, then run:
+credential workflow. Preparation builds the controller unless
+`OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` selects an approved, immutable prebuilt
+controller. For a local build, choose an approved digest-pinned Node 24 build
+image for `NODE_BASE_IMAGE`. Hosted CI uses its configured
+`CONTAINER_NODE_BASE_IMAGE`; local commands do not inherit that variable. Then run:
 
 ```sh
+if [ -n "${OCC_TEST_PRODUCTION_CONTROLLER_IMAGE:-}" ]; then
+  export OCC_TEST_PRODUCTION_CONTROLLER_IMAGE
+else
+  : "${NODE_BASE_IMAGE:?Set an approved digest-pinned Node 24 build image}"
+  export NODE_BASE_IMAGE
+fi
 export OCC_OPENSHELL_TEST_ROOT="$(mktemp -d)"
 node scripts/ci/prepare.mjs --lane openshell \
   --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
