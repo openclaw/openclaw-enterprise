@@ -1968,6 +1968,10 @@ export class ControllerWorker {
       ...(result.outcome !== "succeeded" && result.reason !== undefined
         ? { reason: result.reason }
         : {}),
+      // A refused job's unrecorded Configuration its Driver could not delete (finding 1395).
+      ...(result.outcome !== "succeeded" && result.orphanedConfigurationId !== undefined
+        ? { orphanedConfigurationId: result.orphanedConfigurationId }
+        : {}),
     });
   }
 
