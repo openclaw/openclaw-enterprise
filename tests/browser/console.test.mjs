@@ -952,7 +952,7 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
   );
 });
 
-test("Refresh and focus restoration retain rows until fresh data arrives", async (t) => {
+test("Refresh reloads and focus restoration retains rows until fresh data arrives", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Background reads", { ready: true });
@@ -976,7 +976,12 @@ test("Refresh and focus restoration retain rows until fresh data arrives", async
       }, trigger);
     }
     await pending.waitForRelease();
-    await expectHeldPage(page, "Existing background Agent");
+    if (trigger === "Refresh") {
+      // Refresh rebuilds the page, so a slow one shows loading after 250 ms (finding 1442).
+      await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
+    } else {
+      await expectHeldPage(page, "Existing background Agent");
+    }
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByText(`Added during ${trigger}`, { exact: true }).waitFor();
   }
