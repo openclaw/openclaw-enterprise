@@ -1,9 +1,10 @@
 # First Agent smoke
 
 The `First Agent Smoke` job in the [CI workflow](../../.github/workflows/ci.yml)
-installs this checkout the way a new user does and drives two Agents through
-their first deployment, a model turn, logs, stop, and start. It needs no secrets,
-so it runs on every pull request and every push to `main`.
+installs this checkout the way a new user does and drives an embedded Agent and
+a dedicated Codex Agent through deployment, a model turn, logs, stop, and start.
+A second dedicated Agent controls the public-reader retirement check. It needs no
+secrets and runs on pull requests and pushes to `main` when CI selects full mode.
 
 It is **not** a `CI Required` dependency. A failure is visible on the pull request
 but does not block merging. Making it required is a maintainer decision.
@@ -27,6 +28,14 @@ two commands, run as separate workflow steps:
    - creates and deploys a dedicated Codex Agent through the API the console
      uses: Namespace Secret, exact Secret grant, transport credentials, deploy;
    - sends a chat turn through the Codex Agent's gateway;
+   - installs the Helm public reader with a controlled anonymous provider, selects
+     it in two dedicated Agent revisions, and sends a Codex model turn that reads
+     the managed skill and returns a title supplied by the provider;
+   - reads the exact admitted revision from PostgreSQL in the installed worker,
+     calls Compute preparation with the reader peer absent, and checks that the
+     selected Deployment, Pods, and reader policy disappear before its sockets
+     close; then deploys an unselected successor and checks that it cannot reach
+     the reader or provider while the selected control remains live;
    - reads both Agents' logs with `occ agent logs`;
    - stops both Agents with `occ agent stop`, then starts them with
      `occ agent deploy`, and sends a chat turn to each new revision.
@@ -45,12 +54,22 @@ Each reported status is checked against the cluster and a model turn:
 - After a stop, the Agent must report `desiredRuntimeState: stopped`, clear its
   active revision, and have no running Pods.
 - A start must admit a new revision and serve a chat turn from it.
+- The public read requires managed skill discovery, the selected revision's
+  native limited proxy, reader and controlled provider. The worker observes the
+  unchanged admitted revision with its reader peer removed; this explicit call
+  does not imply that an Installation edit schedules reconciliation. At the
+  withdrawal barrier, the old Deployment, Pods, and policy are absent. Its
+  observed sockets close, and reader and provider counts do not advance afterward.
+  The unselected successor causes no arrivals, while a separate selected Harness
+  continues to reach both. The summary records effects without request content.
 
 ## Stand-in model provider
 
 The provider is [`tests/fixtures/runtime-model-probe-endpoint.mjs`](../../tests/fixtures/runtime-model-probe-endpoint.mjs),
 also used by the runtime image tests. It speaks the Responses API over HTTPS and
-the WebSocket upgrade Codex uses, and echoes the request's nonce.
+the WebSocket upgrade Codex uses, and echoes the request's nonce. For the public
+read turn it emits an `exec_command` tool call and returns the title from the
+tool output. The title is present only in the controlled reader provider response.
 
 It runs in a container of the runtime image on a Docker network attached to the
 k3d node. CoreDNS answers `api.openai.com` with its address through the
@@ -64,7 +83,8 @@ the API Service and `api.openai.com` to the provider before it calls the API.
 
 The runtime image differs from the checkout's image by one layer: the test CA
 in the system trust store (`SSL_CERT_FILE`) and in `NODE_EXTRA_CA_CERTS`. No
-product code or Agent configuration is changed for the smoke.
+product code is changed for the smoke. The dedicated Agent configuration selects
+the test reader's Service address through the native limited network proxy.
 
 ## Node resolver
 
@@ -111,7 +131,7 @@ prints them if Local Setup fails. The model key is a
 placeholder and the cluster is discarded with the runner.
 
 Run it locally only on a disposable Linux host with Docker, k3d, kubectl, Helm,
-Go, and enforced NetworkPolicies:
+yq, Go, and enforced NetworkPolicies:
 
 ```sh
 go build -trimpath -o bin/occ ./cmd/occ

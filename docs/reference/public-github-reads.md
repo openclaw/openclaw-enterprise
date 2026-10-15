@@ -41,10 +41,17 @@ only the revision that opted in. Preparing or activating a successor preserves
 the serving revision's choice; stopping or retiring a revision removes its own policy.
 Reader selection is frozen at admission. A revision created before the reader was
 enabled stays unselected even if its proxy already allowed that address. Disabling
-or changing the configured reader peer revokes its grant on reconciliation; deploy
-a new revision to select the replacement. Apply the database migration before
-starting a controller that writes the new admission fact, and complete the rollout
-before admitting revisions with that controller.
+or changing the configured reader peer does not itself trigger reconciliation of
+an active revision. To avoid interruption, deploy an unselected successor and
+retire the old revision before changing the peer; stopping the Agent also terminates
+its Harness. If a selected revision is prepared or activated after its peer is
+removed or changed, Compute first removes that revision's grant to narrow new
+connections, then stops its Harness and waits for its Pods to terminate before
+reporting a configuration failure. Removing a NetworkPolicy does not guarantee
+that an existing connection closes. A GET admitted before withdrawal completes
+may drain; the stopped Harness cannot start a new one afterward. Deploy a new revision to select a replacement peer. Apply the
+database migration before starting a controller that writes the new admission
+fact, and complete the rollout before admitting revisions with that controller.
 
 The private ClusterIP serves plain HTTP. Repository and file names are visible to
 that in-cluster path and to GitHub. NetworkPolicy selects managed Agent Pods in

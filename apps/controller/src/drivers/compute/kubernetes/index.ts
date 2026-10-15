@@ -5309,6 +5309,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    if (
+      this.hasPublicGithubReadAdmission(revision) &&
+      this.publicGithubReadForRevision(revision) === undefined
+    ) {
+      const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+      const observed = await this.getNamespace(namespace);
+      if (observed === undefined) {
+        return result;
+      }
+      this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
+      if (observed.status?.phase !== "Active") {
+        return result;
+      }
+      await this.revokeUnavailablePublicGithubRead(revision, namespace);
+    }
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
@@ -6312,6 +6327,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<void> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      typeof revision.servicePrincipalId !== "string" ||
+      revision.servicePrincipalId.trim().length === 0
+    ) {
+      throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
+    }
+    if (
+      this.hasPublicGithubReadAdmission(revision) &&
+      this.publicGithubReadForRevision(revision) === undefined
+    ) {
+      const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+      const observed = await this.getNamespace(namespace);
+      if (observed === undefined || observed.status?.phase !== "Active") {
+        throw new DependencyUnavailableError("The AgentRevision Namespace is unavailable.");
+      }
+      this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
+      await this.revokeUnavailablePublicGithubRead(revision, namespace);
+    }
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
       materialInput === undefined ? undefined : this.repositoryConsumer(revision);
@@ -6829,6 +6864,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async deleteRevisionAgentDeployment(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    waitForRemoval = false,
   ): Promise<void> {
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     if (sandboxDriver?.provisionHarness !== undefined) {
@@ -6844,18 +6880,48 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (deployment === undefined) {
       return;
     }
+    const uid = deployment.metadata.uid;
+    if (!isNonEmptyString(uid)) {
+      throw new OwnershipFailure("Refusing to delete an AgentRevision workload without a UID.");
+    }
     const clients = await this.clients(namespace.plane);
     await this.request(
       () =>
         clients.apps.deleteNamespacedDeployment({
           name,
           namespace: namespace.name,
-          ...(deployment.metadata.uid === undefined
-            ? {}
-            : { body: { preconditions: { uid: deployment.metadata.uid } } }),
+          body: {
+            preconditions: { uid },
+            ...(waitForRemoval ? { propagationPolicy: "Foreground" as const } : {}),
+          },
         }),
       { mutating: true },
     );
+    if (waitForRemoval) {
+      const signal = this.operationSignal();
+      const deadline = Date.now() + WORKLOAD_TERMINATION_TIMEOUT_MS;
+      for (;;) {
+        signal.throwIfAborted();
+        const remaining = await this.getOwned("Deployment", name, namespace, {
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          servicePrincipalId: revision.servicePrincipalId,
+          revisionId: revision.id,
+        });
+        if (remaining === undefined) {
+          break;
+        }
+        if (remaining.metadata.uid !== uid) {
+          throw new OwnershipFailure("The AgentRevision workload changed during withdrawal.");
+        }
+        if (Date.now() >= deadline) {
+          throw new DependencyUnavailableError(
+            "The AgentRevision workload did not terminate before the deadline.",
+          );
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, WORKLOAD_TERMINATION_POLL_MS));
+      }
+    }
   }
 
   /**
@@ -12032,11 +12098,40 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.hasPublicGithubReadAdmission(revision) &&
       this.publicGithubReadForRevision(revision) === undefined
     ) {
+      // Removing the grant first prevents new connections, but a CNI may retain existing ones.
       await this.deleteOwnedNamespacedResource(
         "NetworkPolicy",
         this.publicGithubReadNetworkPolicyName(revision),
         this.pluginRuntimeOwnership(revision),
         namespace,
+      );
+      if (this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined) {
+        throw new ConfigurationFailure("Cannot withdraw a reader from a Sandbox-owned Harness.");
+      }
+      await this.deleteRevisionAgentDeployment(revision, namespace, true);
+      await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
+      if (
+        (await this.getOwned(
+          "Deployment",
+          `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
+          namespace,
+          this.pluginRuntimeOwnership(revision),
+        )) !== undefined
+      ) {
+        throw new DependencyUnavailableError("The withdrawn AgentRevision workload reappeared.");
+      }
+      if (
+        (await this.getOwned(
+          "NetworkPolicy",
+          this.publicGithubReadNetworkPolicyName(revision),
+          namespace,
+          this.pluginRuntimeOwnership(revision),
+        )) !== undefined
+      ) {
+        throw new DependencyUnavailableError("The withdrawn reader policy reappeared.");
+      }
+      throw new ConfigurationFailure(
+        "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.",
       );
     }
   }

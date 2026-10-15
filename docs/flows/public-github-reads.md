@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-10-15"
-last_updated_session: authoring-run/6399ddc9-8441-4407-8b0f-9ee9755a1cc0
+last_updated_session: authoring-run/47f5b717-62d4-4f46-8310-770057b70134
 ---
 
 # Public GitHub read flow
@@ -31,6 +31,9 @@ graph TD
   Service --> Github["Anonymous HTTPS GET to api.github.com"]
   Github --> Result["Bounded data, opaque 404, or explicit failure"]
   Revision -->|revision stopped or retired| Retire["Remove only its policy and skill snapshot"]
+  Revision -->|peer changed and revision reobserved| Narrow["Remove revision policy"]
+  Narrow --> Stop["Stop exact Harness and wait for Pods"]
+  Stop --> Withdraw["Verify withdrawal and fail preparation"]
 ```
 
 ## Execution Trace
@@ -69,8 +72,17 @@ provider cursor. An unsafe or out-of-range next link reports an incomplete listi
 `apps/controller/src/drivers/compute/kubernetes/index.ts:deleteRetiredRevisionArtifacts`
 removes the revision's reader policy and skill snapshot after its Pods have
 terminated. Preparing or activating a successor does not change that grant.
-Reconciliation removes the grant earlier if the operator disables or changes the
-admitted peer; a new revision is needed to select the new peer.
+If preparation or activation observes that the operator disabled or changed the
+admitted peer, `revokeUnavailablePublicGithubRead` removes the revision policy to
+narrow new connections. It foreground-deletes the owned Harness Deployment with
+its UID, waits for the Deployment and its Pods to terminate, and verifies that
+the policy and Deployment have not reappeared before failing with a configuration
+error. An incomplete observation leaves withdrawal unfinished. Policy deletion
+alone does not guarantee existing connections close; an in-flight GET may drain
+before Pod termination completes. Reconfiguring the peer
+alone does not schedule a reconciliation; the operator can stop the Agent or deploy
+an unselected successor and retire the old revision. A new revision is needed to
+select a replacement peer.
 
 ## Debugging and Verification
 
@@ -89,6 +101,8 @@ admitted peer; a new revision is needed to select the new peer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 09:55: Stop the selected Harness before withdrawing its reader grant (authoring-run/47f5b717-62d4-4f46-8310-770057b70134 - 97044717385c2af34c6a611e74203f3a2734f4c5)
 
 - 2026-10-15 09:27: Preserve bounded issue pagination cursors (authoring-run/6399ddc9-8441-4407-8b0f-9ee9755a1cc0 - c620c8372898c4720998445f7f7df89b2799336e)
 

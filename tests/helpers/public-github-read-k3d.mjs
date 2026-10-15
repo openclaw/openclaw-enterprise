@@ -8,6 +8,7 @@ export async function installPublicGithubReadFixture({
   controllerImage,
   kubectl,
   applyManifest,
+  observeRequests = false,
 }) {
   const name = "openclaw-enterprise-public-github-read";
   // Let this cluster reserve a Service IP. Apply the chart over the same Service
@@ -52,8 +53,13 @@ export async function installPublicGithubReadFixture({
     'import https from "node:https";',
     'import { syncBuiltinESMExports } from "node:module";',
     "const server = http.createServer((req, res) => {",
-    '  assert.equal(req.url, "/repos/example/public-project/pulls/27");',
+    observeRequests
+      ? "  assert.match(req.url, /^\\/repos\\/example\\/public-project\\/pulls\\/(?:27|28|29|30)$/);"
+      : '  assert.equal(req.url, "/repos/example/public-project/pulls/27");',
     "  assert.equal(req.headers.authorization ?? req.headers.cookie, undefined);",
+    ...(observeRequests
+      ? ['  console.log(JSON.stringify({event: "provider", path: req.url}));']
+      : []),
     '  res.setHeader("content-type", "application/vnd.github+json");',
     "  res.end(JSON.stringify({number: 27, title: " + JSON.stringify(marker) + "}));",
     "});",
@@ -61,7 +67,26 @@ export async function installPublicGithubReadFixture({
     "https.get = (target, { headers, signal }, callback) => {",
     '  const url = new URL(target); assert.equal(url.origin, "https://api.github.com");',
     '  return http.get({host: "127.0.0.1", port: server.address().port, path: url.pathname + url.search, headers, signal}, callback);',
-    "}; syncBuiltinESMExports();",
+    "};",
+    ...(observeRequests
+      ? [
+          "const createServer = http.createServer;",
+          "let nextConnection = 0;",
+          "http.createServer = (options, handler) => {",
+          "  const reader = createServer(options, (req, res) => {",
+          '  if (req.url !== "/healthz") console.log(JSON.stringify({event: "reader", path: req.url, connection: req.socket.oceConnection}));',
+          "  handler(req, res);",
+          "  });",
+          "  reader.on('connection', socket => {",
+          "    const connection = ++nextConnection; socket.oceConnection = connection;",
+          "    console.log(JSON.stringify({event: 'connection', connection}));",
+          "    socket.on('close', () => console.log(JSON.stringify({event: 'closed', connection})));",
+          "  });",
+          "  return reader;",
+          "};",
+        ]
+      : []),
+    "syncBuiltinESMExports();",
   ].join("\n");
   pod.spec.containers[0].args.unshift(
     "--import",

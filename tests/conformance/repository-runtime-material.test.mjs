@@ -1375,7 +1375,7 @@ test("enabling the reader cannot grant an already admitted revision during activ
   assert.equal(publicReaderPolicies(f).length, 0);
 });
 
-test("reconciliation revokes a selected reader when its peer changes or is disabled", async () => {
+test("withdrawing a selected reader narrows access and stops only its revision", async () => {
   for (const replacement of [undefined, { ...publicReader, podLabels: { app: "replacement" } }]) {
     const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
     delete f.revision.repositoryCredentials;
@@ -1386,16 +1386,187 @@ test("reconciliation revokes a selected reader when its peer changes or is disab
     f.revision.compute.admission = f.driver.admitRevision(f.revision);
     const context = f.context(undefined);
     await f.driver.prepareRevision(f.revision, context);
+    f.markReady();
+    await f.driver.activateRevision(f.revision, context);
+    const selected = f.consumer();
+    const successor = { ...structuredClone(f.revision), id: "unselected-successor", revision: 2 };
+    successor.configuration.plugins.entries.codex.config.appServer.networkProxy.domains = {};
+    delete successor.compute.admission;
+    f.enroll(successor);
+    await f.driver.prepareRevision(successor, context);
+    const successorDeployment = f
+      .deployments()
+      .find(
+        (deployment) =>
+          deployment.spec.template.metadata.labels["openclaw.dev/revision"] === successor.id,
+      );
+    assert.ok(successorDeployment);
+    const successorPod = workloadPod(successorDeployment, f.namespace, "successor");
+    f.setPods([workloadPod(selected, f.namespace, "selected"), successorPod]);
     assert.equal(publicReaderPolicies(f).length, 1);
     f.driver.options.network.publicGithubRead = replacement;
-    // An existing immutable projection cannot be rewritten, but revocation must
-    // already have happened when reconciliation reports that conflict.
+    const deleteDeployment = f.clients.apps.deleteNamespacedDeployment;
+    const readDeployment = f.clients.apps.readNamespacedDeployment;
+    let deleting = false;
+    let observedTerminatingDeployment = false;
+    let releaseObservation;
+    let reachedObservation;
+    const reached = new Promise((resolve) => {
+      reachedObservation = resolve;
+    });
+    const release = new Promise((resolve) => {
+      releaseObservation = resolve;
+    });
+    f.clients.apps.deleteNamespacedDeployment = async (request) => {
+      assert.equal(publicReaderPolicies(f).length, 0);
+      assert.equal(request.body.propagationPolicy, "Foreground");
+      assert.equal(request.body.preconditions.uid, selected.metadata.uid);
+      await deleteDeployment(request);
+      deleting = true;
+    };
+    f.clients.apps.readNamespacedDeployment = async (request) => {
+      if (deleting && request.name === selected.metadata.name && !observedTerminatingDeployment) {
+        observedTerminatingDeployment = true;
+        reachedObservation();
+        await release;
+      }
+      return readDeployment(request);
+    };
+    let observed = false;
+    f.observePods(() => {
+      observed = true;
+      assert.equal(observedTerminatingDeployment, true);
+      assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+      assert.ok(
+        f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+      );
+      assert.equal(
+        publicReaderPolicies(f).length,
+        0,
+        "new connections are narrowed before Pod termination",
+      );
+      f.setPods([successorPod]);
+    });
+    const withdrawal = f.driver.prepareRevision(f.revision, context);
+    await reached;
+    assert.equal(
+      observed,
+      false,
+      "Pods cannot establish completion before the Deployment observation",
+    );
+    releaseObservation();
+    await assert.rejects(withdrawal, (error) => {
+      assert.match(error.message, /reader peer was withdrawn/);
+      assert.equal(
+        f.driver.describePrepareRevisionFailure(error).code,
+        "KUBERNETES_CONFIGURATION_INVALID",
+      );
+      return true;
+    });
+    assert.equal(observed, true);
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.ok(
+      f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+    );
+    f.observePods(undefined);
+    let removedProjection = 0;
+    for (const [key, object] of f.objects) {
+      if (
+        object.kind === "ConfigMap" &&
+        object.data?.["runtime.json"] &&
+        object.metadata.labels?.["openclaw.dev/revision"] === f.revision.id
+      ) {
+        f.objects.delete(key);
+        removedProjection++;
+      }
+    }
+    assert.equal(removedProjection, 1);
+    await assert.rejects(
+      f.driver.activateRevision(f.revision, context),
+      /reader peer was withdrawn/,
+    );
     await assert.rejects(
       f.driver.prepareRevision(f.revision, context),
-      /invalid immutable Kubernetes ConfigMap/,
+      /reader peer was withdrawn/,
     );
     assert.equal(publicReaderPolicies(f).length, 0);
+    assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+    assert.ok(
+      f.deployments().some(({ metadata }) => metadata.name === successorDeployment.metadata.name),
+    );
   }
+});
+
+test("withdrawal precedes missing or expired repository material in preparation and activation", async () => {
+  for (const operation of ["prepareRevision", "activateRevision"]) {
+    for (const invalid of ["missing", "expired"]) {
+      const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+      f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+        enabled: true,
+        domains: { [publicReader.address]: "allow" },
+      };
+      f.revision.compute.admission = f.driver.admitRevision(f.revision);
+      const valid = f.context([runtimeBinding()]);
+      await f.driver.prepareRevision(f.revision, valid);
+      f.markReady();
+      await f.driver.activateRevision(f.revision, valid);
+      assert.equal(publicReaderPolicies(f).length, 1);
+      const selected = f.consumer();
+      f.setPods([]);
+      f.driver.options.network.publicGithubRead = undefined;
+      const context =
+        invalid === "missing"
+          ? f.context(undefined)
+          : f.context([{ ...runtimeBinding(), deadlineWallMs: 1 }]);
+      await assert.rejects(f.driver[operation](f.revision, context), /reader peer was withdrawn/);
+      assert.equal(publicReaderPolicies(f).length, 0);
+      assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
+    }
+  }
+});
+
+test("withdrawal cannot complete when Pod termination cannot be observed completely", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+  f.driver.options.network.publicGithubRead = undefined;
+  const listPods = f.clients.core.listNamespacedPod;
+  f.clients.core.listNamespacedPod = async () => ({ items: [], metadata: { continue: "next" } });
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /invalid workload Pod list/);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  f.clients.core.listNamespacedPod = listPods;
+  f.setPods([]);
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /reader peer was withdrawn/);
+  assert.equal(publicReaderPolicies(f).length, 0);
+});
+
+test("withdrawal fails if the reader policy reappears during Pod termination", async () => {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  delete f.revision.repositoryCredentials;
+  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  f.revision.compute.admission = f.driver.admitRevision(f.revision);
+  const context = f.context(undefined);
+  await f.driver.prepareRevision(f.revision, context);
+  f.markReady();
+  await f.driver.activateRevision(f.revision, context);
+  const policy = publicReaderPolicies(f)[0];
+  f.driver.options.network.publicGithubRead = undefined;
+  f.observePods(() => {
+    f.save(policy);
+    f.setPods([]);
+  });
+  await assert.rejects(f.driver.prepareRevision(f.revision, context), /reader policy reappeared/);
 });
 
 test("ordinary dedicated revision gets only the public reader peer and skill; a disabled proxy or deny removes both", async () => {
