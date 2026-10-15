@@ -339,6 +339,8 @@ function installationDrivers({
 // Runs `before(statement, values, backendPid)` ahead of each statement a worker transaction sends,
 // and sends the statement once it settles. Lock-order tests use it to pause the worker at one
 // exact statement; the paused transaction then runs unchanged against the real database.
+// Callback-style calls, such as `pool.query` for the work queue's claim and heartbeat, skip the
+// hook.
 function holdWorkerStatements(pool, before) {
   pool.on("connect", (client) => {
     const query = client.query.bind(client);
@@ -4286,15 +4288,18 @@ test(
     const events = [];
     fixture = await createFixture(context, {
       onWorkerEvent: (event) => events.push(event),
-      // Pause the handoff transaction just before it locks the Namespace: the worker's first
-      // Namespace lock once the transport checkpoint has committed. By then the transaction
-      // has already read the job as running.
+      // Pause the handoff transaction just before it locks the Namespace: the first attempt's
+      // first Namespace lock once the transport checkpoint has committed. By then the
+      // transaction has already read the job as running.
       beforeWorkerStatement: async (statement, values, backendPid) => {
         if (
           handoffPid !== undefined ||
           target === undefined ||
           values?.[0] !== target.namespace.id ||
-          !namespaceLockStatement.test(statement)
+          !namespaceLockStatement.test(statement) ||
+          events.some(
+            (event) => event.event === "worker.completed" && event.workId === target.workId,
+          )
         ) {
           return;
         }

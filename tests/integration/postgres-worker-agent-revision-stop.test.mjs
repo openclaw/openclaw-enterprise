@@ -2596,7 +2596,8 @@ revisionTest(
         activationStarted ? true : undefined,
       );
       // A second worker stands in for another controller replica: the first is busy activating,
-      // and only the one-claim-per-resource rule keeps this one from taking the Agent's stop.
+      // and only the one-claim-per-Agent rule (the claim query skips an Agent with claimed work,
+      // backed by controller_work_one_claim_per_resource) keeps this one from taking the stop.
       await fixture.start(compute, { pool: fixture.createWorkerPool() });
       stop = await fixture.requestStop(owner);
       // Claimed in queue order, the sibling's later stop finishing shows the second worker has
