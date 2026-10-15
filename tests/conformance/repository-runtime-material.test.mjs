@@ -1721,6 +1721,18 @@ test("ordinary dedicated revision gets only the public reader peer and skill; a 
     const mounts = agent.containers[0].volumeMounts;
     const skill = mounts.find(({ mountPath }) => mountPath.endsWith("public-github-read/SKILL.md"));
     assert.equal(Boolean(skill), allowed, JSON.stringify(proxy));
+    const gateway = f
+      .deployments()
+      .find(({ spec }) => spec.template.metadata.labels["openclaw.dev/workload-role"] === "gateway")
+      .spec.template.spec;
+    const gatewaySkill = gateway.containers[0].volumeMounts.find(({ mountPath }) =>
+      mountPath.endsWith("public-github-read/SKILL.md"),
+    );
+    assert.equal(Boolean(gatewaySkill), allowed, "Gateway managed skill discovery");
+    if (allowed) {
+      assert.equal(gatewaySkill.readOnly, true);
+      assert.equal(gatewaySkill.subPath, skill.subPath);
+    }
     // Prepare the private parent as the runtime user before projecting a read-only
     // file there. A root-owned .openclaw would break the node's existing skill publication.
     const prepareHome = agent.initContainers.find(({ name }) => name === "prepare-private-state");
@@ -1790,6 +1802,19 @@ for (const [change, previouslySelected] of [
             spec.template.metadata.labels["openclaw.dev/workload-role"] === "agent" &&
             spec.template.metadata.labels["openclaw.dev/revision"] === revision.id,
         );
+    const assertGatewaySkill = (selected) => {
+      const gateway = f
+        .deployments()
+        .find(
+          ({ spec }) => spec.template.metadata.labels["openclaw.dev/workload-role"] === "gateway",
+        );
+      const mounts = gateway.spec.template.spec.containers[0].volumeMounts;
+      assert.equal(
+        mounts.some(({ mountPath }) => mountPath.endsWith("public-github-read/SKILL.md")),
+        selected,
+        "the serving Gateway follows its selected revision",
+      );
+    };
     const assertAccess = (revision, selected) => {
       const { labels } = deployment(revision).spec.template.metadata;
       const grants = publicReaderPolicies(f).filter(({ spec }) =>
@@ -1802,6 +1827,7 @@ for (const [change, previouslySelected] of [
     await prepare(current, previouslySelected);
     f.markReady();
     await f.driver.activateRevision(current, context);
+    assertGatewaySkill(previouslySelected);
     const next = { ...structuredClone(current), id: "revision-public-read-successor", revision: 2 };
     f.enroll(next);
 
@@ -1810,11 +1836,13 @@ for (const [change, previouslySelected] of [
     assert.equal((await prepare(next, !previouslySelected)).ready, false);
     assertAccess(current, previouslySelected);
     assertAccess(next, !previouslySelected);
+    assertGatewaySkill(previouslySelected);
     f.markReady();
     assert.equal((await f.driver.prepareRevision(next, context)).ready, true);
     await assert.rejects(f.driver.activateRevision(next, context), /gateway is not ready/);
     f.markReady();
     await f.driver.activateRevision(next, context);
+    assertGatewaySkill(!previouslySelected);
     assertAccess(current, previouslySelected);
     assertAccess(next, !previouslySelected);
 

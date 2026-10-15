@@ -22,6 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
 import { installPublicGithubReadFixture } from "../../tests/helpers/public-github-read-k3d.mjs";
@@ -949,15 +950,14 @@ async function readerEvents(stack) {
     .map((line) => JSON.parse(line));
 }
 
-async function publicReadTurn(stack, selected, reader) {
-  const { namespace, pod } = await readyGateway(stack, selected.agent.id, selected.revisionId);
-  const { stdout: status } = await kubectl(
+async function gatewaySkillStatus(stack, gateway) {
+  const { stdout } = await kubectl(
     stack,
     [
       "exec",
       "-n",
-      namespace,
-      pod,
+      gateway.namespace,
+      gateway.pod,
       "-c",
       "gateway",
       "--",
@@ -974,10 +974,120 @@ async function publicReadTurn(stack, selected, reader) {
     ],
     { timeout: 4 * minute },
   );
+  return JSON.parse(stdout);
+}
+
+// Inspect the persisted admission, or invoke the exact Compute withdrawal boundary.
+// An Installation change alone does not schedule this observation.
+async function observeReaderPeer(stack, selected, action) {
+  const input = {
+    namespaceId: stack.namespaceId,
+    agentId: selected.agent.id,
+    revisionId: selected.revisionId,
+  };
+  const script = `
+import assert from "node:assert/strict";
+import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
+import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
+const input = ${JSON.stringify(input)};
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL);
+try {
+  const state = new PostgresPlatformState(pool);
+  const revision = await state.read((view) => view.revisions.findRevision(input.namespaceId, input.agentId, input.revisionId));
+  assert.ok(revision, "admitted revision is unavailable");
+  const startup = await loadStartupConfigurationSnapshot({ mode: "production" });
+  const selected = await loadInstallationConfiguration({ mode: "production", startupConfiguration: startup });
+  assert.ok(revision.compute.admission && selected.computeDriver.admitRevision(revision) === revision.compute.admission, "revision did not select the installed reader");
+  if (${JSON.stringify(action)} === "withdraw") {
+    const configuration = structuredClone(startup.configuration);
+    delete configuration.drivers.compute.configuration.network.publicGithubRead;
+    const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
+    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
+      assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
+      assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
+      return true;
+    });
+  }
+  console.log("reader-peer-observed");
+} finally { await pool.end(); }
+`;
+  const admission = await kubectl(
+    stack,
+    [
+      "exec",
+      "-i",
+      "-n",
+      stack.state.platformNamespace,
+      "deployment/openclaw-enterprise-worker",
+      "-c",
+      "worker",
+      "--",
+      "node",
+      "--input-type=module",
+      "-",
+    ],
+    { input: script, timeout: 4 * minute },
+  );
+  assert.match(admission.stdout, /reader-peer-observed/);
+}
+
+async function assertSelectedReaderProjection(stack, selected, gateway) {
+  await observeReaderPeer(stack, selected, "inspect");
+  log("public reader admission: confirmed");
+  const harness = await revisionHarness(stack, selected.agent, selected.revisionId);
+  const skillPath = "/home/node/.openclaw/skills/public-github-read/SKILL.md";
+  const policy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
+  const granted = await kubectl(stack, [
+    "-n",
+    harness.metadata.namespace,
+    "get",
+    "networkpolicy",
+    policy,
+    "-o",
+    "name",
+  ]);
+  assert.ok(granted.stdout.trim(), "selected revision has no reader policy");
+  log("public reader policy: present");
+  for (const [namespace, pod, container] of [
+    [gateway.namespace, gateway.pod, "gateway"],
+    [harness.metadata.namespace, harness.metadata.name, "agent"],
+  ]) {
+    const observed = JSON.parse(
+      (await kubectl(stack, ["-n", namespace, "get", "pod", pod, "-o", "json"])).stdout,
+    );
+    const mounts =
+      observed.spec.containers.find(({ name }) => name === container)?.volumeMounts ?? [];
+    const mount = mounts.find(({ mountPath }) => mountPath === skillPath);
+    assert.ok(
+      mount?.readOnly && mount.subPath === PUBLIC_GITHUB_READ_SKILL,
+      `${container} skill mount missing`,
+    );
+    await kubectl(stack, [
+      "exec",
+      "-n",
+      namespace,
+      pod,
+      "-c",
+      container,
+      "--",
+      "test",
+      "-r",
+      skillPath,
+    ]);
+    log(`public reader ${container} mount: present`);
+  }
+}
+
+async function publicReadTurn(stack, selected, reader) {
+  const gateway = await readyGateway(stack, selected.agent.id, selected.revisionId);
+  await assertSelectedReaderProjection(stack, selected, gateway);
+  const status = await gatewaySkillStatus(stack, gateway);
   assert.ok(
-    JSON.parse(status).skills.some(({ name }) => name === "public-github-read"),
+    status.skills.some(({ name }) => name === "public-github-read"),
     "managed skill was not discovered",
   );
+  log("public reader Gateway discovery: confirmed");
+  const { namespace, pod } = gateway;
   const prompt =
     "OCE_PUBLIC_READ_JOURNEY: Use the managed public GitHub read skill to obtain pull request 27 in example/public-project and return its title.";
   const script = `await (${gatewayTurn.toString()})(${JSON.stringify({ prompt })});`;
@@ -1067,59 +1177,6 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
   return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
 }
 
-// Exercise the actual Compute maintenance boundary against the admitted private
-// revision in the disposable worker. Changing an Installation alone does not
-// schedule this observation.
-async function withdrawReaderPeer(stack, selected) {
-  const input = {
-    namespaceId: stack.namespaceId,
-    agentId: selected.agent.id,
-    revisionId: selected.revisionId,
-  };
-  const script = `
-import assert from "node:assert/strict";
-import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
-import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
-const input = ${JSON.stringify(input)};
-const pool = await createPostgresPool(process.env.OCC_DATABASE_URL);
-try {
-  const state = new PostgresPlatformState(pool);
-  const revision = await state.read((view) => view.revisions.findRevision(input.namespaceId, input.agentId, input.revisionId));
-  assert.ok(revision, "admitted revision is unavailable");
-  const startup = await loadStartupConfigurationSnapshot({ mode: "production" });
-  const selected = await loadInstallationConfiguration({ mode: "production", startupConfiguration: startup });
-  assert.ok(revision.compute.admission && selected.computeDriver.admitRevision(revision) === revision.compute.admission, "revision did not select the installed reader");
-  const configuration = structuredClone(startup.configuration);
-  delete configuration.drivers.compute.configuration.network.publicGithubRead;
-  const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
-  await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
-    assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
-    assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
-    return true;
-  });
-  console.log("withdrawn-peer=confirmed");
-} finally { await pool.end(); }
-`;
-  const { stdout } = await kubectl(
-    stack,
-    [
-      "exec",
-      "-i",
-      "-n",
-      stack.state.platformNamespace,
-      "deployment/openclaw-enterprise-worker",
-      "-c",
-      "worker",
-      "--",
-      "node",
-      "--input-type=module",
-      "-",
-    ],
-    { input: script, timeout: 4 * minute },
-  );
-  assert.match(stdout, /withdrawn-peer=confirmed/);
-}
-
 async function proveRetirement(stack, selected, control, reader) {
   const old = await revisionHarness(stack, selected.agent, selected.revisionId);
   const live = await revisionHarness(stack, control.agent, control.revisionId);
@@ -1158,7 +1215,7 @@ async function proveRetirement(stack, selected, control, reader) {
       controlRequests.filter((event) => event.connection === controlConnection).length >= 2,
       "control Harness did not complete two requests on its held socket",
     );
-    await withdrawReaderPeer(stack, selected);
+    await observeReaderPeer(stack, selected, "withdraw");
     const deployment = `agent-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
     const { stdout: oldDeployment } = await kubectl(stack, [
       "-n",
@@ -1263,6 +1320,25 @@ async function proveRetirement(stack, selected, control, reader) {
       "-c",
       "test ! -e /home/node/.openclaw/skills/public-github-read/SKILL.md",
     ]);
+    const successorGateway = await readyGateway(stack, selected.agent.id, successor);
+    await kubectl(stack, [
+      "exec",
+      "-n",
+      successorGateway.namespace,
+      successorGateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "sh",
+      "-c",
+      "test ! -e /home/node/.openclaw/skills/public-github-read/SKILL.md",
+    ]);
+    const successorStatus = await gatewaySkillStatus(stack, successorGateway);
+    assert.ok(
+      !successorStatus.skills.some(({ name }) => name === "public-github-read"),
+      "unselected successor discovered the reader skill",
+    );
+    log("unselected Gateway and Harness skill: absent");
     const negative = `const http = require('node:http');
 const req = http.get({host:${JSON.stringify(reader.peer.address)}, port:8080, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
 const timer = setTimeout(() => req.destroy(new Error('probe-deadline')), 5000);

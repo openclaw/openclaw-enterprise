@@ -12449,12 +12449,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             ...GATEWAY_PRIVATE_STATE_CATEGORIES.map(([, mountPath]) => mountPath),
             GATEWAY_SESSION_DIRECTORY,
           ]
-        : [
-            ...HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath),
-            // Prepare the skill's parents as the runtime user before the read-only
-            // file mount. Otherwise the runtime can get a root-owned .openclaw.
-            ...(projectedSkillPath === undefined ? [] : [projectedSkillPath]),
-          ];
+        : HARNESS_WORKSPACE_CATEGORIES.map(([, mountPath]) => mountPath);
+    // Both runtimes need writable parents before the read-only skill file mount.
+    if (projectedSkillPath !== undefined) {
+      paths.push(projectedSkillPath);
+    }
     return [
       "/runtime-state/home",
       "/runtime-temporary/tmp",
@@ -14295,7 +14294,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ? undefined
         : providerHarnessUrl(providerEndpoint, providerNetwork!);
     const publicGithubRead =
-      pluginRuntime?.runtime.kind === "codex" && role === "agent"
+      pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
     const initContainers = privateHome
@@ -14418,8 +14417,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         readOnly: true,
       });
       if (publicGithubRead !== undefined) {
-        // A regular read-only file in the node's managed skill root. Do not write
-        // the Agent's durable workspace or create personal native Codex skills.
+        // The Gateway discovers its managed skill; the Harness needs the same
+        // read-only file for native Codex. Neither uses the durable workspace.
         volumeMounts.push({
           name: PLUGIN_RUNTIME_VOLUME,
           mountPath: publicGithubRead.skillPath,

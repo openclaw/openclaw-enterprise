@@ -63,7 +63,8 @@ DNS and HTTPS to the operator-supplied CIDRs.
 ## Use and troubleshoot
 
 Ask the Agent to use its `public-github-read` skill for a repository whose public
-name you know. The revision mounts the skill read-only in the Harness. Supported
+name you know. The revision mounts the skill read-only in the Gateway for
+discovery and in the Harness for native Codex. Supported
 paths below `/repos/{owner}/{repository}` are repository metadata, `pulls`,
 `issues` or `releases` lists and numeric details, and `contents/{path}`.
 Directories return metadata; files up to 1 MiB return inline base64. Each path

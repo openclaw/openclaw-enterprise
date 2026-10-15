@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-10-15"
-last_updated_session: authoring-run/87f54df9-4b7e-43b3-a627-60e6b6678225
+last_updated_session: authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72
 ---
 
 # Public GitHub read flow
@@ -47,16 +47,18 @@ IP allow in its authored proxy. A deny that might match withholds the capability
 `apps/controller/src/drivers/compute/kubernetes/index.ts:publicGithubReadForRevision`
 requires the stored fact to match the current peer. An older revision without the
 fact stays unselected, including when its runtime projection is rebuilt. For a selected revision,
-Compute creates the managed skill's parent as the runtime user before projecting
-the read-only file. It uses the same immutable plugin-runtime snapshot to write a
-revision-owned egress policy to the exact reader Pod peer and port.
+Compute creates the managed skill's parent as the runtime user in both Gateway
+and Harness, then projects the same read-only file from the immutable plugin-runtime
+snapshot. It also writes a revision-owned egress policy to the exact reader Pod
+peer and port.
 
 ### 2. Resolve the skill and use the actual tool network
 
 `apps/controller/src/drivers/plugin/runtime-translator.ts:codexOpenClawConfiguration`
 adds the skill file to native read paths and preserves the authored Service IP allow.
-The existing workspace node serves managed skill discovery. The skill asks the
-Harness to use its proxy even if a shell client normally bypasses private addresses.
+The Gateway discovers its managed copy, and native Codex reads the Harness copy.
+The skill asks the Harness to use its proxy even if a shell client normally
+bypasses private addresses.
 
 ### 3. Recheck public visibility and bound the result
 
@@ -105,6 +107,8 @@ reports an error. A new revision is needed to select a replacement peer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 11:05: Project the managed reader skill to Gateway and Harness (authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72 - 87e12a1169a997a99fec7de261b43a0ea2255f54)
 
 - 2026-10-15 10:35: Use admitted Harness ownership during reader withdrawal (authoring-run/87f54df9-4b7e-43b3-a627-60e6b6678225 - 52b6a608fa3d1ad6a6f9d7170f3dd5c4d624c1a6)
 
