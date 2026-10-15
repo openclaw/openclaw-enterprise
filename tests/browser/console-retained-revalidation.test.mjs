@@ -401,6 +401,9 @@ async function openPausedList(t, name, agentNames, { deploy = false } = {}) {
   await page.clock.install();
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.locator(settledView).getByRole("link", { name: agentNames[0] }).waitFor();
+  // The list reads each row's latest deployment after it settles; let those finish, so the
+  // list is reusable and no test's held read catches one of them.
+  await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
   await pauseClock(page);
   await page.evaluate(recordShownPages);
   return { fixture, namespace, agents, page };
@@ -662,13 +665,14 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
     page,
   } = await openPausedList(t, "Early leave", ["Revealed Agent"], { deploy: true });
   const record = `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`;
+  // Until the reveal, the detail shows only its toolbar.
   const pendingDetail = page.locator(".agent-detail-pending");
+  const shownDetail = page.locator(`${activeView}.agent-detail-pending`);
   // The first Deployment activity read is held, so the page shows only its summary.
   const firstRecord = await holdRead(t, page, record, { once: true });
   await page.getByRole("link", { name: "Revealed Agent" }).click();
-  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  await shownDetail.waitFor({ state: "attached" });
   await firstRecord.requested;
-  assert.equal(await pendingDetail.count(), 1);
   // Leave before the 1 s reveal and let its timer pass while the page is away.
   await page.clock.runFor(300);
   await page.goBack();
@@ -680,12 +684,12 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   const returnRecord = await holdRead(t, page, record, { once: true });
   await page.goForward();
   await returnRecord.requested;
-  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
-  assert.equal(await pendingDetail.count(), 1);
+  await shownDetail.waitFor({ state: "attached" });
   await page.clock.runFor(999);
   assert.equal(await pendingDetail.count(), 1);
   await page.clock.runFor(1);
   assert.equal(await pendingDetail.count(), 0);
+  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
   returnRecord.release();
   await page.locator(settledView).waitFor();
 });
