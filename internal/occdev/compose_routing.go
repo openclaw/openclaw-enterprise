@@ -14,7 +14,12 @@ import (
 func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developmentState) error {
 	// Create without starting either reader, and inspect their actual images and
 	// Compose user overrides rather than assuming the image's default UID.
-	if err := r.compose(ctx, state, "up", "--no-start", "--build", "--no-deps", "controller", "worker-kubernetes"); err != nil {
+	services := []string{"up", "--no-start", "--build", "--no-deps", "controller", "worker-kubernetes"}
+	// Startup uses --no-build after ownership preparation, including for the browser endpoint.
+	if state.BrowserPort != 0 {
+		services = append(services, "browser-proxy")
+	}
+	if err := r.compose(ctx, state, services...); err != nil {
 		return err
 	}
 	var owner [2]int

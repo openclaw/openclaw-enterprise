@@ -1533,6 +1533,15 @@ function createIntegrationSandboxDriverFactory(
       id: definition.id,
       drivers: definition.drivers,
       client: {
+        placement(namespaceName) {
+          if (namespaceName === undefined) {
+            return undefined;
+          }
+          // Match the real per-Namespace Helm release, preserving the Backend's host checks.
+          return new OpenShellGateway({
+            serviceName: `openshell-${hash(namespaceName, 10)}`,
+          }).placement(namespaceName);
+        },
         clientForNamespace(namespaceName) {
           const state = gatewayState.get(namespaceName);
           assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
