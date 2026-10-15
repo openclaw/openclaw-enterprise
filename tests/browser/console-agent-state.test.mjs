@@ -703,168 +703,96 @@ test("Agent detail keeps an embedded Agent's failed redeploy separate from servi
   assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
 });
 
-// The controller ends an older version's deployment work with REVISION_SUPERSEDED when a newer
-// version took over first. The API records that as failed, but the Agent serves the newer version,
-// so the console shows it as neutral (finding 1353). A reader who cannot read the newer version
-// learns nothing about it beyond what the Current version card already shows.
-test("Agent detail and list show a superseded deployment as neutral, not failed", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Superseded deploy", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Superseded Agent", nativeValues("v1"));
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const newer = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  denyRevisionRead(fixture, namespace, newer.revision);
-  const { page } = await newPage(t, fixture);
-  let error = {
-    code: "REVISION_SUPERSEDED",
-    message: "Deployment was superseded by a newer revision.",
-  };
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
-      }),
-  );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            revisionId: first.revision.id,
-            observedAt: "2026-10-14T16:00:01.000Z",
-            checks: [
-              {
-                component: "gateway",
-                check: "connectivity",
-                state: "unknown",
-                checkedAt: "2026-10-14T16:00:00.000Z",
-                code: "UNAVAILABLE",
-              },
-            ],
-          },
-          meta: { requestId: "req_test_superseded_diagnostics" },
-        }),
-      }),
-  );
-
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const row = page.getByRole("row").filter({ hasText: "Superseded Agent" });
-  await row.getByRole("link", { name: "v1 · superseded" }).waitFor();
-  await row.getByText("Superseded by a newer version.", { exact: true }).waitFor();
-  assert.equal(await row.getByText(/failed|Deployment was superseded/).count(), 0);
-
-  const url = detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration");
-  await page.goto(url.href);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  const summary = page.locator(".agent-current-summary");
-  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
-  await summary.getByText("Superseded by a newer version.", { exact: true }).waitFor();
-  await summary.getByText("Not verified", { exact: true }).waitFor();
-  const activity = page.locator(".deployment-status");
-  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "Superseded by a newer version before this one became current (REVISION_SUPERSEDED). This version did not fail; no action is needed.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-superseded").count(), 2);
-  await activity
-    .getByText("Deployment work stopped because a newer version superseded this one.", {
-      exact: true,
-    })
-    .waitFor();
-  await activity
-    .getByText("Not needed: this version did not become current.", { exact: true })
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await activity.getByRole("alert").count(), 0);
-  const record = page.locator(".version-deployment-record");
-  await record.getByText("Recorded outcome: superseded", { exact: true }).waitFor();
-  await record
-    .getByText(
-      /^Superseded by a newer version before this one became current \(REVISION_SUPERSEDED\)/,
-    )
-    .waitFor();
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-  // Nothing names the newer version, which this reader cannot read.
-  const outcome = page.locator(
-    ".agent-current-summary, .deployment-status, .version-deployment-record, .agent-status-line",
-  );
-  assert.equal(await outcome.getByText(/\bv2\b|failed|Live serving is unverified/i).count(), 0);
-  // Diagnostics do not ask the reader to resolve a superseded record first.
-  const observations = page.locator(".version-diagnostics");
-  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
-  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
-  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
-
-  // A real failure on the same record still renders as failed.
-  error = authenticationFailure;
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
-  await activity
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
-  assert.equal(await activity.locator(".deployment-step-superseded").count(), 0);
-  await page
-    .locator(".agent-status-line")
-    .getByText(
+// The API records a deployment ended by REVISION_SUPERSEDED (a newer version took over first,
+// finding 1353) or REVISION_STOPPED (its owner stopped the Agent, finding 1375) as failed, but the
+// version did not fail, so the console shows a neutral outcome. A reader who cannot read the newer
+// version learns nothing about it. A real failure on the same record still renders red, and so does
+// REPOSITORY_REVISION_STOPPED: the repository credential worker also records it when the Namespace
+// is not ready. Its REPOSITORY_REVISION_SUPERSEDED is neutral.
+const neutralDeployments = [
+  {
+    agent: "Superseded Agent",
+    outcome: "superseded",
+    error: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    note: "Superseded by a newer version.",
+    summaryNote: "Superseded by a newer version.",
+    explanation: (code) =>
+      `Superseded by a newer version before this one became current (${code}). This version did not fail; no action is needed.`,
+    stages: [
+      "Deployment work stopped because a newer version superseded this one.",
+      "Not needed: this version did not become current.",
+    ],
+    failure: authenticationFailure,
+    failedLine:
       /^v1 deployment is recorded as failed\. rev_.* is selected\. Live serving is unverified\.$/,
-    )
-    .waitFor();
+    alsoNeutral: "REPOSITORY_REVISION_SUPERSEDED",
+  },
+  {
+    agent: "Stopped Agent",
+    outcome: "stopped",
+    error: {
+      code: "REVISION_STOPPED",
+      message: "Deployment ended because the Agent was stopped.",
+    },
+    note: "Stopped before it finished.",
+    summaryNote: "Stopped before it finished. Deploy a new version when you want it running.",
+    explanation: (code) =>
+      `The Agent was stopped before this deployment finished (${code}). This version did not fail; deploy a new version when you want it running.`,
+    stages: [
+      "Deployment work ended because the Agent was stopped.",
+      "Not recorded: the Agent was stopped first. Deploy a new version when you want it running.",
+    ],
+    failure: {
+      code: "REPOSITORY_REVISION_STOPPED",
+      message:
+        "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+    },
+    failedLine: /^v1 deployment failed\./,
+  },
+];
 
-  // The repository credential worker ends superseded work with its own code: neutral too.
-  error = {
-    code: "REPOSITORY_REVISION_SUPERSEDED",
-    message: "Deployment was superseded by a newer revision.",
-  };
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "Superseded by a newer version before this one became current (REPOSITORY_REVISION_SUPERSEDED). This version did not fail; no action is needed.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-});
-
-// An owner's Stop during a deployment ends that version's work with REVISION_STOPPED. The API
-// records it as failed, but the version did not fail, so the console shows a neutral Stopped
-// outcome that points at deploying again (finding 1375). REPOSITORY_REVISION_STOPPED stays a
-// failure: the repository credential worker also records it when the Namespace is not ready.
-test("Agent detail and list show a deployment stopped by its owner as neutral, not failed", async (t) => {
+test("Agent detail and list show superseded and stopped deployments as neutral, not failed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Stopped deploy", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Stopped Agent", nativeValues("v1"));
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const namespace = await fixture.createNamespace("Neutral deploys", { ready: true });
   const { page } = await newPage(t, fixture);
-  let error = {
-    code: "REVISION_STOPPED",
-    message: "Deployment ended because the Agent was stopped.",
-  };
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`,
-    (route) =>
+  // Each Agent's recorded deployment error and detail page, by Agent name.
+  const errors = new Map();
+  const urls = new Map();
+  for (const c of neutralDeployments) {
+    const agent = await fixture.createAgent(namespace.id, c.agent, nativeValues("v1"));
+    const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    if (c.outcome === "superseded") {
+      const newer = await fixture.seedActiveAgentRevision(
+        namespace.id,
+        agent.id,
+        first.revision.id,
+      );
+      denyRevisionRead(fixture, namespace, newer.revision);
+    }
+    errors.set(c.agent, c.error);
+    urls.set(
+      c.agent,
+      detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
+    );
+    const deployment = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`;
+    await page.route(deployment, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
+        body: deploymentBody(
+          namespace.id,
+          agent.id,
+          first.revision.id,
+          "failed",
+          errors.get(c.agent),
+        ),
       }),
-  );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
-    (route) =>
+    );
+    await page.route(`${deployment}/diagnostics`, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -882,72 +810,79 @@ test("Agent detail and list show a deployment stopped by its owner as neutral, n
               },
             ],
           },
-          meta: { requestId: "req_test_stopped_diagnostics" },
+          meta: { requestId: "req_test_neutral_diagnostics" },
         }),
       }),
-  );
+    );
+  }
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const row = page.getByRole("row").filter({ hasText: "Stopped Agent" });
-  await row.getByRole("link", { name: "v1 · stopped" }).waitFor();
-  await row.getByText("Stopped before it finished.", { exact: true }).waitFor();
-  assert.equal(await row.getByText(/failed|Deployment ended/).count(), 0);
+  for (const c of neutralDeployments) {
+    const row = page.getByRole("row").filter({ hasText: c.agent });
+    await row.getByRole("link", { name: `v1 · ${c.outcome}` }).waitFor();
+    await row.getByText(c.note, { exact: true }).waitFor();
+    assert.equal(await row.getByText(/failed|Deployment (was|ended)/).count(), 0);
+  }
 
-  const url = detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration");
-  await page.goto(url.href);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const summary = page.locator(".agent-current-summary");
-  await summary.getByText("v1 · Stopped", { exact: true }).waitFor();
-  await summary
-    .getByText("Stopped before it finished. Deploy a new version when you want it running.", {
-      exact: true,
-    })
-    .waitFor();
   const activity = page.locator(".deployment-status");
-  await activity.getByText("Recorded status: stopped", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "The Agent was stopped before this deployment finished (REVISION_STOPPED). This version did not fail; deploy a new version when you want it running.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-stopped").count(), 2);
-  await activity
-    .getByText("Deployment work ended because the Agent was stopped.", { exact: true })
-    .waitFor();
-  await activity
-    .getByText(
-      "Not recorded: the Agent was stopped first. Deploy a new version when you want it running.",
-      { exact: true },
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await activity.getByRole("alert").count(), 0);
   const record = page.locator(".version-deployment-record");
-  await record.getByText("Recorded outcome: stopped", { exact: true }).waitFor();
-  // The selected version was stopped, not broken: no failure banner, no "probably down".
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-  assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
+  const statusLine = page.locator(".agent-status-line");
   const outcome = page.locator(
     ".agent-current-summary, .deployment-status, .version-deployment-record",
   );
-  assert.equal(await outcome.getByText(/failed|check the recorded error/i).count(), 0);
-  const observations = page.locator(".version-diagnostics");
-  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
-  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
-  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
-
-  // The repository credential worker's stop code can mean the Namespace is not ready: still red.
-  error = {
-    code: "REPOSITORY_REVISION_STOPPED",
-    message: "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+  const absent = /\bv2\b|failed|Live serving is unverified|check the recorded error/i;
+  // After a refresh from a failure, the hidden status line keeps its old text, so its text is
+  // checked only when the page first renders the neutral record.
+  const expectNeutral = async (c, code, firstRender = true) => {
+    const label = `${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}`;
+    await summary.getByText(`v1 · ${label}`, { exact: true }).waitFor();
+    await summary.getByText(c.summaryNote, { exact: true }).waitFor();
+    await summary.getByText("Not verified", { exact: true }).waitFor();
+    await activity.getByText(`Recorded status: ${c.outcome}`, { exact: true }).waitFor();
+    await activity.getByText(c.explanation(code)).waitFor();
+    for (const stage of c.stages) {
+      await activity.getByText(stage, { exact: true }).waitFor();
+    }
+    assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 2);
+    assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
+    assert.equal(await activity.getByRole("alert").count(), 0);
+    await record.getByText(`Recorded outcome: ${c.outcome}`, { exact: true }).waitFor();
+    await record.getByText(c.explanation(code), { exact: true }).waitFor();
+    // No failure banner, no "probably down", and nothing names the newer version, which this
+    // reader cannot read.
+    assert.equal(await statusLine.isVisible(), false);
+    assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
+    assert.equal(await outcome.getByText(absent).count(), 0);
+    if (firstRender) {
+      assert.equal(await statusLine.getByText(absent).count(), 0);
+    }
   };
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
-  assert.equal(await activity.locator(".deployment-step-stopped").count(), 0);
-  await page
-    .locator(".agent-status-line")
-    .getByText(/^v1 deployment failed\./)
-    .waitFor();
+  for (const c of neutralDeployments) {
+    await page.goto(urls.get(c.agent).href);
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await expectNeutral(c, c.error.code);
+    // Diagnostics do not ask the reader to resolve a neutral record first.
+    const observations = page.locator(".version-diagnostics");
+    await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+    await observations
+      .getByText(/Check this version's recorded outcome and its Logs tab/)
+      .waitFor();
+    assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
+
+    errors.set(c.agent, c.failure);
+    await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
+    await activity.getByText(`${c.failure.code}: ${c.failure.message}`).waitFor();
+    assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
+    assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 0);
+    await statusLine.getByText(c.failedLine).waitFor();
+
+    if (c.alsoNeutral) {
+      errors.set(c.agent, { ...c.error, code: c.alsoNeutral });
+      await activity.getByRole("button", { name: "Refresh deployment" }).click();
+      await expectNeutral(c, c.alsoNeutral, false);
+    }
+  }
 });
