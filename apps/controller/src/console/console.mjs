@@ -1005,10 +1005,9 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (held && current.namespace !== null) {
-      // Namespace admission is done, so the header selector is usable while the destination's
-      // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the full render below picks the default.
-      shellUI.updateNamespaces(namespaces);
+      // Enable the admitted destination selector, but keep the scope beside the held
+      // rows until the destination replaces them. A switch discards the pending reads.
+      shellUI.updateNamespaces(namespaces, { preservePageScope: true });
     }
     let retainedItems = null;
     let retainedAgent = null;
