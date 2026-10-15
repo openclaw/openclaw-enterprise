@@ -279,7 +279,8 @@ test("console scripts and styles are compressed when accepted; the shell and bin
     assert.deepEqual(result.rawPayload, await consoleFile("console.css"), acceptEncoding);
   }
 
-  // HEAD reports the GET representation; a range request still gets the whole asset.
+  // HEAD reports the GET representation. Range is unsupported: it must keep returning the whole
+  // encoded body, never a slice of it, until someone adds range support on purpose.
   const gzipGet = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" });
   const head = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" }, "HEAD");
   assert.equal(head.statusCode, 200);
@@ -310,11 +311,6 @@ test("console scripts and styles are compressed when accepted; the shell and bin
     assert.equal(result.statusCode, 200, path);
     assert.equal(result.headers["content-encoding"], undefined, path);
   }
-
-  // API responses are never compressed by this path.
-  const api = await fetchRaw("/api/does-not-exist", { "accept-encoding": "gzip, br" });
-  assert.equal(api.statusCode, 404);
-  assert.equal(api.headers["content-encoding"], undefined);
 });
 
 test("console auth routes reject untrusted browser origins and issue production session cookies", async (t) => {

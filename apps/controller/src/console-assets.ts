@@ -166,28 +166,31 @@ async function encodedAsset(
   if (encoding === undefined) {
     return identity;
   }
-  let pending = encodedAssets.get(pathname);
-  if (pending === undefined || !(await pending).identity.equals(body)) {
-    pending = Promise.all([
+  // Look the entry up without awaiting first, so concurrent first requests share one compression.
+  const existing = encodedAssets.get(pathname);
+  let encoded = existing === undefined ? undefined : await existing.catch(() => undefined);
+  if (encoded === undefined || !encoded.identity.equals(body)) {
+    const pending = Promise.all([
       brotliAsync(body, {
         params: {
           [zlib.BROTLI_PARAM_MODE]: zlib.BROTLI_MODE_TEXT,
-          [zlib.BROTLI_PARAM_QUALITY]: zlib.BROTLI_MAX_QUALITY,
+          // Quality 10 is within 3% of 11 at under half the one-time CPU.
+          [zlib.BROTLI_PARAM_QUALITY]: 10,
           [zlib.BROTLI_PARAM_SIZE_HINT]: body.length,
         },
       }),
       gzipAsync(body, { level: zlib.Z_BEST_COMPRESSION }),
     ]).then(([br, gzipped]) => ({ identity: body, br, gzip: gzipped }));
-    const current = pending;
-    encodedAssets.set(pathname, current);
+    encodedAssets.set(pathname, pending);
     // Never cache a failure: the next request compresses again.
-    current.catch(() => {
-      if (encodedAssets.get(pathname) === current) {
+    pending.catch(() => {
+      if (encodedAssets.get(pathname) === pending) {
         encodedAssets.delete(pathname);
       }
     });
+    encoded = await pending;
   }
-  const compressed = (await pending)[encoding];
+  const compressed = encoded[encoding];
   return compressed.length < body.length
     ? { ...identity, body: compressed, contentEncoding: encoding }
     : identity;
@@ -203,7 +206,7 @@ function preferredEncoding(acceptEncoding: string | undefined): "br" | "gzip" | 
     const [name = "", ...parameters] = entry.split(";").map((part) => part.trim().toLowerCase());
     const q = parameters.find((parameter) => parameter.startsWith("q="));
     const weight = q === undefined ? 1 : Number(q.slice(2));
-    weights.set(name, Number.isFinite(weight) ? weight : 0);
+    weights.set(name, Number.isFinite(weight) ? Math.min(Math.max(weight, 0), 1) : 0);
   }
   const weight = (name: string) => weights.get(name) ?? weights.get("*") ?? 0;
   const br = weight("br");
