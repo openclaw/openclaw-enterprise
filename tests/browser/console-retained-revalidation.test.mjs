@@ -11,15 +11,25 @@ async function holdSession(t, page) {
     release = resolve;
   });
   let requestedResolve;
-  const requested = new Promise((resolve) => {
-    requestedResolve = resolve;
+  let timer;
+  // Fails instead of hanging the run when the page never rechecks its session.
+  const requested = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("No session read was requested")), 10_000);
+    requestedResolve = () => {
+      clearTimeout(timer);
+      resolve();
+    };
   });
+  requested.catch(() => {});
   await page.route("**/api/auth/session", async (route) => {
     requestedResolve();
     await held;
     await route.continue().catch(() => {});
   });
-  t.after(() => release());
+  t.after(() => {
+    clearTimeout(timer);
+    release();
+  });
   return { requested, release };
 }
 
@@ -166,7 +176,8 @@ test("Back during an Agent refocus check keeps the held page inert until the ret
   await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
   await page.getByRole("link", { name: "Interrupted Agent" }).click();
   await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
-  await page.locator(activeView).waitFor();
+  // Only a finished detail rechecks in place on refocus.
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]:not([inert])').waitFor();
 
   const session = await holdSession(t, page);
   // Refocusing Agent detail rechecks access in place; Back cuts that check short.
