@@ -1007,14 +1007,9 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (retained && current.namespace !== null) {
       // Namespace admission is done, so the header selector is usable while the destination's
       // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the full render below picks the default.
-      const scope = app.querySelector(".content .scope");
-      const heldScope = held ? scope?.textContent : null;
-      shellUI.updateNamespaces(namespaces);
-      if (heldScope) {
-        // The held page still shows its own Namespace until the destination renders.
-        scope.textContent = heldScope;
-      }
+      // Without a URL selection the full render below picks the default. A held page keeps
+      // the scope beside its rows until the destination replaces them.
+      shellUI.updateNamespaces(namespaces, { preservePageScope: held });
     }
     let retainedItems = null;
     let retainedAgent = null;

@@ -231,7 +231,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function updateNamespaces(readable) {
+  function updateNamespaces(readable, { preservePageScope = false } = {}) {
     if (!namespaceSelect?.isConnected) {
       return;
     }
@@ -247,6 +247,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaces = readable;
     namespaceAdmissionPending = false;
     updateNamespaceSelector();
+    if (preservePageScope) {
+      return;
+    }
     const scope = app.querySelector(".content .scope");
     if (scope && route().feature === "agents") {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
