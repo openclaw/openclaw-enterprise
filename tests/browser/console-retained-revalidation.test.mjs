@@ -155,3 +155,34 @@ test("Back to a retained Agent page after access was revoked never shows the cac
   );
   assert.equal(await page.locator(".agent-current-summary").count(), 0);
 });
+
+test("Back during an Agent refocus check keeps the held page inert until the return is admitted", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Interrupted check", { ready: true });
+  await fixture.createAgent(namespace.id, "Interrupted Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
+  await page.getByRole("link", { name: "Interrupted Agent" }).click();
+  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  await page.locator(activeView).waitFor();
+
+  const session = await holdSession(t, page);
+  // Refocusing Agent detail rechecks access in place; Back cuts that check short.
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await session.requested;
+  await page.goBack();
+  await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
+      }),
+  );
+  assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 1);
+  assert.equal(await page.locator(activeView).count(), 0);
+
+  session.release();
+  await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
+});

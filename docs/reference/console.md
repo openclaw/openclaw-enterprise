@@ -63,8 +63,8 @@ ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
 updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
-On return, it names the destination's Namespace. Subsequent page reads do
-not block it. Without a readable Namespace, Agents and Namespaces explain how to
+Once the list is known, it names the destination's Namespace. On returns,
+later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
 get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new

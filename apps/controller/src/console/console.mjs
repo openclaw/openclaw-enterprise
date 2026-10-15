@@ -1004,11 +1004,17 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
-    if (held && current.namespace !== null) {
+    if (retained && current.namespace !== null) {
       // Namespace admission is done, so the header selector is usable while the destination's
       // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
       // Without a URL selection the full render below picks the default.
+      const scope = app.querySelector(".content .scope");
+      const heldScope = held ? scope?.textContent : null;
       shellUI.updateNamespaces(namespaces);
+      if (heldScope) {
+        // The held page still shows its own Namespace until the destination renders.
+        scope.textContent = heldScope;
+      }
     }
     let retainedItems = null;
     let retainedAgent = null;
@@ -1283,6 +1289,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       clearDrafts();
       resetReads();
       clearPrivate();
+      shell = null;
       publicPanel(
         sessionResolved ? "Namespace access unavailable" : "Session unavailable",
         sessionResolved
@@ -1533,7 +1540,8 @@ async function revalidateMountedAgent(current) {
       error.requestId,
     );
   } finally {
-    if (view.isConnected) {
+    // A newer load may hold this same node on screen; only this check's lifetime releases it.
+    if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
       if (
         isCurrent() &&

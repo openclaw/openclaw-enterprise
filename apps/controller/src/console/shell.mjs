@@ -191,8 +191,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaceSelect.disabled = namespaceAdmissionPending || !session || readable.length === 0;
     namespaceSelect.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
-      // During admission for a return, name the known selection instead of flashing
-      // "Checking access…"; the choices stay hidden until access is confirmed.
+      // Once this session knows the Namespace list, admission names the selection instead of
+      // flashing "Checking access…"; the choices stay hidden until access is confirmed.
       let placeholder = namespaceAdmissionPending
         ? (namespaces.find((item) => item.id === namespaceId)?.name ?? "Checking access…")
         : "Checking access…";
