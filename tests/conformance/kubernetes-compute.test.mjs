@@ -5979,7 +5979,16 @@ async function chatgptIssuanceFixture() {
     binding.externalCredentialId = null;
   };
   const account = { id: secrets.serviceAccountId, namespaceId: tenant.id, name: "issued" };
-  return { ...secrets, account, binding, crashedIssuance, deletedAccounts, request, revoked };
+  return {
+    ...secrets,
+    account,
+    binding,
+    crashedIssuance,
+    deletedAccounts,
+    request,
+    revoked,
+    state,
+  };
 }
 
 test("a failed issuance's Secret rollback after the lock is released keeps a later issuance's Secret", async () => {
@@ -6075,6 +6084,30 @@ test("an issuance that never committed leaves nothing a re-issue or the account 
           error instanceof ResourceConflictError &&
           error.message === "The service account credential changed during cleanup.",
       );
+      assert.deepEqual(revoked, []);
+      assert.equal(objects.has(key), true);
+    },
+  );
+
+  await t.test(
+    "a reclaim whose session ended while reading the Secret fails without touching it",
+    async () => {
+      const { account, crashedIssuance, driver, objects, key, request, revoked, state } =
+        await chatgptIssuanceFixture();
+      await crashedIssuance(account);
+      // The PostgreSQL session ends during the Kubernetes read, so the binding reread on the
+      // transaction's connection fails: no proof the lock still holds, so nothing is revoked.
+      const lost = new DependencyUnavailableError("The database session ended.");
+      const { core } = await driver.apiClients;
+      const read = core.readNamespacedSecret;
+      core.readNamespacedSecret = async (request) => {
+        const result = await read(request);
+        state.queryInTransaction = async () => {
+          throw lost;
+        };
+        return result;
+      };
+      await assert.rejects(request().driver.createCredential(account), (error) => error === lost);
       assert.deepEqual(revoked, []);
       assert.equal(objects.has(key), true);
     },
