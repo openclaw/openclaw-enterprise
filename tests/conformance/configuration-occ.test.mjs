@@ -563,7 +563,15 @@ test("a failed Configuration update leaves an update committed after its rollbac
 test("a Configuration left one generation ahead of its record recovers on the next update", async () => {
   const { agent, configuration, configurationDriver, controller, namespace } = await fixture();
   const reference = { id: configuration.id, namespaceId: namespace.id };
-  const update = configurationDriver.update;
+  // Records each replace as [stored, written] generations: the Kubernetes Driver accepts only a
+  // step of exactly one from the document it read.
+  const steps = [];
+  const storedUpdate = configurationDriver.update;
+  const update = async (next) => {
+    steps.push([configurationDriver.stored(next).generation, next.generation]);
+    return storedUpdate(next);
+  };
+  configurationDriver.update = update;
   const read = configurationDriver.read;
   const valuesWith = (regions) => ({
     ...configuration.values,
@@ -647,6 +655,13 @@ test("a Configuration left one generation ahead of its record recovers on the ne
   );
   assert.equal(revision.configurationGeneration, 3);
   assert.deepEqual(revision.configuration, admitLoggingConfiguration(valuesWith(["east"]), "info"));
+  // Lost write 1 to 2; lost retry 2 to 3 and its compensation 3 to 2; recovery 2 to 3.
+  assert.deepEqual(steps, [
+    [1, 2],
+    [2, 3],
+    [3, 2],
+    [2, 3],
+  ]);
 });
 
 test("a Configuration whose ConfigMap a failed delete removed can still be deleted", async () => {
@@ -712,6 +727,26 @@ test("a Configuration whose ConfigMap a failed delete removed can still be delet
     controller.deleteConfiguration(administrator, namespace.id, configuration.id),
     DependencyUnavailableError,
   );
+
+  // A read that fails while the document is still stored is an outage, not an absence: the
+  // inspection finds the document, so delete keeps refusing and both stay.
+  const intact = await create("intact");
+  const read = configurationDriver.read;
+  configurationDriver.read = async () => {
+    configurationDriver.read = read;
+    throw new Error("synthetic Configuration outage");
+  };
+  await assert.rejects(
+    controller.deleteConfiguration(administrator, namespace.id, intact.id),
+    DependencyUnavailableError,
+  );
+  assert.deepEqual(configurationDriver.stored(intact), intact);
+  assert.deepEqual(
+    await controller.getConfiguration(administrator, namespace.id, intact.id),
+    intact,
+  );
+  await controller.deleteConfiguration(administrator, namespace.id, intact.id);
+  recreated.length = 0;
 
   // Once the Driver confirms nothing is stored, delete removes the record and restores nothing.
   assert.deepEqual(

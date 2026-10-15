@@ -10826,10 +10826,13 @@ export class OpenClawController {
    * The stored Configuration behind a record that update or delete holds locked. A failed update
    * whose compensation could not run (a crash, a lost COMMIT acknowledgement that hid a rollback,
    * or a compensation read that failed in the same outage) leaves the stored document exactly one
-   * generation ahead of the record (finding 1396). The record lock keeps every other writer out,
-   * so that document is a leftover, not a write in flight; it comes back as `ahead`, for update to
-   * replace and delete to remove. Reads and deploys keep refusing it, so unrecorded content is
-   * never served or recorded.
+   * generation ahead of the record (finding 1396). The record lock keeps other requests out, so
+   * that document is a leftover, not a write in flight; it comes back as `ahead`, for update to
+   * replace and delete to remove. Another request's compensation runs without the lock, but the
+   * Kubernetes Driver refuses a replace that does not move the generation by exactly one from the
+   * document it read, or whose resource version changed since, so the later of two writes fails
+   * and rolls back. Reads and deploys keep
+   * refusing the leftover, so unrecorded content is never served or recorded.
    */
   private async lockedConfiguration(
     driver: ConfigurationDriver,
