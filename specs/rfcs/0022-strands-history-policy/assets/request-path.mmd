@@ -1,0 +1,5 @@
+flowchart LR
+  A["Protected Agent"] --> B["Box inspects HTTPS"]
+  B --> H["Dogwood records attempt"]
+  H -->|deny| S["Stop before credential access"]
+  H -->|allow| C["OCE checks, authorizes one send, protects reply"]
