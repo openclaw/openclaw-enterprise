@@ -7,7 +7,7 @@ const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
 // The longest the Logs view keeps its strip and output back for their first reads.
-const FIRST_VIEW_WAIT_MS = 1_000;
+const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this page session instead of re-asking every poll
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();

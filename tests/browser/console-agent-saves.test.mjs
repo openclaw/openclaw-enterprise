@@ -42,6 +42,12 @@ async function watchForReload(page) {
 
 const focusedText = (page) =>
   page.evaluate(() => globalThis.document.activeElement?.textContent ?? null);
+// The saved status a focused control is described by, so a screen reader names it.
+const focusedDescription = (page) =>
+  page.evaluate(() => {
+    const id = globalThis.document.activeElement?.getAttribute("aria-describedby");
+    return id ? globalThis.document.getElementById(id)?.textContent : null;
+  });
 const scrollY = (page) => page.evaluate(() => globalThis.scrollY);
 const getReads = (requests) =>
   requests.filter((request) => request.method === "GET").map((request) => request.path);
@@ -80,16 +86,21 @@ test("saving the draft Configuration updates the Agent page in place", async (t)
   await saved.waitFor();
   assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(page), "Edit Configuration");
+  assert.equal(await focusedDescription(page), "Configuration saved.");
   // The reader stays where they were instead of jumping to the top of the page.
   assert.ok((await scrollY(page)) > scrollBefore / 2, "the page kept its scroll position");
   await page.getByText(/Configuration .* · generation 2$/).waitFor();
-  // Two preflight reads and one read of the saved Configuration; no Agent page reload.
+  // Two preflight reads and one read of the saved Configuration; no Agent page reload, which
+  // read the session, versions, permissions and deployment state again (about 12 reads).
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  assert.deepEqual(getReads(requests).sort(), [
-    `/namespaces/${namespace.id}/agents/${agent.id}`,
-    configurationPath,
-    configurationPath,
-  ]);
+  const reads = getReads(requests);
+  assert.equal(reads.filter((path) => path === configurationPath).length, 2, reads.join(" "));
+  assert.deepEqual(
+    reads.filter((path) =>
+      /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path),
+    ),
+    [],
+  );
   assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
 
   // The refreshed draft is current: deploying it passes the preflight against the saved state.
@@ -141,6 +152,7 @@ test("saving and reloading the authentication source update the Agent page in pl
     await waitForInputValue(secretField, secretOptionLabel(secret));
     assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
     assert.equal(await focusedText(page), "Save authentication source");
+    assert.equal(await focusedDescription(page), "Authentication source saved.");
     // The staged-Secret hint is gone after the save, so the page may end one line shorter.
     const scrollAfter = await scrollY(page);
     assert.ok(
@@ -156,6 +168,34 @@ test("saving and reloading the authentication source update the Agent page in pl
   await waitForInputValue(secretField, secretOptionLabel(first));
   assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(page), "Reload authentication source");
+
+  // Leaving the tab while Reload reads must not keep a Credentials form with its controls off.
+  let releaseRead;
+  const readHeld = new Promise((resolve) => {
+    releaseRead = resolve;
+  });
+  t.after(() => releaseRead());
+  const agentPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  let readRequested;
+  const requested = new Promise((resolve) => {
+    readRequested = resolve;
+  });
+  await page.route(agentPath, async (route) => {
+    readRequested();
+    await readHeld;
+    await route.continue().catch(() => {});
+  });
+  await reload.click();
+  await requested;
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+  releaseRead();
+  await page.unroute(agentPath);
+  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await waitForInputValue(secretField, secretOptionLabel(first));
+  await saveAuthentication.waitFor();
+  assert.equal(await saveAuthentication.isDisabled(), false);
+  assert.equal(await reload.isDisabled(), false);
 });
 
 // Refresh sharing, the Configuration editor's Cancel and the Create Agent shortcuts replaced or

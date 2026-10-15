@@ -1027,6 +1027,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return (
       selected === "draft" &&
       (deployInFlight ||
+        refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
@@ -1156,6 +1157,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let mountedTab = null;
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
+  // Set while a saved draft refreshes in place; tab and version changes wait for it.
+  let refreshingDraft = false;
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
@@ -2215,6 +2218,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // page to its summary, made about 12 reads, scrolled to the top and dropped focus with no
   // saved message (finding 1445). `focus` names the button that takes focus afterwards.
   async function refreshDraftInPlace({ agent: freshAgent = null, saved = "", focus = null } = {}) {
+    if (freshAgent && freshAgent.configurationId !== agent.configurationId) {
+      // The draft now edits another Configuration; reload the page for it.
+      context.navigate(target("draft", selectedTab), namespaceId, true);
+      return;
+    }
+    refreshingDraft = true;
+    updateNavigationControls();
+    try {
+      await refreshDraft(freshAgent, saved, focus);
+    } finally {
+      refreshingDraft = false;
+      if (context.isCurrent()) {
+        updateNavigationControls();
+      }
+    }
+  }
+
+  async function refreshDraft(freshAgent, saved, focus) {
     if (freshAgent) {
       agent = freshAgent;
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
@@ -2243,15 +2264,23 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     } finally {
       savedNotice = "";
     }
-    updateNavigationControls();
     if (!context.isCurrent()) {
       return;
     }
-    const control = [...content.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent === focus && !candidate.disabled,
-    );
+    const control =
+      [...content.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent === focus && !candidate.disabled,
+      ) ?? tabControls.get(selectedTab);
+    const status = saved
+      ? [...content.querySelectorAll('[role="status"]')].find((node) => node.textContent === saved)
+      : null;
+    if (status) {
+      // A status inserted with its text is rarely announced; the focused control names it.
+      status.id = "draft-save-status";
+      control.setAttribute("aria-describedby", status.id);
+    }
     // Focus scrolls only if the control left the viewport.
-    (control ?? tabControls.get(selectedTab)).focus();
+    control.focus();
   }
 
   async function renderTab() {
@@ -2546,7 +2575,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         save.disabled = true;
         let fresh;
         try {
-          fresh = await request(path);
+          // The tab's own request keeps this tab from being retained while the read is pending.
+          fresh = await context.request(path);
         } catch {
           if (context.isCurrent()) {
             data.setAuthenticationSaveState("idle");
