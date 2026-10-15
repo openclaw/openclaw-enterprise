@@ -1,16 +1,12 @@
 # Understand the Agent detail page
 
-Open **Agents**, then select an Agent to inspect its versions, saved settings,
-and workspace. For initial setup, use
+Open **Agents**, then select an Agent. For setup, see
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
+Saved settings don’t establish Agent or Slack connection health.
 
-Available actions depend on your Installation and permissions. If your access does not include
-deploying, stopping, or deleting this Agent, the Console explains the restriction before you
-confirm. Reload after your access changes. If the Console cannot check in advance, the API
-still checks the actual request and explains a denial. Opening the version draft does not
-require permission to update the Agent; saving and deploying have their own access checks.
-
-Stored settings do not confirm that an Agent or its Slack connection is currently healthy.
+The Console can explain why Deploy, Stop, or Delete is unavailable. Reload if your access changes.
+The API checks every request, even when the Console can’t check ahead. Opening a version draft
+doesn’t require Agent update permission; saving and deploying have separate access checks.
 
 ## Navigation and Agent identity
 

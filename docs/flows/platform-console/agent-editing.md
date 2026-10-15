@@ -274,33 +274,24 @@ owns initialization, retries, and cleanup. Live editing requires deployment.
 
 ### 7. Request a stop and read back the Agent
 
-The Console reads the [caller’s permissions on this Agent](../../../specs/rfcs/0021-caller-permission-summaries.md)
-alongside the detail page. If `operate` is false, it explains why Stop is unavailable. If that
-answer arrives while confirmation is open, the dialog explains the restriction, disables
-confirmation, and moves focus to Cancel. An answer arriving after submission cannot recall the
-request. If the summary is unavailable, the person can proceed and see the controller’s actual
-decision. Deploy and Delete use the same advisory contract. Opening a version draft requires
-no Agent update permission. Saving the Configuration and deploying have their own access checks.
+[Permission advice](../../../specs/rfcs/0021-caller-permission-summaries.md) can disable
+Stop before confirmation. If the dialog is open, a negative answer disables confirmation and
+focuses Cancel. Missing advice leaves the normal path available; late advice cannot recall a request.
 
-`apps/controller/src/console/agents/stop.mjs:createAgentStop` renders the control
-composed by `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`. Confirmation sends a
-bodyless `POST` to the exact Agent's `/stop` route. OCC's
-`packages/occ/src/index.ts:stopAgent` checks exact-Agent `operate`, persists the
-requested stopped state, and queues reconciliation. The response proves
-admission, not completed Compute shutdown. When stopped,
-**Request Stop again** confirms a new stop intent through the same authorized route.
-It remains available without a selected revision because history/candidate cleanup
-is not exposed, and an uncertain write blocks it until readback succeeds. When the
-Agent is stopped, has no selected revision and its version list is loading or empty for this
-viewer (`setNoReadableVersions`), as after an API create without a deploy, no stop control renders.
-Cancelling confirmation restores its invoking button; submitted requests focus status refresh.
+`apps/controller/src/console/agents/stop.mjs:createAgentStop` sends a bodyless `POST` to the
+Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
+persists the requested stopped state, and queues reconciliation. Success means admission,
+not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
+**Refresh stop status**.
 
-**Refresh stop status** reads the exact Agent again. It displays desired runtime
-state and selected revision without inferring live health or completion from a
-missing revision. Permission denial stays inline; state changes reload the
-detail view. An uncertain write blocks another stop until a successful read. Deployment remains the resume operation,
-admitting a new revision. The [stop lifecycle](../../reference/agents/deployment.md#stop-and-resume) owns
-worker shutdown and preservation of revisions, credentials, and state.
+For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
+revision; the Console cannot inspect history or candidate cleanup. With no selected revision
+and no readable versions yet (`setNoReadableVersions`), it shows no Stop control.
+
+Refresh reads desired state and selected revision, not live health. Denial stays inline; changed
+state reloads the page. An uncertain write blocks another Stop until readback succeeds.
+[Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
+reference covers worker shutdown and preservation of revisions, credentials, and state.
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
 <span id="7.-confirm-deletion-and-read-back-the-agent"></span>
