@@ -4583,7 +4583,7 @@ export class PostgresPlatformState implements PlatformStateStore {
 		                         'error', jsonb_build_object('code', $3::text, 'message', $4::text)
 		                       ) || CASE
 		                         -- The live claim's attempt may still be writing until its lease
-		                         -- runs out: its worker aborts by then (settleAbandonedEffect).
+		                         -- runs out: its worker stops issuing requests by then.
 		                         WHEN owner.state = 'claimed' THEN jsonb_build_object(
 		                           'cancelledClaimExpiresAt', to_jsonb(owner.lease_expires_at)
 		                         )
@@ -4616,9 +4616,10 @@ export class PostgresPlatformState implements PlatformStateStore {
         },
         settleAbandonedEffect: async (namespaceId, agentId) => {
           // A cancelled job never runs again (finding 1384). Once the claim that began its
-          // transport write has lapsed, its worker has aborted the write, so the exact pending
-          // effect is recorded as settled, as Agent deletion does. A receipt that already exists,
-          // or malformed evidence, matches nothing and stays fail-closed.
+          // transport write has lapsed, its worker has stopped issuing requests, so the exact
+          // pending effect is recorded as settled, as Agent deletion does (a request already sent
+          // may still land; the write creates only absent Secrets). A receipt that already
+          // exists, or malformed evidence, matches nothing and stays fail-closed.
           const settled = rows(
             (
               await client.query(
