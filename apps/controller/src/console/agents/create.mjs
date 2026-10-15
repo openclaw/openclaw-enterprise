@@ -36,7 +36,14 @@ function harnessPluginPolicyConflict(values, harnessId, providerId) {
   if (allow.length > 0 && !allow.includes(pluginId)) {
     return `Configuration setting plugins.allow must include ${pluginId} ${requirement}.`;
   }
-  if (plugins.entries?.[pluginId]?.enabled === false) {
+  const entries = Object.entries(plugins.entries ?? {}).filter(
+    ([id]) => id.trim().toLowerCase() === pluginId,
+  );
+  // Persisted JSON and replay fingerprints cannot preserve ordered alias overrides.
+  if (entries.length > 1) {
+    return `Configuration setting plugins.entries must contain at most one entry for ${pluginId} after trimming whitespace and ignoring case; remove duplicate entries.`;
+  }
+  if (entries[0]?.[1]?.enabled === false) {
     return `Configuration setting plugins.entries.${pluginId}.enabled must not be false ${requirement}.`;
   }
   return "";

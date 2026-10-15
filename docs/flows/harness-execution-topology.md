@@ -8,7 +8,7 @@ last_updated_session: authoring-run/5b16e286-0433-48fc-bd50-db5195cf9c98
 
 ## Overview
 
-Deployment freezes Harness policy, placement and authentication in an AgentRevision. Compute prepares its workloads, publishes guarded routes and
+Deployment freezes policy, placement and authentication in AgentRevision. Compute prepares its workloads, publishes guarded routes and
 retires predecessors before audit.
 
 ## Entry Points
@@ -17,9 +17,8 @@ retires predecessors before audit.
   reconciliation.
 - Source: `packages/occ/src/index.ts:OpenClawController.deployAgent` and
   `apps/controller/src/worker.ts:ControllerWorker`.
-- Assumptions: authorized actor; ready Namespace; same-Namespace Configuration;
-  explicit execution mode; supported `harnessAuth` binding to an authorized
-  OCC Secret or Driver-issued account token.
+- Requires authorized actor, ready Namespace, same-Namespace Configuration,
+  explicit execution mode and supported `harnessAuth` binding.
 
 ## Flow
 
@@ -71,7 +70,7 @@ filesystem, and process containment. Access tokens require dedicated Codex;
 account snapshots retain OCC identity, credential kind, and opaque Secret reference.
 `apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts:requireHarnessPluginPolicy`
 rejects policies blocking Codex or OpenClaw’s selected provider during Harness
-admission, including provisioning replay, retry and worker checks before effects.
+admission, including provisioning replay, retry and worker checks before effects. Required-plugin aliases must be unique.
 Gateway validation and policy stay unchanged.
 
 ### 2. Claim work and realize the approved topology

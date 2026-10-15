@@ -1432,7 +1432,12 @@ test("Default Codex policy survives Harness switches, explicit edits and restore
 });
 
 test("Codex policy conflicts stop Console creation before writes and allow an explicit repair", async (t) => {
-  for (const policy of [{ allow: ["knowledge"] }, { deny: ["codex"] }, { enabled: false }]) {
+  for (const policy of [
+    { allow: ["knowledge"] },
+    { deny: ["codex"] },
+    { enabled: false },
+    { entries: { codex: { enabled: true }, " CODEX ": { enabled: false } } },
+  ]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Codex policy conflict", { ready: true });
@@ -1464,7 +1469,7 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /Configuration setting plugins\..*Codex Harness/ })
+      .filter({ hasText: /Configuration setting plugins\./ })
       .waitFor();
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     const blocked = JSON.parse(await configuration.inputValue());
@@ -1475,6 +1480,7 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     blocked.plugins.allow = ["knowledge", "codex"];
     blocked.plugins.deny = [];
     blocked.plugins.enabled = true;
+    delete blocked.plugins.entries[" CODEX "];
     await configuration.fill(JSON.stringify(blocked));
     const createdResponse = page.waitForResponse(
       (response) =>

@@ -67,7 +67,7 @@ Codex plugin is explicitly enabled with `websocket` app-server transport.
 Kubernetes Compute rejects Agent save, provisioning and deployment when native
 policy blocks the required plugin: `codex` for Codex; `openai` or `anthropic` for
 OpenClaw's selected model provider. It rejects `plugins.enabled: false`, disabled
-required entries, denial, or exclusion from a nonempty allowlist. Missing or empty
+required entries, normalized duplicate required entries, denial or allowlist exclusion. Missing or empty
 allowlists are unrestricted. Configuration can be staged; admission preserves policy.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries

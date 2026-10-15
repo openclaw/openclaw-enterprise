@@ -54,7 +54,17 @@ export function requireHarnessPluginPolicy(
   if (allow.length > 0 && !allow.includes(pluginId)) {
     throw createError("plugins.allow", `must include ${pluginId} ${requirement}`);
   }
-  if (asRecord(asRecord(plugins?.entries)?.[pluginId])?.enabled === false) {
+  const entries = Object.entries(asRecord(plugins?.entries) ?? {}).filter(
+    ([id]) => id.trim().toLowerCase() === pluginId,
+  );
+  // Provisioning fingerprints and PostgreSQL jsonb cannot preserve ordered alias overrides.
+  if (entries.length > 1) {
+    throw createError(
+      "plugins.entries",
+      `must contain at most one entry for ${pluginId} after trimming whitespace and ignoring case; remove duplicate entries`,
+    );
+  }
+  if (asRecord(entries[0]?.[1])?.enabled === false) {
     throw createError(`plugins.entries.${pluginId}.enabled`, `must not be false ${requirement}`);
   }
 }

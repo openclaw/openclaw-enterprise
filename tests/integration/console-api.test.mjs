@@ -495,6 +495,23 @@ for (const providerId of ["codex", "openai", "anthropic"]) {
       [{ deny: [` ${providerId.toUpperCase()} `] }, "plugins.deny"],
       [{ enabled: false }, "plugins.enabled"],
       [{ entries: { [providerId]: { enabled: false } } }, `plugins.entries.${providerId}.enabled`],
+      [
+        { entries: { [providerId.toUpperCase()]: { enabled: false } } },
+        `plugins.entries.${providerId}.enabled`,
+      ],
+      // Required-plugin aliases are ambiguous in either order, even with equal enablement.
+      ...[true, false].flatMap((enabled) =>
+        [false, true].map((reverse) => {
+          const entries = [
+            [providerId, { enabled: true }],
+            [` ${providerId.toUpperCase()} `, { enabled }],
+          ];
+          return [
+            { entries: Object.fromEntries(reverse ? entries.reverse() : entries) },
+            "plugins.entries must contain at most one entry",
+          ];
+        }),
+      ),
       [{ allow: providerId }, "plugins.allow"],
       [{ deny: [42] }, "plugins.deny"],
     ];
