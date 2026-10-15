@@ -509,7 +509,7 @@ test("console ignores stale collection successes and errors while switching Name
   await chooseNamespace(page, "Slow");
   await slowSuccess.waitForRelease();
   const slowSuccessRead = (await settledFetches(page, slowAgentsPath)) + 1;
-  await expectRetainedPreview(page, "Slow agent");
+  await expectHeldPage(page, "Current agent", page.getByText("Slow agent", { exact: true }));
   // Namespace admission has finished, so switching away does not wait for the held read.
   await chooseNamespace(page, "Current");
   await page.getByText("Current agent").waitFor();
@@ -590,13 +590,21 @@ async function waitForSettledView(page) {
   await waitForIdleFetches(page);
 }
 
-async function expectRetainedPreview(page, visibleText) {
-  if (visibleText) {
-    await page.getByText(visibleText, { exact: true }).waitFor();
-  }
-  assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 1);
+// A return keeps the page already on screen, inert, while the retained destination revalidates.
+// The destination's cached view is never painted before its reads pass (`hidden` stays absent).
+async function expectHeldPage(page, shownText, hidden) {
+  const held = page.locator('.content [aria-live="polite"][inert]');
+  await held.getByText(shownText, { exact: true }).first().waitFor();
+  assert.equal(await held.count(), 1);
   assert.equal(await page.locator(".shell[inert]").count(), 0);
   await expectNoText(page, /Checking your session|Checking your session and Namespace access/);
+  if (hidden) {
+    assert.equal(
+      await hidden.count(),
+      0,
+      "the retained destination was painted before revalidating",
+    );
+  }
 }
 
 test("console keeps loaded route families visible while return reads refresh", async (t) => {
@@ -628,7 +636,11 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => agentsHold.release());
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await agentsHold.waitForRelease();
-  await expectRetainedPreview(page, "Retained route Agent");
+  await expectHeldPage(
+    page,
+    "Retained routes",
+    page.getByText("Retained route Agent", { exact: true }),
+  );
   await releaseHeldRoute(page, agentsPattern, agentsHold);
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(
@@ -650,7 +662,11 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => namespacesHold.release());
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await namespacesHold.waitForRelease();
-  await expectRetainedPreview(page, "Retained routes");
+  await expectHeldPage(
+    page,
+    "Retained route Agent",
+    page.getByText("A second Namespace", { exact: true }),
+  );
   await releaseHeldRoute(page, namespacesPattern, namespacesHold);
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(
@@ -671,7 +687,11 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => backendsHold.release());
   await page.goBack();
   await backendsHold.waitForRelease();
-  await expectRetainedPreview(page, "openai-primary");
+  await expectHeldPage(
+    page,
+    "Retained route Agent",
+    page.getByText("openai-primary", { exact: true }),
+  );
   await releaseHeldRoute(page, backendsPattern, backendsHold);
   await page.getByRole("heading", { name: "Backends", exact: true }).waitFor();
 
@@ -688,7 +708,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
   await sessionHold.waitForRelease();
-  await expectRetainedPreview(page, fixture.credentials.email.toLowerCase());
+  await expectHeldPage(page, "Retained route Agent", page.locator("dl.settings"));
   await releaseHeldRoute(page, sessionPattern, sessionHold);
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 
@@ -703,7 +723,11 @@ test("console keeps loaded route families visible while return reads refresh", a
   await waitForSettledView(page);
   const originalNativePanel = await page.locator(".native-admin-access").elementHandle();
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
-  await page.getByText("Retained route Agent", { exact: true }).waitFor();
+  // The detail stays shown, inert, until the retained list revalidates.
+  await page
+    .locator('.content [aria-live="polite"]:not([inert])')
+    .getByRole("link", { name: "Retained route Agent", exact: true })
+    .waitFor();
   const detailPattern = "**/namespaces/" + namespace.id + "/agents/" + agent.id;
   const detailHold = await holdRoute(t, page, detailPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -711,7 +735,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => detailHold.release());
   await page.goBack();
   await detailHold.waitForRelease();
-  await expectRetainedPreview(page, workspaceNotice);
+  await expectHeldPage(page, "Retained route Agent", page.getByText(workspaceNotice));
   assert.equal(new URL(page.url()).searchParams.get("tab"), "workspace");
   await releaseHeldRoute(page, detailPattern, detailHold);
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
@@ -952,7 +976,7 @@ test("Refresh and focus restoration retain rows until fresh data arrives", async
       }, trigger);
     }
     await pending.waitForRelease();
-    await expectRetainedPreview(page, "Existing background Agent");
+    await expectHeldPage(page, "Existing background Agent");
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByText(`Added during ${trigger}`, { exact: true }).waitFor();
   }
@@ -980,7 +1004,11 @@ test("console retained views clear after session expiry and exact Agent denial",
   t.after(() => expiredSession.release());
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expiredSession.waitForRelease();
-  await expectRetainedPreview(page, "Denied retained Agent");
+  await expectHeldPage(
+    page,
+    "Retained invalidation",
+    page.getByText("Denied retained Agent", { exact: true }),
+  );
   await releaseHeldRoute(page, sessionPattern, expiredSession);
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Denied retained Agent/);
@@ -1007,7 +1035,13 @@ test("console retained views clear after session expiry and exact Agent denial",
   t.after(() => deniedAgent.release());
   await page.goBack();
   await deniedAgent.waitForRelease();
-  await expectRetainedPreview(page, "Denied retained Agent");
+  // The list stays while the denied Agent's read runs; its cached detail never appears.
+  await expectHeldPage(
+    page,
+    "Denied retained Agent",
+    page.getByRole("heading", { name: "Denied retained Agent", exact: true }),
+  );
+  assert.equal(await page.locator(".agent-current-summary").count(), 0);
   await releaseHeldRoute(page, detailPattern, deniedAgent);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
   // Someone else's Agent link says what the reader can do, not that a collection is unreadable.

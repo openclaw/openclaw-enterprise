@@ -119,8 +119,8 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` advances the request generation and requests `GET /api/auth/session`.
-First loads show loading. Later loads keep the shown page inert during admission
-and reads; navigation remains available. At most 16 document-local views, keyed by
+Loads show loading, but returns keep the shown page inert during admission and
+reads; navigation remains available. At most 16 document-local views, keyed by
 route, Namespace, and session owner, are retained; password fields and derived
 discovery state clear first.
 
@@ -166,9 +166,8 @@ After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through first-load session
-and Namespace checks; `holdShownView` keeps the held selector disabled, still naming
-its selection.
+`shell.mjs:namespaceSelector` disables and hides choices through session and
+Namespace checks, naming a known selection; retained-view reads do not extend this.
 `shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
 Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation

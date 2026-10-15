@@ -493,30 +493,37 @@ function takeRetainedView(current) {
   return retained;
 }
 
-// Keeps the page already on screen while the next route's admission and reads run, so a
-// retained view is never painted before it revalidates (finding 1412) and nothing flashes
-// a loading state (finding 1415). The held page is inert and its selector hides its choices.
-function holdShownView() {
+// On a return, keeps the page already on screen, inert, in a fresh pending shell while the
+// retained route's admission and reads run. A retained view is then never painted before it revalidates
+// (finding 1412), and returns do not flash a loading state (finding 1415). Returns null when
+// no page is shown.
+function holdShownView(current) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
-    return false;
+    return null;
+  }
+  const title = app.querySelector(".content h1")?.textContent;
+  const scope = app.querySelector(".content .scope")?.textContent;
+  const diagnostics = app.querySelector(".runtime-debug");
+  const scrollY = window.scrollY;
+  const shell = renderShell(current.feature, true);
+  if (title) {
+    app.querySelector(".content h1").textContent = title;
+  }
+  if (scope) {
+    app.querySelector(".content .scope").textContent = scope;
   }
   view.inert = true;
   view.setAttribute("aria-busy", "true");
-  const diagnostics = app.querySelector(".runtime-debug");
-  if (diagnostics) {
+  shell.view.replaceWith(view);
+  shell.view = view;
+  if (shell.diagnostics && diagnostics) {
     diagnostics.inert = true;
+    shell.diagnostics.replaceWith(diagnostics);
+    shell.diagnostics = diagnostics;
   }
-  const selector = app.querySelector("#namespace-selector");
-  if (selector) {
-    const label = selector.querySelector("option[selected]")?.textContent ?? "";
-    selector.disabled = true;
-    selector.setAttribute("aria-busy", "true");
-    selector.replaceChildren(
-      element("option", { value: "", disabled: true, selected: true }, label),
-    );
-  }
-  return true;
+  window.scrollTo({ top: scrollY, left: 0 });
+  return shell;
 }
 
 // Mounts a retained view that revalidated unchanged, active at once.
@@ -842,8 +849,9 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
   }
   const retainedView = knownPrivateState ? takeRetainedView(current) : null;
   let retained = retainedView !== null;
-  let held = knownPrivateState && holdShownView();
-  let shell = null;
+  // A return keeps the shown page until the retained view revalidates; other loads show loading.
+  let shell = retained ? holdShownView(current) : null;
+  let held = shell !== null;
   if (!held) {
     publicPanel("Loading…", "Checking your session.");
   }
@@ -940,10 +948,11 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityOwner = null;
       installationAdmin = null;
       draftUserId = owner;
+      retained = false;
       if (held) {
         // Another account's page must not stay on screen.
-        retained = false;
         held = false;
+        shell = null;
         publicPanel("Loading…", "Checking your session.");
       }
     }
@@ -995,11 +1004,16 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
-    // While a page is held, read the destination's own resource too, so it renders complete.
+    if (held && current.namespace !== null) {
+      // Namespace admission is done, so the header selector is usable while the destination's
+      // reads run, as on first loads. A switch resets the lifetime, discarding these reads.
+      // Without a URL selection the full render below picks the default.
+      shellUI.updateNamespaces(namespaces);
+    }
     let retainedItems = null;
     let retainedAgent = null;
     if (
-      held &&
+      retained &&
       !agentsNamespaceUnavailable &&
       current.feature !== "settings" &&
       !current.creating

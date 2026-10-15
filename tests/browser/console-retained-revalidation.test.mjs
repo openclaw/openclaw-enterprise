@@ -66,7 +66,7 @@ test("Refocusing a loaded page keeps it steady while access is rechecked", async
   await page.waitForURL("**/console/agents/new**");
 });
 
-test("Back after switching Namespace keeps the shown page and its own label until the return is admitted", async (t) => {
+test("Back after switching Namespace keeps the shown page until the return is admitted", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const first = await fixture.createNamespace("First scope", { ready: true });
@@ -85,10 +85,11 @@ test("Back after switching Namespace keeps the shown page and its own label unti
   await page.goBack();
   await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
+  // The shown page keeps its scope; the disabled selector already names the destination.
   assert.equal(await page.locator(".content .scope").textContent(), "Namespace · Second scope");
   assert.equal(
     await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
-    "Second scope",
+    "First scope",
   );
   assert.equal(await selector.locator('option:not([value=""])').count(), 0);
 
