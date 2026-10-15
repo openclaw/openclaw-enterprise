@@ -292,7 +292,7 @@ Token brokerage remains deferred. Consumed markers and source seals prevent OCE 
   `OCC_TEST_HARNESS_K3D_REAL=1` exercises the API binding/deploy path with
   disposable Kubernetes/PostgreSQL, genuine images, and an authorized API key,
   requiring a provider-backed turn from both dedicated Codex and embedded OpenClaw.
-- [Managed-account testing](../testing/service-accounts.md) separately requires
+- [Managed-account testing](../testing/slack.md#chatgpt-service-accounts) separately requires
   provider authorization, an issued ChatGPT credential, and a real Codex turn;
   API fixtures prove only admission or persistence.
 - Verify Secret projections only on intended consumers, source-deletion guards,

@@ -1074,10 +1074,14 @@ test("a session replaced by another tab signs this tab out instead of being adop
     data: { email: fixture.credentials.email, password: fixture.credentials.password },
   });
   assert.equal(response.status(), 200);
+  // A failed check clears the loaded session. Retry must still honor its pinned key.
+  await page.route("**/api/auth/session", (route) => route.fulfill({ status: 503 }), { times: 1 });
+  await page.goBack();
+  await page.getByText("Session unavailable", { exact: true }).waitFor();
   const refused = page.waitForResponse(
     (candidate) => new URL(candidate.url()).pathname === "/api/auth/session",
   );
-  await page.goBack();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   // This tab pinned the key of its own session. The controller refuses the
   // replaced cookie for it, so the tab signs out rather than acting as another session.
   const refusedSession = await refused;
@@ -1087,10 +1091,13 @@ test("a session replaced by another tab signs this tab out instead of being adop
   assert.equal(await page.locator("#agent-name").count(), 0);
   assert.equal(await page.locator(".content [inert]").count(), 0);
 
-  // Signing in again adopts the current session without the old session's draft.
+  // A fresh sign-in does not inherit the old session's route or draft.
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
@@ -1657,19 +1664,24 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       await page.getByRole("button", { name: "Login" }).click();
     }
     await namespaceHold.waitForRelease();
-    // A changed session can discard a retained shell or leave the first-load shell.
-    // Any remaining selector must still await the fresh readable-Namespace response.
-    if (await selector.count()) {
-      assert.equal(await selector.isDisabled(), true);
-      assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-    }
-    assert.equal(new URL(page.url()).searchParams.get("namespace"), missingId);
+    // Refresh preserves the requested Namespace. A replacement session starts on Agents
+    // with no Namespace selection until its own admission returns.
+    const refreshed = trigger === "Refresh";
+    const pendingSelector = refreshed ? selector : page.locator("#namespace-selector");
+    await pendingSelector.waitFor();
+    assert.equal(await pendingSelector.isDisabled(), true);
+    assert.equal(await pendingSelector.locator('option:not([value=""])').count(), 0);
+    assert.equal(new URL(page.url()).searchParams.get("namespace"), refreshed ? missingId : null);
     await releaseHeldRoute(page, "**/namespaces", namespaceHold);
     await page.locator("#namespace-selector:not(:disabled)").waitFor();
-    assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
-    await selector.selectOption(beta.id);
-    await page.waitForURL(`**/console/namespaces?namespace=${beta.id}`);
-    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    assert.equal(await pendingSelector.locator(`option[value="${alpha.id}"]`).count(), 0);
+    if (refreshed) {
+      await selector.selectOption(beta.id);
+      await page.waitForURL(`**/console/namespaces?namespace=${beta.id}`);
+      await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    } else {
+      await page.waitForURL(`**/console/agents?namespace=${beta.id}`);
+    }
     assert.equal(await page.locator(".namespace-recovery").count(), 0);
   });
 }
@@ -1759,7 +1771,10 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
     }
     await namespaceHold.waitForRelease();
     await assertPendingHeader();
-    assert.equal(new URL(page.url()).searchParams.get("namespace"), missingId);
+    assert.equal(
+      new URL(page.url()).searchParams.get("namespace"),
+      trigger === "Refresh" ? missingId : null,
+    );
     await releaseHeldRoute(page, "**/namespaces", namespaceHold);
     await page.locator(".page-header #namespace-selector:not(:disabled)").waitFor();
     assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
@@ -1969,4 +1984,325 @@ test("keyboard page navigation focuses the destination before its controls", asy
       .evaluate((node) => node === globalThis.document.activeElement),
     true,
   );
+});
+
+test("login restores a scrubbed Agent destination only after the tab confirms its provider session", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Login destination", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Destination Agent");
+  const { page } = await newPage(t, fixture);
+  const attemptId = "d".repeat(43);
+  const envelope = (data) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-login" } }),
+  });
+  let sessionKey;
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill(envelope({ github: true, sessionBinding: true })),
+  );
+  await page.route("**/api/auth/providers/github/start", (route) =>
+    route.fulfill(
+      envelope({ url: "https://github.com/login/oauth/authorize?client_id=fixture", attemptId }),
+    ),
+  );
+  // Model the external provider and result exchange; the cookie and session are issued by
+  // the real controller. Provider callback and receipt enforcement are covered separately.
+  await page.route("https://github.com/**", async (route) => {
+    assert.equal(new URL(route.request().url()).searchParams.has("return"), false);
+    const signedIn = await page.context().request.post(`${fixture.origin}/api/auth/sign-in/email`, {
+      headers: { origin: fixture.origin },
+      data: { email: fixture.credentials.email, password: fixture.credentials.password },
+    });
+    assert.equal(signedIn.status(), 200);
+    const session = await page.context().request.get(`${fixture.origin}/api/auth/session`);
+    sessionKey = (await session.json()).data.sessionKey;
+    assert.equal(typeof sessionKey, "string");
+    await route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } });
+  });
+  await page.route("**/api/auth/providers/github/result", async (route) => {
+    assert.equal(route.request().postDataJSON().attemptId, attemptId);
+    await route.fulfill(envelope({ sessionKey }));
+  });
+  await page.goto(
+    `${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials&token=discard-me`,
+  );
+  await page.getByRole("button", { name: "Continue with GitHub" }).click();
+  await page.waitForURL(
+    `**/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByRole("heading", { name: "Destination Agent", exact: true }).waitFor();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Credentials", exact: true })
+      .getAttribute("aria-current"),
+    "page",
+  );
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
+  assert.equal(new URL(page.url()).searchParams.has("token"), false);
+  for (const stored of [
+    {
+      attemptId,
+      time: Date.now() - 11 * 60_000,
+      intent: {
+        kind: "console",
+        feature: `agents/${agent.id}`,
+        namespaceId: namespace.id,
+        revision: null,
+        tab: null,
+      },
+    },
+    {
+      attemptId: "f".repeat(43),
+      time: Date.now(),
+      intent: {
+        kind: "console",
+        feature: `agents/${agent.id}`,
+        namespaceId: namespace.id,
+        revision: null,
+        tab: null,
+      },
+    },
+    {
+      attemptId,
+      time: Date.now(),
+      intent: {
+        kind: "console",
+        feature: "//evil.example",
+        namespaceId: null,
+        revision: null,
+        tab: null,
+      },
+    },
+  ]) {
+    await page.evaluate(
+      ({ attemptId, stored }) => {
+        sessionStorage.setItem("occ.console.githubAttempt", attemptId);
+        sessionStorage.setItem("occ.console.loginIntent", JSON.stringify(stored));
+      },
+      { attemptId, stored },
+    );
+    await page.goto(`${fixture.origin}/console/`);
+    await page.waitForURL(/\/console\/agents(?:\?|$)/);
+    assert.equal(new URL(page.url()).pathname, "/console/agents");
+    assert.equal(
+      await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")),
+      null,
+    );
+  }
+});
+
+test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Shared Agent", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Shared Agent");
+  const { page } = await newPage(t, fixture);
+  const key = "a".repeat(32);
+  let lookups = 0;
+  let allow = true;
+  await page.route(`**/native-admin/return/${key}`, async (route) => {
+    lookups += 1;
+    if (!allow) {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "NOT_FOUND" } }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: { namespaceId: namespace.id, agentId: agent.id },
+        meta: { requestId: "browser-return" },
+      }),
+    });
+  });
+  await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
+  await page.getByLabel("Username").waitFor();
+  assert.equal(lookups, 0);
+  assert.equal(new URL(page.url()).hash, "");
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login" }).click();
+  await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+  assert.equal(lookups, 1);
+  await page.goto(`${fixture.origin}/console/`);
+  await page.waitForURL(/\/console\/agents(?:\?|$)/);
+  assert.equal(lookups, 1);
+  allow = false;
+  await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
+  await page.waitForURL(/\/console\/agents(?:\?|$)/);
+  assert.equal(lookups, 2);
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  for (const value of [
+    "//evil.example",
+    "https://evil.example",
+    "/console/\\\\evil.example",
+    "/console/%252f%252fevil.example",
+    "/console/login",
+    "/console/agents/not-an-agent",
+  ]) {
+    await page.goto(`${fixture.origin}/console/login?return=${encodeURIComponent(value)}`);
+    await page.waitForURL(/\/console\/agents(?:\?|$)/);
+    assert.equal(new URL(page.url()).origin, fixture.origin);
+    assert.equal(new URL(page.url()).pathname, "/console/agents");
+  }
+  await page.goto(`${fixture.origin}/console/#native-agent=${key.toUpperCase()}`);
+  await page.waitForURL(/\/console\/agents(?:\?|$)/);
+  assert.equal(lookups, 2);
+});
+
+test("a refused provider exchange discards its pending login destination", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Refused login", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Old destination");
+  const { page } = await newPage(t, fixture);
+  const envelope = (data) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ data, meta: { requestId: "browser-refusal" } }),
+  });
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill(envelope({ github: true, sessionBinding: true })),
+  );
+  await page.route("**/api/auth/providers/github/start", (route) =>
+    route.fulfill(
+      envelope({
+        url: "https://github.com/login/oauth/authorize?client_id=fixture",
+        attemptId: "e".repeat(43),
+      }),
+    ),
+  );
+  await page.route("https://github.com/**", (route) =>
+    route.fulfill({ status: 302, headers: { location: `${fixture.origin}/console/` } }),
+  );
+  await page.route("**/api/auth/providers/github/result", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "FORBIDDEN" } }),
+    }),
+  );
+  await page.goto(`${fixture.origin}/console/agents/${agent.id}?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Continue with GitHub" }).click();
+  await page.getByText("Could not sign in with GitHub. Try again or use your password.").waitFor();
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login" }).click();
+  await page.waitForURL(/\/console\/agents(?:\?|$)/);
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+test("Agent recovery survives a transient session check and tab refocus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Recovery retry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Recovery retry Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  const key = "a".repeat(32);
+  const pattern = `**/native-admin/return/${key}`;
+  const held = await holdRoute(
+    t,
+    page,
+    pattern,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { namespaceId: namespace.id, agentId: agent.id },
+          meta: { requestId: "browser-retry" },
+        }),
+      }),
+    { fetchBeforeHold: false },
+  );
+  t.after(() => held.release());
+  await page.route(
+    "**/api/auth/session",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "UNAVAILABLE" } }),
+      }),
+    { times: 1 },
+  );
+  await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
+  await page.getByText("Session unavailable", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Retry" }).click();
+  await held.waitForRelease();
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  held.release();
+  await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
+});
+
+test("a naturally expired session does not carry its route into another sign-in", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Expired session", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.route(
+    "**/api/auth/session",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry" } }),
+      }),
+    { times: 1 },
+  );
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+test("session expiry after a failed check does not restore the previous route", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  await page.route(
+    "**/api/auth/session",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "UNAVAILABLE" } }),
+      }),
+    { times: 1 },
+  );
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByText("Session unavailable", { exact: true }).waitFor();
+  await page.route(
+    "**/api/auth/session",
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry-retry" } }),
+      }),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Retry" }).click();
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
 });

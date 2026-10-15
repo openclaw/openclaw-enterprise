@@ -15,7 +15,7 @@ author: freeqaz
   [#790](https://github.com/openclaw/openclaw-enterprise/pull/790));
   [Keycloak operator guide](../../docs/guides/deploy/oidc-keycloak.md);
   [OIDC operations](../../docs/guides/deploy/oidc-operations.md);
-  [Keycloak CI job](../../docs/testing/keycloak.md); PRs
+  [Keycloak CI job](../../docs/testing/kubernetes.md#keycloak-oidc-tests); PRs
   [#2286](https://github.com/openclaw/openclaw-enterprise/pull/2286),
   [#1137](https://github.com/openclaw/openclaw-enterprise/pull/1137),
   [#1138](https://github.com/openclaw/openclaw-enterprise/pull/1138),
@@ -191,7 +191,7 @@ every push to `main`, merge-queue (`merge_group`) runs, tests mode when its test
 and Full Integration `all`; documentation-only runs skip it.
 
 The realm has two users, `alice` (attached to an OCE account) and `carol` (not). The job
-checks ([full list](../../docs/testing/keycloak.md#verified-flows)) discovery and JWKS shape;
+checks ([full list](../../docs/testing/kubernetes.md#verified-keycloak-flows)) discovery and JWKS shape;
 `alice` signing in with `client_secret_post` and with `client_secret_basic`; a new signing key
 without an API restart; `carol` refused and audited `EXTERNAL_IDENTITY_REJECTED`; sign-out,
 then one-click sign-in again; and a user disabled in Keycloak stopping there, never reaching
@@ -340,7 +340,7 @@ ID-token checks, attach semantics and routes. Current behavior:
 [OIDC operations](../../docs/guides/deploy/oidc-operations.md),
 [external sign-in reference](../../docs/reference/authentication/external-sign-in.md),
 [stopped maintenance](../../docs/guides/deploy/auth-maintenance.md),
-[Keycloak CI job](../../docs/testing/keycloak.md). Source:
+[Keycloak CI job](../../docs/testing/kubernetes.md#keycloak-oidc-tests). Source:
 [`auth/oidc.ts`](../../apps/controller/src/auth/oidc.ts),
 [`auth/id-token.ts`](../../apps/controller/src/auth/id-token.ts),
 [`auth/github.ts`](../../apps/controller/src/auth/github.ts),

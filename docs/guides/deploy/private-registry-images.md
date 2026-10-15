@@ -11,7 +11,7 @@ independent verification.
 
 ## Select a release and chart
 
-From a successful [container publication](../../../.github/containers.md), record
+From a successful [container publication](../../release/containers.md), record
 its source commit, successful CI run, publication run and attempt, and both
 immutable image digests. Check the publication receipt and remote digests; a tag
 alone does not establish the image contents. Publication smoke checks do not

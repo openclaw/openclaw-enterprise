@@ -854,6 +854,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return;
   }
   context.setTitle(agent.name);
+  // A missing summary leaves each control on its usual path. The API authorizes the actual request.
+  let callerPermissions = null;
+  const callerPermissionsRead = request(`${path}/permissions`).then(
+    (permissions) => (callerPermissions = permissions),
+    () => null,
+  );
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   let currentRuntimeState = agent.desiredRuntimeState;
@@ -883,15 +889,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     context.navigate(target(revision, tab));
   };
-  const headerActions = element(
-    "div",
-    { className: "agent-toolbar-actions" },
+  const headerNewVersion =
     selected !== "draft"
       ? button("Create new version", () => change("draft", "configuration"), {
           className: "primary",
         })
-      : null,
-  );
+      : null;
+  const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   const header = element(
     "div",
     { className: "agent-toolbar" },
@@ -962,10 +966,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   renderCurrentVersion();
   const identity = element("p", { className: "resource-id" }, agent.id);
-  const stopPanel = createAgentStop(context, path, agent, showDeleting, () =>
-    context.navigate(target(selected, selectedTab), namespaceId, true),
+  const stopPanel = createAgentStop(
+    context,
+    path,
+    agent,
+    showDeleting,
+    () => context.navigate(target(selected, selectedTab), namespaceId, true),
+    callerPermissionsRead.then((permissions) => permissions?.operate),
   );
-  const deletion = createAgentDeletion(context, path, agent, showDeleting);
+  const deletion = createAgentDeletion(
+    context,
+    path,
+    agent,
+    showDeleting,
+    callerPermissionsRead.then((permissions) => permissions?.delete),
+  );
   function showDeleting() {
     deleting = true;
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
@@ -1185,10 +1200,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   function renderVersions(revisions, snapshot, historyError = null) {
     revisionControls.clear();
-    const newVersion = button("Create new version", () => change("draft", "configuration"), {
-      className: "revision-create",
-      ...(selected === "draft" ? { "aria-current": "page" } : {}),
-    });
+    // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
+    const newVersion = button(
+      callerPermissions?.update === false ? "Open version draft" : "Create new version",
+      () => change("draft", "configuration"),
+      {
+        className: "revision-create",
+        ...(selected === "draft" ? { "aria-current": "page" } : {}),
+      },
+    );
     trackRevisionControl(newVersion);
     const list = element("div", { className: "version-list" });
     for (const revision of revisions) {
@@ -1602,6 +1622,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     renderDetailHeading();
   }
   let refreshDeployControls = () => {};
+  void callerPermissionsRead.then((permissions) => {
+    if (!context.isCurrent() || !permissions) {
+      return;
+    }
+    if (permissions.update === false) {
+      // This opens the draft; Configuration update and Agent deploy are independent grants.
+      if (headerNewVersion) {
+        headerNewVersion.textContent = "Open version draft";
+      }
+      for (const control of selector.querySelectorAll(".revision-create")) {
+        control.textContent = "Open version draft";
+      }
+    }
+    refreshDeployControls();
+  });
 
   const snapshotPath =
     selected === "draft"
@@ -1741,6 +1776,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const retainedConfiguration = retainedConfigurationState();
       return (
         deployPending ||
+        callerPermissions?.deploy === false ||
         authenticationSaveState !== "idle" ||
         Boolean(deployReloadMessage) ||
         authenticationPending ||
@@ -1777,7 +1813,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         setupCredentials.disabled = deployPending || Boolean(draftEditorNavigationBlock);
       }
       if (!deployPending) {
-        if (deployReloadMessage) {
+        if (callerPermissions?.deploy === false) {
+          deployStatus.textContent = "Your access does not include deploying this Agent.";
+        } else if (deployReloadMessage) {
           deployStatus.textContent = deployReloadMessage;
         } else if (authenticationSaveState === "saving") {
           deployStatus.textContent = "Wait for the authentication save to finish before deploying.";

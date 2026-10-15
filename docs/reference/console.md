@@ -22,6 +22,7 @@ Installation, see the
 The console uses the [email/password session contract](authentication.md) with
 same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
+See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Identify the control-plane build
 

@@ -5,6 +5,14 @@ Plane (OCC) accounts, and the session, recovery, and account controls that apply
 once an external provider is enabled. The [authentication reference](../authentication.md)
 covers bootstrap, password sessions, request origin, provisioning, and failures.
 
+## Console sign-in destinations
+
+After sign-in, the console returns to the requested supported page and Namespace
+when available. Access is checked again; sign-out and failed external sign-in
+clear the pending destination. A new sign-in after an active session expires
+starts at Agents. An Agent recovery link can return to its console page after
+authorization, where opening the native UI remains a separate action.
+
 ## GitHub sign-in for existing accounts
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with

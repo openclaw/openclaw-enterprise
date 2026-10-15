@@ -147,8 +147,12 @@ export async function revealNativeConfiguration(page, label) {
 export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   const url = new URL(`/console/agents/${agentId}`, fixture.origin);
   url.searchParams.set("namespace", namespaceId);
-  url.searchParams.set("revision", revision);
-  url.searchParams.set("tab", tab);
+  if (revision !== undefined) {
+    url.searchParams.set("revision", revision);
+  }
+  if (tab !== undefined) {
+    url.searchParams.set("tab", tab);
+  }
   return url;
 }
 

@@ -124,7 +124,7 @@ or generated-image directories; sessions stay in Gateway private storage.
 Native runtime and Envoy integration verification remain incomplete. See the
 [enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
 Real Envoy node-authentication verification is described in
-[routing tests](../testing/gateway-routing.md).
+[routing tests](../testing/kubernetes.md#private-gateway-routing).
 
 ## Service key and native identity
 

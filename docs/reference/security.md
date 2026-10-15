@@ -158,7 +158,7 @@ registry provenance or enforce a digest on its build argument.
 Disposable verification fixtures intentionally do not satisfy production image
 approval. The approved production boundary is the digest-pinned controller,
 gateway, and Agent image set above; local k3d fixtures and mutable local tags are
-testing inputs only. See [image and Helm testing](../testing/images.md) and
+testing inputs only. See [image and Helm testing](../testing/docker.md#images-and-helm) and
 [Kubernetes testing](../testing/kubernetes.md).
 
 ## Operational log collection boundary
@@ -282,7 +282,7 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 
 ## Related
 
-- [Image and Helm testing](../testing/images.md)
+- [Image and Helm testing](../testing/docker.md#images-and-helm)
 - [Kubernetes testing](../testing/kubernetes.md)
 
 - [Production Kubernetes deployment](../guides/deploy.md)

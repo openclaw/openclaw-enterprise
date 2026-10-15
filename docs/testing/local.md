@@ -1,11 +1,12 @@
-# Local and browser tests
+# Local, browser, and metrics tests
 
-Run conformance, API, and browser checks against local source. Start with the
-[shared requirements](README.md#requirements-and-credentials).
+## Overview
+
+Run local checks, browser suites, and metrics and observability tests. Start with the [requirements](README.md#requirements-and-credentials).
 
 ## Local checks
 
-With infrastructure selectors unset:
+With infrastructure selectors unset, run:
 
 ```sh
 pnpm check:workspace
@@ -18,58 +19,13 @@ pnpm test:conformance
 pnpm test:integration
 ```
 
-`check:workspace` checks the active workspace, including the
-[repository credential source boundary](repository-credentials.md#check-source-authority-boundaries).
-The test scripts above run the same canonical workspace verification before
-their selected Node.js tests. The conformance suite includes the
-[repository dependency policy test](repository-boundaries.md); `check:modules`
-runs that policy explicitly. `openapi:check` compares generated routes and the
-OpenAPI contract, HTTP API reference, and API cheat sheet with the checked-in
-versions. `typecheck` and `build` currently invoke the same TypeScript build command.
+The conformance tests cover domain and Driver contracts. Local integration
+uses real API routes with test Drivers and in-memory state. Neither proves a
+live cluster or model execution. SSH conformance uses local transport and
+fixtures; it does not prove SSH reachability, OS account isolation, real systemd,
+or OpenClaw. See the [testing index](README.md) for tests with real infrastructure.
 
-The [repository credential checks](repository-credentials.md) use that controller
-output for the private common engine, GitHub backend, and configuration loader.
-`pnpm credentials:build` builds the workspace and emits separate service and
-Git/gh client artifacts. The service includes configuration checking and its
-own process entrypoint; building does not start that process. Detached package
-tests exercise both artifacts without workspace source or runtime dependencies.
-
-The [conformance tests](../../tests/conformance) cover domain rules and selected
-Driver contracts. Kubernetes conformance tests use fixtures and rendered
-resources; they do not exercise a live cluster.
-SSH conformance executes the real host helper with local transport, a fixture
-`systemctl` that starts loopback readiness listeners, and a fixture `flock`
-that wraps the same `flock(2)` syscall because macOS lacks util-linux `flock`.
-Account-management fixtures exercise ownership and failure handling. They do
-not prove OS account isolation, SSH reachability, real systemd, util-linux
-`flock`, or real OpenClaw.
-
-`workspace-node-supervisor` runs the Kubernetes entrypoint with real fixture
-processes on Linux. It checks independent restarts and descendant termination,
-not native node pairing or Codex execution. It is skipped on macOS because
-Darwin's process-group signaling differs. When running it in a Linux container,
-use `/usr/bin/tini -s -- node --test tests/conformance/workspace-node-supervisor.test.mjs`
-as in the Harness command; the init process must reap orphaned descendants.
-The runtime-image initialization case separately runs native `setup --baseline`
-through the Harness entrypoint, checking document creation before either child
-starts, preservation of owner edits on restart, the bootstrap opt-out, and
-startup failure on invalid native initialization config. It substitutes the long-lived
-node and Codex bodies, so it does not prove pairing or model execution.
-
-The local [integration tests](../../tests/integration) include these groups:
-
-- `occ-api`, `configuration-controller`, `secret-api`, and `service-api-keys`:
-  actual Fastify routes with test Drivers and in-memory state.
-- `controller-lifecycle`, `configuration-startup`, `secret-driver-startup`, and
-  `sandbox-driver-startup`: admission, lifecycle, and startup validation.
-- `production-controller-security` and `production-healthcheck`: internal
-  request admission, HTTP cancellation, and readiness-marker behavior.
-- `driver-plugin-installation` and `git-hooks`: local package installation,
-  Driver selection, and hook installation/preservation in temporary checkouts.
-- `compute-singleton-worker`: two local validation cases. The six database-backed
-  cases live in `compute-singleton-worker-postgres` and require `OCC_TEST_DATABASE_URL`.
-
-To target a file or one named case:
+Run one file or one named case:
 
 ```sh
 node --test tests/integration/secret-api.test.mjs
@@ -78,241 +34,193 @@ node --test --test-name-pattern='part of the test name' tests/integration/secret
 
 ## Linting and formatting
 
-Run `pnpm lint` for authored JavaScript and TypeScript, and `pnpm lint:fix` for
-safe automatic fixes. The root [ESLint configuration](../../eslint.config.mjs)
-uses ESLint and typescript-eslint recommended rules. Browser console and docs
-scripts receive browser globals; other modules receive Node.js globals.
-Require a blank line after the final import, one variable per declaration, and
-braces around every `if`, `else`, and loop body. Consecutive imports may stay
-together; imports are not reordered. These readability rules are autofixable and
-must not be added to the suppression baseline.
-Underscore-prefixed unused bindings and object-rest omissions are allowed.
-Generated build output, dependencies, archived code, and vendored skills and docs
-renderer code are excluded.
-
-The initial [suppression baseline](../../eslint-suppressions.json) records existing
-findings by file and rule so adoption does not rewrite unrelated runtime code.
-`pnpm lint` fails on findings above those recorded counts and on unused
-suppressions. When fixing a recorded finding, run
-`pnpm exec eslint . --prune-suppressions` and commit the reduced baseline.
-Do not regenerate or expand the baseline to make new code pass. Because counts
-are per file and rule, replacing an existing finding with another of the same
-rule may not increase the count; review still needs to catch that case.
-
-TypeScript 7 remains the build compiler (`tsc`). ESLint needs the TypeScript 6
-JavaScript API, so the manifest uses Microsoft's
-[side-by-side aliases](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/#running-side-by-side-with-typescript-6-0):
-`@typescript/native` provides TypeScript 7 and `typescript` resolves to
-`@typescript/typescript6`. Lint uses syntax rules; `pnpm typecheck` owns type checking.
-
-Prettier owns layout: 100-column print width, two spaces, double quotes,
-semicolons, trailing commas, spaces inside object braces, parenthesized arrow
-parameters, and LF line endings. The print width is a wrapping preference, not
-a hard line-length limit. Run `pnpm format` (an alias for `pnpm format:fix`),
-review the diff, and run `pnpm format:check`. Root JavaScript and TypeScript
-configuration files are included in both the scripts and the pre-push check.
-Go retains `gofmt` and `go vet` through `pnpm cli:check`.
-The shared CI baseline runs lint and formatting as separate required steps.
+Use `pnpm lint:fix` and `pnpm format:fix` to apply fixes; review the diff and
+run the corresponding checks. Do not expand the
+[lint suppression baseline](../../eslint-suppressions.json). After fixing an
+existing finding, run `pnpm exec eslint . --prune-suppressions` and commit the
+reduced baseline. Counts are per file and rule; review still must catch a new
+finding that replaces an old one.
 
 ## Authentication and authorization coverage
 
-`tests/conformance/iam.test.mjs` covers explicit identities, exact scopes, Group
-membership, Restrictions, current policy loading, and failures.
-`tests/integration/occ-api.test.mjs` covers safe session inspection,
-administrator-provisioned accounts, resource filtering, Namespace isolation,
-audit attribution, and failures without orphaned state.
+`tests/conformance/iam.test.mjs` and `tests/integration/occ-api.test.mjs` cover
+identity, authorization, isolation, and audit behavior. The service API key
+suite uses memory storage. Run the [PostgreSQL tests](postgresql.md) for
+persistence and GitHub sign-in; memory-backed success does not prove them.
 
-`tests/integration/service-api-keys.test.mjs` exercises Fastify HTTP with Better
-Auth memory storage and native IAM. It covers valid, invalid, expired, revoked,
-unauthorized, and cross-Namespace requests, authorized key management, human
-session preservation, Agent exclusion, audit attribution, and JSON-body and
-bodyless operations through the compiled OCC CLI. See
-[PostgreSQL tests](postgresql.md#service-key-persistence) for database-backed
-verification.
-
-GitHub's opted-in profile requires real PostgreSQL; the memory-backed suites do
-not prove its account/method versions, one-use attempts, or atomic session/audit
-commit. Run the [GitHub PostgreSQL and browser proof](postgresql.md#github-human-sign-in)
-for that path. Keep provider discovery failure and callback-error recovery
-separate from successful provider authentication when reporting Console results.
-
-`node --test tests/integration/oidc-ca-trust.test.mjs` needs prepared Helm, yq and
-OpenSSL (`OCC_HELM_BIN` can select Helm). It executes the rendered CA assembly
-command with materialized Secret items and mount paths, then exercises the actual
-OIDC callback's token/JWKS transport against loopback HTTPS servers in fresh Node
-processes. It checks Gateway HTTPS trust, retained Node public roots, rejected
-unrelated CAs and hostnames, invalid bundles and CA replacement. The rendered API
-preload also gates the real production PostgreSQL pool: loopback TLS accepts the
-selected database CA and rejects an IdP-only CA for password and workload-identity
-configuration, without requesting a token. Invalid configuration stops before the
-entrypoint and emits no credential-bearing URL. IP and socket database hosts are
-refused; without the preload, the client accepts a `DNS:localhost` certificate for
-an IP host. This proves TLS, not PostgreSQL
-authentication, SQL or Azure token acquisition. The State fixture
-stops at identity lookup: this proves no PostgreSQL session commit, live IdP,
-browser trust, Kubernetes mount enforcement or installed deployment. Run those
-proofs separately in the authorized production qualification environment.
+`tests/integration/oidc-ca-trust.test.mjs` requires Helm, yq, and OpenSSL;
+`OCC_HELM_BIN` can select Helm. It exercises loopback TLS trust and callback
+transport, not a live IdP, PostgreSQL authentication, or an installed deployment.
 
 ## Packaged-driver integration
 
-`tests/integration/driver-plugin-installation.test.mjs` installs scoped,
-precompiled IAM, Compute, and Configuration tarballs with real pnpm into an
-isolated dependency root, with package lifecycle scripts disabled. It selects
-all three through production startup and session admission backed by in-memory
-OCC state. The checks include `401`/`403` responses, audited identity and
-restriction evidence, Configuration CRUD, disabled public signup, and Namespace
-reconciliation writing its identity to `/tmp/local-test`. Cleanup removes only
-the test's own file; the suite does not alter checkout dependencies.
-
-This suite does not verify PostgreSQL persistence, cross-process policy
-visibility, private-registry authentication, Kubernetes workloads, a real
-OpenClaw gateway, or a Codex model turn.
+`tests/integration/driver-plugin-installation.test.mjs` installs precompiled
+Driver tarballs in an isolated dependency root and exercises production startup
+with in-memory state. It does not prove database persistence, Kubernetes, a real
+gateway, or a model turn.
 
 ## Console browser checks
 
-The [console](../reference/console.md) uses real controller routes in
-`tests/integration/console-api.test.mjs`, `tests/browser/console.test.mjs`, and
-the `tests/browser/console-agent*.test.mjs` files. The shared browser fixture runs
-Fastify, Better Auth memory storage, Native IAM, and in-memory platform storage
-on an ephemeral loopback port. Configuration and Compute helpers are test-only.
-The Agent browser suite seeds active revision pointers only to render admitted
-history; that fixture does not prove runtime dispatch, worker leases, Compute
-Driver effects, PostgreSQL persistence, live Backend health, or deployed Agent
-runtime behavior.
-
-Native admin UI coverage in this suite should prove panel visibility, warning
-copy, shared-cookie Agent-host admission, denied service API keys, wrong or
-unknown Agent hosts, and revision-change reconnect behavior. It does not prove
-a real gateway, private Envoy routing, or that the OCE session cookie is stripped
-before the native gateway; cover those in the native admin integration proof.
-
-Run the API/static boundary checks without a browser:
-
-```sh
-node --test tests/integration/console-api.test.mjs
-```
-
-On a host approved for browser automation, provision Playwright's Chromium and
-run the dedicated browser suite:
+On a host approved for browser automation:
 
 ```sh
 pnpm exec playwright install chromium
 pnpm test:console-browser
 ```
 
-`OCC_TEST_BROWSER_EXECUTABLE` optionally selects an approved existing browser
-executable. The suite always uses a fresh context. Browser setup is explicit;
-the test command does not install software or silently skip a missing browser.
-Do not change managed browser policies to make the suite run. A managed Chrome
-debugging policy can currently block the browser suite on locked-down hosts; use
-an approved browser environment instead. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to
-retain screenshots at a chosen path; otherwise the suite uses a temporary
-directory. The existing
-[image smoke test](images.md#images-and-helm) also loads console assets from the built
-controller image; it does not claim a live production deployment.
+Set `OCC_TEST_BROWSER_EXECUTABLE` to use an approved existing browser. The test
+fails if no browser is available; it does not install one. Do not change managed
+browser policies. Set `OCC_TEST_CONSOLE_ARTIFACT_DIR` to retain screenshots.
+
+The browser fixture uses real controller routes with in-memory state and test
+Drivers. It does not prove persistence, routing through a deployed gateway, or
+Agent runtime behavior. The API checks can run without a browser:
+
+```sh
+node --test tests/integration/console-api.test.mjs
+```
 
 ### Browser failure diagnostics
 
-When a browser test fails in a checks-browser lane, CI uploads a
-`browser-failures-*` artifact, kept for three days. Each failed test gets a
-directory with a screenshot of every open page and `failure.json`. That file
-holds the error, page URLs, requests still pending at failure time, and recent
-navigation, console and network events. Tests that pass write nothing. Set
-`OPENCLAW_CI_BROWSER_FAILURE_DIR` to collect the same files locally, and add
-`OPENCLAW_CI_BROWSER_FAILURE_TRACE=1` for a Playwright trace (`trace.zip`; open
-it with `pnpm exec playwright show-trace`). CI does not trace: tracing slows the
-page enough to make timing-sensitive console tests fail more often.
-
-### Console navigation coverage
-
-`apps/controller/src/console/navigation.mjs` owns the route inventory. The shared
-loader previously cleared the shell and repeated session, Namespace, and resource
-reads on each return; only same-Agent tab changes avoided that path. Audit return
-behavior at this shared boundary whenever adding a page.
-
-| Route family             | Return and refresh checks                                                                  |
-| ------------------------ | ------------------------------------------------------------------------------------------ |
-| Agents collection        | Create/detail breadcrumbs, sidebar, repeated Back/Forward, retained search, empty results. |
-| Create Agent             | Preset and form drafts, password clearing, Cancel/Start over, pending saves.               |
-| Agent detail             | Each tab, draft/admitted revision, page return, exact-Agent denial, missing resource.      |
-| Namespaces               | Installation-wide rows, selection changes, access removal.                                 |
-| Backends                 | Direct hidden route, return through Settings, denied discovery.                            |
-| Settings                 | Account menu, Back destination, changed account identity.                                  |
-| Login and unknown routes | Direct load, safe return, logout, missing session, no restored private content.            |
-
-Delay real HTTP responses to check what remains visible before revalidation
-finishes. Include Refresh, focus/visibility restoration, direct first load,
-Namespace switches, `401`, authorization denial, dependency errors, late responses,
-and pagehide/pageshow. Existing draft-retention cases cover editor semantics;
-Storybook's delayed navigation stories provide simulated visual checks.
-A passing fixture does not establish production deployment or runtime behavior.
+Failed `checks-browser` CI lanes retain `browser-failures-*` artifacts for three
+days. Use the [CI evidence overrides](ci.md#local-runner-overrides) to collect them
+locally, including an optional Playwright trace. Open a trace with
+`pnpm exec playwright show-trace`.
 
 ## Repository and tooling configuration
 
-The active workspace requires Node.js 24 or newer and pins pnpm `11.15.1` in
-[`package.json`](../../package.json). Repository-wide settings are defined in:
+The repository pins Node and pnpm requirements in [package.json](../../package.json).
+After changing API routes or schemas, run `pnpm openapi:generate`, then
+`pnpm openapi:check`. To check the generated Markdown against the existing
+OpenAPI contract without controller dependencies, run:
 
-- [`pnpm-workspace.yaml`](../../pnpm-workspace.yaml): one controller application
-  and five platform packages.
-- [`tsconfig.base.json`](../../tsconfig.base.json): strict TypeScript,
-  `NodeNext` modules, ES2022 output, and declaration generation.
-- [`tsconfig.json`](../../tsconfig.json): the six active TypeScript project
-  references.
-- [`.prettierrc.json`](../../.prettierrc.json): a `100`-column print width.
-- [`.githooks/pre-push`](../../.githooks/pre-push): the repository-managed
-  formatting check invoked by a normal Git push. It runs the installed Prettier
-  executable directly without invoking a package manager or installing
-  dependencies, and blocks pushes when Prettier is unavailable.
-
-Dependency installation installs the hook in Git's native hooks directory.
-Run `pnpm hooks:install` to reinstall it. Installation preserves an existing
-`core.hooksPath` setting and refuses to replace an unmanaged pre-push hook.
-The hook checks active source and root files; authored documentation also needs
-the full formatting check below.
-
-The root formatting scripts cover active source files, root Markdown, and
-`docs/**/*.md` except the full generated HTTP API reference, which
-`pnpm openapi:check` verifies. Run the complete authored-file check with:
-
-```bash
-pnpm format:check
-git diff --check
+```sh
+node scripts/generate-occ-api-reference.mjs --check
 ```
 
-After changing API routes or schemas, run `pnpm openapi:generate` to update the
-OpenAPI contract, [HTTP API reference](../reference/api.md), and
-[API cheat sheet](../reference/cheatsheets/api.md); then verify them with
-`pnpm openapi:check`. To check both Markdown pages against
-the checked-in OpenAPI contract without loading controller dependencies, run
-`node scripts/generate-occ-api-reference.mjs --check`.
+Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
+replace an unmanaged hook and preserves `core.hooksPath`.
 
-See the [architecture guide](../design.md) for ownership and runtime
-boundaries, the [quickstart](../guides/quickstart.md) for the default local
-startup helper, and the [deployment guide](../guides/deploy.md) for production
-example files and Helm installation.
+## Metrics and observability tests
 
-## Related
+### Start the development dashboard
 
-- [Choose another test suite](README.md).
-- [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+Start the [Compose quickstart](../guides/quickstart.md) first. This overlay
+recreates the API and worker, so allow existing work to finish. Use the same
+Compose project and `.env`. Run this block in Bash (start `bash` first if your
+shell is zsh):
 
-## Standard Codex Preset
+```bash
+read -rs -p 'Development Grafana password: ' OCC_METRICS_GRAFANA_PASSWORD
+printf '\n'
+export OCC_METRICS_GRAFANA_PASSWORD
+docker compose -f compose.yaml -f compose.metrics.yaml up -d --build
+```
 
-Run `node --test tests/integration/presets-controller.test.mjs`. The standard
-Preset case posts the shipped JSON through Fastify with native IAM, reads it
-from the Namespace catalog, renders variables, and creates a Configuration
-and dedicated Agent. It checks credential references, native policy retention,
-and rejection of a cross-Namespace model credential. The password workflow in
-`tests/browser/console-agent-presets.test.mjs` exercises the real chooser, masked input,
-same-Namespace Secret creation, credential grant, and retry after a name conflict.
-The API suite also loads Installation YAML and checks default seeding, preserved
-customizations, and authorization rollback. The
-[production PostgreSQL suite](postgresql.md) checks bootstrap-namespace seeding,
-API restart preservation, and new-Namespace defaults with real persisted state.
-Persistence is in-memory with the filesystem Configuration Driver; no workload
-or model starts.
+Open `http://127.0.0.1:3001`, sign in as `admin`, and select **OCC → OCC
+observability**. In Prometheus at `http://127.0.0.1:9090`, query
+`up{job=~"occ-api|occ-worker"}` after about 15 seconds; expect two series at
+`1`. Remote-write targets do not appear on the server's Targets page. Set
+`OCC_GRAFANA_PORT` or `OCC_PROMETHEUS_PORT` if a port is in use.
 
-The [runtime verification procedure](../guides/topics/standard-codex-preset.md#verify-before-use)
-requires compatible native images, working Linux sandbox enforcement, authorized
-model credentials, and controlled network destinations. API success alone does
-not prove deny-by-default tool egress, cached model search, or Pod isolation.
+Use a trusted development machine: the server accepts unauthenticated remote
+writes on the development network. Grafana state is disposable; back up data
+that you need before recreating it. For Podman, include `compose.podman.yaml` and
+the selected socket as described in the quickstart.
+
+A draft Agent can exercise inventory metrics. The current Docker Driver rejects
+Agent harness authentication bindings, so its real Agent model scenarios fail
+at admission; the dashboard does not establish a deployed Agent or model turn.
+Use [Kubernetes runtime tests](kubernetes.md) for that proof.
+
+### Troubleshoot and stop
+
+Rate panels need at least two scrapes. Missing inventory data does not mean zero
+Agents. For failures, inspect `docker compose -f compose.yaml -f compose.metrics.yaml
+logs --tail=100 metrics-api metrics-worker prometheus grafana` and check remote
+writes, datasource URL, project/network, and mounts.
+
+```sh
+docker compose -f compose.yaml -f compose.metrics.yaml stop metrics-api metrics-worker grafana prometheus
+docker compose -f compose.yaml -f compose.metrics.yaml rm -f metrics-api metrics-worker grafana prometheus
+unset OCC_METRICS_GRAFANA_PASSWORD
+```
+
+To disable OCC listeners, recreate the API and worker with the original
+quickstart Compose files. Keep PostgreSQL volumes, `.env`, and Agent workloads;
+do not use `down -v` to clean up monitoring.
+
+### Automated proof
+
+With an exclusively used disposable database from [PostgreSQL setup](postgresql.md), run:
+
+```sh
+OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_test_local \
+OCC_METRICS_TEST_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_test_local \
+  node --test tests/integration/occ-metrics.test.mjs
+```
+
+The migration URL must target the same database; without it the lock case skips.
+This verifies instrumentation and persistence with a Compute fixture, not live
+workload readiness.
+
+On Linux with Podman, run the real monitoring containers:
+
+```sh
+OCC_TEST_METRICS_MONITORING=1 OCC_METRICS_TEST_ENGINE=podman \
+  node --test tests/integration/occ-metrics-monitoring.test.mjs
+```
+
+Use `docker` for Docker Engine. The test removes its randomly named containers.
+It proves collection and dashboard provisioning, not live Agent behavior.
+
+### Kubernetes observability acceptance
+
+With Node 24+, pinned pnpm and installed dependencies, Helm, kubectl, k3d,
+and Docker or an explicitly selected compatible Podman engine, run the
+credential-free lane on a disposable loopback cluster. NetworkPolicy must be
+enforced. Use a fresh private state directory for each run:
+
+```sh
+OBS_LANE=k3d-observability
+OBS_RUN_DIR=$(mktemp -d)
+env -u OPENAI_API_KEY node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  env -u OPENAI_API_KEY node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+```
+
+Inspect the exit status and result counts, including skips. After preparation
+or testing, including failure, run `node scripts/ci/cleanup.mjs --state
+"$OBS_RUN_DIR/state.json"`. Retain state if cleanup fails. After interruption,
+confirm owned subprocesses have stopped before cleanup. See [CI testing](ci.md).
+
+This lane checks Helm-installed OCC metrics and logs, with no model calls or
+Prometheus, Grafana, or Loki. For the demo smoke, install Playwright Chromium
+with `pnpm exec playwright install --with-deps chromium`, use a fresh directory,
+and set `OBS_LANE=k3d-observability-demo` in the commands above. It checks a
+fixture dashboard stack, not OCC runtime behavior. CI retains `demo-log-dashboard`
+for seven days without login state, request headers, full responses, browser
+traces, or credentials.
+
+For the separate `k3d-otel` model lane, set `OCC_TEST_OPENAI_MODEL`, a
+digest-pinned `NODE_BASE_IMAGE`, and an existing authorized `OPENAI_API_KEY`.
+Use a matching installed dependency graph and a fresh state directory:
+
+```sh
+OBS_LANE=k3d-otel
+OBS_RUN_DIR=$(mktemp -d)
+pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" && \
+  pnpm_config_verify_deps_before_run=false node scripts/ci/run-tests.mjs run "$OBS_LANE" --state "$OBS_RUN_DIR/state.json" --results "$OBS_RUN_DIR/results.json"
+```
+
+Inspect results and clean up as above. The model lane checks embedded and
+dedicated turns and attributed logs in a production topology fixture; it does
+not prove Helm-installed model coverage or revision cutover. See
+[Kubernetes image requirements](kubernetes.md#kubernetes-model-turns-and-secrets).
+
+On macOS, Podman needs a compatible rootful engine with cpuset delegation. Select
+its connection without changing the default. Bootstrap storage must preserve
+Linux UID/GID and modes; use a task-owned VM-native `RUNNER_TEMP` when necessary.
+For model builds, first pull `NODE_BASE_IMAGE` and the base pinned in
+[`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); the external
+receiver files in `RUNNER_TEMP` must be visible to the host and VM. Do not weaken
+permission checks.

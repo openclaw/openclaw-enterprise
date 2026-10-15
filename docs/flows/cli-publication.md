@@ -91,7 +91,7 @@ provenance.
 
 ## Related docs
 
-- [Publish the OCC CLI](../../.github/cli-publication.md)
+- [Publish the OCC CLI](../release/cli-publication.md)
 - [Set up the OCC CLI](../guides/cli.md)
 - [Container publication flow](container-publication.md)
 
