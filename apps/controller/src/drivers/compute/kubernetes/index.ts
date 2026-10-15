@@ -6864,11 +6864,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private async deleteRevisionAgentDeployment(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-    waitForRemoval = false,
+    {
+      waitForRemoval = false,
+      owner = "current-sandbox",
+    }: {
+      readonly waitForRemoval?: boolean;
+      readonly owner?: "current-sandbox" | "admitted-public-reader";
+    } = {},
   ): Promise<void> {
-    const sandboxDriver = this.sandboxDriverForRevision(revision);
-    if (sandboxDriver?.provisionHarness !== undefined) {
-      return;
+    if (owner === "current-sandbox") {
+      const sandboxDriver = this.sandboxDriverForRevision(revision);
+      if (sandboxDriver?.provisionHarness !== undefined) {
+        return;
+      }
     }
     const name = `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
     const deployment = await this.getOwned("Deployment", name, namespace, {
@@ -6879,6 +6887,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
     });
     if (deployment === undefined) {
       return;
+    }
+    if (owner === "admitted-public-reader") {
+      const labels = asRecord(asRecord(asRecord(deployment.spec?.template)?.metadata)?.labels);
+      const expected = {
+        [NETWORK_PROFILE_LABEL]: ORDINARY_NETWORK_PROFILE,
+        "openclaw.dev/namespace": revision.namespaceId,
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      };
+      if (
+        !this.hasPublicGithubReadAdmission(revision) ||
+        revision.harness.id !== "codex" ||
+        revision.harness.mode !== "dedicated" ||
+        Object.entries(expected).some(([key, value]) => labels?.[key] !== value)
+      ) {
+        throw new OwnershipFailure("Refusing an ambiguous reader workload profile.");
+      }
     }
     const uid = deployment.metadata.uid;
     if (!isNonEmptyString(uid)) {
@@ -6892,7 +6918,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
           namespace: namespace.name,
           body: {
             preconditions: { uid },
-            ...(waitForRemoval ? { propagationPolicy: "Foreground" as const } : {}),
+            ...(waitForRemoval || owner === "admitted-public-reader"
+              ? { propagationPolicy: "Foreground" as const }
+              : {}),
           },
         }),
       { mutating: true },
@@ -7121,18 +7149,49 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (revision.harness.mode === "embedded") {
       return;
     }
-    const sandboxDriver = this.sandboxDriverForRevision(revision);
-    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
-    if (computeOwnsWorkload && isYieldingComputeStop()) {
-      // A refused candidate's Harness goes before the OAuth bootstrap's wait, which may yield.
-      await this.deleteRevisionAgentDeployment(revision, namespace);
-    }
-    if (revision.harnessAuth.method === "oauth") {
-      await this.removeOAuthBootstrap(revision, namespace);
-    }
-    if (computeOwnsWorkload) {
-      await this.deleteRevisionAgentDeployment(revision, namespace);
+    const admittedReader = this.hasPublicGithubReadAdmission(revision);
+    if (admittedReader) {
+      const owner = "admitted-public-reader" as const;
+      if (isYieldingComputeStop()) {
+        // A refused candidate's Harness goes before the OAuth bootstrap's wait, which may yield.
+        await this.deleteRevisionAgentDeployment(revision, namespace, { owner });
+      }
+      if (revision.harnessAuth.method === "oauth") {
+        await this.removeOAuthBootstrap(revision, namespace);
+      }
+      await this.deleteRevisionAgentDeployment(revision, namespace, {
+        owner,
+        waitForRemoval: true,
+      });
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
+      await this.deleteOwnedNamespacedResource(
+        "NetworkPolicy",
+        this.publicGithubReadNetworkPolicyName(revision),
+        this.pluginRuntimeOwnership(revision),
+        namespace,
+      );
+    }
+    // Ancillary Sandbox cleanup still requires its current exact driver. If it is
+    // unavailable, report that failure after the admitted reader workload is fenced.
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    if (admittedReader && sandboxDriver?.provisionHarness !== undefined) {
+      throw new ConfigurationFailure(
+        "Cannot clean up an admitted reader with a Sandbox-owned Harness driver.",
+      );
+    }
+    const computeOwnsWorkload = sandboxDriver?.provisionHarness === undefined;
+    if (!admittedReader) {
+      if (computeOwnsWorkload && isYieldingComputeStop()) {
+        // A refused candidate's Harness goes before the OAuth bootstrap's wait, which may yield.
+        await this.deleteRevisionAgentDeployment(revision, namespace);
+      }
+      if (revision.harnessAuth.method === "oauth") {
+        await this.removeOAuthBootstrap(revision, namespace);
+      }
+      if (computeOwnsWorkload) {
+        await this.deleteRevisionAgentDeployment(revision, namespace);
+        await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
+      }
     }
     if (sandboxDriver !== undefined) {
       await sandboxDriver.cleanup({
@@ -7143,7 +7202,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         revision,
       });
     }
-    if (!computeOwnsWorkload) {
+    if (!admittedReader && !computeOwnsWorkload) {
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
     }
   }
@@ -12105,10 +12164,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         this.pluginRuntimeOwnership(revision),
         namespace,
       );
-      if (this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined) {
-        throw new ConfigurationFailure("Cannot withdraw a reader from a Sandbox-owned Harness.");
-      }
-      await this.deleteRevisionAgentDeployment(revision, namespace, true);
+      // Admission is issued only to a Compute-owned Harness; current Sandbox
+      // configuration may have changed since that immutable decision.
+      await this.deleteRevisionAgentDeployment(revision, namespace, {
+        waitForRemoval: true,
+        owner: "admitted-public-reader",
+      });
       await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
       if (
         (await this.getOwned(

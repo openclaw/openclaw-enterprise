@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-10-15"
-last_updated_session: authoring-run/47f5b717-62d4-4f46-8310-770057b70134
+last_updated_session: authoring-run/87f54df9-4b7e-43b3-a627-60e6b6678225
 ---
 
 # Public GitHub read flow
@@ -74,15 +74,19 @@ removes the revision's reader policy and skill snapshot after its Pods have
 terminated. Preparing or activating a successor does not change that grant.
 If preparation or activation observes that the operator disabled or changed the
 admitted peer, `revokeUnavailablePublicGithubRead` removes the revision policy to
-narrow new connections. It foreground-deletes the owned Harness Deployment with
-its UID, waits for the Deployment and its Pods to terminate, and verifies that
+narrow new connections. The immutable reader admission identifies a Compute-owned
+Harness even if its pinned Sandbox is now unavailable or has changed. Compute
+checks the exact Deployment ownership and ordinary workload profile, then
+foreground-deletes it with its UID, waits for the Deployment and its Pods to terminate, and verifies that
 the policy and Deployment have not reappeared before failing with a configuration
 error. An incomplete observation leaves withdrawal unfinished. Policy deletion
 alone does not guarantee existing connections close; an in-flight GET may drain
 before Pod termination completes. Reconfiguring the peer
 alone does not schedule a reconciliation; the operator can stop the Agent or deploy
-an unselected successor and retire the old revision. A new revision is needed to
-select a replacement peer.
+an unselected successor and retire the old revision. Stop and retirement fence
+the admitted Compute-owned Harness before resolving the current Sandbox; an
+unavailable or changed Sandbox still leaves ancillary cleanup unfinished and
+reports an error. A new revision is needed to select a replacement peer.
 
 ## Debugging and Verification
 
@@ -101,6 +105,8 @@ select a replacement peer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 10:35: Use admitted Harness ownership during reader withdrawal (authoring-run/87f54df9-4b7e-43b3-a627-60e6b6678225 - 52b6a608fa3d1ad6a6f9d7170f3dd5c4d624c1a6)
 
 - 2026-10-15 09:55: Stop the selected Harness before withdrawing its reader grant (authoring-run/47f5b717-62d4-4f46-8310-770057b70134 - 97044717385c2af34c6a611e74203f3a2734f4c5)
 

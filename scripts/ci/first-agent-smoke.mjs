@@ -16,7 +16,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, realpath, statfs, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, realpath, rm, statfs, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -612,19 +612,28 @@ async function enablePublicReader(stack) {
   installation.drivers.compute.configuration.network.publicGithubRead = reader.peer;
   const installationData = JSON.stringify(installation);
   await writeFile(installationPath, installationData);
-  await kubectl(
-    stack,
-    [
+  const patchPath = join(stack.directory, `installation-patch-${randomUUID()}.json`);
+  try {
+    await writeFile(
+      patchPath,
+      JSON.stringify({ stringData: { "installation.yaml": installationData } }),
+      {
+        flag: "wx",
+        mode: 0o600,
+      },
+    );
+    await kubectl(stack, [
       "-n",
       stack.state.platformNamespace,
       "patch",
       "secret",
       "occ-installation-startup",
       "--type=merge",
-      "--patch-file=/dev/stdin",
-    ],
-    { input: JSON.stringify({ stringData: { "installation.yaml": installationData } }) },
-  );
+      `--patch-file=${patchPath}`,
+    ]);
+  } finally {
+    await rm(patchPath, { force: true });
+  }
   values.controlPlane = {
     ...values.controlPlane,
     installationChecksum: createHash("sha256").update(installationData).digest("hex"),
