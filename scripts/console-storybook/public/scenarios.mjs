@@ -1161,7 +1161,7 @@ export const scenarios = {
       { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
     ],
     description:
-      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select a result to add its workspace-qualified user ID.",
+      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
     gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
@@ -2798,7 +2798,7 @@ export const scenarios = {
       "Calendar explicitly has no Slack approvers, while Create event overrides it with a different user. The UI distinguishes both from inherited lists.",
     steps: [
       "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
-      "Search Create event tool approvers people to choose between duplicate Alex Chen names by exact ID.",
+      "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
     ],
     gap: overrideApproverGap,
   },
@@ -2820,7 +2820,7 @@ export const scenarios = {
       { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
     ],
     description:
-      "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one saves a team-qualified selector.",
+      "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
     steps: [
       "Switch to another browser tab and return. The open query and results remain while Agent access is checked.",
       "Move focus to another Console control to close the list, then focus the search field to reopen it.",
@@ -2853,7 +2853,7 @@ export const scenarios = {
       "When the API reports channel directory lookup as unavailable, the approver field still accepts a raw Slack user ID and saves it on the draft Agent.",
     steps: [
       "Confirm the directory error explains that exact IDs can still be entered.",
-      "Review the saved default plugin approver chip: UDEMO123 remains visible because names could not be resolved.",
+      "Review the saved default plugin approver chip: Name unavailable keeps the selection visible and removable when the directory cannot resolve it.",
       "Open Plugin selections JSON or inspect the saved Agent response in browser tools to confirm the plugin policy JSON was not changed by the approver save.",
     ],
     gap: "The 501 directory response, Slack user ID, and Agent save are simulated. This proves Console behavior only, not Slack identity validity or runtime approval delivery.",

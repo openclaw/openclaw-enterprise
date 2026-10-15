@@ -34,12 +34,19 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   const lookups = [];
+  const lookupStarted = Promise.withResolvers();
+  const releaseLookup = Promise.withResolvers();
+  t.after(() => releaseLookup.resolve());
   let denied = false;
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
     async (route) => {
       const body = route.request().postDataJSON();
       lookups.push(body);
+      if (body.ids?.includes("UTEST123")) {
+        lookupStarted.resolve();
+        await releaseLookup.promise;
+      }
       if (denied) {
         await route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
         return;
@@ -82,7 +89,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await people.fill("UOTHER123");
   await people.press("Enter");
   await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
-  await page.getByRole("button", { name: "Remove UOTHER123" }).click();
+  await page.getByRole("button", { name: "Remove selected person 1 (name unavailable)" }).click();
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   denied = true;
   await people.fill("denied");
@@ -91,12 +98,19 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await people.fill("nobody");
   await page.getByText("No matches found. Try another name or paste an exact ID.").waitFor();
   await people.fill("free");
-  await page.getByRole("option", { name: /Freeman Example.*UTEST123/ }).waitFor();
+  await page.getByRole("option", { name: /Freeman Example.*@freeman/ }).waitFor();
   await people.evaluate((node) => node.scrollIntoView({ block: "center" }));
   await page.screenshot({ path: join(artifacts, "approver-results.png") });
   await people.press("ArrowDown");
   await people.press("Enter");
-  await page.locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]').waitFor();
+  // Hold name resolution at the first selected frame. The search result already identified this person.
+  await lookupStarted.promise;
+  const chip = page.locator(".slack-directory-chip");
+  assert.equal(await chip.locator("span").innerText(), "Freeman Example (@freeman)");
+  await chip
+    .getByRole("button", { name: "Remove Freeman Example (@freeman)", exact: true })
+    .waitFor();
+  releaseLookup.resolve();
   assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
   await page.getByLabel("Agent name").fill("Approver search Agent");
   await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
@@ -260,7 +274,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   });
   const picker = people.locator("..").locator("..");
   await people.focus();
-  await picker.getByRole("option", { name: /Alex.*UTEST123/ }).waitFor();
+  await picker.getByRole("option", { name: /Alex.*@alex/ }).waitFor();
   const searched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/channel-directory/lookup`) &&
@@ -268,7 +282,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   await people.fill("Alex");
   await searched;
-  const result = picker.getByRole("option", { name: /Alex.*UTEST123/ });
+  const result = picker.getByRole("option", { name: /Alex.*@alex/ });
   await result.waitFor();
   const resultNode = await result.elementHandle();
   const lookupCount = directoryBodies.length;
@@ -343,9 +357,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     await picker.locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]').count(),
     1,
   );
-  await picker
-    .getByRole("button", { name: "Remove team:TTEST123:user:UTEST123", exact: true })
-    .click();
+  await picker.getByRole("button", { name: "Remove Alex (@alex)", exact: true }).click();
   await people.fill("team:TOTHER123:user:UTEST123");
   await people.press("Enter");
   await picker
@@ -357,12 +369,14 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await people.press("Enter");
   await picker
     .locator('.slack-directory-chip[data-value="UTEST999"]')
-    .getByText("UTEST999")
+    .getByText("Name unavailable")
     .waitFor();
-  await picker.getByRole("button", { name: "Remove UTEST999", exact: true }).click();
+  await picker
+    .getByRole("button", { name: "Remove selected person 1 (name unavailable)", exact: true })
+    .click();
   directoryAvailable = true;
   await people.fill("Alex");
-  await picker.getByRole("option", { name: /Alex.*UTEST123/ }).click();
+  await picker.getByRole("option", { name: /Alex.*@alex/ }).click();
   assert.equal(
     await picker.locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]').count(),
     1,
