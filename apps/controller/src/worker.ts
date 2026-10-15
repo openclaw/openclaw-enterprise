@@ -83,6 +83,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
+import { createBundledChannelNetworkRequirements } from "./composition/channel.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import {
   ComputeStopYieldedError,
@@ -1120,6 +1121,7 @@ export class ControllerWorker {
       state: this.state,
       backends: this.backends,
       recordOperations: true,
+      channelNetworkRequirements: createBundledChannelNetworkRequirements(),
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}
         : { configuredServiceAccountDriverId: this.configuredServiceAccountDriverId }),

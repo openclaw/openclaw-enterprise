@@ -602,14 +602,14 @@ else
 fi
 # Keep all settings protected except the supported proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
-values_guard='del(.api.channelDirectoryProxyUrl) | if .api == {} then del(.api) else . end'
+values_guard='del(.api.controlPlaneOutboundProxyUrl) | if .api == {} then del(.api) else . end'
 installation_guard='del(.drivers.plugin.id, .drivers.plugin.configuration.catalogSource) |
   if .drivers.plugin.configuration == {} then del(.drivers.plugin.configuration) else . end |
   if .drivers.plugin == {} then del(.drivers.plugin) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
-  die "candidate values change a protected setting; only api.channelDirectoryProxyUrl may change."
+  die "candidate values change a protected setting; only api.controlPlaneOutboundProxyUrl may change."
 project_yaml "$evidence_dir/before-installation.yaml" "$installation_guard" "$evidence_dir/installation-guard.json"
 project_yaml "${candidate_installation}.requested" "$installation_guard" "$evidence_dir/candidate-installation-guard.json"
 cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json" ||

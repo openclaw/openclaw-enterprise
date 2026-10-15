@@ -28,7 +28,9 @@ Optional `gatewayNetworkRequirements(configuration)` declares required native
 channel destinations from enabled saved settings. `controlPlaneNetworkRequirements()`
 declares independent management destinations before an Agent exists. Both return
 trusted host/subdomain declarations; they neither hold credentials nor approve
-additional Agent access. See [Gateway outbound](../gateway-outbound.md).
+additional Agent access. Worker provisioning receives only the pure Gateway
+declaration; API credential validation remains outside its admission transaction.
+See [Gateway outbound](../gateway-outbound.md).
 
 ## IAM
 

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
-updated: 2026-10-14
-last_updated_session: authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3
+updated: 2026-10-15
+last_updated_session: authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8
 ---
 
 # Gateway Outbound Flow
@@ -78,6 +78,13 @@ invariants. The normal mutation audit names the actor and exact Agent.
 selected Channel Driver for `gatewayNetworkRequirements`. The Slack Driver
 supplies requirements only for enabled supported accounts. Caller-authored
 native settings cannot supply this trusted declaration.
+
+For provisioning, `apps/controller/src/worker.ts:ControllerWorker.start` injects
+only the pure declaration from
+`apps/controller/src/composition/channel.ts:createBundledChannelNetworkRequirements`.
+The worker freezes these requirements during transactional revision admission;
+it receives no provider validation or directory methods. API credential validation
+still runs before enqueueing provisioning, outside the write transaction.
 
 `KubernetesComputeDriver.admitGatewayOutbound` enforces the Installation ceiling
 and produces the snapshot. OCC validates it and `freezeAgentRevision` copies
@@ -164,6 +171,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-15 10:01: Preserve Channel Driver requirements during worker provisioning admission. (authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8 - 313a70262e432192306a2db431bf0b6f0459a957)
 
 - 2026-10-14 17:45: Add durable terminal-maintenance withdrawal (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - 27562ebf56a8315a663583731a303ca362cbfc5d)
 - 2026-10-14 16:16: Document accompanying Gateway outbound implementation (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - bd8fe1f7b0b798dca84d6f90b7377ddda79d88a6)

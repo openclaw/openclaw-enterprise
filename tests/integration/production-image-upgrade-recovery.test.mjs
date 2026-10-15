@@ -941,6 +941,21 @@ test(
   },
 );
 
+test("candidate values keep retired proxy keys and unrelated API settings protected", async (t) => {
+  for (const field of ["channelDirectoryProxyUrl", "port"]) {
+    await t.test(field, async (subtest) => {
+      const f = await fixture(subtest, { candidates: true });
+      const path = join(f.directory, "candidate-values.json");
+      const candidate = JSON.parse(await readFile(path, "utf8"));
+      // Approving the new proxy URL must not approve an old key or another API setting.
+      candidate.api[field] = field === "port" ? 8081 : "http://198.51.100.27:3128";
+      await writeFile(path, JSON.stringify(candidate));
+      await assert.rejects(f.run(), /candidate values change a protected setting/);
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
 test(
   "candidate cannot change repository identity, grants, trust, or the Compute peer",
   { concurrency: true },
