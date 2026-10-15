@@ -673,7 +673,8 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(await open.count(), 0);
 
-  // Only a 404 means the Agent is gone. A caller who may not read it cannot tell either.
+  // Only a 404 means the Agent is gone. A caller who may not read it (403) cannot tell a Stop
+  // from a deletion either.
   cancelled = { agentId: kept.id, by: "stopped" };
   agentRead = {
     status: 403,
@@ -688,7 +689,8 @@ test("Dedicated Agent creation reports a stop before the first deployment and li
   assert.equal(await open.getAttribute("href"), keptHref);
   await page.unroute(agentUrl);
 
-  // A job that created its Agent and then failed did not stop, even though that Agent is kept.
+  // A job that created its Agent and then failed after its retries did not stop, even though
+  // that Agent is kept.
   cancelled = {
     agentId: kept.id,
     error: {
