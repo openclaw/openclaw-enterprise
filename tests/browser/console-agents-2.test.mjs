@@ -513,7 +513,8 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   const unknown =
     "Provisioning was cancelled because the Agent was stopped. If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.";
   // Each submit returns the same job; each case changes which Agent it names, how it ended and
-  // how that Agent reads. `href` is the Open Agent link, null when there is none.
+  // how that Agent reads. `href` is the Open Agent link, null when there is none. The retryable
+  // failure stays last: the page keeps its accepted job, so the next Create Agent would retry it.
   const cases = [
     {
       // Someone stopped the Agent while its first deployment was rolling out.
@@ -568,6 +569,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
         },
       },
       text: "Agent provisioning could not complete. Retry uses the accepted provisioning job.",
+      href: null,
     },
   ];
   let current = cases[0];
@@ -613,7 +615,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
     if (c.stopped) {
       await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
       assert.equal(
-        await page.getByText(/Provisioning failed|Create a new Agent|correct the cause/).count(),
+        await page.getByText(/Provisioning failed|Create a new Agent|correct the cause/i).count(),
         0,
       );
       await assertNotErrorColour(page.locator(".provisioning-stopped"));
@@ -626,11 +628,10 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       assert.equal(await page.locator(".provisioning-stopped").count(), 0);
     }
     const open = page.getByRole("link", { name: c.link ?? "Open Agent", exact: true });
-    if (c.href === null) {
-      assert.equal(await open.count(), 0);
-    }
     if (c.href) {
       assert.equal(await open.getAttribute("href"), c.href);
+    } else {
+      assert.equal(await open.count(), 0);
     }
   }
 

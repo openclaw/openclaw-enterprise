@@ -729,6 +729,7 @@ const neutralDeployments = [
     failedLine:
       /^v1 deployment is recorded as failed\. rev_.* is selected\. Live serving is unverified\.$/,
     alsoNeutral: "REPOSITORY_REVISION_SUPERSEDED",
+    newerHidden: true,
   },
   {
     agent: "Stopped Agent",
@@ -765,7 +766,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   for (const c of neutralDeployments) {
     const agent = await fixture.createAgent(namespace.id, c.agent, nativeValues("v1"));
     const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    if (c.outcome === "superseded") {
+    if (c.newerHidden) {
       const newer = await fixture.seedActiveAgentRevision(
         namespace.id,
         agent.id,
@@ -834,7 +835,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   const absent = /\bv2\b|failed|Live serving is unverified|check the recorded error/i;
   // After a refresh from a failure, the hidden status line keeps its old text, so its text is
   // checked only when the page first renders the neutral record.
-  const expectNeutral = async (c, code, firstRender = true) => {
+  const expectNeutral = async (c, code, checkStatusLineText = true) => {
     const label = `${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}`;
     await summary.getByText(`v1 · ${label}`, { exact: true }).waitFor();
     await summary.getByText(c.summaryNote, { exact: true }).waitFor();
@@ -854,7 +855,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     assert.equal(await statusLine.isVisible(), false);
     assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
     assert.equal(await outcome.getByText(absent).count(), 0);
-    if (firstRender) {
+    if (checkStatusLineText) {
       assert.equal(await statusLine.getByText(absent).count(), 0);
     }
   };
