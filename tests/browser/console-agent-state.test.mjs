@@ -1021,11 +1021,14 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now() + 60_000));
   await page.addInitScript(() => {
-    globalThis.__layoutShift = 0;
+    globalThis.__layoutShifts = [];
     new globalThis.PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         if (!entry.hadRecentInput) {
-          globalThis.__layoutShift += entry.value;
+          globalThis.__layoutShifts.push({
+            value: entry.value,
+            sources: entry.sources.map((source) => source.node?.className ?? source.node?.nodeName),
+          });
         }
       }
     }).observe({ type: "layout-shift", buffered: true });
@@ -1039,13 +1042,16 @@ test("Agent detail does not move shown sections when Deployment activity first s
     .waitFor({ state: "attached" });
   assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   assert.equal(await page.locator(".agent-version-layout").isVisible(), false);
-  // Give a frame to paint what is shown before the read settles.
+  // Paint what is shown, with its fonts, then measure only from the first read settling.
+  await page.evaluate(() => globalThis.document.fonts.ready);
   await new Promise((resolve) => setTimeout(resolve, 300));
+  await page.evaluate(() => globalThis.__layoutShifts.splice(0));
 
   releaseRecord();
   await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
   await page.locator(".agent-version-layout").waitFor();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  const shift = await page.evaluate(() => globalThis.__layoutShift);
-  assert.ok(shift < 0.01, `layout shift ${shift}`);
+  const shifts = await page.evaluate(() => globalThis.__layoutShifts);
+  const shift = shifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
 });
