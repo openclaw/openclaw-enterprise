@@ -113,7 +113,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     },
     harnessAuth: { ...apiKeyBinding, secretDriverId: harnessSecret.driverId },
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
-    compute: { id: "compute-contract", implementation: "deterministic-contract" },
+    compute: {
+      id: "compute-contract",
+      implementation: "deterministic-contract",
+      admission: `driver-state:v1:${"a".repeat(64)}`,
+    },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
@@ -148,6 +152,25 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);
   });
+
+  for (const admission of ["", "a".repeat(1025), "bad\nvalue"]) {
+    await assert.rejects(
+      store.transact((transaction) =>
+        transaction.revisions.createRevision({
+          ...revision,
+          id: identifier("rev"),
+          revision: 2,
+          compute: { ...revision.compute, admission },
+        }),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        postgresOwnershipViolation,
+      ),
+      "malformed Compute admission must be rejected",
+    );
+  }
 
   // The draft binding and the pending deployment both reference the key: one Agent entry.
   await store.read(async (state) => {

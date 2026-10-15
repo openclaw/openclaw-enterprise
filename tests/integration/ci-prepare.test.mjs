@@ -2228,6 +2228,10 @@ if (args[0] === "pull") {
       OPENAI_API_KEY: "test-openai-key",
       OCC_TEST_OPENAI_MODEL: "gpt-test",
     };
+    const openShellModelEnv = {
+      CODEX_ACCESS_TOKEN: "synthetic-codex-pat",
+      OCC_TEST_OPENAI_MODEL: "gpt-test",
+    };
     const k3dImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
@@ -2294,7 +2298,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
@@ -2308,7 +2312,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: mutableImage,
@@ -2322,7 +2326,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
@@ -2337,7 +2341,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_KEYCLOAK_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,

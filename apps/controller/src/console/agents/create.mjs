@@ -1,5 +1,5 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { element, button } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -172,8 +172,12 @@ async function cancelledAgentState(request, namespaceId, agentId) {
 async function waitForProvisioning({ request, status, first, namespaceId }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
+  // A started job goes back to queued between retries. Keep one label once it has started,
+  // and write it only when it changes, since this rereads every second (finding 1424).
+  let started = false;
   while (current?.status === "queued" || current?.status === "running") {
-    status.textContent = provisioningStatusText(current.status);
+    started ||= current.status === "running";
+    setText(status, provisioningStatusText(started ? "running" : current.status));
     if (typeof current.url !== "string" || !current.url) {
       throw new Error("Provisioning status URL is unavailable.");
     }
@@ -913,8 +917,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let configurationSecretBindings = structuredClone(
     draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
   );
+  let directorySecretSource = null;
+  const getDirectorySecretSource = () =>
+    directorySecretSource ?? configurationSecretBindings.SLACK_BOT_TOKEN?.source;
   const getSlackBotSecretId = () => {
     const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+  };
+  const getDirectorySecretId = () => {
+    const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
   const pluginDiscovery = createPluginDiscovery({
@@ -954,10 +965,30 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let pluginApprovers = structuredClone(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
   );
+  const directorySecret = createSecretReferenceField({
+    context,
+    id: "approver-directory-secret",
+    label: "Slack bot token Secret for people search",
+    getCurrentSource: getDirectorySecretSource,
+    onSecretSelected: async (secret) => {
+      directorySecretSource = secret.ref;
+      defaultApprovers.refreshDirectory();
+    },
+    createSecretName: () => `${name.value.trim() || "Agent"} Slack bot token`,
+    metadataLabel: "View Slack bot Secret metadata",
+    stagedHint: "Ready to search.",
+  });
+  directorySecret.field.append(
+    element(
+      "p",
+      { className: "hint" },
+      "Choose a Slack bot token to search by name. This choice is only for search and does not configure the Agent's Slack channel.",
+    ),
+  );
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
-    getSecretId: getSlackBotSecretId,
+    getSecretId: getDirectorySecretId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
@@ -965,6 +996,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     lazyNames: true,
+    directorySetup: directorySecret.field,
   });
   defaultApprovers.hidden = true;
   pluginFields.section.insertBefore(
@@ -1341,7 +1373,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (options.secretBindings !== undefined) {
           configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
-          defaultApprovers.refreshValue();
+          directorySecret.refresh();
+          defaultApprovers.refreshDirectory();
           pluginDiscovery.update();
         }
         configuration.setCustomValidity("");
@@ -1454,7 +1487,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
     nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
-    authMethod.disabled ||= Boolean(savedSecret) || nativeProvider.value === "anthropic";
+    authMethod.disabled ||= Boolean(savedSecret);
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
     const patOption = authMethod.querySelector('[value="codex_pat"]');

@@ -18,7 +18,7 @@ owns consumer access to the credential sidecar and the repository-bound Codex
 proxy policy, which allows the exact broker hostname with `allow_local_binding = true`
 and `mode = "full"`, disabling Codex's private-address guard and permitting every
 HTTP method at otherwise allowed destinations. Explicit denies, NetworkPolicy,
-TLS and broker authorization still apply. Unbound Agents keep their policy.
+TLS and broker authorization still apply. Operators can enable [anonymous public reads](public-github-reads.md).
 
 The separate service owns protected configuration, private sender callbacks and
 the `open`, `status`, `close` and `shutdown` controls; separate Git/gh artifacts
@@ -347,8 +347,20 @@ slots per session, one provider action and 64 queued actions, 64 sockets per
 listener, and 32 exchanges total and four per session. Headers are limited to 32 KiB/64 pairs;
 request targets to 8 KiB. Git fetch input is 1 MiB; push input and Git output are
 256 MiB. API input is 1 MiB and response data 8 MiB. Git gzip input has independent
-wire and decoded limits. Exchanges have a five-minute total bound and 60-second
-credential margin. The
+wire and decoded limits. Exchanges have a five-minute total bound, a 30-second
+response-header wait, a five-second progress timeout and a 60-second credential margin.
+
+For larger upload-pack responses, operators can configure `gitFetchResponseBytes`,
+`gitFetchFirstHeaderMs`, `gitFetchStallMs`, `gitFetchExchangeMs` and `maxExchangeMs`
+in the protected service configuration. For example, set these to 17179869184
+(16 GiB), 60000, 60000, 1800000 and 1800000 respectively. Existing explicit
+`gitResponseBytes`, `firstHeaderMs`, `stallMs` and `exchangeMs` overrides also apply
+to upload-pack unless the corresponding upload-pack limit is set. `maxExchangeMs`
+caps every exchange; an `exchangeMs` override sets this ceiling unless configured
+separately. Session expiry can end requests sooner. Credential validity must cover
+the deadline plus the credential margin; development static-token upload-pack is
+capped at the lease less two margins. Each stream consumes a socket and exchange slot.
+The
 [dispatch flow](../flows/repository-credentials.md#4-reserve-acquire-and-dispatch)
 owns upstream-origin capture, adapter-header reconstruction and per-phase
 client-header, response-header, connection, input and stall deadlines.

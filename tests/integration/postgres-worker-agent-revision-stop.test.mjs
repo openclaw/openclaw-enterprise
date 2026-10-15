@@ -2558,6 +2558,77 @@ revisionTest(
 );
 
 revisionTest(
+  "a stop admitted after the last running check waits for the claimed revision work, then stops the Agent",
+  async (fixture) => {
+    const owner = await fixture.agent("stop-after-running-check");
+    const sibling = await fixture.agent("stop-after-running-check-sibling");
+    const candidate = await fixture.revision(owner, 1);
+    let releaseActivation;
+    const activationReleased = new Promise((resolve) => {
+      releaseActivation = resolve;
+    });
+    let activationStarted = false;
+    const stoppedRevisions = [];
+    const compute = {
+      ...fixture.compute,
+      // An after-commit Driver activates the published candidate after the worker's last check
+      // that the Agent runs. Holding it keeps the revision work claimed past that check.
+      async activateRevision(revision) {
+        if (revision.id === candidate.id && !activationStarted) {
+          activationStarted = true;
+          await activationReleased;
+        }
+      },
+      async stopRevision(revision) {
+        // Records whether the revision work had released its claim when the stop reached Compute.
+        const work = await fixture.observerPool.query(
+          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        stoppedRevisions.push([revision.id, work.rows[0]?.state]);
+        return fixture.compute.stopRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    let stop;
+    try {
+      await waitFor("candidate activation to start", async () =>
+        activationStarted ? true : undefined,
+      );
+      // A second worker stands in for another controller replica: the first is busy activating,
+      // and only the one-claim-per-Agent rule (the claim query skips an Agent with claimed work,
+      // backed by controller_work_one_claim_per_resource) keeps this one from taking the stop.
+      await fixture.start(compute, { pool: fixture.createWorkerPool() });
+      stop = await fixture.requestStop(owner);
+      // Claimed in queue order, the sibling's later stop finishing shows the second worker has
+      // passed over the owner's stop while the revision work held its claim.
+      const siblingStop = await fixture.requestStop(sibling);
+      await fixture.work(siblingStop, "succeeded");
+      const held = await fixture.observerPool.query(
+        "SELECT idempotency_key, state FROM occ.controller_work WHERE idempotency_key = ANY($1::text[])",
+        [[candidate.idempotencyKey, stop.idempotencyKey]],
+      );
+      assert.deepEqual(
+        Object.fromEntries(held.rows.map((row) => [row.idempotency_key, row.state])),
+        { [candidate.idempotencyKey]: "claimed", [stop.idempotencyKey]: "queued" },
+      );
+    } finally {
+      releaseActivation();
+    }
+
+    // The revision work finishes its activation, then the stop runs and stops the active
+    // candidate, so the Agent ends stopped rather than serving after its owner stopped it.
+    await fixture.work(candidate, "succeeded");
+    await fixture.work(stop, "succeeded");
+    const stopped = await fixture.currentAgent(owner);
+    assert.equal(stopped.desiredRuntimeState, "stopped");
+    assert.equal(stopped.activeRevisionId, undefined);
+    assert.deepEqual(stoppedRevisions, [[candidate.id, "succeeded"]]);
+    assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_STOPPED"]);
+  },
+);
+
+revisionTest(
   "a stop admitted immediately after publication retires the predecessor before completion",
   async (fixture, context) => {
     const { owner, candidate: predecessor } =

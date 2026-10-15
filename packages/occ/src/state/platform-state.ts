@@ -552,7 +552,9 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
         Object.keys(value).length === 5 &&
         isNonEmptyString(value.credentialGatewayId) &&
         isNonEmptyString(value.sourceType) &&
-        (value.loginMode === "api_key" || value.loginMode === "chatgptAuthTokens")
+        (value.loginMode === "api_key" ||
+          value.loginMode === "codex_pat" ||
+          value.loginMode === "chatgptAuthTokens")
       );
     }
     const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });
@@ -773,11 +775,16 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     typeof revision.compute !== "object" ||
     revision.compute === null ||
     Array.isArray(revision.compute) ||
-    Object.keys(revision.compute).length !== 2 ||
+    Object.keys(revision.compute).some(
+      (key) => !["id", "implementation", "admission"].includes(key),
+    ) ||
     !Object.hasOwn(revision.compute, "id") ||
     !Object.hasOwn(revision.compute, "implementation") ||
     !isNonEmptyString(revision.compute.id) ||
     !isNonEmptyString(revision.compute.implementation) ||
+    (revision.compute.admission !== undefined &&
+      (typeof revision.compute.admission !== "string" ||
+        !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
@@ -2913,6 +2920,7 @@ function repositories(
       settleEffect: provisioningUnavailable,
       cancel: provisioningUnavailable,
       cancelByAgent: async () => undefined,
+      settleAbandonedEffect: provisioningUnavailable,
       retryByWorkId: provisioningUnavailable,
       releaseConfiguration: async () => false,
     },

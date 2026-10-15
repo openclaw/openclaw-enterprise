@@ -1633,7 +1633,9 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
-      [53, "preCanonicalHarnessAuth"],
+      [53, "preCredentialSourcePat"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1667,7 +1669,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(context, fixture, "externalchatgpt", { prefix: 53 });
+    const db = await historyDatabase(context, fixture, "externalchatgpt", { prefix: 55 });
     const namespaceId = await seedCanonicalData(db);
     const sourceId = `cs_${randomUUID()}`;
     await db.app.query(
@@ -1695,6 +1697,21 @@ test(
       );
     const invalidSnapshot = (error) =>
       error.code === "23514" && error.constraint === "agent_revisions_admitted_snapshot";
+
+    // A valid PAT snapshot from main must survive the new function replacement.
+    const patSourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+       VALUES($1,$2,'Existing PAT','codex-pat','{}','external-gateway','ready',now())`,
+      [patSourceId, namespaceId],
+    );
+    const patBinding = {
+      ...binding,
+      sourceId: patSourceId,
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    assert.deepEqual((await insertSnapshot(patBinding)).rows, [{ auth: patBinding }]);
 
     // Exercise the actual old CHECK constraint first, not the application validator.
     await assert.rejects(insertSnapshot(binding), invalidSnapshot);
@@ -1737,6 +1754,16 @@ test(
     assert.deepEqual((await insertSnapshot(binding)).rows, [{ auth: binding }]);
     const apiKey = { ...binding, loginMode: "api_key" };
     assert.deepEqual((await insertSnapshot(apiKey)).rows, [{ auth: apiKey }]);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT admitted_spec->'harness_auth' AS auth FROM occ.agent_revisions WHERE admitted_spec #>> '{harness_auth,sourceId}'=$1",
+          [patSourceId],
+        )
+      ).rows,
+      [{ auth: patBinding }],
+    );
+    assert.deepEqual((await insertSnapshot(patBinding)).rows, [{ auth: patBinding }]);
     // Only the admitted mode expands: unknown modes and credential payloads remain invalid.
     await assert.rejects(insertSnapshot({ ...binding, loginMode: "unknown" }), invalidSnapshot);
     await assert.rejects(
@@ -1979,7 +2006,9 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
-      [53, "preCanonicalHarnessAuth"],
+      [53, "preCredentialSourcePat"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2061,7 +2090,9 @@ test(
       [50, "preCredentialWithdrawalRequester"],
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
-      [53, "preCanonicalHarnessAuth"],
+      [53, "preCredentialSourcePat"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2070,15 +2101,34 @@ test(
         }
         const before = await historySnapshot(db);
         const data = prefix ? await canonicalData(db) : undefined;
+        // 0054 and 0056 replace the validator; 0055 changes the snapshot constraint.
+        let rejectedDdl = "CREATE FUNCTION";
+        if (prefix === 54) {
+          rejectedDdl = "ALTER TABLE";
+        } else if (prefix !== 53 && prefix !== 55) {
+          rejectedDdl =
+            prefix >= 50
+              ? "GRANT"
+              : prefix >= 41
+                ? "ALTER TABLE"
+                : prefix >= 38
+                  ? "CREATE FUNCTION"
+                  : prefix >= 36
+                    ? "CREATE INDEX"
+                    : prefix >= 31
+                      ? "ALTER TABLE"
+                      : prefix >= 27
+                        ? "CREATE FUNCTION"
+                        : "ALTER FUNCTION";
+        }
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
-        // 0051's final GRANT follows both trigger replacements; prefix 51 instead
-        // rejects 0054's function replacement before its auth-grammar validation.
+        // 0051's final GRANT runs after it dropped both withdrawal triggers.
         await historyAdmin(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${prefix >= 51 ? "CREATE FUNCTION" : prefix >= 50 ? "GRANT" : prefix >= 41 ? "ALTER TABLE" : prefix >= 38 ? "CREATE FUNCTION" : prefix >= 36 ? "CREATE INDEX" : prefix >= 31 ? "ALTER TABLE" : prefix >= 27 ? "CREATE FUNCTION" : "ALTER FUNCTION"}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rejectedDdl}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
         assert.deepEqual(await historyReceipts(db.migrator), before.receipts);

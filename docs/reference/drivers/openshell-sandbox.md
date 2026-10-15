@@ -176,7 +176,7 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+For PAT-backed dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
 configuration before OCC validates and freezes the revision:
 
 ```json
@@ -187,7 +187,7 @@ configuration before OCC validates and freezes the revision:
         "enabled": true,
         "config": {
           "appServer": {
-            "sandbox": "danger-full-access",
+            "sandbox": "workspace-write",
             "approvalsReviewer": "user"
           }
         }
@@ -197,11 +197,15 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
-Codex's own sandbox cannot start inside OpenShell, the dedicated Harness's outer
-boundary; the `user` reviewer stops the Gateway re-enabling it per turn.
-Revisions admitted before #2079 lack the reviewer; deploy those Agents again
-([notice](../../guides/deploy/breaking-changes-before-2026-10-11.md#2026-10-10-openshell-codex-agents-need-a-new-deployment)).
-Native OpenClaw already disables inner isolation. Its workers have separate
+API-key sources use `danger-full-access`, with OpenShell providing isolation.
+PAT, OAuth and unresolved sources retain `workspace-write` and native managed policy.
+Both use explicit `user` review. Nested shell execution remains unverified: Codex requires
+bubblewrap user namespaces, which OpenShell blocks.
+Native OpenClaw already disables inner isolation. Its hook sets
+`agents.defaults.workspace` and any
+`agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
+which the Gateway, file transfer, and node address; admission refuses a roster
+that makes another Agent the default. Native workers have separate
 workspaces but share the Sandbox's user, filesystem, process, and network
 boundary. OpenShell isolates the AgentRevision from other workloads, not mutually
 untrusted sessions within one Agent. Kubernetes defaults to eight native workers;

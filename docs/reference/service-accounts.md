@@ -205,12 +205,18 @@ provider, not IAM, Compute, OCC, or the Harness.
   it answers `503`, and the API log says the credential could not be removed.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
-  read or delete that Secret, it answers `503`. The leftover Secret then blocks
-  each retry with a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus
-  the first 32 hex digits of the account ID's SHA-256, in the Namespace's control
-  namespace (omitted when that name is long). An operator deletes it, for example
-  `kubectl delete secret -n <namespace> <name>`, then retries. The failed issuance
-  still revokes its token.
+  read or delete that Secret, it answers `503` and still revokes its token.
+- Issuance that never commits: a crash, or an unknown COMMIT that failed, skips
+  compensation, so the provider credential and its token Secret stay. The Secret
+  records the credential's ID, so the next issuance or the account's deletion
+  revokes that credential and deletes the Secret. A crash before the Secret is
+  stored leaves only the provider credential, which expires at its TTL.
+- A leftover Secret that records no valid credential ID blocks each issuance with
+  a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus the first 32
+  hex digits of the account ID's SHA-256, in the Namespace's control namespace
+  (omitted when that name is long). An operator deletes it, for example
+  `kubectl delete secret -n <namespace> <name>`, then retries. Deleting the
+  account with the ChatGPT Backend configured also removes it.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 
@@ -228,7 +234,7 @@ admission, association, deletion, and revision snapshots. The
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.
 
-- [Service-account testing](../testing/service-accounts.md)
+- [Service-account testing](../testing/slack.md#chatgpt-service-accounts)
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)

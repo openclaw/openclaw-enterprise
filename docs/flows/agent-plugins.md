@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-14
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-15
+last_updated_session: authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63
 ---
 
 # Agent Plugin Deployment Flow
@@ -69,10 +69,9 @@ graph TD
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) accepts
 transient PATs, same-Namespace Secrets/CredentialSources, or credential-free access.
-OCC checks Namespace Agent `create` and source `operate` before credential access
-and again before the Plugin Driver call. Cross-Namespace references return
-`400 INVALID_REQUEST`; missing sources return `404`. Unsupported discovery reads
-no credential.
+OCC checks Agent `create` and source `operate` before credential access and the
+Driver call. Cross-Namespace references return `400 INVALID_REQUEST`; missing
+sources return `404`. Unsupported discovery reads no credential.
 
 Existing-Agent discovery requires active Agent `read`/`update`. Hosted discovery
 uses a bound PAT through [`SecretDriver.withValue`](../reference/drivers/secret.md)
@@ -80,24 +79,22 @@ or Credential Gateway `withSourceToken`, which may refresh before returning an
 access token and account metadata. The callback rechecks binding and
 caller/Agent source `operate`. Stored sources outlive
 [login sessions](credential-source-lifecycle.md#device-authorization-and-configuration).
-Curated discovery needs no credential; missing, denied or unavailable sources
-fail before discovery. Nontransactional reads may precede rotation. Discovery
-persists neither state nor credentials.
+Curated discovery needs no credential. Unavailable or unauthorized sources fail
+before discovery. Reads may precede rotation; discovery persists no state or credentials.
 
 The [Codex Driver](../../apps/controller/src/drivers/plugin/index.ts) hydrates
-identity and searches `q`, paging GLOBAL entries with opaque cursors.
+identity, searches `q`, and pages GLOBAL entries with opaque cursors.
 [Console discovery](../../apps/controller/src/console/agents/plugin-discovery.mjs)
 prefetches Create Agent and editable Agent Plugin catalogs. Credential changes
 clear results, preserving selections. Search invalidates stale responses before
 its [delay](../reference/drivers/plugin-bundled.md#selection-and-catalogs);
 Enter/paging bypass it. Closing, configured view, credential changes and
 cancellation abort requests. Tools (`null`: unknown) load before selection;
-unsupported releases stay unavailable. Curated catalogs do not verify tools or
-account access.
+unsupported releases stay unavailable. Curated catalogs verify neither tools nor account access.
 
 Bounded hosted reads forbid redirects. Responses are `no-store`, reject credential
 echoes, and omit upstream errors/artifacts and Driver links/setup guidance.
-Connections remain unverified. HTTPS logos omit referrers and default to initials.
+Connections stay unverified. HTTPS logos omit referrers; initials are the default.
 
 ### 1. Validate desired state under exact-Agent authority
 
@@ -114,7 +111,7 @@ authentication, and release/tool metadata remain startup checks. Agent mutations
 the reusable Configuration or active runtime. On update, omission preserves the
 map, `{}` clears it, and a nonempty map replaces it.
 
-Installation readers use `GET /installation`; Agent editors use
+Installation uses `GET /installation`; Agent editors use
 `GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
 
 ### 2. Admit an immutable plugin deployment
@@ -239,24 +236,20 @@ authentication. Transport loss, timeouts, signals, malformed responses,
 discovery failures, and policy failures retain ordinary startup failure
 behavior. Provider-owned Harnesses keep their existing startup path.
 
-Private startup status drives readiness. Kubernetes caps streaming bodies at
-65,536 bytes; oversized 2xx fails without retry:
-`Runtime status returned oversized data.` It discards oversized error bodies;
-404/503 mean not serving.
-Readiness validates workload, revision, startup instance, selection keys and warning
-codes; restart recomputes status. Docker Codex healthchecks fail immediately on
-interrupted plugin/runtime-status bodies. Plugin status failures retain transport codes;
-interrupted status enrichment preserves the original reason.
+Kubernetes Compute streams private startup status with a 65,536-byte limit.
+Overflow cancels the response without retry, even for a 404/503; within the limit
+those codes mean not serving. Readiness verifies workload, revision, startup
+instance, selection keys and warnings. Docker Codex healthchecks fail on
+interrupted status bodies, preserving the transport code or original reason.
 
-Dedicated Codex runs separately and receives runtime-binary reads even without
-plugins. Startup symlinks
-`/home/node/.openclaw/plugin-skills` to
-`/home/node/openclaw-runtime-assets/plugin-skills`, preserving relative files
-without gateway state/credentials.
+With the tool proxy enabled, dedicated Codex reads bundled skills at
+`/home/node/.codex/skills/.system` without a repository broker or neighboring
+credentials. Startup links `/home/node/.openclaw/plugin-skills` to
+`/home/node/openclaw-runtime-assets/plugin-skills`, keeping gateway state private.
 
-Gateway blocks failed bridge selections before serving and prevents retry during
-turns. It refreshes effective configuration when Agent startup changes; untrusted
-status cannot establish readiness. Requested revision selections remain unchanged.
+Gateway blocks failed bridges before serving and retry during turns. Startup
+changes refresh effective configuration; untrusted status cannot establish
+readiness or change revision selections.
 
 Compute installs status NetworkPolicies before the first dedicated gateway and
 creates it only when the Agent and plugin status are ready and its Service selects
@@ -348,6 +341,10 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 22:26: Reconcile main and OpenShell OAuth in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-15 04:39: Grant read-only access to bundled Codex system skills. (authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169 - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
 
 - 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

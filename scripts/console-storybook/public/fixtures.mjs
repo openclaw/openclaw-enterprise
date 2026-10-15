@@ -129,10 +129,13 @@ function candidateDeploymentError(scenario, checkedAt) {
       message: "Deployment ended because the Agent was stopped.",
     };
   }
+  // Deployment error messages copy deploymentErrorMessage in
+  // packages/occ/src/state/controller-work.ts; keep them in step.
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
-      message: "Deployment runtime startup model check failed.",
+      message:
+        "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
       data: {
         runtimeFailure: {
           component: "gateway",
@@ -152,7 +155,8 @@ function candidateDeploymentError(scenario, checkedAt) {
   }
   return {
     code: "CONVERGENCE_DEADLINE_EXCEEDED",
-    message: "Deployment convergence deadline exceeded.",
+    message:
+      "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
     data: {
       timeoutMs: 60000,
       runtimeFailure: { component: "harness", check: "readiness", code: "TIMEOUT", checkedAt },
@@ -188,6 +192,7 @@ export function installFixture(scenario, evidence) {
   const roles = [];
   const bindings = [];
   const deleted = new Set();
+  const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -922,6 +927,9 @@ export function installFixture(scenario, evidence) {
           return response(saved);
         }
       }
+      if (resource === "permissions" && method === "GET") {
+        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
+      }
       if (resource === "agents") {
         if (method === "GET") {
           return response([...agents.values()]);
@@ -1144,6 +1152,9 @@ export function installFixture(scenario, evidence) {
               agents.delete(id);
               return error(404);
             }
+            if (clearRevisionOnRead.delete(id)) {
+              saved.activeRevisionId = null;
+            }
             return response(saved);
           }
           if (method === "PATCH") {
@@ -1157,8 +1168,15 @@ export function installFixture(scenario, evidence) {
             return response(saved, 202);
           }
         }
+        if (suffix === "/permissions" && method === "GET") {
+          const allowed = !scenario.readOnlyPermissionSummary;
+          return response({ update: allowed, deploy: allowed, operate: allowed, delete: allowed });
+        }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
+          if (scenario.clearRevisionOnStopReadback) {
+            clearRevisionOnRead.add(id);
+          }
           return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {

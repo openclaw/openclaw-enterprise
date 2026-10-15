@@ -146,7 +146,11 @@ p {
   color: var(--muted);
 }
 .startup {
-  padding: 36px;
+  /* Padding, not margin: a margin collapses through #app and body, so the page jumps when it is replaced. */
+  margin: 0;
+  padding: calc(14vh + 28px) 28px;
+  color: var(--muted);
+  text-align: center;
 }
 .auth {
   background: var(--surface);
@@ -631,6 +635,10 @@ select:not([multiple])[size="1"] {
 .agent-current-summary p {
   margin: 0;
   font-size: 12px;
+}
+/* Until Deployment activity first settles, Agent detail shows its header and summary only. */
+.agent-detail-pending > :not(.agent-toolbar, .resource-id, .agent-current-summary) {
+  display: none;
 }
 .agent-status-line {
   margin: 10px 0 0;

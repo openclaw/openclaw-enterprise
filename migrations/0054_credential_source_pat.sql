@@ -5,7 +5,7 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     AND jsonb_typeof(binding->'method') = 'string'
     AND CASE
       WHEN binding->>'method' = 'runtime' THEN binding = '{"method":"runtime"}'::jsonb
-      WHEN binding->>'method' IN ('api_key', 'codex_pat')
+      WHEN binding->>'method' IN ('api_key', 'codex_pat', 'oauth')
         AND binding #>> '{source,kind}' = 'secret' THEN
         (binding ?& ARRAY['method', 'source'])
         AND (binding - 'method' - 'source' - CASE WHEN resolved THEN 'secretDriverId' ELSE 'method' END) = '{}'::jsonb
@@ -64,30 +64,8 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
           AND jsonb_typeof(binding->'sourceType') = 'string'
           AND (binding->>'sourceType') ~ '^[a-z][a-z0-9-]{0,63}$'
           AND jsonb_typeof(binding->'loginMode') = 'string'
-          AND binding->>'loginMode' IN ('api_key', 'chatgptAuthTokens')
+          AND binding->>'loginMode' IN ('api_key', 'codex_pat')
         ELSE (binding - 'method' - 'sourceId') = '{}'::jsonb END
       ELSE false
     END, false);
-$$;
---> statement-breakpoint
--- Retired OAuth Secret bindings are unsupported development state.
--- Reject them before accepting the external credential-source mode.
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM occ.agents
-    WHERE harness_auth IS NOT NULL
-      AND NOT occ.harness_auth_is_valid(harness_auth, namespace_id, false)
-  ) OR EXISTS (
-    SELECT 1 FROM occ.agent_revisions
-    WHERE NOT occ.harness_auth_is_valid(admitted_spec->'harness_auth', namespace_id, true)
-  ) OR EXISTS (
-    SELECT 1 FROM occ.agent_provisioning_work
-    WHERE plan->'harnessAuth' IS NOT NULL AND plan->'harnessAuth' <> 'null'::jsonb
-      AND NOT occ.harness_auth_is_valid(plan->'harnessAuth', namespace_id, false)
-  ) THEN
-    RAISE EXCEPTION 'Unsupported legacy OAuth authentication: recreate development Agents, revisions, and provisioning requests before migrating'
-      USING ERRCODE = '23514';
-  END IF;
-END;
 $$;

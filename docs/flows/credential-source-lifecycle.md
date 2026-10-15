@@ -1,17 +1,17 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-14
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-15
+last_updated_session: authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-OCC authorizes Namespace sources and freezes Agent bindings in revisions. The
-worker resolves them for paired Gateway/Sandbox attachment. OCC stores metadata
-and Secret references, never values. See [refresh](credential-source-refresh.md)
-and [Sandbox provisioning](openshell-sandbox-provisioning.md) for their internal steps.
+The gateway holds credential values; OCC authorizes their lifecycle and stores
+metadata/references. Admission freezes identity; the worker passes the live
+source to Compute. See [refresh](credential-source-refresh.md) and
+[Sandbox provisioning](openshell-sandbox-provisioning.md).
 
 ## Entry Points
 
@@ -21,9 +21,8 @@ and [Sandbox provisioning](openshell-sandbox-provisioning.md) for their internal
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:deleteCredentialSource`
-- Assumptions: the Installation selected a Credential Gateway that belongs to an
-  `openshell` Backend, a Sandbox, and bundled Kubernetes Compute; the Namespace
-  is `ready`; the caller holds the grants named in each phase.
+- Assumptions: a `ready` Namespace; an Installation selecting a Credential Gateway in an
+  `openshell` Backend, a Sandbox and bundled Kubernetes Compute; and per-phase caller grants.
 
 ## Flow
 
@@ -45,6 +44,7 @@ graph TD
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
   P -- "api_key" --> Q["<b>Sandbox provisions Harness</b><br/>API-key placeholder"]
+  P -- "codex_pat" --> Q1["<b>Sandbox provisions Codex</b><br/>PAT placeholder"]
   P -- "chatgptAuthTokens: paired OpenShell" --> T["<b>Driver supplies attachment</b><br/>Placeholder and account metadata"]
   T --> U["<b>Codex entrypoint</b><br/>Ephemeral external-mode auth.json"]
   U --> V["<b>Native model probe</b><br/>Then app-server startup"]
@@ -142,18 +142,20 @@ it into `agent_credential_sources`, whose foreign key restricts deletion.
 
 `packages/occ/src/index.ts:deployAgent`, `packages/occ/src/index.ts:admitHarnessAuth`
 
-With a gateway selected, `assertCredentialGatewayDelivery` rejects `api_key` and
-`codex_pat` (`409`). For `credential_source`, `admitHarnessAuth` authorizes Agent
-principal `operate`, requires a ready source whose catalog type declares
-`harnessAuth`, and freezes `{ method, sourceId, credentialGatewayId, sourceType,
-loginMode }`. `admittedCredentialSourceType` requires Sandbox selection;
-Compute `validateHarnessAuth` requires dedicated Codex or native OpenClaw, paired
-Drivers, and `openai`/`api_key`. Codex also accepts `openai`/`chatgptAuthTokens`
-from an external-auth Driver. Compute projects no model Secret.
+`assertCredentialGatewayDelivery` rejects `api_key` and both sources of
+`codex_pat` with `409` while a gateway is selected. For `credential_source`,
+`admitHarnessAuth` authorizes the Agent principal's `operate`, requires a ready
+source whose catalog type declares `harnessAuth`, and freezes `{ method,
+sourceId, credentialGatewayId, sourceType, loginMode }`.
+`admittedCredentialSourceType` requires a Sandbox. Compute `validateHarnessAuth`
+requires dedicated Codex or native OpenClaw, paired Drivers, and
+`openai`/`api_key`. Dedicated Codex also accepts `codex-pat`/`codex_pat` or
+`openai`/`chatgptAuthTokens` from an external-auth Driver. Compute renders no
+model Secret and passes the resolved source to Sandbox provisioning.
 
 `admitCredentialSources` requires a Sandbox (`409`), rechecks caller binding
-grants, authorizes Agent principal `operate` on every listed source including
-the Harness source, checks catalog types, and freezes `{ sourceId,
+grants, authorizes the Agent principal's `operate` on every listed source,
+including the Harness source, checks catalog types, and freezes `{ sourceId,
 credentialGatewayId, sourceType }` in revision `credential_sources`.
 
 ### 6. Resolve the source at dispatch
@@ -270,10 +272,9 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Debugging and Verification
 
-- `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog
-  validation, grants, registration compensation and recovery, audit, deletion,
-  Namespace gating, admission snapshots, and Secret-backed method rejection,
-  with an in-process gateway double.
+- `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog,
+  grants, lifecycle, compensation/recovery, audit and revision admission with
+  an in-process gateway double.
 - `node --test tests/integration/credential-source-api.test.mjs` exercises
   Fastify/IAM/OCC/OpenShell Driver validation, deletion recovery, profile isolation
   and endpoint lifecycle. Gateway storage and Compute placement are doubles,
@@ -285,12 +286,10 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
   and worker against PostgreSQL with a Compute double: retries, outages, replays,
   refusals, maintenance, denials, other revisions, lost grants, and late creates.
-- The real OpenShell test updates the source and withdraws a `bearer-token`
-  source (its placeholder stops reaching an echo service), then the model
-  source (the next model turn fails).
-- `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
-  registers an `openai` source through the production API against a real
-  gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
+- The [real OpenShell suite](../testing/openshell.md#openshell-sandbox) registers
+  the selected PAT/API-key source through the production API, reads live status,
+  updates it, and withdraws tool and model sources. The echo service stops
+  receiving the tool token; the next model turn fails.
 - A source stuck in `deleting` returns `503` on delete until the gateway is
   reachable; `GET` shows its live `status`.
 - Worker reason codes `CREDENTIAL_GATEWAY_MISMATCH` and
@@ -314,6 +313,12 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
+
+- 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
 
 - 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
 

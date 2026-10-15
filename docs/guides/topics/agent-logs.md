@@ -43,13 +43,15 @@ visible.
 
 ### Download
 
-**Download** saves the last 1000 lines of the selected source, Pod and instance
-as a text file named `<agent>-<revision>-<source>-<pod>.log`, using IDs. The
-file holds the same classified and redacted records as the page, one per line
-(`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
-rows), after a `#` header naming the Agent, revision, Pod and container.
-Only **Include debug** applies to the download. Redaction is best-effort:
-handle the file as sensitive and delete it when done.
+**Download** requests the last 1000 lines. Only **Include debug** affects the export.
+Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
+instance** adds `-previous` before `.log`.
+
+The `#` header names the Agent and revision, plus the Pod and container if available.
+`instance=current` or `instance=previous` is what you requested, not a guarantee that logs exist.
+Records follow the page format (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`,
+`GAP` or `WITHHELD`), with the same best-effort redaction. Treat the file as
+sensitive; delete it when done.
 
 The HTTP API has the same two reads:
 

@@ -19,7 +19,7 @@ Dedicated execution uses Kubernetes Codex; see
 [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 Dedicated OpenClaw worker execution remains pending.
 
-See [two-cluster transport](../testing/two-cluster-local.md) for CP/DP routing.
+See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
 ## Entry Points
 

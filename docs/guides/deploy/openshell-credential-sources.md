@@ -54,7 +54,13 @@ SECRET_REF="$(./bin/occ secret create --file model-secret.json -o json | jq -c .
 rm model-secret.json
 ```
 
-Register the Secret as an `openai` credential source:
+For a Codex personal access token, including a service-account token, save that
+token as the Secret above and register `type: "codex-pat"` with
+`secrets: {access_token: $ref}` in the command below. Select dedicated Codex;
+OpenShell keeps the real token outside the Harness. The [Driver reference](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+defines its permitted endpoints and authentication limits.
+
+Register an API-key Secret as an `openai` credential source:
 
 For an OpenAI-compatible service, set `OPENAI_BASE_URL` to its HTTPS `/v1`
 endpoint before creating the source. Codex requires Responses API compatibility,
@@ -134,14 +140,12 @@ JSON
 CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o json | jq -r .id)"
 ```
 
-The Configuration keeps `"sandbox": "read-only"`, but each deployed revision
-freezes `"sandbox": "danger-full-access"` and `"approvalsReviewer": "user"`. The
-OpenShell Sandbox Driver overrides these values for every dedicated Codex
-revision so that Codex's own sandbox does not run inside OpenShell's; OpenShell
-is the containment boundary. Codex's sandbox cannot start there, so keep
-`tools.exec` at its default or `mode: full`: other modes, including those the
-legacy `security` and `ask` fields select, make every shell command fail.
-`approvalPolicy` stays as configured.
+For PAT sources, the OpenShell Sandbox Driver freezes `"sandbox": "workspace-write"` and
+`"approvalsReviewer": "user"` for dedicated Codex revisions. `approvalPolicy`
+stays configured. Managed account requirements and OpenShell enforcement remain
+active; forbidden native settings fail closed. The pinned runtimes currently
+conflict on nested shell sandboxing, so model readiness alone does not qualify
+shell-tool execution.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:

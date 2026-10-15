@@ -732,6 +732,19 @@ export class TransientDependencyError extends Error {
   }
 }
 
+/**
+ * A Sandbox Driver's provider refused a Namespace step because the controller's own
+ * identity is unauthenticated or lacks a permission there. Retrying cannot help until an
+ * operator fixes that identity or grant, so Compute fails the Namespace step at once.
+ * The message names only the provider's refusal code, never provider text.
+ */
+export class SandboxNamespaceRefusedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SandboxNamespaceRefusedError";
+  }
+}
+
 /** A step of dedicated activation that completes by itself once a workload catches up. */
 export type ActivationPendingCode = "WORKSPACE_NODE_PENDING" | "WORKSPACE_NODE_BINDING_PENDING";
 

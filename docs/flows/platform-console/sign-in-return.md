@@ -1,0 +1,108 @@
+---
+created: 2026-10-15
+updated: 2026-10-15
+last_updated_session: authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3
+---
+
+# Console sign-in and destination recovery
+
+## Overview
+
+The console authenticates a browser session and restores a requested supported
+page when the user can still access it. Agent recovery resolves an opaque key
+only after session admission and ends at ordinary Agent detail.
+
+## Entry Points
+
+- `apps/controller/src/console/console.mjs:loadPage` checks the browser session.
+- `apps/controller/src/console/console.mjs:showLogin` offers available sign-in methods.
+- `apps/controller/src/console/navigation.mjs:createNavigation` validates page intents.
+
+## Flow
+
+```mermaid
+graph TD
+  A["Open console route or recovery link"] --> B["Check session"]
+  B -->|missing| C["Sign in"]
+  C --> D["Confirm session"]
+  B -->|present| D
+  D -->|page intent| E["Open console page"]
+  D -->|Agent key| F["Resolve authorized Agent"]
+  F -->|allowed| E
+  F -->|unavailable| G["Open Agents"]
+  E --> H["Authorize page reads"]
+```
+
+## Execution Trace
+
+### 1. Discover sign-in and bind the session
+
+`apps/controller/src/console/console.mjs:showLogin`, `loadPage`
+
+On a cold visit, `loadPage` leaves an empty status region while checking the
+session. It announces “Checking session…” only if still pending after 300 ms.
+The result can render immediately: sign-in for a missing session, the console
+for a confirmed session, or a retry if the check failed.
+
+`showLogin` reads `GET /api/auth/providers`; true `github`/`google` flags add their **Continue
+with** buttons, and discovery failure keeps password login. A true `oidc` flag adds a button
+labelled from `oidcSignIn.label` only when `oidcSignIn.authorizationUrl` is `https:`; its start
+URL must use that endpoint's origin and path, as GitHub's and Google's must use their fixed ones. `password: false`
+(recovery-only) hides the form behind **Recovery sign-in** and changes the
+provider-error advice from "use your password" to asking an administrator. Pending login disables
+all; generations reject late redirects. With `sessionBinding`, `loadPage`
+exchanges the button's stored `attemptId` once for its key. Tabs then send
+their pinned `x-occ-session-key`, so a replaced cookie yields login.
+When login interrupts a recognized console route, `navigation.mjs` records its
+page, validated Namespace ID, and recognized Agent version and tab without unrelated
+query parameters. Password
+sign-in carries that intent in the current view; external sign-in stores it in
+tab `sessionStorage` with the one-use attempt ID and a ten-minute limit. The
+console consumes it only after confirming that attempt and its session, and
+clears it on failure or logout. An expired or replaced active session does not
+carry its old route into a new sign-in, even after a failed session check. The
+login page accepts no return URL.
+
+A native Agent recovery link can supply a 32-character lowercase hexadecimal key
+in the console root fragment. `loadPage` removes the fragment before sign-in and
+retains it across a failed session check, and resolves it only after session
+confirmation with `GET /native-admin/return/:key`.
+A valid authorized response routes to ordinary Agent detail; failed or malformed
+responses open Agents. The [native Agent host](../agent-native-admin.md) redirects
+a qualifying chat navigation here. Opening native chat still requires a separate user action.
+`authError=<provider>` shows a generic, one-time error; with `authError=github`, an
+`authReason` of `membership` or `membership-unavailable` explains a GitHub
+[allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist)
+refusal instead. With any provider, `account-disabled` says the account is disabled and to ask
+an administrator to enable it; `provider-unavailable` and `unavailable` say to try again
+later. The
+[authentication flow](../local-password-authentication.md#3-construct-session-authentication)
+owns the server side.
+
+### 2. Authorize the destination
+
+`apps/controller/src/console/console.mjs:loadPage` checks the session and loads
+readable Namespaces before rendering the requested page. The Agent and Namespace
+reads use their usual authorization; an inaccessible resource remains unavailable.
+See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resource).
+
+## Debugging and Verification
+
+The focused cases in `tests/browser/console.test.mjs` exercise the console
+against controller sessions and resource reads. Their external provider exchange
+and recovery endpoint are modeled; they do not establish a deployed OAuth or
+native-gateway integration.
+
+## Related docs
+
+- [Parent console flow](../platform-console.md)
+- [External sign-in reference](../../reference/authentication/external-sign-in.md)
+
+## Manual Notes
+
+[keep this for the user to add notes. do not change between edits]
+
+## Changelog
+
+- 2026-10-15 20:27: Defer console or sign-in until the initial session is known. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
+- 2026-10-15 00:00: Move provider discovery and trace scoped sign-in destination recovery. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)

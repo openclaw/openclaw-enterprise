@@ -8,6 +8,7 @@ import {
   login,
   nativeValues,
   newPage,
+  persistedDeploymentError,
   trackSettledFetches,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -35,10 +36,7 @@ function deploymentBody(
   });
 }
 
-const authenticationFailure = {
-  code: "RUNTIME_AUTHENTICATION_FAILED",
-  message: "Deployment runtime credentials were rejected.",
-};
+const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -76,7 +74,7 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await activity.getByText("Recorded status: failed").waitFor();
   await record.getByText("Recorded outcome: failed").waitFor();
   await record
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${authenticationFailure.message}`)
     .waitFor();
   assert.equal(await record.getByText("No persisted startup failure.").count(), 0);
 });
@@ -171,6 +169,77 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await status.getByText("Revision cleanup completed for this version.").waitFor();
   await activity.getByText("Recorded status: failed").waitFor();
+});
+
+// A pending deployment is reread every few seconds and its summary usually stays the same.
+// Rewriting the summary cards and status line with the same text repainted them on every
+// poll (finding 1424); only the changed attempt details in Deployment activity may change.
+test("Deployment polls leave an unchanged summary and status line untouched", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Quiet polls", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Quiet Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let attempt = 1;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: revision.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "running",
+            error: null,
+            warnings: [],
+            progress: {
+              lastAttempt: {
+                at: `2026-09-30T12:00:0${attempt}.000Z`,
+                code: "REVISION_INCOMPLETE",
+                message: `Waiting for the runtime to become ready (attempt ${attempt}).`,
+              },
+              nextAttemptAt: null,
+            },
+          },
+          meta: { requestId: "req_test_quiet_polls" },
+        }),
+      }),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const activity = page.locator(".deployment-status");
+  await activity.getByText("Waiting for the runtime to become ready (attempt 1).").waitFor();
+  await page.getByText("v1 · In progress", { exact: true }).waitFor();
+  await page.evaluate(() => {
+    globalThis.summaryRewrites = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        globalThis.summaryRewrites.push(record.target.textContent);
+      }
+    });
+    for (const selector of [".agent-current-summary", ".agent-status-line"]) {
+      observer.observe(globalThis.document.querySelector(selector), {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+  });
+
+  // The poll renders the new attempt and the summary in the same pass.
+  attempt = 2;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await activity.getByText("Waiting for the runtime to become ready (attempt 2).").waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.summaryRewrites), []);
 });
 
 test("Deployment activity keeps following after Back restores the cached Agent view", async (t) => {
@@ -556,10 +625,15 @@ test("Agent detail reports a failed selected version as probably not serving", a
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const selected = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
   const { page } = await newPage(t, fixture);
-  await routeDeploymentStatus(page, fixture, namespace, agent, selected.revision, "failed", {
-    code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-    message: "Deployment runtime startup model check timed out.",
-  });
+  await routeDeploymentStatus(
+    page,
+    fixture,
+    namespace,
+    agent,
+    selected.revision,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
+  );
 
   const url = detailUrl(fixture, namespace.id, agent.id, selected.revision.id, "configuration");
   await login(page, fixture, url);
@@ -580,6 +654,8 @@ test("Agent detail reports a failed selected version as probably not serving", a
 // CLI, is not a rejected credential, so its next step points at the Configuration and the failed version's Logs, not at Credentials.
 // OpenClaw reports an unreachable provider (refused connection, DNS failure) as a timeout and
 // Codex as a failure, so each text names the harness it applies to.
+// The API's message carries the next step, so occ and HTTP clients get it too (finding 1393);
+// the console shows that message once and adds only the link to the page that holds the fix.
 test("Deployment activity guides a failed model check or an unauthorized gateway cli", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -587,63 +663,47 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
   const { page } = await newPage(t, fixture);
   const cases = [
     {
-      error: {
-        code: "RUNTIME_MODEL_PROBE_FAILED",
-        message: "Deployment runtime startup model check failed.",
-        data: {
-          runtimeFailure: {
-            component: "gateway",
-            check: "model-probe",
-            checkedAt: "2026-10-03T08:00:00.000Z",
-            code: "MODEL_PROBE_FAILED",
-            cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-          },
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "gateway",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
         },
-      },
-      guidance:
-        /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\./,
+      }),
+      nextStep:
+        /^The startup model check failed for a reason other than a rejected credential, .*, or, with Codex, a provider the runtime cannot reach\. .*and that the runtime can reach the provider, then deploy a new version\.$/,
       // The runtime's classified cause names why this check failed.
       cause:
         "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
     },
     {
       // A cause without its own text keeps the kind label and the detail token.
-      error: {
-        code: "RUNTIME_MODEL_PROBE_FAILED",
-        message: "Deployment runtime startup model check failed.",
-        data: {
-          runtimeFailure: {
-            component: "agent",
-            check: "model-probe",
-            checkedAt: "2026-10-03T08:00:00.000Z",
-            code: "MODEL_PROBE_FAILED",
-            cause: { kind: "PROBE_STATUS", detail: "error-event" },
-          },
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail: "error-event" },
         },
-      },
-      guidance: /^The startup model check failed for a reason other than a rejected credential, /,
+      }),
+      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
       cause: "The model provider check reported a failure (error-event)",
     },
     {
-      error: {
-        code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-        message: "Deployment runtime startup model check timed out.",
-      },
-      guidance:
-        /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\./,
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
+      nextStep:
+        /^The startup model check did not get a reply from the model provider in time\. With OpenClaw this includes a provider the runtime cannot reach \(refused connection or unknown host\)\..* then deploy a new version\.$/,
     },
     {
       // The Configuration holds the fix (Enable gateway password access), not Credentials.
-      error: {
-        code: "AGENT_GATEWAY_UNAUTHORIZED",
-        message:
-          "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
-      },
-      guidance:
-        /^The Agent Gateway refused its own in-Pod CLI, so the version never finished starting\. In the Configuration, select Enable gateway password access if it is not already enabled, save, then deploy a new version\./,
+      error: persistedDeploymentError("AGENT_GATEWAY_UNAUTHORIZED"),
+      nextStep: /\(Enable gateway password access\), then deploy again\.$/,
     },
   ];
-  for (const [index, { error, guidance, cause }] of cases.entries()) {
+  for (const [index, { error, nextStep, cause }] of cases.entries()) {
     const agent = await fixture.createAgent(namespace.id, `Agent ${index}`, nativeValues("v1"));
     const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     await routeDeploymentStatus(page, fixture, namespace, agent, revision, "failed", error);
@@ -655,8 +715,17 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       await page.goto(url.href);
     }
     const activity = page.locator(".deployment-status");
-    await activity.getByText(`${error.code}: ${error.message}`).waitFor();
-    await activity.locator(".deployment-failure-guidance").getByText(guidance).waitFor();
+    assert.match(error.message, nextStep);
+    await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
+    // The next step appears once, in the API's message; the hint holds only the link.
+    assert.equal(
+      await activity.locator(".deployment-failure-guidance").textContent(),
+      "Open Configuration",
+    );
+    assert.equal(
+      await activity.locator(".deployment-failure-guidance").getByRole("link").count(),
+      1,
+    );
     assert.equal(
       await activity.getByText("Cause", { exact: true }).count(),
       cause === undefined ? 0 : 1,
@@ -703,168 +772,97 @@ test("Agent detail keeps an embedded Agent's failed redeploy separate from servi
   assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
 });
 
-// The controller ends an older version's deployment work with REVISION_SUPERSEDED when a newer
-// version took over first. The API records that as failed, but the Agent serves the newer version,
-// so the console shows it as neutral (finding 1353). A reader who cannot read the newer version
-// learns nothing about it beyond what the Current version card already shows.
-test("Agent detail and list show a superseded deployment as neutral, not failed", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Superseded deploy", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Superseded Agent", nativeValues("v1"));
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const newer = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  denyRevisionRead(fixture, namespace, newer.revision);
-  const { page } = await newPage(t, fixture);
-  let error = {
-    code: "REVISION_SUPERSEDED",
-    message: "Deployment was superseded by a newer revision.",
-  };
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
-      }),
-  );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            revisionId: first.revision.id,
-            observedAt: "2026-10-14T16:00:01.000Z",
-            checks: [
-              {
-                component: "gateway",
-                check: "connectivity",
-                state: "unknown",
-                checkedAt: "2026-10-14T16:00:00.000Z",
-                code: "UNAVAILABLE",
-              },
-            ],
-          },
-          meta: { requestId: "req_test_superseded_diagnostics" },
-        }),
-      }),
-  );
-
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const row = page.getByRole("row").filter({ hasText: "Superseded Agent" });
-  await row.getByRole("link", { name: "v1 · superseded" }).waitFor();
-  await row.getByText("Superseded by a newer version.", { exact: true }).waitFor();
-  assert.equal(await row.getByText(/failed|Deployment was superseded/).count(), 0);
-
-  const url = detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration");
-  await page.goto(url.href);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  const summary = page.locator(".agent-current-summary");
-  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
-  await summary.getByText("Superseded by a newer version.", { exact: true }).waitFor();
-  await summary.getByText("Not verified", { exact: true }).waitFor();
-  const activity = page.locator(".deployment-status");
-  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "Superseded by a newer version before this one became current (REVISION_SUPERSEDED). This version did not fail; no action is needed.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-superseded").count(), 2);
-  await activity
-    .getByText("Deployment work stopped because a newer version superseded this one.", {
-      exact: true,
-    })
-    .waitFor();
-  await activity
-    .getByText("Not needed: this version did not become current.", { exact: true })
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await activity.getByRole("alert").count(), 0);
-  const record = page.locator(".version-deployment-record");
-  await record.getByText("Recorded outcome: superseded", { exact: true }).waitFor();
-  await record
-    .getByText(
-      /^Superseded by a newer version before this one became current \(REVISION_SUPERSEDED\)/,
-    )
-    .waitFor();
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-  // Nothing names the newer version, which this reader cannot read.
-  const outcome = page.locator(
-    ".agent-current-summary, .deployment-status, .version-deployment-record, .agent-status-line",
-  );
-  assert.equal(await outcome.getByText(/\bv2\b|failed|Live serving is unverified/i).count(), 0);
-  // Diagnostics do not ask the reader to resolve a superseded record first.
-  const observations = page.locator(".version-diagnostics");
-  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
-  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
-  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
-
-  // A real failure on the same record still renders as failed.
-  error = authenticationFailure;
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
-  await activity
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
-  assert.equal(await activity.locator(".deployment-step-superseded").count(), 0);
-  await page
-    .locator(".agent-status-line")
-    .getByText(
+// The API records a deployment ended by REVISION_SUPERSEDED (a newer version took over first,
+// finding 1353) or REVISION_STOPPED (its owner stopped the Agent, finding 1375) as failed, but the
+// version did not fail, so the console shows a neutral outcome. A reader who cannot read the newer
+// version learns nothing about it. A real failure on the same record still renders red, and so does
+// REPOSITORY_REVISION_STOPPED: the repository credential worker also records it when the Namespace
+// is not ready. Its REPOSITORY_REVISION_SUPERSEDED is neutral.
+const neutralDeployments = [
+  {
+    agent: "Superseded Agent",
+    outcome: "superseded",
+    error: {
+      code: "REVISION_SUPERSEDED",
+      message: "Deployment was superseded by a newer revision.",
+    },
+    note: "Superseded by a newer version.",
+    summaryNote: "Superseded by a newer version.",
+    explanation: (code) =>
+      `Superseded by a newer version before this one became current (${code}). This version did not fail; no action is needed.`,
+    stages: [
+      "Deployment work stopped because a newer version superseded this one.",
+      "Not needed: this version did not become current.",
+    ],
+    failure: authenticationFailure,
+    failedLine:
       /^v1 deployment is recorded as failed\. rev_.* is selected\. Live serving is unverified\.$/,
-    )
-    .waitFor();
+    alsoNeutral: "REPOSITORY_REVISION_SUPERSEDED",
+    newerHidden: true,
+  },
+  {
+    agent: "Stopped Agent",
+    outcome: "stopped",
+    error: {
+      code: "REVISION_STOPPED",
+      message: "Deployment ended because the Agent was stopped.",
+    },
+    note: "Stopped before it finished.",
+    summaryNote: "Stopped before it finished. Deploy a new version when you want it running.",
+    explanation: (code) =>
+      `The Agent was stopped before this deployment finished (${code}). This version did not fail; deploy a new version when you want it running.`,
+    stages: [
+      "Deployment work ended because the Agent was stopped.",
+      "Not recorded: the Agent was stopped first. Deploy a new version when you want it running.",
+    ],
+    failure: {
+      code: "REPOSITORY_REVISION_STOPPED",
+      message:
+        "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+    },
+    failedLine: /^v1 deployment failed\./,
+  },
+];
 
-  // The repository credential worker ends superseded work with its own code: neutral too.
-  error = {
-    code: "REPOSITORY_REVISION_SUPERSEDED",
-    message: "Deployment was superseded by a newer revision.",
-  };
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Superseded", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: superseded", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "Superseded by a newer version before this one became current (REPOSITORY_REVISION_SUPERSEDED). This version did not fail; no action is needed.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-});
-
-// An owner's Stop during a deployment ends that version's work with REVISION_STOPPED. The API
-// records it as failed, but the version did not fail, so the console shows a neutral Stopped
-// outcome that points at deploying again (finding 1375). REPOSITORY_REVISION_STOPPED stays a
-// failure: the repository credential worker also records it when the Namespace is not ready.
-test("Agent detail and list show a deployment stopped by its owner as neutral, not failed", async (t) => {
+test("Agent detail and list show superseded and stopped deployments as neutral, not failed", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Stopped deploy", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Stopped Agent", nativeValues("v1"));
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const namespace = await fixture.createNamespace("Neutral deploys", { ready: true });
   const { page } = await newPage(t, fixture);
-  let error = {
-    code: "REVISION_STOPPED",
-    message: "Deployment ended because the Agent was stopped.",
-  };
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`,
-    (route) =>
+  // Each Agent's recorded deployment error and detail page, by Agent name.
+  const errors = new Map();
+  const urls = new Map();
+  for (const c of neutralDeployments) {
+    const agent = await fixture.createAgent(namespace.id, c.agent, nativeValues("v1"));
+    const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    if (c.newerHidden) {
+      const newer = await fixture.seedActiveAgentRevision(
+        namespace.id,
+        agent.id,
+        first.revision.id,
+      );
+      denyRevisionRead(fixture, namespace, newer.revision);
+    }
+    errors.set(c.agent, c.error);
+    urls.set(
+      c.agent,
+      detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
+    );
+    const deployment = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}`;
+    await page.route(deployment, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: deploymentBody(namespace.id, agent.id, first.revision.id, "failed", error),
+        body: deploymentBody(
+          namespace.id,
+          agent.id,
+          first.revision.id,
+          "failed",
+          errors.get(c.agent),
+        ),
       }),
-  );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${first.revision.id}/diagnostics`,
-    (route) =>
+    );
+    await page.route(`${deployment}/diagnostics`, (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -882,66 +880,252 @@ test("Agent detail and list show a deployment stopped by its owner as neutral, n
               },
             ],
           },
-          meta: { requestId: "req_test_stopped_diagnostics" },
+          meta: { requestId: "req_test_neutral_diagnostics" },
         }),
       }),
-  );
+    );
+  }
 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const row = page.getByRole("row").filter({ hasText: "Stopped Agent" });
-  await row.getByRole("link", { name: "v1 · stopped" }).waitFor();
-  await row.getByText("Stopped before it finished.", { exact: true }).waitFor();
-  assert.equal(await row.getByText(/failed|Deployment ended/).count(), 0);
+  for (const c of neutralDeployments) {
+    const row = page.getByRole("row").filter({ hasText: c.agent });
+    await row.getByRole("link", { name: `v1 · ${c.outcome}` }).waitFor();
+    await row.getByText(c.note, { exact: true }).waitFor();
+    assert.equal(await row.getByText(/failed|Deployment (was|ended)/).count(), 0);
+  }
 
-  const url = detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration");
-  await page.goto(url.href);
-  await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const summary = page.locator(".agent-current-summary");
-  await summary.getByText("v1 · Stopped", { exact: true }).waitFor();
-  await summary
-    .getByText("Stopped before it finished. Deploy a new version when you want it running.", {
-      exact: true,
-    })
-    .waitFor();
   const activity = page.locator(".deployment-status");
-  await activity.getByText("Recorded status: stopped", { exact: true }).waitFor();
-  await activity
-    .getByText(
-      "The Agent was stopped before this deployment finished (REVISION_STOPPED). This version did not fail; deploy a new version when you want it running.",
-    )
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-stopped").count(), 2);
-  await activity
-    .getByText("Deployment work ended because the Agent was stopped.", { exact: true })
-    .waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
-  assert.equal(await activity.getByRole("alert").count(), 0);
   const record = page.locator(".version-deployment-record");
-  await record.getByText("Recorded outcome: stopped", { exact: true }).waitFor();
-  // The selected version was stopped, not broken: no failure banner, no "probably down".
-  assert.equal(await page.locator(".agent-status-line").isVisible(), false);
-  assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
+  const statusLine = page.locator(".agent-status-line");
   const outcome = page.locator(
     ".agent-current-summary, .deployment-status, .version-deployment-record",
   );
-  assert.equal(await outcome.getByText(/failed|check the recorded error/i).count(), 0);
-  const observations = page.locator(".version-diagnostics");
-  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
-  await observations.getByText(/Check this version's recorded outcome and its Logs tab/).waitFor();
-  assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
-
-  // The repository credential worker's stop code can mean the Namespace is not ready: still red.
-  error = {
-    code: "REPOSITORY_REVISION_STOPPED",
-    message: "Deployment ended because the Agent was stopped or its Namespace is no longer ready.",
+  const absent = /\bv2\b|failed|Live serving is unverified|check the recorded error/i;
+  // After a refresh from a failure, the hidden status line keeps its old text, so its text is
+  // checked only when the page first renders the neutral record.
+  const expectNeutral = async (c, code, checkStatusLineText = true) => {
+    const label = `${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}`;
+    await summary.getByText(`v1 · ${label}`, { exact: true }).waitFor();
+    await summary.getByText(c.summaryNote, { exact: true }).waitFor();
+    await summary.getByText("Not verified", { exact: true }).waitFor();
+    await activity.getByText(`Recorded status: ${c.outcome}`, { exact: true }).waitFor();
+    await activity.getByText(c.explanation(code)).waitFor();
+    for (const stage of c.stages) {
+      await activity.getByText(stage, { exact: true }).waitFor();
+    }
+    assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 2);
+    assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
+    assert.equal(await activity.getByRole("alert").count(), 0);
+    await record.getByText(`Recorded outcome: ${c.outcome}`, { exact: true }).waitFor();
+    await record.getByText(c.explanation(code), { exact: true }).waitFor();
+    // No failure banner, no "probably down", and nothing names the newer version, which this
+    // reader cannot read.
+    assert.equal(await statusLine.isVisible(), false);
+    assert.equal(await page.getByText("Probably down", { exact: true }).count(), 0);
+    assert.equal(await outcome.getByText(absent).count(), 0);
+    if (checkStatusLineText) {
+      assert.equal(await statusLine.getByText(absent).count(), 0);
+    }
   };
-  await activity.getByRole("button", { name: "Refresh deployment" }).click();
-  await summary.getByText("v1 · Failed", { exact: true }).waitFor();
-  await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
-  assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
-  assert.equal(await activity.locator(".deployment-step-stopped").count(), 0);
+  for (const c of neutralDeployments) {
+    await page.goto(urls.get(c.agent).href);
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await expectNeutral(c, c.error.code);
+    // Diagnostics do not ask the reader to resolve a neutral record first.
+    const observations = page.locator(".version-diagnostics");
+    await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+    await observations
+      .getByText(/Check this version's recorded outcome and its Logs tab/)
+      .waitFor();
+    assert.equal(await observations.getByText(/recorded deployment failed with/).count(), 0);
+
+    errors.set(c.agent, c.failure);
+    await activity.getByRole("button", { name: "Refresh deployment" }).click();
+    await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
+    await activity.getByText(`${c.failure.code}: ${c.failure.message}`).waitFor();
+    assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
+    assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 0);
+    await statusLine.getByText(c.failedLine).waitFor();
+
+    if (c.alsoNeutral) {
+      errors.set(c.agent, { ...c.error, code: c.alsoNeutral });
+      await activity.getByRole("button", { name: "Refresh deployment" }).click();
+      await expectNeutral(c, c.alsoNeutral, false);
+    }
+  }
+});
+
+test("Deployment activity appears once with its recorded status, not as an empty panel first", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Activity layout", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Layout Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let releaseStatus;
+  const statusHeld = new Promise((resolve) => {
+    releaseStatus = resolve;
+  });
+  let statusRequested;
+  const requested = new Promise((resolve) => {
+    statusRequested = resolve;
+  });
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    async (route) => {
+      statusRequested();
+      await statusHeld;
+      await route
+        .fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: deploymentBody(namespace.id, agent.id, revision.id, "running"),
+        })
+        .catch(() => {});
+    },
+  );
+  t.after(() => releaseStatus());
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  // The version list has loaded and the newest version's status read is held.
+  await summary.getByText("Reading recorded deployment status.").waitFor();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await requested;
+
+  // The loading placeholder stays: no empty panel (disabled Refreshing... and "has not
+  // loaded") pushes the sharing panel and version tabs down before the status arrives.
+  const activity = page.locator(".deployment-status");
+  assert.equal(await activity.count(), 1);
+  assert.equal(await activity.getByText("Loading the most recent visible deployment…").count(), 1);
+  assert.equal(await activity.getByText("Deployment status has not loaded.").count(), 0);
+  assert.equal(await activity.getByRole("button", { name: /Refresh/ }).count(), 0);
+
+  releaseStatus();
+  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByRole("button", { name: "Refresh deployment" }).waitFor();
+  await summary.getByText("Recorded status: running").waitFor();
+  assert.equal(await page.locator(".deployment-status").count(), 1);
+});
+
+test("Agent detail reads the selected version's deployment record once on load", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Single record read", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Single read Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let recordReads = 0;
+  let failFirst = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    (route) => {
+      recordReads += 1;
+      if (failFirst && recordReads === 1) {
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: "UNAVAILABLE", message: "Try again." } }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      });
+    },
+  );
+  await trackSettledFetches(page);
+  const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration");
+  await login(page, fixture, url);
+  const activity = page.locator(".deployment-status");
+  const record = page.locator(".version-deployment-record");
+  await activity.getByText("Recorded status: succeeded").waitFor();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  // Deployment activity and the version's record panel show the same record.
+  assert.equal(recordReads, 1);
+
+  // When the shared read fails, the version's record panel reads the record itself.
+  recordReads = 0;
+  failFirst = true;
+  await page.reload();
+  await activity.getByRole("alert").waitFor();
+  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(recordReads, 2);
+});
+
+test("Agent detail does not move shown sections when Deployment activity first settles", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Steady detail", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Steady detail Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  let releaseRecord;
+  const recordHeld = new Promise((resolve) => {
+    releaseRecord = resolve;
+  });
+  t.after(() => releaseRecord());
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    async (route) => {
+      await recordHeld;
+      await route
+        .fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+        })
+        .catch(() => {});
+    },
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Steady detail Agent" }).waitFor();
+  // A paused clock keeps the reveal waiting for the read instead of FIRST_ACTIVITY_WAIT_MS.
+  await page.clock.install();
+  await page.clock.pauseAt(new Date(Date.now() + 60_000));
+  await page.addInitScript(() => {
+    globalThis.__layoutShifts = [];
+    new globalThis.PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (!entry.hadRecentInput) {
+          globalThis.__layoutShifts.push({
+            value: entry.value,
+            sources: entry.sources.map((source) => source.node?.className ?? source.node?.nodeName),
+          });
+        }
+      }
+    }).observe({ type: "layout-shift", buffered: true });
+  });
+  // A full load, so no recent input excuses a shift.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
+  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  // The version's own reads finish while Deployment activity's first read is still held.
   await page
-    .locator(".agent-status-line")
-    .getByText(/^v1 deployment failed\./)
-    .waitFor();
+    .locator(".agent-version-heading", { hasText: "Version v1" })
+    .waitFor({ state: "attached" });
+  assert.equal(await page.locator(".agent-detail-pending").count(), 1);
+  assert.equal(await page.locator(".agent-version-layout").isVisible(), false);
+  // Paint what is shown, with its fonts. The load up to here (startup status, shell, summary)
+  // must not shift either; then measure the first read settling on its own.
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const loadShifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  const loadShift = loadShifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(loadShift < 0.01, `load shift ${loadShift}: ${JSON.stringify(loadShifts)}`);
+
+  releaseRecord();
+  await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
+  await page.locator(".agent-version-layout").waitFor();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const shifts = await page.evaluate(() => globalThis.__layoutShifts);
+  const shift = shifts.reduce((sum, entry) => sum + entry.value, 0);
+  assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
 });

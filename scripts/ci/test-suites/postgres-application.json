@@ -128,6 +128,7 @@
       "path": "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
       "expectedTests": [
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
+        "a stop admitted after the last running check waits for the claimed revision work, then stops the Agent",
         "Agent stop cleans a terminal candidate without an active revision",
         "Agent stop reauthorizes the recorded actor before Compute mutation",
         "Agent delete reauthorizes the recorded actor before Compute mutation",

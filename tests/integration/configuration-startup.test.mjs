@@ -1001,6 +1001,10 @@ test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localh
     "http://user@localhost:3000",
     "https://console.example.com",
     "ftp://127.0.0.1:3000",
+    // A bind-all address is not loopback, and "localhost" counts only as the whole last label.
+    "http://0.0.0.0:3000",
+    "https://console.notlocalhost",
+    "https://localhost.example.com",
   ];
   for (const value of refused) {
     assert.equal(isDevelopmentBrowserOrigin(value), false, value);
