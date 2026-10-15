@@ -589,6 +589,145 @@ test("native admin shared session configuration validates cookie scope and rejec
   }
 });
 
+test("a copied Agent chat link directs a browser to the configured console without granting access", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const context = await createNativeAdminFixture(t, { auditSink });
+  const status = await nativeStatus(context);
+  const host = nativeAuthority(status.data);
+  const navigation = {
+    host,
+    accept: "text/html,application/xhtml+xml",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+  };
+  const page = await injectJson(context.fixture, "GET", "/chat/main", {
+    headers: { ...navigation, "x-forwarded-host": "attacker.example.test" },
+  });
+  assert.equal(page.statusCode, 403);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.match(page.body, /Open the team console/);
+  const key = status.data.host.match(/^agent-([a-f0-9]{32})\./)[1];
+  assert.match(
+    page.body,
+    new RegExp(`href="https://console\\.oce\\.example\\.test/console/#native-agent=${key}"`),
+  );
+  assert.doesNotMatch(page.body, /attacker\.example\.test/);
+  assert.match(page.body, new RegExp(page.headers["x-request-id"]));
+  assert.equal(page.headers["set-cookie"], undefined);
+  const sessionSuffix = "a".repeat(32);
+  const sessionPage = await injectJson(
+    context.fixture,
+    "GET",
+    `/chat/main/${sessionSuffix}?private=omitted`,
+    { headers: navigation },
+  );
+  assert.equal(sessionPage.statusCode, 403);
+  assert.match(sessionPage.headers["content-type"], /^text\/html/);
+  assert.match(sessionPage.body, new RegExp(`/console/#native-agent=${key}`));
+  assert.doesNotMatch(sessionPage.body, new RegExp(`${sessionSuffix}|private=omitted`));
+  const inventedKey = "f".repeat(32);
+  const invented = await injectJson(context.fixture, "GET", "/chat/main", {
+    headers: {
+      ...navigation,
+      host: `agent-${inventedKey}.${nativeDomain}`,
+      "x-forwarded-host": "attacker.example.test",
+    },
+  });
+  assert.equal(invented.statusCode, 403);
+  assert.match(invented.body, new RegExp(`/console/#native-agent=${inventedKey}`));
+  assert.doesNotMatch(invented.body, /attacker\.example\.test/);
+
+  for (const [method, path, headers] of [
+    ["GET", "/chat/main", { host, accept: "application/json" }],
+    ["GET", "/chat/main", { ...navigation, "sec-fetch-dest": "iframe" }],
+    ["GET", "/chat/main", { ...navigation, "sec-fetch-mode": "cors" }],
+    ["GET", "/chat/main", { ...navigation, accept: "text/html;q=0,application/json" }],
+    ["GET", "/chat/main/not-a-session", navigation],
+    ["GET", "/settings", navigation],
+    ["POST", "/chat/main", navigation],
+  ]) {
+    const denied = await injectJson(context.fixture, method, path, { headers });
+    assert.equal(denied.statusCode, 403, `${method} ${path}`);
+    assert.match(denied.headers["content-type"], /^application\/json/);
+    assert.equal(denied.json().error.code, "FORBIDDEN");
+  }
+  const limited = await createReadOperateSession(context);
+  const unauthorized = await injectJson(context.fixture, "GET", "/chat/main", {
+    headers: { ...navigation, cookie: limited.cookie },
+  });
+  assert.equal(unauthorized.statusCode, 403);
+  assert.match(unauthorized.headers["content-type"], /^application\/json/);
+  const endpoint = `/native-admin/return/${key}`;
+  const found = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
+  });
+  assert.equal(found.statusCode, 200, found.body);
+  assert.deepEqual(found.json().data, {
+    namespaceId: context.namespace.id,
+    agentId: context.agent.id,
+  });
+  assert.equal(found.headers["cache-control"], "no-store");
+  const unknown = await injectJson(
+    context.fixture,
+    "GET",
+    `/native-admin/return/${"f".repeat(32)}`,
+    {
+      headers: { host: new URL(publicOrigin).host, cookie: limited.cookie },
+    },
+  );
+  const forbidden = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host, cookie: limited.cookie },
+  });
+  assert.equal(unknown.statusCode, 404, unknown.body);
+  assert.equal(forbidden.statusCode, 404, forbidden.body);
+  assert.deepEqual(unknown.json().error, forbidden.json().error);
+  assert.ok(
+    auditSink.events.some(
+      (event) =>
+        event.action === "openclaw.agents.native_admin.return.authorize" &&
+        event.requestId === forbidden.json().meta.requestId &&
+        event.outcome === "denied",
+    ),
+  );
+  const anonymous = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host },
+  });
+  assert.equal(anonymous.statusCode, 401, anonymous.body);
+  const invalid = await injectJson(context.fixture, "GET", "/native-admin/return/not-a-key", {
+    headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
+  });
+  assert.equal(invalid.statusCode, 404, invalid.body);
+  const forwarded = await injectJson(context.fixture, "GET", endpoint, {
+    headers: {
+      host: new URL(publicOrigin).host,
+      cookie: context.session.cookie,
+      "x-forwarded-host": "attacker.example.test",
+    },
+  });
+  assert.equal(forwarded.statusCode, 403);
+
+  // The detail page is the recovery destination even when no revision is serving.
+  const stopped = await context.fixture.request(
+    "POST",
+    `/namespaces/${context.namespace.id}/agents/${context.agent.id}/stop`,
+  );
+  assert.equal(stopped.status, 202);
+  await context.fixture.controller.transact((state) =>
+    state.agents.compareAndClearActiveRevision(
+      context.namespace.id,
+      context.agent.id,
+      context.revision.id,
+    ),
+  );
+  const stoppedReturn = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
+  });
+  assert.equal(stoppedReturn.statusCode, 200, stoppedReturn.body);
+  assert.deepEqual(stoppedReturn.json().data, found.json().data);
+  assert.equal(context.upstream.requests.length, 0);
+});
+
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
   const context = await createNativeAdminFixture(t);
   const status = await nativeStatus(context);

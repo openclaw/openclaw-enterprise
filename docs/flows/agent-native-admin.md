@@ -124,17 +124,7 @@ Native-host admission resolves the irreversible hash by checking existing Instal
 
 `apps/controller/src/auth/index.ts:createControllerAuth`
 
-When native admin is enabled, startup passes `nativeAdmin.sharedCookieDomain` to
-Better Auth as `OCC_AUTH_COOKIE_DOMAIN`, and Better Auth emits the ordinary OCE
-session cookie at that configured shared cookie parent domain. The controller
-validates that the console host and Agent host suffix fit that parent on
-DNS-label boundaries and rejects public suffixes, malformed domains, or values
-outside the parent. It does not infer a broader parent domain from the console
-or Agent hostname. When native admin is disabled, leftover shared-cookie-domain
-configuration is ignored and the console keeps the legacy host-only
-`openclaw_occ` cookie prefix and scope.
-
-A domain-scoped session cookie cannot use a host-only `__Host-` prefix. The controller keeps one canonical cookie name and scope so the browser does not choose between duplicate host-only and domain cookies during migration.
+When enabled, native admin passes the configured shared cookie domain to Better Auth. The controller validates that the console and Agent hosts fit that parent on DNS-label boundaries, rejecting public suffixes and malformed domains. It never infers a parent domain. When disabled, the console uses the host-only `openclaw_occ` cookie. A shared-domain cookie cannot use the `__Host-` prefix; one canonical name and scope prevents ambiguous duplicates.
 
 ### 6. OCC intercepts native-host HTTP requests
 
@@ -149,6 +139,8 @@ revalidates exact Agent `administer`, selects the current active revision, and
 validates native configuration support before proxying. Attributable IAM denials
 during proxy admission preserve an IAM denial audit for the human session and
 exact Agent instead of becoming unaudited dependency failures.
+
+For a top-level browser navigation to `/chat/main` or its 32-hex session path with an invalid session, the Agent host returns a `403` HTML page with the configured console link and the HTTP request ID. It carries the opaque host key in a fragment without an Agent lookup or session. The authenticated console return endpoint checks exact Agent access; unknown and unauthorized keys return `404`.
 
 Admission reads Better Auth once and returns the verified session metadata with
 the caller identity. The status and proxy paths reuse that result to check

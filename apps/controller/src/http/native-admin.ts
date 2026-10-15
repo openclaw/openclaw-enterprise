@@ -108,6 +108,14 @@ export const nativeAdminStatusOperation = {
   tags: ["Agents"],
   schema: {},
 } as unknown as OccApiRoute;
+export const nativeAdminReturnOperation = {
+  ...nativeAdminStatusOperation,
+  operationId: "resolveAgentNativeAdminReturn",
+  path: "/native-admin/return/:agentKey",
+  action: "openclaw.agents.native_admin.return",
+  summary: "Resolve an authorized Agent from a copied native chat link",
+} as unknown as OccApiRoute;
+
 const nativeAdminParamsSchema = {
   type: "object",
   additionalProperties: false,
@@ -162,6 +170,36 @@ export const nativeAdminStatusSchema = {
     503: { description: "Service Unavailable", ...nativeAdminErrorSchema },
   },
 } as FastifySchema;
+
+function acceptsHtml(accept: string | undefined): boolean {
+  return (accept ?? "").split(",").some((entry) => {
+    const [mediaType, ...parameters] = entry.trim().toLowerCase().split(";");
+    if (mediaType?.trim() !== "text/html") {
+      return false;
+    }
+    const quality = parameters
+      .map((parameter) => parameter.trim())
+      .find((parameter) => parameter.startsWith("q="));
+    return (
+      quality === undefined ||
+      (/^q=(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(quality) && Number(quality.slice(2)) > 0)
+    );
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      })[character]!,
+  );
+}
 
 /** Bounds the once-per-revision Compute-owner mismatch warnings kept in memory. */
 const MAX_LOGGED_COMPUTE_OWNER_MISMATCHES = 1024;
@@ -323,6 +361,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
 
   async function appendNativeAdminProxyDenialAudit(
     admission: NativeAdminProxyAdmission | undefined,
+    input: { readonly action?: string; readonly requestId?: string } = {},
   ): Promise<void> {
     if (
       admission === undefined ||
@@ -350,7 +389,8 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         },
         iamDriverId: selectedIAMDriver().id,
         authorization: { principalId: admission.actorId, ...admission.authorization },
-        action: "openclaw.agents.native_admin.proxy.authorize",
+        action: input.action ?? "openclaw.agents.native_admin.proxy.authorize",
+        ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
         resource: {
           kind: "agent",
           id: admission.agentId,
@@ -685,6 +725,78 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     return availability;
   }
 
+  async function resolveNativeAdminReturn(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<void> {
+    const context = getContext(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    requireNativeAdminHumanSession(request, context);
+    const missing = () =>
+      failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    const key = (request.params as { agentKey: string }).agentKey;
+    if (
+      !/^[0-9a-f]{32}$/.test(key) ||
+      options.nativeAdmin?.enabled !== true ||
+      nativeAdminDomain === undefined ||
+      publicOrigin === undefined ||
+      nativeAdminAuthority(request.headers.host) !== new URL(publicOrigin).host.toLowerCase()
+    ) {
+      throw missing();
+    }
+    const hostname = `agent-${key}.${nativeAdminDomain}`;
+    const agent = await resolveNativeAdminAgentHost(hostname);
+    if (!agent) {
+      throw missing();
+    }
+    try {
+      const controller = getController();
+      if (!controller) {
+        throw dependencyUnavailable();
+      }
+      const authorized = await controller.getAdministerableAgent(
+        context.actorId,
+        agent.namespaceId,
+        agent.id,
+      );
+      if (deriveNativeAdminHost(installationId, authorized, nativeAdminDomain) !== hostname) {
+        throw missing();
+      }
+    } catch (error) {
+      if (isDependencyUnavailable(error)) {
+        throw error;
+      }
+      if (isAuthorizationDenied(error)) {
+        await appendNativeAdminProxyDenialAudit(
+          nativeAdminProxyDenial("authorization_denied", {
+            actorId: context.actorId,
+            actorIssuer: context.issuer,
+            actorSubject: context.subject,
+            namespaceId: agent.namespaceId,
+            agentId: agent.id,
+            host: hostname,
+            actualAuthorizationDenied: true,
+            ...(error.evidence === undefined ? {} : { evidence: error.evidence }),
+            ...(error.authorization === undefined ? {} : { authorization: error.authorization }),
+          }),
+          { action: "openclaw.agents.native_admin.return.authorize", requestId: request.id },
+        );
+        throw missing();
+      }
+      const mapped = requestFailure(error);
+      if (mapped.status === 403 || mapped.status === 404) {
+        throw missing();
+      }
+      throw error;
+    }
+    reply.header("cache-control", "no-store").send({
+      data: { namespaceId: agent.namespaceId, agentId: agent.id },
+      meta: { requestId: request.id },
+    });
+  }
+
   async function getNativeAdminStatus(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const context = getContext(request);
     if (!context) {
@@ -881,6 +993,35 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         canonicalFailure(reply, dependencyUnavailable());
         return true;
       }
+      const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+      if (
+        agentKey !== undefined &&
+        hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
+        admission?.reason === "session_invalid" &&
+        options.nativeAdmin?.enabled === true &&
+        publicOrigin !== undefined &&
+        request.method === "GET" &&
+        /^\/chat\/main(?:\/[0-9a-f]{32})?$/.test(nativeAdminPathname(request.url)) &&
+        request.headers["sec-fetch-mode"] === "navigate" &&
+        request.headers["sec-fetch-dest"] === "document" &&
+        acceptsHtml(request.headers.accept)
+      ) {
+        reply
+          .header("cache-control", "no-store")
+          .header("content-type", "text/html; charset=utf-8")
+          .header("x-content-type-options", "nosniff")
+          .header("x-request-id", request.id)
+          .header("referrer-policy", "no-referrer")
+          .header(
+            "content-security-policy",
+            "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          )
+          .status(403)
+          .send(
+            `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Open the team console</title><style>body{font-family:system-ui,sans-serif;max-width:36rem;margin:10vh auto;padding:0 1.5rem;line-height:1.5;color:#1d2939}a{color:#155eef}</style></head><body><main><h1>Open the team console</h1><p>Open the team console to access this Agent.</p><p><a href="${escapeHtml(publicOrigin)}/console/#native-agent=${agentKey}">Open the team console</a></p><p>Request ID: ${escapeHtml(request.id)}</p></main></body></html>`,
+          );
+        return true;
+      }
       canonicalFailure(
         reply,
         admission === undefined
@@ -1004,5 +1145,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     nativeAdminSockets.clear();
     await drainNativeAdminCloseAudits();
   });
-  return { interceptHttp: interceptNativeAdminHttp, status: getNativeAdminStatus };
+  return {
+    interceptHttp: interceptNativeAdminHttp,
+    status: getNativeAdminStatus,
+    resolveReturn: resolveNativeAdminReturn,
+  };
 }

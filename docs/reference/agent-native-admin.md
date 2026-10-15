@@ -61,6 +61,8 @@ logs one `native_admin.compute_owner_mismatch` warning per revision and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 revision's Compute Driver again, with the same ID and implementation.
 
+When an unauthenticated browser opens a copied `/chat/main` Agent link or a link ending in a 32-character lowercase hexadecimal session segment, OCC returns a `403` page linking to the configured console. Open the console and select the Agent to launch its native admin UI. The link carries the opaque key from the Agent host in a URL fragment. After sign-in, the console can resolve that key through the authenticated `GET /native-admin/return/<key>` operation, which checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped, without creating a session or launch. The original session segment and query are not forwarded. Unknown and unauthorized keys receive the same `404`. The page's request ID identifies the HTTP request in controller logs; it does not identify the visitor or prove a later sign-in attempt belongs to the same person. Other Agent-host API requests and WebSocket admission retain their existing refusal behavior.
+
 ## Agent host identity
 
 OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.

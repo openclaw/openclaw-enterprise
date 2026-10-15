@@ -122,6 +122,7 @@ import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -3969,6 +3970,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.route({
+      method: "GET",
+      url: nativeAdminReturnOperation.path,
+      schema: { hide: true },
+      onRequest: async (request) => admit(request, nativeAdminReturnOperation),
+      preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      handler: nativeAdmin.resolveReturn,
+    });
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
