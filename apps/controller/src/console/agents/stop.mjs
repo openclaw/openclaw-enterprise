@@ -17,6 +17,8 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     needsRefresh: false,
     notice: "",
     error: null,
+    // Whether the version list loaded with no version this viewer can read; null until known.
+    noReadableVersions: null,
   };
 
   section.append(
@@ -79,7 +81,18 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
     repeat.disabled = state.pending || state.needsRefresh;
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
-    if (requested || state.needsRefresh) {
+    // An Agent created through the API starts stopped and has no version until its first
+    // deploy, so there is nothing to stop or to check (finding 1394). Only what this viewer
+    // can read decides it: a member who reads no version of a deployed Agent sees the same.
+    const neverStarted =
+      requested &&
+      !state.agent.activeRevisionId &&
+      state.noReadableVersions === true &&
+      !state.pending &&
+      !state.needsRefresh;
+    if (neverStarted) {
+      actions.replaceChildren();
+    } else if (requested || state.needsRefresh) {
       actions.replaceChildren(stop, ...(requested ? [repeat] : []), refresh);
     } else {
       actions.replaceChildren(stop);
@@ -272,6 +285,15 @@ export function createAgentStop(context, path, agent, onDeleting, onAgentChanged
   render();
   return {
     section,
+    // The detail page reports whether its version list loaded empty (true), loaded with
+    // versions (false), or failed (null).
+    setNoReadableVersions(value) {
+      if (state.noReadableVersions === value) {
+        return;
+      }
+      state.noReadableVersions = value;
+      render();
+    },
     updateAgent(next) {
       if (state.pending) {
         return;
