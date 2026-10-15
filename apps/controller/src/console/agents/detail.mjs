@@ -862,6 +862,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
+  // The Agent as last read; Stop and finished deployments update it in place.
+  let currentAgent = agent;
   let currentRuntimeState = agent.desiredRuntimeState;
   let visibleRevisions = [];
   // True once the readable version list loaded; until then nothing counts as hidden.
@@ -1348,8 +1350,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
     currentRuntimeState = freshAgent.desiredRuntimeState;
+    currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
+      // Cached tabs show the old current version; the next visit rebuilds them.
+      retainedTabs.clear();
       // Native admin access depends on the serving version, so a finished deployment rereads it.
       nativeAdmin.refresh();
     }
@@ -2178,7 +2183,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
-      content.append(renderWorkspaceFiles(tabContext, agent, path));
+      content.append(renderWorkspaceFiles(tabContext, currentAgent, path));
       state.loading = false;
       content.style.minHeight = "";
       return;

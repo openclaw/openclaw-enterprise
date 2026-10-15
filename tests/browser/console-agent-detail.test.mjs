@@ -2294,6 +2294,16 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
     .waitFor();
   assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(), "Refresh stop status");
+  // The viewed version is no longer current, and tabs built from the old state are rebuilt.
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  assert.equal(
+    await page.locator('.revision-selector [aria-label$=", current version"]').count(),
+    0,
+  );
+  await page.getByRole("button", { name: "Workspace files" }).click();
+  await page
+    .getByText("Workspace files require a deployed Agent with a current version", { exact: false })
+    .waitFor();
 });
 
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
