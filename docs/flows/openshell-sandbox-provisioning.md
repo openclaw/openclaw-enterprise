@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-15
-last_updated_session: authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -96,7 +96,9 @@ Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects
 Kubernetes-only. Before state creation, Kubernetes-only rejects API-port
 collisions and records engine, cluster, namespace, port and key destination.
 Both verify the pinned archive, package charts and import digest-pinned
-Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
+Gateway/Sandbox/supervisor images.
+`internal/occdev/openshell_assets.go:openShellCharts` normalizes `+` to `_`
+only in Helm `appVersion` labels; chart versions and image digests stay pinned. Kubernetes-only builds or selects controller/runtime images, imports them
 with PostgreSQL and resolves in-cluster digests.
 
 Both import OCE images before OpenShell Sandbox/supervisor images, then install
@@ -164,8 +166,7 @@ the pinned API cannot preserve the exact Agent ServiceAccount/token.
 For `credential_source`, Compute renders the catalog login mode without a model
 Secret and passes revision and `attachForRevision` provider names through
 `requirements.credentialAttachments`. For `chatgptAuthTokens`, OpenShell omits
-static `CODEX_ACCESS_TOKEN`, retaining account metadata: only the provider injects
-scoped aliases. Codex receives only `APP_TOKEN_SHA` from its exact Agent transport
+static `CODEX_ACCESS_TOKEN`, retaining account metadata. Codex receives only `APP_TOKEN_SHA` from its exact Agent transport
 Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
 `config.toml` workload files, removing their ConfigMap environment paths.
 
@@ -179,9 +180,9 @@ PAT bootstrap (`prepareHarnessAuth`;
 writes an opaque placeholder to private `auth.json`, clears the child override,
 and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 admit bootstrap/model traffic; failure keeps revisions inactive.
-For API-key sources, the profile binds credentials to immutable `config.base_url`
-plus `/**`, defaulting to OpenAI `/v1`. Shared [registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
-rejects invalid endpoints. Prefixes such as `/api/v1` are preserved.
+API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
+preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
+rejects invalid endpoints.
 `attachForRevision` rejects custom endpoints for native OpenClaw. For Codex,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexConfigurationToml`
 selects a named provider and HTTPS Responses transport.
@@ -295,10 +296,9 @@ process-group signaling returns `EPERM`.
 Compute verifies revision ownership. With `harnessEndpoint`, it replaces the
 initial fail-closed target with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
 and the owned k3d profile's exact host alias.
-`gatewayConfigurationDocument` renders dedicated Codex's Gateway defaults and
-main workspace as `/home/node/workspace`. The admitted Harness workspace stays
-on its Sandbox mount. Codex maps the Gateway's local path through
-`remoteWorkspaceRoot`; the Gateway does not mount Harness storage.
+`gatewayConfigurationDocument` sets the dedicated Codex Gateway workspace to
+`/home/node/workspace`. Codex maps that path through `remoteWorkspaceRoot` to the
+admitted Sandbox workspace; the Gateway does not mount Harness storage.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayNativeHookRelayConfiguration`
 derives private storage from Sandbox `harnessHome`; Compute owns relay URL/auth.
 Egress permits only the provider peer/port; the direct Agent Service stays
@@ -350,6 +350,8 @@ networking. Native OpenClaw remains verification-only.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 23:19: Normalize Helm `appVersion` labels. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 5e5473f0631a4eb17c4497795a4dd850d244de4c)
 
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 

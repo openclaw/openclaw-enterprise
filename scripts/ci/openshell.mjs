@@ -223,6 +223,8 @@ function escapeRegExp(value) {
 }
 
 async function acquireOpenShellCharts(execFile, helm, directory) {
+  // Upstream charts copy appVersion into Kubernetes labels.
+  const appVersion = openShellVersion.replaceAll("+", "_");
   const chartDirectory = join(directory, "chart");
   const chartPath = join(chartDirectory, openShellChartArchive);
   const workspaceChartPath = join(chartDirectory, openShellWorkspaceChartArchive);
@@ -251,7 +253,7 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
     "--version",
     openShellVersion,
     "--app-version",
-    openShellVersion,
+    appVersion,
     "--destination",
     chartDirectory,
   ]);
@@ -261,7 +263,7 @@ async function acquireOpenShellCharts(execFile, helm, directory) {
     "--version",
     openShellVersion,
     "--app-version",
-    openShellVersion,
+    appVersion,
     "--destination",
     chartDirectory,
   ]);

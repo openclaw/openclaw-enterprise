@@ -65,10 +65,12 @@ func (r *runner) openShellCharts(ctx context.Context, root string) (string, stri
 	if err := os.Mkdir(packageDirectory, 0700); err != nil {
 		return "", "", err
 	}
+	// Upstream charts copy appVersion into Kubernetes labels.
+	appVersion := strings.ReplaceAll(openShellVersion, "+", "_")
 	charts := make([]string, 0, 2)
 	for _, name := range []string{"openshell", "openshell-workspace"} {
 		chartDirectory := filepath.Join(sourceRoot, filepath.FromSlash(prefix), name)
-		output, err := r.output(ctx, "helm", "package", chartDirectory, "--version", openShellVersion, "--app-version", openShellVersion, "--destination", packageDirectory)
+		output, err := r.output(ctx, "helm", "package", chartDirectory, "--version", openShellVersion, "--app-version", appVersion, "--destination", packageDirectory)
 		if err != nil {
 			return "", "", err
 		}

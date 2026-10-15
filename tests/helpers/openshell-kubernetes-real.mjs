@@ -244,8 +244,8 @@ function assertRenderedOpenShellImages({
   const expectedSupervisorImage = renderedOpenShellImage(supervisorImage);
   assert.equal(
     statefulSet.metadata?.labels?.["app.kubernetes.io/version"],
-    defaultTag,
-    "OpenShell gateway StatefulSet must retain the pinned chart application version.",
+    defaultTag.replaceAll("+", "_"),
+    "OpenShell gateway StatefulSet must retain the pinned chart version as a Kubernetes label.",
   );
   assert.equal(
     statefulSet.spec?.template?.spec?.containers?.find(({ name }) => name === "openshell-gateway")
