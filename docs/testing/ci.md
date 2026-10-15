@@ -6,17 +6,17 @@ Configure GitHub Actions variables, secrets, environments, and local runner over
 
 ## Checks and gates
 
-| Checks                                                                                                                                                       | When they run                                                             | Blocks merge               | Blocks publication                                                            | Blocks deployment                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------- | --------------------------------------- |
-| [Selected CI suites, including integration tests](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                  | PRs, pushes to `main`, merge groups, manual CI                            | Yes, through `CI Required` | Container and CLI releases require successful exact-source main-push CI       | No automatic Agent/platform gate        |
-| [First Agent Smoke](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                                                | Full CI mode; install, chat, stop, restart with a stand-in model provider | No; outside `CI Required`  | Yes, for container and CLI releases: the entire main-push CI run must succeed | No automatic Agent/platform gate        |
-| [QA advisory: Codex model/UI and Calendar, OpenShell, local installation](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml) | Every same-repository PR except Dependabot; manual dispatch               | No                         | No                                                                            | No                                      |
-| [Full Integration](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)                                                   | Manual dispatch                                                           | No                         | No                                                                            | No                                      |
-| [Native controller/runtime image checks on AMD64 and ARM64](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-check.yml)           | Container preparation or manual image checks                              | No                         | Yes, for container publication                                                | No automatic Agent/platform gate        |
-| [Documentation deployment build](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                                           | Every `main` push or manual Pages dispatch on `main`                      | No                         | No                                                                            | Yes, for that documentation update only |
+| Checks                                                                                                                                                       | When they run                                                         | Blocks merge               | Blocks publication                                                            | Blocks deployment                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------- | -------------------------- | ----------------------------------------------------------------------------- | --------------------------------------- |
+| [Selected CI suites, including integration tests](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                  | PRs, pushes to `main`, merge groups, manual CI                        | Yes, through `CI Required` | Container and CLI releases require successful exact-source main-push CI       | No automatic Agent/platform gate        |
+| [First Agent Smoke](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                                                | Code/configuration PRs, pushes to `main`, merge groups, and manual CI | No; outside `CI Required`  | Yes, for container and CLI releases: the entire main-push CI run must succeed | No automatic Agent/platform gate        |
+| [QA advisory: Codex model/UI and Calendar, OpenShell, local installation](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml) | Every same-repository PR except Dependabot; manual dispatch           | No                         | No                                                                            | No                                      |
+| [Full Integration](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)                                                   | Manual dispatch                                                       | No                         | No                                                                            | No                                      |
+| [Native controller/runtime image checks on AMD64 and ARM64](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-check.yml)           | Container preparation or manual image checks                          | No                         | Yes, for container publication                                                | No automatic Agent/platform gate        |
+| [Documentation deployment build](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                                           | Every `main` push or manual Pages dispatch on `main`                  | No                         | No                                                                            | Yes, for that documentation update only |
 
 Docs-only PRs run static checks without product tests. Test-only PRs select
-affected CI suites; other changes and main pushes run full CI. QA advisory and
+affected CI suites; other changes and main pushes run all ordinary CI test lanes. QA advisory and
 Full Integration are separate workflows, not prerequisites for publication.
 
 `CI Required` is the required status check on `main`; branch rules can change.
@@ -169,7 +169,7 @@ verifies imported image references on every node and fails on import timeout.
 
 ## GitHub Actions
 
-[CI](../../.github/workflows/ci.yml) checks selected lanes and their results at the same source commit. Unverifiable selection evidence uses full CI. See [checks and gates](#checks-and-gates) for triggers and blocking failures, and the [CI flow](../flows/github-actions-testing.md) for selection and result accounting.
+[CI](../../.github/workflows/ci.yml) checks selected lanes and their results at the same source commit. If CI cannot safely identify the affected tests, it runs all ordinary CI test lanes. See [checks and gates](#checks-and-gates) for triggers and blocking failures, and the [CI flow](../flows/github-actions-testing.md) for selection and result accounting.
 
 The [suite index](../../scripts/ci/test-suites.json) and its lane files define test ownership, inputs, and resources. Check ownership with:
 
@@ -181,7 +181,17 @@ Static checks include workspace, lint, format, OpenAPI, and docs checks. `pnpm d
 
 ## First Agent smoke
 
-The non-required `First Agent Smoke` runs in full CI mode, without secrets. It installs Local Setup and deploys, chats with, stops, and restarts embedded OpenClaw and dedicated Codex Agents. Its stand-in provider proves the request path, not compatibility with a real model provider. The job summary has phase timings; failure logs include Agent and cluster diagnostics.
+`First Agent Smoke` runs automatically on PRs that change application code or
+configuration, pushes to `main`, merge groups, and manual CI runs. It skips
+docs-only PRs and recognized test-only PRs. It also runs when CI cannot safely
+identify the affected tests.
+
+The test installs Local Setup, deploys embedded OpenClaw and dedicated Codex
+Agents, checks chat, stops and restarts them, and checks chat again. It uses a
+simulated model service without provider credentials. It does not verify a real
+model provider. The job summary has phase timings; failure logs include Agent
+and cluster diagnostics. Its failure is outside `CI Required`; see
+[checks and gates](#checks-and-gates).
 
 On a disposable Linux host with Docker, k3d, kubectl, Helm, Go, and enforced NetworkPolicies:
 
