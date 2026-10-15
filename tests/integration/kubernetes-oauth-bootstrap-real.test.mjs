@@ -106,7 +106,7 @@ test(
     );
     const workerEvents = [];
     const fixture = await createProvisioningApiFixture(context, driver, controller.authentication, {
-      emit: (event) => workerEvents.push(event),
+      emit: (event) => workerEvents.push({ ...event, at: Date.now() }),
     });
     context.after(() =>
       deleteNamespaces(...fixture.bootstrapNamespaceIds.map(kubernetesNamespaceName)),
@@ -327,6 +327,36 @@ test(
     // bootstrap's removal, before this poll sees it. Only a failure while the source
     // is unconsumed refutes the handoff. The status is read first: a failed deployment
     // runs no further pass, so a source still unconsumed after it stays unconsumed.
+    // PROBE (temporary, removed before landing): inject the flaking order. The worker
+    // finishes the handoff and exhausts its attempts before the first poll runs.
+    const probeStarted = Date.now();
+    await waitFor(
+      "probe: first deployment fails by itself after the handoff",
+      async () =>
+        (await fixture.request("GET", `${agentPath}/deployments/${first.id}`)).data.status ===
+        "failed",
+      90_000,
+    );
+    const probeFailedAfterMs = Date.now() - probeStarted;
+    const probeDeployment = (await fixture.request("GET", `${agentPath}/deployments/${first.id}`))
+      .body;
+    // The pre-fix predicate rejects here, as in main run 38800258244.
+    await assert.rejects(async () => {
+      const status = await fixture.request("GET", `${agentPath}/deployments/${first.id}`);
+      assert.notEqual(status.data.status, "failed", "pre-fix predicate");
+    }, /pre-fix predicate/);
+    const probeEvidence = {
+      consumed:
+        (await sourceObject(source))?.metadata.annotations?.["openclaw.dev/oauth-phase"] ===
+        "consumed",
+      complete: jobFor(first, "Complete") !== undefined,
+      jobMissing: await missing("job", jobFor(first, "Complete")?.metadata.name ?? "x", placement),
+      secretMissing: await missing(
+        "secret",
+        jobFor(first, "Complete")?.metadata.name ?? "x",
+        placement,
+      ),
+    };
     const prepareFailures = () =>
       workerEvents.filter(({ event }) => event === "worker.compute-prepare-failed");
     await waitFor("Job completion and source consumption before native startup", async () => {
@@ -605,5 +635,29 @@ test(
     assert.deepEqual(recovered.data.error.data.preparation, evidence);
     assert.equal(recovered.data.cleanup.status, "succeeded");
     await fixture.stopWorker();
+    // PROBE (temporary): report the injected run's evidence through a deliberate failure.
+    assert.fail(
+      `PROBE ${JSON.stringify({
+        probeFailedAfterMs,
+        probeEvidence,
+        error: probeDeployment?.data?.error?.code,
+        events: workerEvents
+          .filter(
+            (event) =>
+              event.revisionId === first.id || String(event.workId ?? "").includes(first.id),
+          )
+          .map(({ event, attempt, outcome, code, step, status, errorClass, message, at }) => ({
+            event,
+            attempt,
+            outcome,
+            code,
+            step,
+            status,
+            errorClass,
+            message: typeof message === "string" ? message.slice(0, 160) : undefined,
+            t: at - probeStarted,
+          })),
+      })}`,
+    );
   },
 );
