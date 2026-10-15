@@ -374,7 +374,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
-    const refresh = button("Refresh", () => void loadPage());
+    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
     refresh.disabled = true;
     const header = element(
       "header",
