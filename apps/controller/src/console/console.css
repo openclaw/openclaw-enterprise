@@ -152,9 +152,13 @@ p {
   color: var(--muted);
   text-align: center;
   /* A load that settles within the loading delay never flashes its status (finding 1444). */
-  animation: startup-delay 250ms;
+  animation: loading-delay 250ms;
 }
-@keyframes startup-delay {
+/* Loading text that appears only if its read outlasts 250 ms (findings 1444, 1449). */
+.delayed-status {
+  animation: loading-delay 250ms;
+}
+@keyframes loading-delay {
   from,
   to {
     visibility: hidden;

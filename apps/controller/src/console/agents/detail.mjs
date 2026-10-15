@@ -856,7 +856,8 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
 export async function renderAgentDetail(context, { agent: preloadedAgent = null } = {}) {
   const { view, namespaceId, agentId, request, url } = context;
   const path = `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`;
-  const agent = preloadedAgent ?? (await request(path));
+  // Saving the authentication source replaces it with the saved Agent (finding 1445).
+  let agent = preloadedAgent ?? (await request(path));
   if (!context.isCurrent()) {
     return;
   }
@@ -1149,8 +1150,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   });
   let details;
+  // The details read that has settled, so a tab rebuilt from it shows no loading text.
+  let settledDetails = null;
   const retainedTabs = new Map();
   let mountedTab = null;
+  // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
+  let savedNotice = "";
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
@@ -1211,7 +1216,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ),
       element(
         "h2",
-        {},
+        // A read that settles within 250 ms never shows its loading text (finding 1449).
+        selected !== "draft" && !snapshot && !detailLoadFinished
+          ? { className: "delayed-status" }
+          : {},
         selected === "draft"
           ? "Create new version"
           : snapshot
@@ -2134,7 +2142,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       deployStatus,
       deployFeedback,
     );
-    detailPane.insertBefore(draftActions, tabs);
+    // A draft refreshed in place swaps its actions in one step (finding 1445).
+    const shownActions = detailPane.querySelector(":scope > .agent-draft-actions");
+    if (shownActions) {
+      shownActions.replaceWith(draftActions);
+    } else {
+      detailPane.insertBefore(draftActions, tabs);
+    }
     return {
       get snapshot() {
         return snapshot;
@@ -2194,6 +2208,50 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         updateDeployControls();
       },
     };
+  }
+
+  // A saved draft refreshes in place: one read of its Configuration rebuilds the draft's state
+  // and the shown tab, keeping the reader's place. Re-navigating to the same URL collapsed the
+  // page to its summary, made about 12 reads, scrolled to the top and dropped focus with no
+  // saved message (finding 1445). `focus` names the button that takes focus afterwards.
+  async function refreshDraftInPlace({ agent: freshAgent = null, saved = "", focus = null } = {}) {
+    if (freshAgent) {
+      agent = freshAgent;
+      updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
+    }
+    const next = loadDetails();
+    const data = await next;
+    if (!context.isCurrent() || deleting || !data) {
+      return;
+    }
+    settledDetails = next;
+    if (data.error) {
+      detailPane.querySelector(":scope > .agent-draft-actions")?.remove();
+    }
+    details = next;
+    // The rebuilt editors start clean; nothing is saving any more.
+    draftEditorNavigationBlock = null;
+    authenticationSaveState = "idle";
+    // Tabs built from the previous draft state would drive its replaced controls.
+    retainedTabs.clear();
+    if (mountedTab) {
+      mountedTab.reusable = false;
+    }
+    savedNotice = saved;
+    try {
+      await renderTab();
+    } finally {
+      savedNotice = "";
+    }
+    updateNavigationControls();
+    if (!context.isCurrent()) {
+      return;
+    }
+    const control = [...content.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === focus && !candidate.disabled,
+    );
+    // Focus scrolls only if the control left the viewport.
+    (control ?? tabControls.get(selectedTab)).focus();
   }
 
   async function renderTab() {
@@ -2282,8 +2340,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       return;
     }
-    content.append(element("p", { role: "status" }, "Loading configuration…"));
-    const data = await (details ??= loadDetails());
+    const pendingDetails = (details ??= loadDetails());
+    if (pendingDetails !== settledDetails) {
+      // Shown only if the read outlasts 250 ms (finding 1449).
+      content.append(
+        element("p", { role: "status", className: "delayed-status" }, "Loading configuration…"),
+      );
+    }
+    const data = await pendingDetails;
+    settledDetails = pendingDetails;
     if (!tabContext.isCurrent() || deleting) {
       return;
     }
@@ -2464,17 +2529,31 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           onChange: () => syncUnsavedAuthentication(),
         },
       );
-      const feedback = element("p", { role: "status", className: "hint" });
+      const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
       const save = element(
         "button",
         { type: "submit", className: "primary" },
         "Save authentication source",
       );
-      const reload = button("Reload authentication source", () => {
+      const reload = button("Reload authentication source", async () => {
         context.drafts.forget("authentication");
-        data.setAuthenticationSaveState("idle");
-        data.setAuthenticationPending(false);
-        context.navigate(target("draft", "credentials"), namespaceId, true);
+        reload.disabled = true;
+        save.disabled = true;
+        let fresh;
+        try {
+          fresh = await request(path);
+        } catch {
+          if (context.isCurrent()) {
+            data.setAuthenticationSaveState("idle");
+            data.setAuthenticationPending(false);
+            context.navigate(target("draft", "credentials"), namespaceId, true);
+          }
+          return;
+        }
+        if (context.isCurrent()) {
+          // Rebuild in place; focus stays on Reload (finding 1446).
+          await refreshDraftInPlace({ agent: fresh, focus: "Reload authentication source" });
+        }
       });
       const form = element(
         "form",
@@ -2558,6 +2637,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             return;
           }
           assertReadableConfiguration(current);
+          // The Agent as saved: this PATCH's response, or the fresh read on a retry.
+          let savedAgent = current;
           const expected = savedAuthentication ?? baseline;
           if (
             current.configurationId !== expected.configurationId ||
@@ -2574,17 +2655,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               method: "PATCH",
               body: { configurationId: agent.configurationId, harnessAuth },
             });
+            savedAgent = savedAuthentication;
             details = null;
           }
           if (harnessAuth?.source?.kind === "secret") {
             feedback.textContent = "Authentication saved. Checking Secret access…";
             await ensureSecretOperateBinding(context, current, harnessAuth.source);
           }
-          data.setAuthenticationPending(false);
           if (context.isCurrent()) {
-            data.setAuthenticationSaveState("idle");
             context.drafts.forget("authentication");
-            change("draft", "credentials");
+            await refreshDraftInPlace({
+              agent: savedAgent,
+              saved: "Authentication source saved.",
+              focus: "Save authentication source",
+            });
           }
         } catch (error) {
           if (!context.isCurrent()) {
@@ -2821,7 +2905,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         : undefined,
     );
-    const feedback = element("p", { className: "hint", role: "status" });
+    const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     let feedbackLocked = false;
     const edit = button("Edit Configuration", () => {
       editing = true;
@@ -2876,6 +2960,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         reloadRequired: false,
       });
       render();
+      // Cancel leaves with the editor; its replacement control keeps focus (finding 1446).
+      edit.focus();
     });
     const reload = button("Reload draft", () => {
       context.drafts.forget("configuration");
@@ -3000,7 +3086,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         );
         if (context.isCurrent()) {
           context.drafts.forget("configuration");
-          context.navigate(target("draft", "configuration"), namespaceId, true);
+          await refreshDraftInPlace({
+            saved: "Configuration saved.",
+            focus: "Edit Configuration",
+          });
         }
       } catch (error) {
         if (!context.isCurrent()) {
@@ -3041,6 +3130,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             usesGeneratedGatewayPassword ? null : enableGatewayPassword,
           ),
           nativeDocument(values, "View native Configuration"),
+          feedback.textContent ? feedback : null,
         );
         return;
       }
