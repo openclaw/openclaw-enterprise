@@ -175,6 +175,7 @@ const safeRuntimeImageStockBrokerStages = new Set([
   "config-patch",
   "fixture-reachability",
   "initialize",
+  "bundled-system-skill",
   "proxy-env",
   "broker-denial",
   "outside-home-read",

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-10-15
+last_updated_session: authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169
 ---
 
 # Agent Plugin Deployment Flow
@@ -241,21 +241,17 @@ authentication. Transport loss, timeouts, signals, malformed responses,
 discovery failures, and policy failures retain ordinary startup failure
 behavior. Provider-owned Harnesses keep their existing startup path.
 
-After verification, runtime exposes private startup status. Kubernetes Compute
-caps every runtime-status response body at 65,536 bytes while streaming, cancels overflow,
-and fails without retry: `Runtime status returned oversized data.` In-limit
-404/503 mean not serving; oversized 404/503 fail. Readiness validates
-workload, revision, startup instance, selection keys, and warning codes; restart
-recomputes status.
-Docker Codex healthchecks fail immediately when a plugin or runtime status
-response is interrupted after its headers. Plugin-status failures retain the
-transport code; interrupted status enrichment preserves the original reason.
+Kubernetes Compute streams private startup status with a 65,536-byte limit.
+Overflow cancels the response without retry, even for a 404/503; within the limit
+those codes mean not serving. Readiness verifies workload, revision, startup
+instance, selection keys and warnings. Docker Codex healthchecks fail on
+interrupted status bodies, preserving the transport code or original reason.
 
-Dedicated Codex runs separately and receives runtime-binary reads even without
-plugins. Startup symlinks
-`/home/node/.openclaw/plugin-skills` to
-`/home/node/openclaw-runtime-assets/plugin-skills`, preserving relative files
-without gateway state/credentials.
+With an enabled tool proxy, dedicated Codex can read its bundled skills at
+`/home/node/.codex/skills/.system`, including without a repository broker. The
+profile does not expose neighboring credentials. Startup
+links `/home/node/.openclaw/plugin-skills` to
+`/home/node/openclaw-runtime-assets/plugin-skills` without exposing gateway state.
 
 Gateway blocks failed bridge selections before serving and prevents retry during
 turns. It refreshes effective configuration when Agent startup changes; untrusted
@@ -351,6 +347,8 @@ deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 04:39: Grant read-only access to bundled Codex system skills. (authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169 - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
 
 - 2026-10-14 12:23: Document runtime-status streaming limits and oversized error responses. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

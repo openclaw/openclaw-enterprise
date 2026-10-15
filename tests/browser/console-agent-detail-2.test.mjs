@@ -3267,6 +3267,32 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(after.data.activeRevisionId, active.revision.id);
   assert.equal(after.data.desiredRuntimeState, "stopped");
   assert.equal(after.data.configurationId, agent.configurationId);
+  // Hold the real status read so focus can move before the Console handles its response.
+  const refresh = page.getByRole("button", { name: "Refresh stop status" });
+  const agentsLink = page.getByRole("link", { name: "← Agents", exact: true });
+  for (const expectedFocus of [refresh, agentsLink]) {
+    const held = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    await page.route(
+      `${fixture.origin}${path}`,
+      async (route) => {
+        const response = await route.fetch();
+        held.resolve(response.status());
+        await release.promise;
+        await route.fulfill({ response });
+      },
+      { times: 1 },
+    );
+    await refresh.press("Enter");
+    const status = await held.promise;
+    if (expectedFocus === agentsLink) {
+      await agentsLink.focus();
+    }
+    release.resolve();
+    assert.equal(status, 200);
+    await page.getByRole("button", { name: "Refresh stop status", disabled: false }).waitFor();
+    assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
+  }
   // No selected version does not prove candidate/history cleanup completed.
   await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),

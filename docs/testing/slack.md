@@ -48,3 +48,10 @@ The test attempts to delete the provider account and its scoped resources. Inves
 ## Local and provider coverage
 
 `tests/conformance/service-account-driver.test.mjs` and `tests/integration/occ-api.test.mjs` cover lifecycle and API behavior with synthetic providers. The loopback HTTPS Backend regression requires `openssl`. [PostgreSQL tests](postgresql.md) cover persistence and deletion constraints. These do not prove live provider credential revocation or a model turn.
+
+[`postgres-service-account-issuance-recovery.test.mjs`](../../tests/integration/postgres-service-account-issuance-recovery.test.mjs)
+runs the ChatGPT ServiceAccount Driver through OCC over PostgreSQL after an
+issuance that never committed. The next issuance and account deletion reclaim
+the leftover Secret and credential. Ending a session during reclamation must
+preserve a later issuance. The provider and Secret store are in-memory; conformance
+tests cover their behavior. Use the [PostgreSQL setup](postgresql.md).

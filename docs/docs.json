@@ -385,6 +385,10 @@
                       {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
+                      },
+                      {
+                        "page": "reference/public-github-reads",
+                        "label": "Public GitHub Reads"
                       }
                     ]
                   }
@@ -990,6 +994,7 @@
               "testing/openshell",
               "testing/openshell-coverage",
               "flows/agent-repository-credentials",
+              "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",

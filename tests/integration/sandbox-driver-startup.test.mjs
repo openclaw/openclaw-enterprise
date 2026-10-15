@@ -2024,21 +2024,44 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       return true;
     });
   }
-  // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state,
-  // not the identity.
-  {
+  // Other passed-through codes keep their error: FAILED_PRECONDITION names a Workspace state and
+  // RESOURCE_EXHAUSTED a rate limit or busy admission workers, neither of them the identity.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"]) {
     const gatewayClient = workspaceGatewayClient();
-    const precondition = grpcError(grpc.status.FAILED_PRECONDITION, "workspace is terminating");
+    const passedThrough = grpcError(grpc.status[name], "not an identity refusal");
     gatewayClient.createWorkspace = async () => {
-      throw precondition;
+      throw passedThrough;
     };
     await assert.rejects(
       sandboxDriver(gatewayClient).ensureNamespace(namespaceContext()),
       (error) => {
-        assert.equal(error, precondition);
+        assert.equal(error, passedThrough, name);
         return true;
       },
     );
+  }
+  // A Workspace removed between Namespace cleanup's read and its provider listing answers
+  // NOT_FOUND. Cleanup keeps that error: it names a missing Workspace, not the identity.
+  {
+    const context = namespaceContext();
+    const gatewayClient = workspaceGatewayClient([
+      {
+        name: context.namespace.name,
+        labels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/namespace-id": context.namespace.id,
+        },
+        phase: "WORKSPACE_PHASE_ACTIVE",
+      },
+    ]);
+    const missing = grpcError(grpc.status.NOT_FOUND, "workspace not found");
+    gatewayClient.listProviders = async () => {
+      throw missing;
+    };
+    await assert.rejects(sandboxDriver(gatewayClient).cleanup(context), (error) => {
+      assert.equal(error, missing);
+      return true;
+    });
   }
 
   // Through Compute: the Kubernetes steps before the Sandbox Driver are stubbed, so the
@@ -2100,12 +2123,12 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
       failure: "permanent",
     });
   }
-  {
-    // A refusal Compute cannot classify stays retryable, with a fixed reason and no
-    // "HTTP status 9".
+  // A refusal Compute cannot classify stays retryable, with a fixed reason and no
+  // "HTTP status 9" or "HTTP status 8": a rate limit clears by itself.
+  for (const name of ["FAILED_PRECONDITION", "RESOURCE_EXHAUSTED"]) {
     const gatewayClient = workspaceGatewayClient();
     gatewayClient.createWorkspace = async () => {
-      throw grpcError(grpc.status.FAILED_PRECONDITION, "precondition");
+      throw grpcError(grpc.status[name], "not an identity refusal");
     };
     assert.deepEqual(await compute(gatewayClient).ensureNamespace(tenant), {
       namespaceId: tenant.id,

@@ -1104,7 +1104,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     input,
     "input",
-    ["controlPlane", "runtime", "channels", "codex", "repository", "presets"],
+    ["controlPlane", "runtime", "channels", "codex", "repository", "publicGithubRead", "presets"],
     diagnostics,
   );
   const controlPlane = section(input, "controlPlane", diagnostics);
@@ -1112,6 +1112,13 @@ function buildInput(rawInput, diagnostics) {
   const channels = section(input, "channels", diagnostics, false);
   const codex = section(input, "codex", diagnostics, false);
   const repository = section(input, "repository", diagnostics, false);
+  const publicGithubRead = section(input, "publicGithubRead", diagnostics, false);
+  closed(
+    publicGithubRead,
+    "publicGithubRead",
+    ["enabled", "clusterIP", "upstreamCidrs"],
+    diagnostics,
+  );
   const presets = section(input, "presets", diagnostics, false);
   closed(presets, "presets", ["files"], diagnostics);
   closed(
@@ -1255,6 +1262,7 @@ function buildInput(rawInput, diagnostics) {
     channels,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -1417,6 +1425,7 @@ function buildRendered(profile, parsed, diagnostics) {
     channels,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -2082,6 +2091,44 @@ function buildRendered(profile, parsed, diagnostics) {
       },
       port: 8443,
     };
+  }
+
+  if (asBoolean(publicGithubRead, ["publicGithubRead", "enabled"], diagnostics)) {
+    if (profile.name !== "codex") {
+      diagnostics.errors.push("publicGithubRead requires the codex profile.");
+    }
+    const clusterIP = asString(publicGithubRead, ["publicGithubRead", "clusterIP"], diagnostics, {
+      validate: (value) => isIP(value) === 4,
+      description: "the reserved IPv4 Service ClusterIP",
+    });
+    const upstreamCidrs = stringArray(
+      publicGithubRead,
+      ["publicGithubRead", "upstreamCidrs"],
+      diagnostics,
+      { validate: isIpv4Cidr, description: "an approved IPv4 CIDR for api.github.com" },
+    );
+    values.publicGithubRead = { enabled: true, clusterIP, upstreamCidrs };
+    installation.drivers.compute.configuration.network.publicGithubRead = {
+      namespace,
+      address: clusterIP,
+      podLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": releaseName,
+        "app.kubernetes.io/component": "public-github-read",
+      },
+    };
+    diagnostics.prerequisites.push(
+      "Reserve the public GitHub reader ClusterIP until every AgentRevision that allows it has retired; enforce both NetworkPolicies.",
+    );
+    diagnostics.nextSteps.push(
+      "Select public reads in a dedicated Codex Agent Configuration or Preset: enable plugins.entries.codex.config.appServer.networkProxy and allow its exact Service IP " +
+        clusterIP +
+        " in domains, then deploy the Agent.",
+    );
+  } else if (Object.keys(publicGithubRead).some((key) => key !== "enabled")) {
+    diagnostics.errors.push(
+      "publicGithubRead fields are only consumed when publicGithubRead.enabled is true.",
+    );
   }
 
   dedicatedSecrets(values, releaseName, namespace, diagnostics);

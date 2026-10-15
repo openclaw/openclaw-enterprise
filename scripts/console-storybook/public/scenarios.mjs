@@ -2293,7 +2293,11 @@ export const scenarios = {
       ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
-      "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Authentication method stays clickable with Anthropic API key as its only option. Its fixed model list is available before credential entry and starts without a selection.",
+    steps: [
+      "Open Authentication method and select Anthropic API key. It remains clickable even though it is the only available method.",
+      "Confirm the selected model credential Secret stays selected after choosing the authentication method.",
+    ],
   },
   createCodexPat: {
     group: "Pages/Create Agent",
@@ -3115,6 +3119,25 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+  },
+  deploymentActivityLoading: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity loading",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      {
+        prefix:
+          "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/",
+        delayMs: 4000,
+      },
+    ],
+    description:
+      "Deployment status reads take 4 s. Deployment activity keeps its loading placeholder until the newest version's status arrives, then shows it in one step.",
+    steps: [
+      "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
+    ],
   },
   deploymentUnavailable: {
     group: "Pages/Agent detail",
@@ -4678,6 +4701,11 @@ export const scenarios = {
     path: revision,
     deployed: true,
     stopped: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1800 }],
+    steps: [
+      "Focus Refresh stop status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
+    ],
     description:
       "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
   },

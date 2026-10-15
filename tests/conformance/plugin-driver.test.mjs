@@ -193,8 +193,7 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
       tools: { [toolId]: { approvers: [second] } },
     }),
     [],
-    undefined,
-    [first],
+    { pluginApprovers: [first] },
   );
   assert.deepEqual(codex.approvals.plugin.slack, {
     approvers: [first.id],
@@ -202,7 +201,7 @@ test("Plugin approver translation keeps Agent, plugin, and exact scoped tool ove
       linear: { approvers: [], tools: { [toolId]: { approvers: [second.id] } } },
     },
   });
-  assert.deepEqual(codexOpenClawConfiguration({}, [], undefined, []).approvals, {
+  assert.deepEqual(codexOpenClawConfiguration({}, [], { pluginApprovers: [] }).approvals, {
     plugin: { slack: { approvers: [] } },
   });
   assert.deepEqual(
@@ -723,8 +722,7 @@ test("Codex bridge keeps runtime binaries readable after the last plugin is remo
 
 test("Codex bridge configuration carries repository broker network policy without plugins", () => {
   const bridgeConfiguration = codexOpenClawConfiguration({}, [], {
-    host: "git.tenant.svc",
-    domains: { "github.com": "allow" },
+    repositoryBrokerNetworkPolicy: { host: "git.tenant.svc", domains: { "github.com": "allow" } },
   });
 
   assert.deepEqual(bridgeConfiguration.plugins.entries.codex.config, {

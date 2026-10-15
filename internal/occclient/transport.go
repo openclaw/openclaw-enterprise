@@ -9,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -79,7 +80,7 @@ func (err *APIError) Error() string {
 	}
 	if err.RetryAfter > 0 {
 		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
-		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(err.RetryAfter/time.Second))
+		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(math.Ceil(err.RetryAfter.Seconds())))
 	}
 	return message
 }
@@ -267,6 +268,10 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	}
 	if seconds, err := strconv.Atoi(header.Get("retry-after")); err == nil && seconds > 0 && seconds <= 3600 {
 		result.RetryAfter = time.Duration(seconds) * time.Second
+	} else if until, err := http.ParseTime(header.Get("retry-after")); err == nil {
+		if remaining := time.Until(until); remaining > 0 && remaining <= time.Hour {
+			result.RetryAfter = (remaining + time.Second - 1).Truncate(time.Second)
+		}
 	}
 	if status >= http.StatusMultipleChoices && status < http.StatusBadRequest {
 		// Drop userinfo, query, and fragment: a sign-in redirect can carry tokens there.

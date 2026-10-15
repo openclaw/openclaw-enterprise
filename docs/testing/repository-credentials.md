@@ -33,6 +33,22 @@ access. The long-session test advances controlled clocks; it is not a 13-hour so
 The source boundary check also runs in `pnpm check:workspace`. Changes to its
 privileged allowlists require security review of the authority, caller, scope,
 and negative coverage. It is a regression guard, not a sandbox or a dataflow proof.
+
+The separate [public GitHub reader](../reference/public-github-reads.md) owns an
+HTTP listener and permits anonymous HTTPS GET requests to a fixed origin. The source guard forbids imports
+between the reader and credential owners; its boundary test uses a local TLS
+provider. PR CI's Image Runtime Startup lane checks that stock Codex reads the
+projected skill through its limited native proxy, with local binding disabled,
+and returns a random title available only at the TLS provider. This needs no
+model or repository credentials.
+
+Full Integration's Gateway Routing journey checks the dedicated Agent, managed
+skill, and native network path with a substituted external provider. The Agent
+must return a pull request title absent from its prompt. Record a pass with no
+skips on the reviewed source. The hosted lane accepts only approved main
+revisions; verify the full conversation and cluster policy there or in an
+authorized equivalent environment.
+
 For native selection and routing, run:
 
 ```sh

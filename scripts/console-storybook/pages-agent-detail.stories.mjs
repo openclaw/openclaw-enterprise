@@ -38,6 +38,7 @@ export const DeploymentPending = story("deploymentPending");
 export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
+export const DeploymentActivityLoading = story("deploymentActivityLoading");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");

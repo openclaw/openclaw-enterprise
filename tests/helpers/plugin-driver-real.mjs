@@ -360,6 +360,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
         const secretRef = await compute.storeServiceAccountCredential({
           namespaceId: account.namespaceId,
           serviceAccountId: account.id,
+          credentialId: `imported-credential-${account.id}`,
           accessToken: imported.accessToken,
           workspaceId: imported.workspaceId,
         });
