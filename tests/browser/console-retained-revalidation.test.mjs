@@ -483,6 +483,17 @@ const slowRecheckCases = [
     focus: "Refresh",
   },
   {
+    name: "Refresh, then moving focus to navigation,",
+    hold: (namespace) => `**/namespaces/${namespace.id}/agents`,
+    async act(page) {
+      await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      await page.getByRole("link", { name: "Namespaces", exact: true }).focus();
+    },
+    shows: "loading",
+    // Focus the person moved during the load stays there through both re-renders.
+    focus: "nav: namespaces",
+  },
+  {
     name: "Back to a loaded page",
     async prepare(page) {
       await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -545,7 +556,11 @@ for (const c of slowRecheckCases) {
     assert.equal(await checking.count(), 0);
     if (c.focus) {
       assert.equal(
-        await page.evaluate(() => globalThis.document.activeElement?.textContent.trim()),
+        await page.evaluate(() => {
+          const focused = globalThis.document.activeElement;
+          const nav = focused?.getAttribute("data-nav");
+          return nav ? `nav: ${nav}` : focused?.textContent.trim();
+        }),
         c.focus,
       );
     }

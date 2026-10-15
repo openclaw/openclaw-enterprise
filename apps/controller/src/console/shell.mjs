@@ -279,6 +279,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
         ? document.activeElement
         : null;
+    // Within one load (held page, loading, then the page), focus the person moved to a sidebar
+    // control stays on it. reset() starts each navigation without one.
+    const sidebarFocus =
+      !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(document.activeElement)
+        ? document.activeElement
+        : null;
     if (!session) {
       menuControls = null;
     }
@@ -458,6 +464,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         openDrawer(!target && !menuFocus && document.activeElement === document.body);
         target?.focus({ preventScroll: true });
       }
+    }
+    if (sidebarFocus) {
+      sameControl(sidebarFocus, sidebar)?.focus({ preventScroll: true });
     }
     if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
