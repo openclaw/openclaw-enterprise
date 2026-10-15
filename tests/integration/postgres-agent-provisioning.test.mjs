@@ -2079,13 +2079,11 @@ test(
     // The worker wrote the duplicate's Configuration before the Agent insert refused it and
     // rolled back its record. The refusal deletes that unrecorded document (in Kubernetes, a
     // ConfigMap no Configuration answers for; finding 1395) and the job forgets it. The delete
-    // follows the committed failure, so wait for it rather than racing the worker.
+    // runs before the refusal commits, so it is done once the job reads as failed.
     assert.equal(written.length, 2);
     assert.equal(written[0], created.configurationId);
     const rejectedConfiguration = { namespaceId: namespace.id, id: written[1] };
-    await waitFor("the refused provisioning to delete the Configuration it wrote", async () =>
-      configurationDriver.stored(rejectedConfiguration) === undefined ? true : undefined,
-    );
+    assert.equal(configurationDriver.stored(rejectedConfiguration), undefined);
     // The delete succeeded, so nothing stays marked for a later attempt to delete either.
     const rejectedRecord = await fixture.pool.query(
       `SELECT completed_phase, configuration_id, progress ? 'pendingEffect' AS pending,
@@ -2868,10 +2866,9 @@ test(
     );
     await fixture.stopWorker();
 
-    // The failed delete changes neither the refusal nor the job: the job still forgets the
-    // write, so a retry never trusts it, and the operator log names the document left behind.
-    // The job also keeps it marked for deletion, so the leftover is not only a log line
-    // (finding 1399).
+    // The failed delete does not change the refusal: the job still forgets the write, so a
+    // retry never trusts it, and the operator log names the document left behind. The job
+    // also keeps it marked for deletion, so the leftover is not only a log line (finding 1399).
     assert.equal(created.length, 1);
     assert.deepEqual(
       completed
@@ -2930,6 +2927,106 @@ test(
     );
     const retriedRow = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.equal(retriedRow.progress.unrecordedConfigurationId, undefined);
+  },
+);
+
+test(
+  "a refusal whose worker loses its claim before the Configuration delete is deleted by the next refusing attempt",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    const computeDriver = createRuntimeComputeDriver();
+    const configurationDriver = createProvisioningConfigurationDriver({
+      id: "configuration-provisioning-delete-claim-lost",
+    });
+    const createExact = configurationDriver.createExact;
+    const created = [];
+    configurationDriver.createExact = async (configuration) => {
+      const stored = await createExact(configuration);
+      created.push(configuration.id);
+      // The write lands, then the Compute Driver refuses the stored plan for good, so this
+      // attempt's fence and every later one reject the work, and `/retry` would refuse too.
+      const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
+        repositoryCredentials: true,
+      });
+      computeDriver.validateAgentProvisioning = (input) =>
+        unrouted.validateAgentProvisioning(input);
+      return stored;
+    };
+    let fixture;
+    let workId;
+    const deleteConfiguration = configurationDriver.delete;
+    const deleted = [];
+    let stalled = false;
+    configurationDriver.delete = async (reference) => {
+      if (!stalled) {
+        // The worker stalls before its delete until its database lease has run out, as a
+        // stopped or partitioned worker would, and the delete never reaches the Driver.
+        stalled = true;
+        await fixture.pool.query(
+          `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
+           WHERE idempotency_key = $1 AND state = 'claimed'`,
+          [workId],
+        );
+        throw new Error("synthetic worker stall before the Configuration delete");
+      }
+      deleted.push(reference.id);
+      return deleteConfiguration(reference);
+    };
+    const completed = [];
+    fixture = await createFixture(context, {
+      computeDriver,
+      configurationDriver,
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
+      },
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    workId = admitted.data.provisioning.workId;
+
+    // The stalled attempt cannot record its refusal. Recovery requeues the job, which still
+    // names the write only through its mark, and the next attempt's fence refuses it again.
+    // That refusal deletes the marked document, then forgets the mark (finding 1399).
+    await fixture.startWorker();
+    try {
+      await waitFor(
+        "the requeued attempt to refuse the work",
+        async () => (completed.some((event) => event.workId === workId) ? true : undefined),
+        30_000,
+      );
+    } finally {
+      await fixture.stopWorker();
+    }
+    assert.equal(stalled, true);
+    assert.equal(created.length, 1, "no attempt writes the Configuration again");
+    assert.deepEqual(deleted, [created[0]]);
+    assert.equal(
+      configurationDriver.stored({ namespaceId: namespace.id, id: created[0] }),
+      undefined,
+    );
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ outcome, code, orphanedConfigurationId }) => ({
+          outcome,
+          code,
+          orphanedConfigurationId,
+        })),
+      [{ outcome: "permanent", code: "PROVISIONING_REJECTED", orphanedConfigurationId: undefined }],
+    );
+    const failed = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.progress.error?.code, "PROVISIONING_REJECTED");
+    assert.equal(failed.progress.pendingEffect, undefined);
+    assert.equal(failed.progress.effectReceipt, undefined);
+    assert.equal(failed.progress.unrecordedConfigurationId, undefined);
   },
 );
 

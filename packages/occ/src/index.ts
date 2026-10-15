@@ -2835,8 +2835,8 @@ export class OpenClawController {
       // A refusal deletes the Configuration it wrote but never recorded. The job first forgets
       // the write and marks it for deletion, under its claim, so neither a retry nor a crash can
       // trust a receipt for a deleted document; the refusal then drops the mark only once the
-      // delete has succeeded. A delete that fails, or never runs, leaves the mark for the next
-      // attempt, which deletes the document before it writes another (finding 1399).
+      // delete has succeeded. A delete that fails, or never runs, leaves the mark: the next
+      // attempt deletes it before writing another, and a refusal deletes it too (finding 1399).
       const unrecorded =
         disposition === "permanent"
           ? await this.mutate(async (state) => {
@@ -2844,18 +2844,16 @@ export class OpenClawController {
               if (current === undefined) {
                 throw new WorkClaimLostError();
               }
-              const unrecorded = await this.unrecordedProvisioningConfiguration(state, current);
-              if (unrecorded !== undefined) {
-                await this.commitProvisioningCheckpoint(state, claim, {
-                  completedPhase: current.completedPhase,
-                  status: "running",
-                  progress: withUnrecordedProvisioningConfiguration(
-                    current.progress,
-                    unrecorded.id,
-                  ),
-                });
+              const written = await this.unrecordedProvisioningConfiguration(state, current);
+              if (written === undefined) {
+                return this.markedProvisioningConfiguration(state, current);
               }
-              return unrecorded;
+              await this.commitProvisioningCheckpoint(state, claim, {
+                completedPhase: current.completedPhase,
+                status: "running",
+                progress: withUnrecordedProvisioningConfiguration(current.progress, written.id),
+              });
+              return this.provisioningConfiguration(current, written.id);
             })
           : undefined;
       const orphanedConfigurationId =
@@ -9152,8 +9150,7 @@ export class OpenClawController {
       pending?.kind !== "configuration" ||
       pending.owner !== receipt.owner ||
       pending.targetId !== receipt.targetId ||
-      !this.selections.has("configuration") ||
-      asRecord(record.plan.drivers)?.configuration !== this.configurationDriver().id
+      !this.provisioningConfigurationDriverSelected(record)
     ) {
       return undefined;
     }
@@ -9166,65 +9163,96 @@ export class OpenClawController {
     return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
   }
 
-  /**
-   * Deletes the Configuration a refused job wrote but never recorded, through the Driver call
-   * Configuration deletion uses, once the checkpoint that forgets and marks it has committed. A
-   * failed delete keeps the refusal as it is, leaves the mark for the next attempt, and returns
-   * the ID for the operator log.
-   */
-  private async deleteUnrecordedProvisioningConfiguration(
-    reference: Readonly<{ id: string; namespaceId: string }>,
-  ): Promise<string | undefined> {
-    try {
-      await this.driverOperation(() => this.configurationDriver().delete(reference));
-      return undefined;
-    } catch {
-      return reference.id;
-    }
+  /** Whether the accepted plan names the Configuration Driver the Installation selects. */
+  private provisioningConfigurationDriverSelected(
+    record: Readonly<AgentProvisioningRecord>,
+  ): boolean {
+    return (
+      this.selections.has("configuration") &&
+      asRecord(record.plan.drivers)?.configuration === this.configurationDriver().id
+    );
   }
 
   /**
-   * Deletes the Configuration an earlier refusal of this job marked but did not finish deleting:
-   * its delete failed, or the worker stopped first (finding 1399). It runs after this attempt's
-   * first fence and before it writes another Configuration, so the mark is never dropped with
-   * the document still stored. Nothing references the document: the job forgot it with the
-   * mark, and its ID is unique to the job. A document already gone (an applied delete whose
-   * response was lost) only drops the mark; a failed delete fails the attempt and keeps the
-   * mark. A record with the ID, or a Configuration Driver the accepted plan no longer names,
-   * leaves the document alone. Returns whether the mark can be dropped.
+   * The Configuration an earlier refusal of this job marked for deletion but did not finish
+   * deleting: its delete failed, or the worker lost its claim first (finding 1399). A
+   * Configuration record with the ID, or a Driver the accepted plan no longer names, leaves it
+   * alone.
    */
-  private async deleteMarkedProvisioningConfiguration(
+  private async markedProvisioningConfiguration(
+    state: PlatformReadView,
     record: Readonly<AgentProvisioningRecord>,
-    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
-  ): Promise<boolean> {
+  ): Promise<Configuration | undefined> {
     const configurationId = unrecordedProvisioningConfiguration(record.progress);
     if (
       configurationId === undefined ||
-      !this.selections.has("configuration") ||
-      asRecord(record.plan.drivers)?.configuration !== this.configurationDriver().id
+      !this.provisioningConfigurationDriverSelected(record) ||
+      (await state.configurations.findConfiguration(record.namespaceId, configurationId)) !==
+        undefined
     ) {
-      return false;
+      return undefined;
     }
-    const recorded = await this.read((state) =>
-      state.configurations.findConfiguration(record.namespaceId, configurationId),
-    );
-    if (recorded !== undefined) {
-      return true;
-    }
+    return this.provisioningConfiguration(record, configurationId);
+  }
+
+  /**
+   * Deletes a Configuration the job wrote but never recorded, through the Driver call
+   * Configuration deletion uses. Nothing references it: the job forgot it when it marked it, and
+   * its ID is unique to the job. It is inspected first, so a document already gone (an applied
+   * delete whose response was lost) is not an error.
+   */
+  private async removeUnrecordedProvisioningConfiguration(
+    configuration: Configuration,
+  ): Promise<void> {
     const driver = this.configurationDriver();
     if (driver.inspectExact === undefined) {
       throw new DependencyUnavailableError(
         "The Configuration Driver does not support exact provisioning recovery.",
       );
     }
-    const configuration = this.provisioningConfiguration(record, configurationId);
-    await runEffect(async () => {
-      if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
-        await this.driverOperation(() =>
-          driver.delete({ id: configurationId, namespaceId: record.namespaceId }),
-        );
-      }
-    });
+    if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
+      await this.driverOperation(() =>
+        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+      );
+    }
+  }
+
+  /**
+   * A refusal's delete of its unrecorded or marked Configuration, once the mark has committed.
+   * A failed delete keeps the refusal as it is, leaves the mark, and returns the ID for the
+   * operator log.
+   */
+  private async deleteUnrecordedProvisioningConfiguration(
+    configuration: Configuration,
+  ): Promise<string | undefined> {
+    try {
+      await this.removeUnrecordedProvisioningConfiguration(configuration);
+      return undefined;
+    } catch {
+      return configuration.id;
+    }
+  }
+
+  /**
+   * Deletes the marked Configuration after this attempt's first fence and before it writes
+   * another, so the mark is never dropped with the document still stored. A failed delete fails
+   * the attempt and keeps the mark. Returns whether the job had a mark to drop.
+   */
+  private async deleteMarkedProvisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<boolean> {
+    if (unrecordedProvisioningConfiguration(record.progress) === undefined) {
+      return false;
+    }
+    if (!this.provisioningConfigurationDriverSelected(record)) {
+      // The fence refuses this first; never let a new write replace the mark.
+      throw new DependencyUnavailableError("The selected Configuration Driver is unavailable.");
+    }
+    const marked = await this.read((state) => this.markedProvisioningConfiguration(state, record));
+    if (marked !== undefined) {
+      await runEffect(() => this.removeUnrecordedProvisioningConfiguration(marked));
+    }
     return true;
   }
 
