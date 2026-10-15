@@ -950,13 +950,12 @@ test("Agent detail reads the selected version's deployment record once on load",
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   let recordReads = 0;
-  let failNext = false;
+  let failFirst = false;
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
     (route) => {
       recordReads += 1;
-      if (failNext) {
-        failNext = false;
+      if (failFirst && recordReads === 1) {
         return route.fulfill({
           status: 503,
           contentType: "application/json",
@@ -983,8 +982,9 @@ test("Agent detail reads the selected version's deployment record once on load",
 
   // When the shared read fails, the version's record panel reads the record itself.
   recordReads = 0;
-  failNext = true;
+  failFirst = true;
   await page.reload();
+  await activity.getByRole("alert").waitFor();
   await record.getByText("Recorded outcome: succeeded").waitFor();
   await waitForIdleFetches(page);
   assert.equal(recordReads, 2);
@@ -1037,8 +1037,10 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await page
     .locator(".agent-version-heading", { hasText: "Version v1" })
     .waitFor({ state: "attached" });
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   assert.equal(await page.locator(".agent-version-layout").isVisible(), false);
+  // Give a frame to paint what is shown before the read settles.
+  await new Promise((resolve) => setTimeout(resolve, 300));
 
   releaseRecord();
   await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();

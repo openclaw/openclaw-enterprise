@@ -610,6 +610,8 @@ function createVersionDeploymentRecord(
   let error = null;
   let loading = false;
   let awaitingShared = shared;
+  // A shared read that never settles must not leave this panel loading.
+  let sharedTimer = shared ? setTimeout(() => release(), DEPLOYMENT_POLL_MS) : null;
   // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
   let generation = 0;
 
@@ -618,6 +620,7 @@ function createVersionDeploymentRecord(
       return;
     }
     awaitingShared = false;
+    clearTimeout(sharedTimer);
     loading = true;
     error = null;
     const started = generation;
@@ -654,6 +657,7 @@ function createVersionDeploymentRecord(
       return;
     }
     awaitingShared = false;
+    clearTimeout(sharedTimer);
     generation += 1;
     status = next;
     error = null;
