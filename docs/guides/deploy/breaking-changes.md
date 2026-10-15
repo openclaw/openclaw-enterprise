@@ -34,14 +34,14 @@ name (`10-42-0-5.idp.pod.cluster.local`), also with extra leading labels or
 without the cluster domain (`x.10-42-0-5.idp.pod`), and, when the OpenShell Backend's
 `endpoint` or `serviceName` names the gateway's namespace, any name in that
 namespace (`openshell-gateway.openshell-system.svc`,
-`openshell-gateway-0.openshell-gateway-peer`). OCC now stores `token_url` in
+`openshell-gateway-0.openshell-gateway-peer`, `grpc.tcp.openshell-gateway`). OCC now stores `token_url` in
 normalized form (`https://Login.Example.test:443/token` becomes
 `https://login.example.test/token`). A `bearer-token` or OAuth2 `host` ending in a
 numeric or `0x` label (`0x7f.0x1`, `example.123`) is refused like an IP address.
 
 **Who is affected.** Installations with OAuth2 credential sources whose issuer
 is addressed by IP address, a `localhost` name, a single-label name, a Pod DNS
-name, or a name in the OpenShell gateway's namespace, and new `bearer-token` or
+name, or a name in the OpenShell gateway's namespace, and `bearer-token` or
 OAuth2 sources whose `host` ends in a numeric or `0x` label.
 
 **How to tell.** Creation returns `400` for `/config/token_url` with `... token_url
@@ -50,13 +50,32 @@ localhost or localdomain name.` or `... token_url host must not be a Kubernetes
 Pod name or a name in the OpenShell gateway's namespace.` A deployment that binds such a source fails with the same
 message, or with `... token_url port must be 1 to 65535.` for a stored port `0`. `GET` on the source shows
 its stored `config.token_url`. Creation with such a `host` returns `400` for
-`/config/host` with `... host must be an exact DNS name.`; stored sources still attach.
+`/config/host` with `... host must be an exact DNS name.`, and deploying or
+updating the value of a stored source with such a `host` fails with the same
+message.
+
+To find affected sources before upgrading, print every source's `token_url`
+and `host` with the [CLI](../../reference/cli.md) and `jq`, as an account that
+can read every Namespace and credential source (lists return only readable ones):
+
+```sh
+for ns in $(occ namespace list -o json | jq -r '.[].id'); do
+  occ credential-source list --namespace "$ns" -o json | jq -r '.[]
+    | select(.config.token_url or .config.host)
+    | [.namespaceId, .id, .type, .config.token_url // "-", .config.host // "-"]
+    | @tsv'
+done
+```
+
+Compare each host with the shapes under **What breaks**. This was checked
+against the CLI and the list response shape, not a live Installation.
 
 **Steps.** _untested_ against a live Installation:
 
-1. Give the issuer a DNS name its TLS certificate covers, such as its Service
-   name with its Namespace (`keycloak.idp.svc.cluster.local`).
-2. Register a replacement source with that `token_url`.
+1. Give the issuer (or, for a `host`, the protected API) a DNS name its TLS
+   certificate covers, such as its Service name with its Namespace
+   (`keycloak.idp.svc.cluster.local`).
+2. Register a replacement source with that `token_url` or `host`.
 3. For each Agent bound to the old source, grant its service principal
    `operate` on the replacement, list the replacement in `credentialSources`
    instead of the old source, and deploy.

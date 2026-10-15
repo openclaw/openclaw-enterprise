@@ -1144,6 +1144,86 @@ for (const authMethod of ["api_key", "codex_pat"]) {
 }
 
 test(
+  "initial provisioning settles when a stop interrupts its first deployment",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    let firstRevisionId;
+    const computeDriver = createRuntimeComputeDriver();
+    const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
+    // Keep the first revision unready until the owner stops the Agent.
+    computeDriver.prepareRevision = async (revision, operationContext) => ({
+      ...(await prepareRevision(revision, operationContext)),
+      ready: firstRevisionId !== undefined && revision.id !== firstRevisionId,
+    });
+    const fixture = await createFixture(context, { computeDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    await fixture.startWorker();
+    try {
+      const handoff = await waitFor("the first deployment to be admitted", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.revisionId !== undefined ? observed.data : undefined;
+      });
+      firstRevisionId = handoff.revisionId;
+      fixture.cancelProvisioningAtTeardown(namespace.id, handoff.agentId);
+      const agentPath = `/namespaces/${namespace.id}/agents/${handoff.agentId}`;
+      const stopped = await fixture.request("POST", `${agentPath}/stop`);
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+
+      const settled = await waitFor("initial provisioning to settle", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return ["succeeded", "failed"].includes(observed.data.status) ? observed.data : undefined;
+      });
+      const first = await fixture.request("GET", `${agentPath}/deployments/${handoff.revisionId}`);
+      assert.equal(first.status, 200, JSON.stringify(first.body));
+      assert.equal(first.data.error?.code, "REVISION_STOPPED");
+      assert.equal(settled.status, "failed", JSON.stringify(settled));
+      assert.equal(settled.agentId, handoff.agentId);
+      assert.equal(settled.revisionId, handoff.revisionId);
+      assert.deepEqual(settled.error, {
+        code: "REVISION_STOPPED",
+        message: "The Agent was stopped before its first deployment finished.",
+      });
+
+      // Stop remains a permanent audited failure of the original provisioning request.
+      const work = await fixture.pool.query(
+        "SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1",
+        [admitted.data.provisioning.workId],
+      );
+      assert.deepEqual(work.rows, [{ state: "failed_permanent", reason_code: "REVISION_STOPPED" }]);
+      const audit = await fixture.pool.query(
+        `SELECT kind, outcome, details->>'code' AS code
+         FROM occ.audit_events
+         WHERE namespace_id = $1
+           AND action = 'openclaw.agents.provision.failure'
+           AND details->>'workId' = $2`,
+        [namespace.id, admitted.data.provisioning.workId],
+      );
+      assert.deepEqual(audit.rows, [
+        { kind: "mutation", outcome: "failure", code: "REVISION_STOPPED" },
+      ]);
+      const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+      assert.equal(retried.status, 409, JSON.stringify(retried.body));
+      const revisions = await fixture.state.read((view) =>
+        view.revisions.listRevisions(namespace.id, handoff.agentId),
+      );
+      assert.deepEqual(
+        revisions.map(({ id }) => id),
+        [handoff.revisionId],
+      );
+    } finally {
+      await fixture.stopWorker();
+    }
+  },
+);
+
+test(
   "queued provisioning leaves existing Secrets but creates no Agent or Configuration before a worker runs",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
@@ -3530,6 +3610,12 @@ test(
     assert.equal(stoppedProvisioning.status, 200, JSON.stringify(stoppedProvisioning.body));
     assert.equal(stoppedProvisioning.data.status, "failed");
     assert.equal(stoppedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
+    // The status names the Stop: the stopped Agent keeps its name, so it must not say to
+    // create a new Agent (finding 1376).
+    assert.equal(
+      stoppedProvisioning.data.error?.message,
+      "Provisioning was cancelled because the Agent was stopped.",
+    );
 
     await settleLateTransport(stopFixture, stopTarget);
     reportStoredCredentials = true;
@@ -3556,6 +3642,10 @@ test(
     assert.equal(deletedProvisioning.status, 200, JSON.stringify(deletedProvisioning.body));
     assert.equal(deletedProvisioning.data.status, "failed");
     assert.equal(deletedProvisioning.data.error?.code, "PROVISIONING_CANCELLED");
+    assert.equal(
+      deletedProvisioning.data.error?.message,
+      "Provisioning was cancelled because the Agent was deleted.",
+    );
 
     await settleLateTransport(deleteFixture, deleteTarget);
     const deletedAgent = await deleteFixture.request(

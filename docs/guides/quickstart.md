@@ -65,8 +65,9 @@ then open the printed HTTPS console URL. Startup generates a local CA; it does
 not install it in a trust store. Without that step, the browser can report
 `NET::ERR_CERT_AUTHORITY_INVALID` even when the stack is ready. Follow
 [local browser CA trust and verification](operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
-for macOS instructions, certificate checks, and removal. Keep the CA private key
-and the entire state directory private.
+for macOS instructions, certificate checks, and removal. The CA can vouch only
+for that installation's console and Agent hosts, and startup discards its
+private key. Keep the entire state directory private.
 
 Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
 mode publishes the console port on that machine's loopback, and the hostname

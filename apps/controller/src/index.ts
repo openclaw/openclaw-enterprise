@@ -79,6 +79,10 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "./auth/configuration.ts";
+import {
   OCC_SERVICE_KEY_HEADER,
   SERVICE_KEY_NAME_MAX_LENGTH,
   ServiceKeyNameRefused,
@@ -429,32 +433,10 @@ function developmentBrowserOrigin(development: DevelopmentAdmission): URL | unde
   if (development.browserOrigin === undefined) {
     return undefined;
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(development.browserOrigin);
-  } catch {
-    throw new Error("The development browser origin must be an absolute origin URL.");
+  if (!development.enabled || !isDevelopmentBrowserOrigin(development.browserOrigin)) {
+    throw new Error(`The development browser origin must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
-  const loopback = LOOPBACK_HOSTNAMES.has(parsed.hostname);
-  const localhostSubdomain =
-    parsed.hostname.length > ".localhost".length && parsed.hostname.endsWith(".localhost");
-  const http = parsed.protocol === "http:" || parsed.protocol === "https:";
-  if (
-    !development.enabled ||
-    parsed.origin !== development.browserOrigin ||
-    parsed.username ||
-    parsed.password ||
-    parsed.pathname !== "/" ||
-    parsed.search ||
-    parsed.hash ||
-    !http ||
-    (!loopback && (!localhostSubdomain || parsed.protocol !== "https:"))
-  ) {
-    throw new Error(
-      "The development browser origin must be loopback HTTP(S) or an HTTPS localhost subdomain.",
-    );
-  }
-  return parsed;
+  return new URL(development.browserOrigin);
 }
 
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {

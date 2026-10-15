@@ -27,25 +27,33 @@ export const NAMESPACE_NOT_READY_MESSAGE =
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
-// The controller ends a version's deployment work with one of these codes when a newer version
-// took over before this one became current. The API records that as failed, but nothing went
-// wrong with this version, so the console shows a neutral outcome instead (finding 1353). The
-// record never names the newer version, so neither does the console.
-const SUPERSEDED_DEPLOYMENT_CODES = new Set([
-  "REVISION_SUPERSEDED",
-  "REPOSITORY_REVISION_SUPERSEDED",
+// The API records these deployment endings as failed, but nothing went wrong with the version,
+// so the console shows a neutral outcome instead. A newer version took over before this one
+// became current (finding 1353; the record never names the newer version, so neither does the
+// console), or the owner stopped the Agent while this version was deploying (finding 1375).
+// REPOSITORY_REVISION_STOPPED stays a failure: it can also mean the Namespace is not ready.
+const NEUTRAL_DEPLOYMENT_OUTCOMES = new Map([
+  ["REVISION_SUPERSEDED", "superseded"],
+  ["REPOSITORY_REVISION_SUPERSEDED", "superseded"],
+  ["REVISION_STOPPED", "stopped"],
 ]);
 
-export function supersededDeployment(status) {
-  return status?.status === "failed" && SUPERSEDED_DEPLOYMENT_CODES.has(status.error?.code);
+// "superseded" or "stopped" for a neutral ending, otherwise null.
+export function neutralDeploymentOutcome(status) {
+  return status?.status === "failed"
+    ? (NEUTRAL_DEPLOYMENT_OUTCOMES.get(status.error?.code) ?? null)
+    : null;
 }
 
-// The recorded outcome to show: the API's status, except that superseded work is not a failure.
+// The recorded outcome to show: the API's status, except that a neutral ending is not a failure.
 export function deploymentOutcome(status) {
-  return supersededDeployment(status) ? "superseded" : status.status;
+  return neutralDeploymentOutcome(status) ?? status.status;
 }
 
-export const SUPERSEDED_DEPLOYMENT_NOTE = "Superseded by a newer version";
+export const NEUTRAL_DEPLOYMENT_NOTES = {
+  superseded: "Superseded by a newer version",
+  stopped: "Stopped before it finished",
+};
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
@@ -207,9 +215,14 @@ export function renderAgentList(context) {
               context,
             ),
           );
-          if (supersededDeployment(result.status)) {
+          const neutral = neutralDeploymentOutcome(result.status);
+          if (neutral) {
             deployment.append(
-              element("span", { className: "resource-id" }, `${SUPERSEDED_DEPLOYMENT_NOTE}.`),
+              element(
+                "span",
+                { className: "resource-id" },
+                `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.`,
+              ),
             );
           } else if (result.status.status === "failed") {
             deployment.append(

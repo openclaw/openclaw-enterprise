@@ -123,7 +123,8 @@ native login and model execution
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
 
-- `host` is an exact lowercase DNS name, not an IP address or wildcard.
+- `host` is an exact lowercase DNS name (re-checked at attachment), not an IP
+  address or wildcard.
 - `port` is 1 to 65535 and defaults to `443`.
 - `path` is an absolute path pattern and defaults to `/**`.
 - `env_var` is the upper-case Sandbox variable holding the placeholder, not

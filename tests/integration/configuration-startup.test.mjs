@@ -10,6 +10,10 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "../../apps/controller/src/auth/configuration.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -975,6 +979,65 @@ test("production requires one YAML while development may start without a Configu
       loadInstallationConfiguration({ mode: "production", environment: { OCC_CONFIG_PATH: path } }),
       { message },
       JSON.stringify(path),
+    );
+  }
+});
+
+test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localhost subdomain", async (t) => {
+  for (const accepted of [
+    "http://127.0.0.1:3000",
+    "http://[::1]:3000",
+    "http://localhost:3000",
+    "https://console.occ-dev-example.oce.localhost:8443",
+  ]) {
+    assert.equal(isDevelopmentBrowserOrigin(accepted), true, accepted);
+  }
+  const refused = [
+    "http://x.localhost",
+    "https://.localhost",
+    "https://a..localhost",
+    "http://localhost:3000/auth",
+    "http://localhost:3000/",
+    "http://user@localhost:3000",
+    "https://console.example.com",
+    "ftp://127.0.0.1:3000",
+    // A bind-all address is not loopback, and "localhost" counts only as the whole last label.
+    "http://0.0.0.0:3000",
+    "https://console.notlocalhost",
+    "https://localhost.example.com",
+  ];
+  for (const value of refused) {
+    assert.equal(isDevelopmentBrowserOrigin(value), false, value);
+  }
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /HTTPS localhost subdomain/);
+  assert.match(DEVELOPMENT_BROWSER_ORIGIN_RULE, /no path, query, fragment or user info/);
+
+  // The server refuses each spelling in configuration(), before reading the Installation, so the
+  // startup diagnostic names the setting instead of a later generic failure.
+  const path = await fixture(t);
+  for (const authBaseURL of [
+    "http://x.localhost",
+    "https://.localhost",
+    "http://localhost:3000/auth",
+  ]) {
+    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+      cwd: process.cwd(),
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "development",
+        OCC_CONFIG_PATH: path,
+        OCC_HOST: "127.0.0.1",
+        OCC_PORT: "8080",
+        OCC_AUTH_BASE_URL: authBaseURL,
+      },
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(server.status, 1, authBaseURL);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "AUTH_BASE_URL_INVALID",
+      authBaseURL,
     );
   }
 });

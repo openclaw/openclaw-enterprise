@@ -187,7 +187,12 @@ export function provisioningProgress(
       ? {
           error: {
             code: "PROVISIONING_CANCELLED",
-            message: "Provisioning was cancelled. Create a new Agent to provision again.",
+            // Stop and Delete store a fixed sentence naming which one cancelled the job: a
+            // stopped Agent keeps its name, so "create a new Agent" would be wrong (finding 1376).
+            message:
+              error?.code === "PROVISIONING_CANCELLED" && isNonEmptyString(error.message)
+                ? error.message
+                : "Provisioning was cancelled.",
           },
         }
       : failed
