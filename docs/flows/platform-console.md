@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-09
-last_updated_session: authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2
+updated: "2026-10-15"
+last_updated_session: "authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3"
 ---
 
 # Platform console request flow
@@ -375,6 +375,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 13:36: Retain pagination metadata and failed-read outcomes together during view revalidation. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
 
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)

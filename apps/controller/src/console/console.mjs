@@ -1055,7 +1055,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
             return;
           }
           try {
-            fresh.set(path, readSuccess(await request(path, { includeMeta: retainedState.metaReads.has(path) }), retainedState.metaReads.has(path)));
+            fresh.set(
+              path,
+              readSuccess(
+                await request(path, { includeMeta: retainedState.metaReads.has(path) }),
+                retainedState.metaReads.has(path),
+              ),
+            );
           } catch (error) {
             const failure = readFailure(error);
             if (failure === null) {

@@ -63,8 +63,17 @@ export const iamHandlers = {
     const roles = await controller.listIAMRoles(context.actorId, namespaceId);
     reply.send({ data: roles.map(clientIAMRole), meta: { requestId: request.id } });
   },
-  async createIAMRole({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-    const role = await controller.transact(async (unit) => {
+  async createIAMRole({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const role = await transactIAM(async (unit) => {
       const created = await controller.createIAMRole(context.actorId, {
         namespaceId,
         ...(body?.name === undefined ? {} : { name: body.name as string }),
@@ -84,8 +93,16 @@ export const iamHandlers = {
     const role = await controller.getIAMRole(context.actorId, namespaceId, params.roleId as string);
     reply.send({ data: clientIAMRole(role), meta: { requestId: request.id } });
   },
-  async deleteIAMRole({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMRole({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMRole(
         context.actorId,
         namespaceId,
@@ -115,8 +132,9 @@ export const iamHandlers = {
     body,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const binding = await controller.transact(async (unit) => {
+    const binding = await transactIAM(async (unit) => {
       const created = await controller.createIAMAccessBinding(context.actorId, {
         namespaceId,
         subjectKind: body?.subjectKind as "identity",
@@ -156,8 +174,9 @@ export const iamHandlers = {
     body,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const binding = await controller.transact(async (unit) => {
+    const binding = await transactIAM(async (unit) => {
       const updated = await controller.updateIAMRuntimeRole(
         context.actorId,
         namespaceId,
@@ -183,8 +202,16 @@ export const iamHandlers = {
       meta: { requestId: request.id },
     });
   },
-  async deleteIAMAccessBinding({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMAccessBinding({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMAccessBinding(
         context.actorId,
         namespaceId,
@@ -210,8 +237,9 @@ export const iamHandlers = {
     reply,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const created = await controller.transact(async (unit) => {
+    const created = await transactIAM(async (unit) => {
       const servicePrincipal = await controller.createIAMServicePrincipal(
         context.actorId,
         namespaceId,

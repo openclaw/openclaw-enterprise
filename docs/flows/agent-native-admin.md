@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-14"
-last_updated_session: "authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083"
+updated: "2026-10-15"
+last_updated_session: "authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3"
 ---
 
 # Agent Native Admin UI Flow
@@ -19,7 +19,6 @@ and proxies native HTTP and WebSocket traffic.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Source: `apps/controller/src/http/native-admin.ts:handleNativeAdminUpgrade`
 - Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getAgentRuntimeAccess` value.
 
 ## Flow
@@ -138,7 +137,6 @@ insufficient device approval or unsupported transport. Missing endpoints and
 unclean private `wss:` URLs also return `unsupported`. Only `available` carries
 private `gatewayBase`, omitted from browser responses.
 Then the selected Compute Driver ID and implementation must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint, key or transport lookup. Selection changes do not migrate existing revisions.
-
 
 ### 4. OCC derives the isolated Agent host
 
@@ -279,6 +277,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 13:36: Preserve Compute ownership checks and shared hostname derivation with per-person runtime admission. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
 
 - 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
 

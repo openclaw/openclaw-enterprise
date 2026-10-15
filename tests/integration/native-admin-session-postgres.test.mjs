@@ -1259,6 +1259,105 @@ test(
 );
 
 test(
+  "PostgreSQL runtime-role updates retain the assigning session until commit",
+  { ...requiresPostgres, timeout: 30_000 },
+  async (t) => {
+    await ensureBootstrap(t);
+    const upstream = await startNativeHttpsUpstream(t);
+    trustLocalUpstreamCertificate(t, upstream.cert);
+    const configurationRoot = await privateBootstrapDirectory(t, "openclaw-role-commit-");
+    const apiA = await createApi(t, "role-commit-a", upstream.port, { configurationRoot });
+    const apiB = await createApi(t, "role-commit-b", upstream.port, { configurationRoot });
+    t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
+    const assigning = await signIn(apiA.app);
+    const { namespace, agent, native, runtimeBinding } = await createNativeAgent(
+      apiA,
+      assigning,
+      upstream,
+    );
+    const recipient = await createReadOperateSession(apiA, namespace.id, agent.id, "role-commit");
+    const policyPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+    const catalog = await inject(
+      apiA.app,
+      "GET",
+      `/namespaces/${namespace.id}/agents/${agent.id}/runtime-roles`,
+      { session: assigning },
+    );
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const configuration = catalog.json().data.configuration;
+    const created = await inject(apiA.app, "POST", policyPath, {
+      session: assigning,
+      body: {
+        subjectKind: "identity",
+        subjectId: recipient.principal.id,
+        roleId: runtimeBinding.roleId,
+        resourceKind: "agent",
+        resourceId: agent.id,
+        runtimeRole: "reviewer",
+        runtimeRoleConfiguration: configuration,
+      },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const path = `${policyPath}/${created.json().data.id}/runtime-role`;
+    const blocker = await apiA.pool.connect();
+    let released = false;
+    let patch;
+    let logout;
+    try {
+      // Hold a real policy lock after admission; the assigning session must remain held too.
+      await blocker.query("BEGIN");
+      const {
+        rows: [{ pid }],
+      } = await blocker.query("SELECT pg_backend_pid() AS pid");
+      await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespace.id]);
+      patch = inject(apiA.app, "PATCH", path, {
+        session: assigning,
+        body: { runtimeRole: "administrator", runtimeRoleConfiguration: configuration },
+      });
+      const writer = await waitFor("the runtime-role write waiting on its Namespace", async () => {
+        const { rows } = await apiA.pool.query(
+          "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+          [pid],
+        );
+        return rows[0]?.pid;
+      });
+      logout = inject(apiB.app, "POST", "/api/auth/sign-out", { session: assigning });
+      await waitFor("cross-replica logout waiting for the runtime-role commit", async () => {
+        const { rowCount } = await apiB.pool.query(
+          "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+          [writer],
+        );
+        return rowCount > 0 ? true : undefined;
+      });
+      await blocker.query("COMMIT");
+      released = true;
+      const [changed, signedOut] = await Promise.all([patch, logout]);
+      assert.equal(changed.statusCode, 200, changed.body);
+      assert.equal(changed.json().data.runtimeRole, "administrator");
+      assert.equal(signedOut.statusCode, 200, signedOut.body);
+      assert.equal(
+        (
+          await inject(apiB.app, "GET", path.replace(/\/runtime-role$/, ""), {
+            session: assigning,
+          })
+        ).statusCode,
+        401,
+      );
+      // Logout revokes the assigning session; it does not revoke the recipient's separate grant.
+      const available = await nativeGet(apiB, native, recipient.session.cookie);
+      assert.equal(available.statusCode, 200, available.body);
+      assert.equal(upstream.requests.at(-1).headers["x-occ-role"], "administrator");
+    } finally {
+      if (!released) {
+        await blocker.query("ROLLBACK");
+      }
+      blocker.release();
+      await Promise.allSettled([patch, logout]);
+    }
+  },
+);
+
+test(
   "PostgreSQL persists only one exact human assignment and limits updates to the runtime role",
   requiresPostgres,
   async (t) => {

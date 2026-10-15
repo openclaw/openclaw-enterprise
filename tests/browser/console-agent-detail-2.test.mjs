@@ -3530,7 +3530,6 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
 });
 
-
 test("Agent sharing before deployment rejects stale Configuration and previews saved policy changes", async (t) => {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["draft-recipient"] });
   await fixture.bootstrap();
@@ -3590,7 +3589,6 @@ test("Agent sharing before deployment rejects stale Configuration and previews s
   assert.match(await preview.nth(0).innerText(), /operator.write/);
   assert.doesNotMatch(await preview.nth(1).innerText(), /operator.write/);
 });
-
 
 test("an unassigned Installation administrator can self-assign and explicitly refresh OpenClaw access", async (t) => {
   const auditSink = new InMemoryAuditSink();
@@ -3684,7 +3682,6 @@ test("an unassigned Installation administrator can self-assign and explicitly re
   assert.equal(denials(), 2);
   assert.equal(await card.getByText("assign your Principal ID", { exact: false }).count(), 0);
 });
-
 
 test("Back refreshes sharing when a failed role catalog recovers", async (t) => {
   const fixture = await createConsoleAppFixture(t);

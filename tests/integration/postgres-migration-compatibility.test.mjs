@@ -1639,7 +1639,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preRuntimeRoles"],
+      [54, "preHeldAuthenticationSession"],
+      [55, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1654,6 +1655,19 @@ test(
         await assertCompletedHistory(db, receipts);
         assert.deepEqual(await canonicalData(db), before);
         await assertUpgradedAuthentication(db);
+        if (prefix === 54) {
+          const upgradedReceipts = await historyReceipts(db.migrator);
+          const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
+          child.diagnostic(
+            JSON.stringify({
+              scenario: "previous-schema-upgrade",
+              oldReceipts: receipts.length,
+              newReceipts: upgradedReceipts.length,
+              retainedSessions: sessions.rows[0].count,
+              preservedStoredRows: true,
+            }),
+          );
+        }
         // Main's existing IAM DELETE compatibility grant belongs to its later controlled-writer transition.
         assert.equal(
           (
@@ -1902,7 +1916,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preRuntimeRoles"],
+      [54, "preHeldAuthenticationSession"],
+      [55, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1985,7 +2000,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preRuntimeRoles"],
+      [54, "preHeldAuthenticationSession"],
+      [55, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -1994,33 +2010,28 @@ test(
         }
         const before = await historySnapshot(db);
         const data = prefix ? await canonicalData(db) : undefined;
-        // 0055 adds the role binding shape; abort after its other changes to prove rollback.
-        let rejectedDdl = prefix === 54 ? "GRANT" : "CREATE FUNCTION";
-        if (prefix !== 53) {
-          rejectedDdl =
-            prefix >= 50
-              ? "GRANT"
-              : prefix >= 41
-                ? "ALTER TABLE"
-                : prefix >= 38
-                  ? "CREATE FUNCTION"
-                  : prefix >= 36
-                    ? "CREATE INDEX"
-                    : prefix >= 31
-                      ? "ALTER TABLE"
-                      : prefix >= 27
-                        ? "CREATE FUNCTION"
-                        : "ALTER FUNCTION";
-        }
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
-        // 0051's GRANT follows both withdrawal-trigger drops; 0055's follows
-        // the runtime-role column, constraint, index, function and trigger.
+        // 0051's final GRANT runs after it dropped both withdrawal triggers.
+        // 0056 grants privileges after its schema changes; abort there.
+        // Abort 0055 after its function was created, before the deferred trigger exists.
+        const rollbackTag = [
+          [55, "GRANT"],
+          [54, "CREATE TRIGGER"],
+          [53, "CREATE FUNCTION"],
+          [50, "GRANT"],
+          [41, "ALTER TABLE"],
+          [38, "CREATE FUNCTION"],
+          [36, "CREATE INDEX"],
+          [31, "ALTER TABLE"],
+          [27, "CREATE FUNCTION"],
+          [0, "ALTER FUNCTION"],
+        ].find(([minimum]) => prefix >= minimum)[1];
         await historyAdmin(
           db,
           db.name,
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
-        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rejectedDdl}') EXECUTE FUNCTION public.reject_migration_ddl()`,
+        CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
         assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
@@ -2581,7 +2592,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 54,
+      prefix: 55,
     });
     const namespaceId = await seedCanonicalData(db, { preset: true });
     const agentId = (
@@ -2717,7 +2728,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 54 },
+      { prefix: 55 },
     );
     const deniedNamespace = await seedCanonicalData(denied, { preset: true });
     await denied.app.query(
