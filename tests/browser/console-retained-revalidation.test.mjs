@@ -279,7 +279,7 @@ test("A first visit keeps the shown page until its first read settles, then swap
   ]);
 
   await page.locator(settledView).waitFor();
-  await page.evaluate(() => globalThis.__shownPages.push("Agent"));
+  await page.evaluate(() => globalThis.__shownPages.splice(0, Infinity, "Agent"));
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page
     .locator(activeView)
