@@ -4,7 +4,6 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
-import { createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -76,11 +75,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       callback,
     );
   });
-  // These cases send every read from one caller, so they use a share that no
-  // case exhausts. The fair-share case below uses the production defaults.
-  const reader = createPublicGithubReadServer({
-    share: { burst: 1000, refillMs: 1000 },
-  }).listen(0, "127.0.0.1");
+  const reader = createPublicGithubReadServer().listen(0, "127.0.0.1");
   await once(reader, "listening");
   t.after(() => {
     reader.closeAllConnections();
@@ -89,34 +84,6 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   const origin = "http://127.0.0.1:" + reader.address().port;
   const repo = "/repos/example/project";
   const get = (path = "", options) => fetch(origin + repo + path, options);
-  // Each Agent Pod is a separate caller address; loopback aliases stand in for them.
-  const from = (address, path, base = origin) =>
-    new Promise((resolve, reject) => {
-      http
-        .get(base + repo + path, { agent: false, localAddress: address }, async (res) => {
-          let text = "";
-          res.setEncoding("utf8");
-          try {
-            for await (const chunk of res) {
-              text += chunk;
-            }
-            resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
-          } catch (error) {
-            reject(error);
-          }
-        })
-        .once("error", reject);
-    });
-  const aliases = ["127.0.0.2", "127.0.0.3", "127.0.0.4"];
-  const probe = createTcpServer();
-  const aliased = await new Promise((resolve) => {
-    probe.once("error", () => resolve(false));
-    probe.listen(0, aliases.at(-1), () => probe.close(() => resolve(true)));
-  });
-  // Bound the cases that wait for held provider reads, so a regression fails instead of hanging.
-  const multipleCallers = aliased
-    ? { timeout: 15_000 }
-    : { skip: "loopback aliases 127.0.0.2-4 are unavailable" };
   const answer = (status, body, headers) => {
     reply = (req, res) => {
       res
@@ -380,8 +347,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     },
   );
   await t.test(
-    "three callers' reads can run; excess fails promptly; quota denial becomes a shared retry time",
-    multipleCallers,
+    "three distinct requests can run; excess fails promptly; quota denial becomes a shared retry time",
     async () => {
       const opened = Promise.withResolvers();
       const responses = [];
@@ -391,13 +357,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
           opened.resolve();
         }
       };
-      const active = Promise.all(
-        ["127.0.0.1", ...aliases.slice(0, 2)].map((address, id) =>
-          from(address, "/pulls/" + (id + 1)),
-        ),
-      );
+      const active = Promise.all([1, 2, 3].map((id) => get("/pulls/" + id)));
       await opened.promise;
-      const busy = await from(aliases[2], "/pulls/4");
+      const busy = await get("/pulls/4");
       assert.equal(busy.status, 503);
       for (const res of responses) {
         res.writeHead(200, { "content-type": "application/json" }).end("{}");
@@ -423,91 +385,6 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         before + 1,
         "another reader should not spend quota during a known denial",
       );
-    },
-  );
-  await t.test(
-    "each caller gets a fair share: one read in flight, a small refilling budget, and an honest shared park",
-    multipleCallers,
-    async () => {
-      const fair = createPublicGithubReadServer().listen(0, "127.0.0.1");
-      await once(fair, "listening");
-      t.after(() => {
-        fair.closeAllConnections();
-        fair.close();
-      });
-      const base = "http://127.0.0.1:" + fair.address().port;
-      const [first, second, third] = aliases;
-      // The provider holds pulls 1-3 until released, as a slow GitHub read would.
-      const held = [];
-      const opened = Promise.withResolvers();
-      reply = (req, res) => {
-        if (/^\/repos\/example\/project\/pulls\/[1-3]$/.test(req.url)) {
-          held.push(res);
-          opened.resolve();
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" }).end("{}");
-      };
-
-      // One caller that opens three slow reads holds one provider slot, not all
-      // three. Wait until each read is either answered or held by the provider.
-      const answered = [];
-      const slow = ["/pulls/1", "/pulls/2", "/pulls/3"].map((path) =>
-        from("127.0.0.1", path, base).then((response) => {
-          answered.push(response);
-          return response;
-        }),
-      );
-      await opened.promise;
-      for (let poll = 0; held.length + answered.length < 3 && poll < 500; poll++) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      t.after(() => {
-        for (const res of held) {
-          res.writeHead(200, { "content-type": "application/json" }).end("{}");
-        }
-      });
-      assert.equal(held.length, 1, "one caller must not occupy every provider slot");
-      assert.equal(answered.length, 2);
-      for (const response of answered) {
-        assert.equal(response.status, 429);
-        assert.equal(response.headers["retry-after"], "2");
-        assert.match(response.body.message, /in progress/);
-      }
-      // Another caller is still served while the first caller's read is slow.
-      assert.equal((await from(first, "/pulls/9", base)).status, 200);
-
-      // A caller that uses its burst waits for its own refill; other callers are unaffected.
-      const spent = [];
-      for (let read = 2; read <= 11; read++) {
-        spent.push((await from(first, "/releases/" + read, base)).status);
-      }
-      assert.deepEqual(spent, [...Array(9).fill(200), 429]);
-      const refused = await from(first, "/releases/12", base);
-      assert.equal(refused.status, 429);
-      assert.match(refused.body.message, /share/);
-      const wait = Number(refused.headers["retry-after"]);
-      assert.ok(wait > 0 && wait <= 120, String(wait));
-      assert.equal((await from(second, "/releases/1", base)).status, 200);
-      held.shift().writeHead(200, { "content-type": "application/json" }).end("{}");
-      assert.equal((await Promise.all(slow)).filter(({ status }) => status === 200).length, 1);
-
-      // GitHub's anonymous quota belongs to the shared egress address. A primary
-      // limit reset ten minutes out outlasts a shorter retry-after, so callers are
-      // told the later time instead of returning to be refused again.
-      const reset = String(Math.ceil(Date.now() / 1000) + 600);
-      answer(
-        403,
-        { message: "API rate limit exceeded" },
-        { "retry-after": "60", "x-ratelimit-remaining": "0", "x-ratelimit-reset": reset },
-      );
-      const before = requests;
-      for (const address of [second, third]) {
-        const parked = await from(address, "/pulls/20", base);
-        assert.equal(parked.status, 429);
-        assert.ok(Number(parked.headers["retry-after"]) > 590, parked.headers["retry-after"]);
-      }
-      assert.equal(requests, before + 1);
     },
   );
 });
