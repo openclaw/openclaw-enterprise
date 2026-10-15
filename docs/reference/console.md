@@ -59,14 +59,14 @@ mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offe
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
-Selection persists in `?namespace=<id>` across navigation, reload, and Back.
-An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
-namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks; retained-view reads do not.
-On a return, the disabled selector names the restored view's Namespace.
-Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
-global pages remain available.
+The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
+ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
+updates the URL in place.
+
+During session and Namespace checks, the selector is disabled and hides its choices.
+On return, it still names the restored view's Namespace. Subsequent page reads do
+not block it. Without a readable Namespace, Agents and Namespaces explain how to
+get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
 scope; global pages stay open. The selector cannot broaden API authorization.
