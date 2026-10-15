@@ -390,6 +390,60 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
   assert.notEqual(colors.list, colors.warning);
 });
 
+// Runtime status is reread every 10 s and usually comes back unchanged. Rebuilding the
+// aria-live status strip, the Source and Pod pickers and the retention text with the same
+// content made screen readers announce them again on every poll (finding 1420).
+test("an unchanged runtime status poll leaves the status strip and pickers untouched", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "steady output")];
+  // A second Pod shows the Pod picker as well.
+  computeDriver.state.extraPods = [
+    { name: "gateway-second", uid: "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f" },
+  ];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page.getByRole("log", { name: "Runtime log output" }).getByText("steady output").waitFor();
+  const strip = page.locator(".runtime-strip");
+  await strip.locator(".runtime-pod").nth(1).waitFor();
+  await page.locator("#runtime-log-pod:not([hidden])").waitFor();
+  const observed = ["#runtime-log-source", "#runtime-log-pod", ".runtime-strip", ".log-retention"];
+  await page.evaluate((selectors) => {
+    globalThis.statusRewrites = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const node = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        globalThis.statusRewrites.push(`${record.type} ${node.id || node.className}`);
+      }
+    });
+    for (const selector of selectors) {
+      observer.observe(globalThis.document.querySelector(selector), {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+  }, observed);
+  const statusLine = page.locator(".agent-logs p[role='status']").first();
+
+  // Only the observation time changes; it shows outside the observed regions.
+  computeDriver.state.observedAt = "2026-09-30T12:00:10.000Z";
+  const before = await statusLine.textContent();
+  await page.clock.runFor(10_000);
+  await page.waitForFunction(
+    (text) =>
+      globalThis.document.querySelector(".agent-logs p[role='status']").textContent !== text,
+    before,
+  );
+  assert.deepEqual(await page.evaluate(() => globalThis.statusRewrites), []);
+
+  // A real change still updates the strip.
+  computeDriver.state.restartCount = 4;
+  await page.clock.runFor(10_000);
+  await strip.getByText("4", { exact: true }).first().waitFor();
+  assert.ok((await page.evaluate(() => globalThis.statusRewrites.length)) > 0);
+});
+
 test("a rejected cursor starts one new view and later restarts wait for it", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "first view line")];

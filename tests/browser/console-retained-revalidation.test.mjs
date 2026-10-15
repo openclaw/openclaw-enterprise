@@ -319,7 +319,7 @@ test("A first visit that outlasts the loading delay shows loading only after it"
   assert.equal(await loading.count(), 0);
 });
 
-test("A full load replaces the startup text once when its reads settle in time", async (t) => {
+test("A full load replaces the startup status once when its reads settle in time", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Single load", { ready: true });
@@ -330,7 +330,7 @@ test("A full load replaces the startup text once when its reads settle in time",
   await login(page, fixture, url);
   await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
   await pauseClock(page);
-  // Record from the startup text on, before the console's module runs.
+  // Record from before the console's module runs, which adds the startup status.
   await page.addInitScript(
     `document.addEventListener("readystatechange", () => {
       if (document.readyState === "interactive") (${recordShownPages})();
@@ -339,5 +339,9 @@ test("A full load replaces the startup text once when its reads settle in time",
 
   await page.reload();
   await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
-  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), ["startup", "Agents"]);
+  assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), [
+    "no page",
+    "startup",
+    "Agents",
+  ]);
 });

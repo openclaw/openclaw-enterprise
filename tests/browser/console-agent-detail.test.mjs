@@ -2221,6 +2221,127 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.deepEqual(running.data.harnessAuth, { method: "runtime" });
 });
 
+// Stop changes only the Agent's runtime state and current version, so the page updates those
+// regions in place. Reloading the page for it collapsed the version detail to its loading state,
+// scrolled the Stop result away and dropped focus to the page (finding 1419).
+test("Agent stop and Refresh stop status update the page in place and keep focus", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop in place", {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ filename }) {
+        return { status: "ok", file: { name: filename, content: `Saved ${filename}` } };
+      },
+    },
+  });
+  const agent = await fixture.createAgent(namespace.id, "In Place Stop", nativeValues("in-place"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1280, height: 720 } },
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.waitForFunction(
+    () => !globalThis.document.body.textContent.includes("Loading configuration…"),
+  );
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
+  await stop.scrollIntoViewIfNeeded();
+  // Mark the rendered version detail and record any loading state the page shows again.
+  await page.evaluate(() => {
+    const doc = globalThis.document;
+    doc.querySelector(".agent-version-detail").dataset.stopMarker = "kept";
+    globalThis.reloadedText = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
+            globalThis.reloadedText.push(node.textContent);
+          }
+        }
+      }
+    }).observe(doc.body, { childList: true, subtree: true });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const scrollBefore = await page.evaluate(() => globalThis.scrollY);
+  assert.ok(scrollBefore > 0);
+  const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
+  const keptInPlace = () =>
+    page.evaluate(() => ({
+      marker: globalThis.document.querySelector(".agent-version-detail")?.dataset.stopMarker,
+      reloadedText: globalThis.reloadedText,
+    }));
+
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop In Place Stop?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
+  // A closed dialog has no dialog role, so wait for its close handler to remove the element.
+  await page.locator("dialog.agent-stop-dialog").waitFor({ state: "detached" });
+  assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
+  assert.equal(await focusedText(), "Refresh stop status");
+  // The page did not jump back up to rebuild above the reader.
+  assert.ok((await page.evaluate(() => globalThis.scrollY)) >= scrollBefore - 1);
+
+  // Stop acceptance does not clear the current version. Open Workspace in the interval
+  // before the worker clears it, and keep an unsaved edit in the mounted editor.
+  const workspace = page.getByRole("button", { name: "Workspace files", exact: true });
+  const file = page.getByLabel("AGENTS.md", { exact: true });
+  const draft = "Unsaved workspace edit during Stop";
+  await workspace.click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await file.fill(draft);
+
+  // The worker clears the current version; Refresh stop status shows it without a reload too.
+  await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+  await stopRegion.getByText("No current version", { exact: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("None", { exact: true })
+    .waitFor();
+  assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
+  assert.equal(await focusedText(), "Refresh stop status");
+  // The viewed version is no longer current, and tabs built from the old state are rebuilt.
+  const unavailable = page.getByText(
+    "Workspace files require a deployed Agent with a current version and a reachable gateway.",
+    { exact: true },
+  );
+  assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
+  await unavailable.waitFor();
+  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  assert.equal(
+    await page.locator('.revision-selector [aria-label$=", current version"]').count(),
+    0,
+  );
+  await workspace.click();
+  await unavailable.waitFor();
+  assert.equal(await file.count(), 0, "returning must not resurrect the old editor");
+
+  // Files are live Agent data, not a revision snapshot. A later serving revision restores
+  // the unsaved draft, but must not silently write it to the workspace.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+  await page
+    .getByText("Unsaved edits restored. Reload replaces them with the current file.")
+    .waitFor();
+  assert.equal(await file.inputValue(), draft);
+  assert.equal(
+    requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
+    0,
+  );
+});
+
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
 // so no stop was ever requested and nothing runs to stop (finding 1394). The panel says how
 // to start it and offers no stop controls until a deploy creates a version.

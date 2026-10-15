@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
@@ -237,9 +237,11 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!description) {
       return;
     }
-    stripStatus.textContent = `Observed ${displayDate(description.observedAt)}`;
-    strip.replaceChildren(
-      ...(description.pods.length
+    setText(stripStatus, `Observed ${displayDate(description.observedAt)}`);
+    // The strip is a live region and status polls every 10 s, so rebuild it only on a change.
+    replaceChildrenIfChanged(
+      strip,
+      description.pods.length
         ? description.pods.map(podCard)
         : [
             element(
@@ -247,14 +249,16 @@ export function renderAgentLogs(context, { agent, revisionId }) {
               { className: "muted" },
               "This version has no running Pod. See Deployment activity.",
             ),
-          ]),
+          ],
     );
   }
 
   function renderPickers() {
     const chosen = sourceSelect.value;
-    sourceSelect.replaceChildren(
-      ...description.sources.map((source) =>
+    // Rebuilding identical options would reset an open picker and re-announce it.
+    replaceChildrenIfChanged(
+      sourceSelect,
+      description.sources.map((source) =>
         element(
           "option",
           { value: source.id, disabled: !source.available },
@@ -268,8 +272,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       : (available?.id ?? description.sources[0]?.id ?? "");
     const source = selectedSource();
     const chosenPod = podSelect.value;
-    podSelect.replaceChildren(
-      ...(source?.pods ?? []).map((pod) =>
+    replaceChildrenIfChanged(
+      podSelect,
+      (source?.pods ?? []).map((pod) =>
         element(
           "option",
           { value: JSON.stringify([pod.name, pod.container]) },
@@ -285,7 +290,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     ) {
       podSelect.value = chosenPod;
     }
-    retention.textContent = source?.retention ?? "";
+    setText(retention, source?.retention ?? "");
     // A dedicated Gateway logs connection errors to a Harness that never came up; its
     // own source holds the cause (for example a failed model probe).
     // Only a revision with a dedicated Harness lists an "agent" source; the hint fires
@@ -299,11 +304,14 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       description.sources.some(({ id }) => id === "agent") &&
       !harnessPods.some(({ ready }) => ready);
     sourceHint.hidden = !harnessDown;
-    sourceHint.textContent = !harnessDown
-      ? ""
-      : harnessPods.length === 0
-        ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
-        : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.";
+    setText(
+      sourceHint,
+      !harnessDown
+        ? ""
+        : harnessPods.length === 0
+          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
+    );
     const pod = selectedPod();
     const restarts = pod
       ? pod.restartCount

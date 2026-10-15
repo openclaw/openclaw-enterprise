@@ -642,6 +642,12 @@ function renderShell(feature, namespaceAdmissionPending = false) {
   });
 }
 
+function renderPendingNamespaceShell(feature) {
+  const shell = renderShell(feature, true);
+  panel(shell.view, "Loading…", "Checking Namespace access.");
+  return shell;
+}
+
 function clearPrivate() {
   session = null;
   namespaces = [];
@@ -878,6 +884,21 @@ function showLogin(message = "", destination = null) {
     });
 }
 
+function showCheckingSession() {
+  // Destination recovery can continue in another loadPage without restarting this status.
+  if (app.firstElementChild?.classList.contains("startup")) {
+    return;
+  }
+  const status = element("p", { className: "startup", role: "status" });
+  app.replaceChildren(status);
+  // Delay the announcement, never the session check or the view that replaces it.
+  setTimeout(() => {
+    if (status.isConnected) {
+      status.textContent = "Checking session…";
+    }
+  }, 300);
+}
+
 async function loadPage({ fromNavigation = false, reuseView = fromNavigation } = {}) {
   if (loggingOut) {
     return;
@@ -928,16 +949,17 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     return;
   }
-  // A full load keeps the startup text, and a held page stays, until the load outlasts
+  // A load without a shown private page shows the startup status (no signed-in navigation
+  // before the session check) and keeps it, as a held page stays, until the load outlasts
   // loadingDelayMs, so a fast one never flashes loading. A return's held page stays until it
-  // revalidates (finding 1415). Anything else (a sign-in form, an error panel) shows loading
-  // at once.
-  const startup = !held && app.querySelector(":scope > .startup") !== null;
-  if (!held && !startup) {
-    publicPanel("Loading…", "Checking your session.");
-    if (current.feature !== "login") {
-      shell = renderShell(current.feature, true);
-      panel(shell.view, "Loading…", "Checking your session and Namespace access.");
+  // revalidates (finding 1415). A signed-in load with no page to hold (an error panel, say)
+  // shows the pending shell at once.
+  const startup = !held && !knownPrivateState;
+  if (!held) {
+    if (knownPrivateState) {
+      shell = renderPendingNamespaceShell(current.feature);
+    } else {
+      showCheckingSession();
     }
   }
   let loadingTimer =
@@ -948,20 +970,22 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
           if (!lifetime.isCurrent(active)) {
             return;
           }
-          held = false;
-          if (current.feature === "login") {
-            publicPanel("Loading…", "Checking your session.");
+          if (startup && !sessionResolved) {
+            // The startup status announces the session check itself.
             return;
           }
-          shell = renderShell(current.feature, !accessResolved);
+          held = false;
+          if (!accessResolved) {
+            shell = renderPendingNamespaceShell(current.feature);
+            return;
+          }
+          shell = renderShell(current.feature, false);
           panel(
             shell.view,
             "Loading…",
-            !accessResolved
-              ? "Checking your session and Namespace access."
-              : current.agentId
-                ? "Reading this Agent."
-                : `Reading ${pages[current.feature].toLowerCase()}.`,
+            current.agentId
+              ? "Reading this Agent."
+              : `Reading ${pages[current.feature].toLowerCase()}.`,
           );
         }, loadingDelayMs);
   const stopLoadingTimer = () => {
@@ -1056,7 +1080,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         stopLoadingTimer();
         held = false;
         shell = null;
-        publicPanel("Loading…", "Checking your session.");
+        showCheckingSession();
       }
     }
     const destination = pendingIntent;
@@ -1090,6 +1114,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       history.replaceState(null, "", intentUrl(destination) ?? "/console/agents");
       void loadPage();
       return;
+    }
+    if (loadingTimer === null) {
+      // The startup status stays until the loading delay passes or the first reads settle.
+      shell ??= renderPendingNamespaceShell(current.feature);
     }
     // Read the admin-only destination once per session owner. Non-administrators
     // get 403, which the API audits as a denial, so do not repeat it per navigation
