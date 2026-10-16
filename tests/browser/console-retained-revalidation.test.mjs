@@ -32,6 +32,8 @@ const holdAgent = (t, page, namespace, agent, options = { once: true }) =>
   holdRequests(t, page, agentPath(namespace, agent), options);
 const holdOverview = (t, page, namespace, agent) =>
   holdRequests(t, page, `${agentPath(namespace, agent)}/deployments/*`);
+const agentsRead = (namespace) => `**/namespaces/${namespace.id}/agents`;
+const clickRefresh = (page) => page.getByRole("button", { name: "Refresh", exact: true }).click();
 const agentShown = (page) => page.locator(settledView).getByRole("region", SUMMARY).waitFor();
 const listShown = (page, name) => page.locator(settledView).getByRole("link", { name }).waitFor();
 
@@ -64,6 +66,8 @@ function recordShown(kind) {
   const seen = [];
   globalThis.__shown ??= {};
   globalThis.__shown[kind] = seen;
+  globalThis.__shownObservers ??= {};
+  globalThis.__shownObservers[kind]?.disconnect();
   const record = () => {
     const view = document.querySelector(
       `.content [aria-live="polite"]${frames ? ":not([hidden])" : ""}`,
@@ -100,7 +104,8 @@ function recordShown(kind) {
     }
   };
   record();
-  new globalThis.MutationObserver(record).observe(document, {
+  globalThis.__shownObservers[kind] = new globalThis.MutationObserver(record);
+  globalThis.__shownObservers[kind].observe(document, {
     subtree: true,
     childList: true,
     characterData: true,
@@ -253,7 +258,7 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   const held = page.locator(heldView);
 
   const session = await holdRequests(t, page, SESSION);
-  const collection = await holdRequests(t, page, `**/namespaces/${first.id}/agents`);
+  const collection = await holdRequests(t, page, agentsRead(first));
   await page.goBack();
   await session.requested;
   await held.waitFor();
@@ -377,7 +382,7 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
 // highlighted, with a disabled Namespace selector in the Namespaces header (finding 1515).
 test("A page held for Agents keeps its own navigation and header until Agents replaces it", async (t) => {
   const { namespace, page } = await openList(t, "Own shell", "Shell Agent");
-  const list = `**/namespaces/${namespace.id}/agents`;
+  const list = agentsRead(namespace);
   const agentsShown = "agents | Agents | selector | Agents";
 
   // From Namespaces: the list read is held.
@@ -735,7 +740,8 @@ test("Opening an Agent focuses its heading before the tab's reads settle", async
   await link.focus();
   await link.press("Enter");
   await configuration.requested;
-  // The overview reveals at its bound; the heading is focused as it shows, with time paused.
+  // With the Configuration read held, the overview reveals only at its bound. The heading is
+  // focused as it shows, with time paused.
   await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS);
   const heading = page.getByRole("heading", { level: 1, name: "Opening Focus" });
   await heading.waitFor();
@@ -799,7 +805,7 @@ for (const focusTarget of [
     const { fixture, page } = await signedOutPage(t);
     const namespace = await fixture.createNamespace("Rebuilt list", { ready: true });
     const agent = await fixture.createAgent(namespace.id, "Opening Agent", nativeValues("v1"));
-    const list = `**/namespaces/${namespace.id}/agents`;
+    const list = agentsRead(namespace);
 
     // Leaving while a row is still loading means Back must build a fresh list, not reuse its DOM.
     const revision = await holdOnce(t, page, `${list}/${agent.id}/revisions`);
@@ -961,8 +967,6 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
 
 // Held loads, each from a loaded Agents list: `prepare` runs first, then `hold` (the session
 // check unless named) is held once, then `act` starts the load.
-const agentsRead = (namespace) => `**/namespaces/${namespace.id}/agents`;
-const clickRefresh = (page) => page.getByRole("button", { name: "Refresh", exact: true }).click();
 const heldReturn = { prepare: showNamespaces, act: (page) => page.goBack() };
 const heldRefocus = { act: refocus };
 
@@ -1055,13 +1059,15 @@ for (const c of [
     const held = page.locator(heldView);
     await held.waitFor();
     // CSS animations run on real time, not the paused page clock: read the held page's look
-    // with its animation set to `at` ms after the hold began, or as it is now.
+    // with the content's animations set to `at` ms in, or as it is now.
     const look = (at) =>
       held.evaluate((view, time) => {
         const [animation] = view.getAnimations();
-        if (animation && time !== null) {
-          animation.pause();
-          animation.currentTime = time;
+        if (time !== null) {
+          for (const running of view.parentElement.getAnimations({ subtree: true })) {
+            running.pause();
+            running.currentTime = time;
+          }
         }
         const style = view.ownerDocument.defaultView.getComputedStyle(view);
         const main = view.ownerDocument.defaultView.getComputedStyle(view.parentElement);
@@ -1378,14 +1384,18 @@ test("A double press on Back to Agents goes back once and stays in the console",
   const { read, main } = await openPendingAgent(t, page, namespace, agent);
   const back = main.getByRole("button", { name: "Back to Agents" });
   await back.waitFor();
-  // Count the history traversals the page asks for; a second one would leave the console.
+  // Record the history steps the page asks for; one more step back would leave the console.
   await page.evaluate(() => {
     const { history } = globalThis;
-    globalThis.__traversals = [];
-    for (const name of ["back", "forward", "go"]) {
+    globalThis.__steps = [];
+    for (const [name, step] of [
+      ["back", () => -1],
+      ["forward", () => 1],
+      ["go", (delta) => delta ?? 0],
+    ]) {
       const original = history[name].bind(history);
       history[name] = (...args) => {
-        globalThis.__traversals.push(name);
+        globalThis.__steps.push(step(...args));
         original(...args);
       };
     }
@@ -1397,7 +1407,7 @@ test("A double press on Back to Agents goes back once and stays in the console",
   });
   await page.waitForURL(`**${listUrl}`);
   await page.locator(activeView).getByRole("link", { name: "Double Agent" }).waitFor();
-  assert.deepEqual(await page.evaluate(() => globalThis.__traversals), ["back"]);
+  assert.deepEqual(await page.evaluate(() => globalThis.__steps), [-1]);
   assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, listUrl);
   assert.equal(
     await page.locator(activeView).getByRole("link", { name: "Double Agent" }).isVisible(),
