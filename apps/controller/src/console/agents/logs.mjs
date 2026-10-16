@@ -465,6 +465,10 @@ export function renderAgentLogs(
     if (!current()) {
       return;
     }
+    // Taken before any wait, so even a load that reads nothing (hidden page, remembered
+    // refusal) supersedes a read in flight.
+    const ticket = ++statusRead;
+    const superseded = () => ticket !== statusRead;
     if (deniedStatusViews.has(statusKey)) {
       // A rebuilt view compares the denial with a fresh answer, so an operate grant since
       // shows on the next visit to Logs (finding 1579). Back's check already compared a
@@ -487,12 +491,11 @@ export function renderAgentLogs(
       }
     }
     if (!document.hidden) {
-      const ticket = ++statusRead;
-      const superseded = () => ticket !== statusRead;
       try {
         const first = description === null;
         const answer = await read(base);
-        if (!current() || superseded()) {
+        // A superseded first answer still opens the view, unless a refusal has taken its place.
+        if (!current() || (superseded() && description !== null)) {
           return;
         }
         description = answer;
@@ -501,6 +504,10 @@ export function renderAgentLogs(
         renderPickers();
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
+        }
+        if (superseded()) {
+          // The newer load schedules the next poll.
+          return;
         }
       } catch (error) {
         if (!current() || superseded()) {

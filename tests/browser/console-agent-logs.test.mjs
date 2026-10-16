@@ -1909,10 +1909,13 @@ for (const { name, revoked, podsKept } of [
       assert.equal(await pods.count(), 0, "the stale answer does not bring the Pod cards back");
       await page.getByText(/Runtime status requires Agent operate/).waitFor();
     }
-    // The fresh read alone schedules the next poll: nothing more within the poll interval.
+    // The fresh read alone schedules the next poll, one interval on; a refused status stops.
     await page.clock.runFor(9_000);
     await waitForIdleFetches(page);
     assert.equal(statusReads(), before + 1);
+    await page.clock.runFor(1_000);
+    await waitForIdleFetches(page);
+    assert.equal(statusReads(), before + (podsKept ? 2 : 1));
   });
 }
 

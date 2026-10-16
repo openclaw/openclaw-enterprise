@@ -87,7 +87,8 @@ viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
-an unchanged poll writes nothing; pending result rows and height stay reserved until Refresh. **Current observations** requests timestamped
+an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
+the details keep their tallest height until Refresh after it settles. **Current observations** requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact AgentRevision `read`.
 **Create new version** opens the saved draft; **Deploy new version** admits its
