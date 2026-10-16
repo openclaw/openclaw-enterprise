@@ -415,24 +415,26 @@ function applyCarriedFields(provider, fields, carried, initial) {
       continue;
     }
     const current = { value: field.value, checked: field.checked };
-    let detail = "";
-    if (field.disabled) {
-      // The reloaded settings turn this field off (an Open DM policy, or Everyone in these
-      // channels), so a save would ignore it: named, not applied.
-      applied.push({ id: field.id, detail: "not applied: the reloaded settings turn it off" });
+    const isList = provider.listFields?.includes(field.id);
+    const list = isList
+      ? carryList(listValues(base.value), listValues(mine.value), listValues(current.value))
+      : null;
+    if (
+      isList
+        ? list.value.join(",") === listValues(current.value).join(",")
+        : current.value === mine.value && current.checked === mine.checked
+    ) {
       continue;
     }
-    if (provider.listFields?.includes(field.id)) {
-      const list = carryList(
-        listValues(base.value),
-        listValues(mine.value),
-        listValues(current.value),
-      );
-      const value = list.value.join(", ");
-      if (value === current.value) {
-        continue;
-      }
-      field.value = value;
+    if (field.disabled) {
+      // The reloaded settings turn this field off (an Open DM policy, or Everyone in these
+      // channels), so a save would ignore it: named as skipped, not applied.
+      applied.push({ id: field.id, detail: "", skipped: true });
+      continue;
+    }
+    let detail = "";
+    if (isList) {
+      field.value = list.value.join(", ");
       detail = [
         list.added.length ? `added ${list.added.join(", ")}` : "",
         list.removed.length ? `removed ${list.removed.join(", ")}` : "",
@@ -440,9 +442,6 @@ function applyCarriedFields(provider, fields, carried, initial) {
         .filter(Boolean)
         .join("; ");
     } else {
-      if (current.value === mine.value && current.checked === mine.checked) {
-        continue;
-      }
       if (carryValue(base, mine, current).conflict) {
         detail = `also changed in another browser, saved as ${shownValue(field, current)}`;
       }
@@ -574,8 +573,8 @@ function openDrawer(section, state, provider, retained) {
   let applied = [];
   if (carried) {
     applied = applyCarriedFields(provider, fields, carried, retained.initial);
-    for (const { id, detail } of applied) {
-      if (!detail.startsWith("not applied")) {
+    for (const { id, skipped } of applied) {
+      if (!skipped) {
         edited.add(id);
       }
     }
@@ -599,17 +598,19 @@ function openDrawer(section, state, provider, retained) {
   body.addEventListener("change", markEdited);
   if (carriedNote) {
     // Name what was reapplied, so the reader can see what overrides the reread settings.
+    const fieldName = ({ id, detail }) => {
+      const field = fields.find((node) => node.id === id);
+      // Directory-backed lists label their search box, not the hidden list input.
+      const label =
+        body.querySelector(`label[for="${id}"]`) ??
+        body.querySelector(`label[for="${id}-search"]`) ??
+        field?.closest("label");
+      const name = label?.textContent.trim() || id;
+      return detail ? `${name} (${detail})` : name;
+    };
+    const skipped = applied.filter((entry) => entry.skipped).map(fieldName);
     const names = [
-      ...applied.map(({ id, detail }) => {
-        const field = fields.find((node) => node.id === id);
-        // Directory-backed lists label their search box, not the hidden list input.
-        const label =
-          body.querySelector(`label[for="${id}"]`) ??
-          body.querySelector(`label[for="${id}-search"]`) ??
-          field?.closest("label");
-        const name = label?.textContent.trim() || id;
-        return detail ? `${name} (${detail})` : name;
-      }),
+      ...applied.filter((entry) => !entry.skipped).map(fieldName),
       ...carried.secrets.map((key) => {
         const label = provider.secretBindings?.find((binding) => binding.key === key)?.label ?? key;
         const saved = state.drawerContext.secretBindings?.[key]?.source;
@@ -620,9 +621,20 @@ function openDrawer(section, state, provider, retained) {
           : label;
       }),
     ];
-    carriedNote.textContent = names.length
-      ? `Your edits are applied over the reloaded settings: ${names.join(", ")}. Review them, then save.`
-      : "The reloaded settings already include your edits.";
+    carriedNote.textContent =
+      names.length || skipped.length
+        ? [
+            names.length
+              ? `Your edits are applied over the reloaded settings: ${names.join(", ")}.`
+              : "",
+            skipped.length
+              ? `Not applied, because the reloaded settings turn ${skipped.length === 1 ? "it" : "them"} off: ${skipped.join(", ")}.`
+              : "",
+            "Review them, then save.",
+          ]
+            .filter(Boolean)
+            .join(" ")
+        : "The reloaded settings already include your edits.";
     dialog.setAttribute("aria-describedby", carriedNote.id);
   }
   const captureDraft = () => ({

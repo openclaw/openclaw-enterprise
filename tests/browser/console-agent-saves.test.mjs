@@ -953,7 +953,7 @@ test("a carried DM user is named as not applied when another browser opened DMs"
     .getByRole("status")
     .filter({
       hasText:
-        "Your edits are applied over the reloaded settings: Allowed people in direct messages (not applied: the reloaded settings turn it off). Review them, then save.",
+        "Not applied, because the reloaded settings turn it off: Allowed people in direct messages. Review them, then save.",
     })
     .waitFor();
   await dialog.getByRole("button", { name: "Save configuration" }).click();
