@@ -700,6 +700,7 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
   const carriedBot = await fixture.createSecret(namespace.id, "Carried bot token", "xoxb-carry");
   const otherApp = await fixture.createSecret(namespace.id, "Other app token", "xapp-other");
   const page = await openTab(t, fixture, namespace, agent, "channels");
+  const requests = apiRequests(page, fixture.origin);
   await page.getByRole("heading", { name: "Channels Carry" }).waitFor();
   const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
@@ -733,10 +734,9 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
 
   await page.getByRole("button", { name: "Reload draft" }).click();
   await dialog.waitFor();
-  await dialog
-    .getByRole("status")
-    .filter({ hasText: "Your edits are applied over the reloaded settings." })
-    .waitFor();
+  const note =
+    "Your edits are applied over the reloaded settings: Direct-message policy, Slack bot token. Review them, then save.";
+  await dialog.getByRole("status").filter({ hasText: note }).waitFor();
   assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
   assert.equal(await dialog.getByLabel("Require a mention").isChecked(), false);
   await dialog.getByRole("button", { name: "Save configuration" }).click();
@@ -753,6 +753,86 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
     source: carriedBot.ref,
     delivery: { type: "env" },
   });
+  // The carried Secret still gets its access grant on the final save.
+  assert.deepEqual(
+    requests
+      .filter(
+        (request) => request.method === "POST" && request.path.endsWith("/iam/access-bindings"),
+      )
+      .map((request) => request.body.resourceId),
+    [carriedBot.id],
+  );
+});
+
+// A Secret picked and then picked back is no edit: carrying it would put the old binding back
+// over another browser's change.
+test("a Channels conflict does not carry a Secret picked back to the saved one", async (t) => {
+  const context = await slackAgent(t, "Channels Pick Back");
+  const { fixture, namespace, agent } = context;
+  const original = (await fixture.request("GET", configurationPath(context))).data.secretBindings
+    .SLACK_BOT_TOKEN;
+  const originalBot = { id: original.source.id, name: "Channels Pick Back bot token" };
+  const tempBot = await fixture.createSecret(namespace.id, "Temporary bot token", "xoxb-temp");
+  const otherBot = await fixture.createSecret(namespace.id, "Other bot token", "xoxb-other");
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  await page.getByRole("heading", { name: "Channels Pick Back" }).waitFor();
+  const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await edit.click();
+  await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await selectSecret(dialog, "Slack bot token", tempBot);
+  await selectSecret(dialog, "Slack bot token", originalBot);
+  const current = await fixture.request("GET", configurationPath(context));
+  const changed = await fixture.request("PATCH", configurationPath(context), {
+    body: {
+      values: current.data.values,
+      secretBindings: {
+        ...current.data.secretBindings,
+        SLACK_BOT_TOKEN: { source: otherBot.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(changed.status, 200);
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  const message =
+    "The saved Configuration changed while you were editing. Reload this draft before saving. Reload draft reopens your Slack edits over the saved settings.";
+  await page.getByRole("alert").filter({ hasText: message }).waitFor();
+  assert.equal(await focusedDescription(page), message);
+
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await dialog
+    .getByRole("status")
+    .filter({
+      hasText:
+        "Your edits are applied over the reloaded settings: Direct-message policy. Review them, then save.",
+    })
+    .waitFor();
+  await waitForInputValue(dialog.getByLabel("Slack bot token"), "Other bot token");
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
+  const saved = (await fixture.request("GET", configurationPath(context))).data;
+  assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, {
+    source: otherBot.ref,
+    delivery: { type: "env" },
+  });
+});
+
+// The editor Reload draft reopens has no opener left on the rebuilt page; closing it returned
+// focus to the document body.
+test("closing an editor reopened by Reload draft focuses Edit Slack", async (t) => {
+  const context = await slackAgent(t, "Channels Reopened Close");
+  const { fixture, namespace, agent } = context;
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  await page.getByRole("heading", { name: "Channels Reopened Close" }).waitFor();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await changeElsewhere(context);
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await focusedText(page), "Edit Slack");
 });
 
 // After Save Configuration the rebuilt summary showed "Bound Secret · sec_… · Loading

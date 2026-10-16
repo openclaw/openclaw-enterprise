@@ -241,10 +241,16 @@ function draftChanges(draft) {
     const initial = draft.initial[id];
     return field && (field.value !== initial.value || field.checked !== initial.checked);
   });
-  return {
-    fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]])),
-    secrets: Object.keys(draft?.changedSecrets ?? {}),
-  };
+  // A Secret picked and then picked back is no change; carrying it would replace another
+  // browser's binding with the old one.
+  const secrets = Object.keys(draft?.changedSecrets ?? {}).filter(
+    (key) =>
+      !refsEqual(
+        draft.secretBindings?.[key]?.source,
+        draft.initialSecretBindings?.[key]?.source ?? {},
+      ),
+  );
+  return { fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]])), secrets };
 }
 
 // A save conflict keeps the editor's changes: Reload draft reopens them over the reread
@@ -269,8 +275,8 @@ function carriedNotice(draft, provider) {
   if (!draft) {
     return "";
   }
-  const names = Object.values(draft.changedSecrets ?? {})
-    .map((secret) => secret?.name)
+  const names = draftChanges(draft)
+    .secrets.map((key) => draft.changedSecrets[key]?.name)
     .filter((name) => typeof name === "string" && name.length);
   const secrets = names.length
     ? `, including the ${names.length === 1 ? "Secret" : "Secrets"} ${names.map((name) => `“${name}”`).join(" and ")}`
@@ -392,8 +398,9 @@ function openDrawer(section, state, provider, retained) {
         ? undefined
         : structuredClone(state.drawerContext.secretBindings),
   };
-  // A draft carried through a save conflict applies over the reread settings (finding 1504).
-  const carried = retained?.carried ? draftChanges(retained) : null;
+  // A draft carried through a save conflict applies over the settings Reload draft rereads
+  // (finding 1504). Reached any other way, it reopens like any retained draft.
+  const carried = retained?.carried && retained.reloaded ? draftChanges(retained) : null;
   const stale = retained && !carried && retained.baseline !== state.drawerContext.baseline;
   const unresolved = retained?.unresolved;
   if (carried) {
@@ -404,7 +411,9 @@ function openDrawer(section, state, provider, retained) {
           carried.secrets.map((key) => [key, clone(retained.secretBindings?.[key])]),
         ),
       };
-      drawerContext.draftChangedSecrets = clone(retained.changedSecrets);
+      drawerContext.draftChangedSecrets = Object.fromEntries(
+        carried.secrets.map((key) => [key, clone(retained.changedSecrets[key])]),
+      );
     }
   } else if (retained) {
     drawerContext.draftSecretBindings = clone(retained.secretBindings);
@@ -416,11 +425,24 @@ function openDrawer(section, state, provider, retained) {
     config.enabled !== false,
   );
   const body = element("form", { method: "dialog", className: "channel-drawer-form" });
+  const carriedNote = carried
+    ? element("p", { className: "hint", role: "status", id: `${provider.id}-carried-edits` })
+    : null;
   const feedback = element("div", { "aria-live": "polite" });
+  // An editor reopened by Reload draft has no opener left to return focus to.
+  const keepFocus = () => {
+    const active = globalThis.document.activeElement;
+    if (!active || active === globalThis.document.body || !active.isConnected) {
+      [...section.querySelectorAll(".channel-actions button")]
+        .find((node) => node.textContent.endsWith(` ${provider.name}`) && !node.disabled)
+        ?.focus();
+    }
+  };
   const discard = () => {
     state.drawerContext.drafts?.forget("channels");
     dialog.close();
     dialog.remove();
+    keepFocus();
   };
   const cancel = button("Cancel", discard);
   const submit = element(
@@ -445,15 +467,7 @@ function openDrawer(section, state, provider, retained) {
       state.copy.drawerNotice ??
         "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before first deploy.",
     ),
-    ...(carried
-      ? [
-          element(
-            "p",
-            { className: "hint", role: "status" },
-            "Your edits are applied over the reloaded settings. Review them, then save.",
-          ),
-        ]
-      : []),
+    ...(carriedNote ? [carriedNote] : []),
     enabled,
   );
   provider.appendFields(body, config, drawerContext);
@@ -470,6 +484,10 @@ function openDrawer(section, state, provider, retained) {
     retained && !carried
       ? retained.initial
       : fieldValues(fields.filter((field) => field.getAttribute("role") !== "combobox"));
+  const initialSecretBindings =
+    retained && !carried
+      ? clone(retained.initialSecretBindings)
+      : clone(state.drawerContext.secretBindings);
   for (const field of fields) {
     const saved = (carried ? carried.fields : retained?.fields)?.[field.id];
     if (saved) {
@@ -479,10 +497,26 @@ function openDrawer(section, state, provider, retained) {
       field.dispatchEvent(new Event("change"));
     }
   }
+  if (carriedNote) {
+    // Name what was reapplied, so the reader can see what overrides the reread settings.
+    const names = [
+      ...Object.keys(carried.fields).map((id) => {
+        const field = fields.find((node) => node.id === id);
+        const label = body.querySelector(`label[for="${id}"]`) ?? field?.closest("label");
+        return label?.textContent.trim() || id;
+      }),
+      ...carried.secrets.map(
+        (key) => provider.secretBindings?.find((binding) => binding.key === key)?.label ?? key,
+      ),
+    ];
+    carriedNote.textContent = `Your edits are applied over the reloaded settings: ${names.join(", ")}. Review them, then save.`;
+    dialog.setAttribute("aria-describedby", carriedNote.id);
+  }
   const captureDraft = () => ({
     provider: provider.id,
     baseline: (!carried && retained?.baseline) || state.drawerContext.baseline,
     initial,
+    initialSecretBindings,
     fields: fieldValues(fields),
     secretBindings: clone(drawerContext.draftSecretBindings),
     changedSecrets: clone(drawerContext.draftChangedSecrets),
@@ -553,7 +587,14 @@ function openDrawer(section, state, provider, retained) {
   dialog.append(body);
   dismissOnBackdrop(dialog);
   section.append(dialog);
-  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  dialog.addEventListener(
+    "close",
+    () => {
+      dialog.remove();
+      keepFocus();
+    },
+    { once: true },
+  );
   dialog.showModal();
   dialog.querySelector("input, button")?.focus();
 }
@@ -627,7 +668,10 @@ export function renderChannelSection(
       "Reload draft",
       () => {
         reload.disabled = true;
-        if (!(state.reloadRequired && state.carriedDraft)) {
+        if (state.reloadRequired && state.carriedDraft) {
+          // Only this reload applies the carried edits over the settings it rereads.
+          state.carriedDraft.reloaded = true;
+        } else {
           // Nothing carried: the reloaded section starts from the saved state.
           state.drawerContext.drafts?.forget("channels");
         }
