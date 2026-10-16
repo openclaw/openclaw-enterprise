@@ -405,12 +405,24 @@ revisionTest(
       fixture.work(stop, "succeeded", 30_000),
       fixture.work(replacement, "succeeded", 30_000),
     ]);
+    const [replacementCompleted, stopCompleted] = await Promise.all(
+      [replacement, stop].map((work) =>
+        completion(
+          events,
+          `work ${work.idempotencyKey} to complete successfully`,
+          ({ event, workId, outcome }) =>
+            event === "worker.completed" && workId === work.idempotencyKey && outcome === "success",
+        ),
+      ),
+    );
     // The replacement's own work stopped it as a stopped Agent's revision, and yielded while the
     // Gateway drained instead of spending its attempts.
-    const replacementPasses = stopPasses(events, replacement).map(({ code }) => code);
-    assert.ok(replacementPasses.includes("AGENT_STOP_YIELDED"), replacementPasses.join(", "));
-    assert.equal(replacementPasses.at(-1), "REVISION_STOPPED");
-    assert.ok(!replacementPasses.includes("DEPENDENCY_UNAVAILABLE"), replacementPasses.join(", "));
+    const replacementPasses = stopPasses(events, replacement);
+    const replacementCodes = replacementPasses.map(({ code }) => code);
+    assert.ok(replacementCodes.includes("AGENT_STOP_YIELDED"), replacementCodes.join(", "));
+    assert.equal(replacementPasses.at(-1), replacementCompleted);
+    assert.equal(replacementCompleted.code, "REVISION_STOPPED");
+    assert.ok(!replacementCodes.includes("DEPENDENCY_UNAVAILABLE"), replacementCodes.join(", "));
     // The stop's retries reached both revisions; Harnesses stop only after the drain.
     assert.ok(record.yields >= 1);
     assert.deepEqual(
@@ -419,10 +431,11 @@ revisionTest(
     );
     assert.deepEqual([...record.pointers], [candidate.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    const stopWorkPasses = stopPasses(events, stop);
+    assert.equal(stopWorkPasses.at(-1), stopCompleted);
+    assert.equal(stopCompleted.code, "AGENT_STOPPED");
     assert.deepEqual(
-      stopPasses(events, stop)
-        .map(({ code }) => code)
-        .filter((code) => code !== "AGENT_STOP_YIELDED"),
+      stopWorkPasses.map(({ code }) => code).filter((code) => code !== "AGENT_STOP_YIELDED"),
       ["AGENT_STOPPED"],
     );
   },
