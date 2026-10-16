@@ -1025,6 +1025,8 @@ async function loadPage({
   // until it reveals (findings 1516, 1526).
   let shownStandIn = null;
   let standInTitle = null;
+  // The shell that says it is checking Namespace access, while it is the one shown.
+  let pendingNamespaceShell = null;
   let sessionResolved = false;
   let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -1075,7 +1077,7 @@ async function loadPage({
     if (startup) {
       showCheckingSession();
     } else {
-      shell = renderPendingNamespaceShell(current.feature);
+      shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
     }
   }
   // A return or refocus that can reuse its retained view keeps the shown page and, past
@@ -1103,7 +1105,7 @@ async function loadPage({
             }
             held = false;
             if (!accessResolved) {
-              shell = renderPendingNamespaceShell(current.feature);
+              shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
               return;
             }
             shell = renderShell(current.feature, false);
@@ -1251,7 +1253,7 @@ async function loadPage({
       if (!shell && openingAgent && !startup) {
         showOpeningPanel();
       } else {
-        shell ??= renderPendingNamespaceShell(current.feature);
+        shell ??= pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
       }
     }
     // Read the admin-only destination once per session owner. Non-administrators
@@ -1416,7 +1418,6 @@ async function loadPage({
       markMountedRoute(current);
       return;
     }
-    stopLoadingTimer();
     // The destination rebuilds: a retained view that did not match is stale from here on.
     forgetRetainedView(taken);
     // An Agent page renders hidden behind what is on screen (the opening panel, a held page or
@@ -1428,6 +1429,15 @@ async function loadPage({
       current.agentId && !current.creating && !agentsNamespaceUnavailable && shell?.view.isConnected
         ? shell
         : null;
+    // A held return keeps saying it is still checking while the Agent renders (finding 1442).
+    // Other timers would replace the stand-in's shell, so they stop here.
+    if (!standIn || !recheck) {
+      stopLoadingTimer();
+    }
+    if (standIn && standIn === pendingNamespaceShell) {
+      // Admission is done; the stand-in names the read that remains.
+      panel(standIn.view, "Loading…", "Reading this Agent.");
+    }
     if (standIn) {
       const detailView = element("div", { "aria-live": "polite", "aria-busy": "true", hidden: "" });
       standIn.view.after(detailView);
@@ -1605,6 +1615,7 @@ async function loadPage({
             return;
           }
           shownStandIn = null;
+          stopLoadingTimer();
           if (!detailView.isConnected) {
             markRevealed();
             return;
@@ -1644,7 +1655,7 @@ async function loadPage({
       );
       // The load settles with the Agent's page shown, not its placeholder.
       await revealed;
-      if (lifetime.isCurrent(active)) {
+      if (lifetime.isCurrent(active) && shell.view.isConnected) {
         mountedAgent = agent;
         viewState.agent = agent;
         viewState.reusable &&= agent?.status !== "deleting";

@@ -62,7 +62,7 @@ ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
 updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
-Once the list is known, it names the destination's Namespace. On returns,
+Once the list is known, it names the destination's Namespace. On returns to the same page,
 later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
 get access; global pages remain available.
 

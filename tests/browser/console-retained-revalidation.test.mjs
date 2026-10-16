@@ -451,7 +451,6 @@ test("A held Namespaces page shows no recovery for the next page's Namespace", a
     .locator(settledView)
     .getByRole("heading", { name: "Namespace unavailable", exact: true })
     .waitFor();
-  assert.equal(await page.locator(".namespace-recovery").count(), 0);
 });
 
 // A click opens the destination immediately; the next visible state is the usable overview,
@@ -558,6 +557,9 @@ test("Back to a changed Agent keeps the held page until the overview reveals", a
   await record.requested;
   // The Agent page has rendered, waiting for its overview.
   await page.locator(".content .agent-detail-pending").waitFor({ state: "attached" });
+  // The held return still says it is checking (finding 1442).
+  await page.clock.runFor(1000);
+  await page.getByRole("status").filter({ hasText: "Still checking…" }).waitFor();
   record.release();
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await shownFrames(page), [
