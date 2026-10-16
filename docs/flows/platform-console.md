@@ -368,8 +368,8 @@ refresh and inspection.
 ## Changelog
 
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
+- 2026-10-16 14:30: Scroll a Logs view that loads before its Agent page shows to its newest output. (flake-fix-1016)
 - 2026-10-16 13:00: Keep the shown page until an entered Agent reveals; keep a held page's selector disabled on the way to another page. (ui-jank-code-10)
 - 2026-10-16 12:00: Paint Create Agent with its permission answer; keep a clicked Logs tab's strip in place. (ui-jank-code-9)
-- 2026-10-16 11:30: Hold the shown page in its own navigation and header; show an Agent’s heading and overview together when ready. (ui-jank-code-9)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
