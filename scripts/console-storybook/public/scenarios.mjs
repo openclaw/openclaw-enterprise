@@ -878,6 +878,14 @@ export const scenarios = {
     rules: [{ path: "/backends", status: 503 }],
     description: "Backend discovery fails and can be retried.",
   },
+  backendsDenied: {
+    group: "Pages/Backends",
+    name: "Access denied",
+    path: "/console/backends",
+    rules: [{ path: "/backends", status: 403 }],
+    description:
+      "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
+  },
   namespaces: {
     group: "Pages/Namespaces",
     name: "Ready and provisioning",
@@ -2574,7 +2582,7 @@ export const scenarios = {
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "Provisioning admission conflicts before any separate Configuration save. Edit the request and retry from the same draft.",
+      "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
   },
   createUnknown: {
     group: "Pages/Create Agent",
@@ -3034,8 +3042,9 @@ export const scenarios = {
     bootstrapFailure: true,
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     description:
-      "The list shows the newest visible failure beside the current version, without asserting serving health.",
+      "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
+      "Hover the one-line failure to read its whole text.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   },
