@@ -4358,6 +4358,58 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
   );
 });
 
+test("Kubernetes preserves explicit human proxy identities alongside workspace access", () => {
+  const auth = {
+    mode: "trusted-proxy",
+    trustedProxy: {
+      userHeader: "x-occ-identity",
+      allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
+    },
+    identityScopes: {
+      "occ-workspace-files": ["operator.admin"],
+      "oidc:member-01": ["operator.read", "operator.write"],
+      "oidc:maintainer-02": ["operator.admin"],
+    },
+  };
+  for (const configure of [options, routedOptions]) {
+    const driver = createKubernetesComputeDriver(configure());
+    const revision = routedRevision(driver);
+    revision.configuration.gateway.auth = structuredClone(auth);
+    const original = structuredClone(revision.configuration);
+
+    // Provisioning and rendering must preserve individual identities without
+    // replacing the platform's independently privileged workspace connection.
+    driver.validateAgentProvisioning({
+      executionMode: "dedicated",
+      configuration: revision.configuration,
+    });
+    const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
+    assert.deepEqual(rendered.gateway.auth, auth);
+    assert.deepEqual(revision.configuration, original);
+
+    // An empty list means "allow every proxy user" upstream. Additional humans
+    // must not turn explicit admission into a wildcard or remove machine access.
+    for (const allowUsers of [[], ["oidc:member-01"], ["occ-workspace-files", " "], null]) {
+      assert.throws(
+        () =>
+          driver.kubernetesGatewayConfigurationDocument({
+            gateway: { auth: { ...auth, trustedProxy: { ...auth.trustedProxy, allowUsers } } },
+          }),
+        /allowUsers/,
+      );
+    }
+    assert.throws(
+      () =>
+        driver.kubernetesGatewayConfigurationDocument({
+          gateway: {
+            auth: { ...auth, identityScopes: { "oidc:maintainer-02": ["operator.admin"] } },
+          },
+        }),
+      /identityScopes/,
+    );
+  }
+});
+
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
   const driver = createKubernetesComputeDriver(routedOptions());
   const revision = routedRevision(driver);
@@ -4757,7 +4809,7 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
           ...runtimeRevision.configuration.gateway.auth,
           trustedProxy: {
             ...runtimeRevision.configuration.gateway.auth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
           },
         },
       },
@@ -5392,7 +5444,7 @@ test("agent provisioning validation reuses native trusted-proxy admission before
         },
       },
       "gateway.auth.identityScopes",
-      "must grant only occ-workspace-files operator.admin when set",
+      "must retain occ-workspace-files operator.admin when set",
     ],
     [
       { gateway: { trustedProxies: ["10.99.0.0/16"] } },

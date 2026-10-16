@@ -57,19 +57,40 @@ the native gateway port in this mode.
 
 ### Gateway authentication
 
-Kubernetes Compute supports only trusted-proxy authentication, in every
-routing mode. It renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`,
-`gateway.auth.mode: trusted-proxy`, `userHeader: x-occ-identity`, the allowed
-identity `occ-workspace-files` with `operator.admin`, and
-`gateway.allowRealIpFallback: true`. Configuration and Console starters
-can omit these fields. Unsupported auth fields or conflicting trust fields fail
-deployment; matching CIDR lists are accepted regardless of order. Deployment and
-provisioning check the same fields and answer `409 RESOURCE_CONFLICT` naming the setting and requirement, never its value. `trustedProxy.allowUsers` is checked later:
-provisioning returns fixed `409` text with the reason in the API log; deployment
-is admitted, then fails with `DEPENDENCY_UNAVAILABLE` and the reason in the
-worker's `worker.compute-prepare-failed` line. `trustedProxy.allowLoopback` must be omitted or false:
-loopback access uses the separate password, not proxy identity headers. Native
-required-header and device auto-approval settings retain their separate purposes.
+All routing requires `gateway.auth.mode: trusted-proxy` and
+`userHeader: x-occ-identity`. Omission defaults `allowUsers` to
+`["occ-workspace-files"]` and its `identityScopes` grant to `["operator.admin"]`.
+Explicit policies may add humans but must retain machine entries.
+Empty allowlists and nonstring, blank, or untrimmed identities fail closed.
+
+Compute renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`
+and `gateway.allowRealIpFallback: true`; CIDR order may differ.
+Conflicting/unsupported settings return `409 RESOURCE_CONFLICT` with setting/requirement,
+never values. Invalid `allowUsers` instead produces fixed provisioning `409`
+text plus an API-log reason, or deployment-preparation `DEPENDENCY_UNAVAILABLE`
+plus `worker.compute-prepare-failed`. `trustedProxy.allowLoopback` must be omitted
+or false; local verification uses the separate password.
+
+```json
+{
+  "gateway": {
+    "auth": {
+      "trustedProxy": {
+        "allowUsers": ["occ-workspace-files", "oidc:member-01"]
+      },
+      "identityScopes": {
+        "occ-workspace-files": ["operator.admin"],
+        "oidc:member-01": ["operator.read", "operator.write"]
+      }
+    }
+  }
+}
+```
+
+Ingress must authenticate human aliases, validate OIDC, authorize the exact Gateway,
+and overwrite identity headers. This adds no browser route or Keycloak integration.
+Private operator routes retain the machine identity. Named roles must also permit
+machine admin.
 
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
@@ -84,11 +105,8 @@ readiness gates; Gateway probes HTTP. `gateway.tls.enabled: true` is refused
 before revision creation. Envoy terminates TLS. Docker/SSH
 retain managed-password defaults and explicit trusted-proxy HTTP.
 
-Configured CIDRs must contain the proxy's
-source addresses and exclude untrusted sources. CIDRs do not authenticate a
-proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
+CIDRs do not authenticate a proxy: retain the exact Envoy NetworkPolicy peer, TLS verification, service-key
 authentication, and identity/header sanitization.
-Direct access still requires a trusted proxy or the operator loopback password.
 
 For repository-bearing revisions, Compute grants credential-service egress to
 the embedded gateway/Harness or dedicated Codex Pod. The separate dedicated

@@ -666,6 +666,22 @@ test(
       slackBotSecretRef: slackBotSecret.data.ref,
       authMethod: "codex_pat",
     });
+    // The regular provisioning API must admit separately identified proxy users
+    // without changing the platform's workspace identity. This fixture proves
+    // configuration handoff, not OIDC login or native Gateway authorization.
+    const gatewayAuth = {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
+      },
+      identityScopes: {
+        "occ-workspace-files": ["operator.admin"],
+        "oidc:member-01": ["operator.read", "operator.write"],
+        "oidc:maintainer-02": ["operator.admin"],
+      },
+    };
+    body.configuration.values.gateway.auth = gatewayAuth;
     assert.equal(
       JSON.stringify(body).includes(rotatedPat),
       false,
@@ -723,6 +739,7 @@ test(
     assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
     assert.equal(exactRevision.data.compute.id, driver.id);
     assert.equal(exactRevision.data.compute.implementation, driver.implementation);
+    assert.deepEqual(exactRevision.data.configuration.gateway.auth, gatewayAuth);
 
     const configuration = await resource(
       "configmap",

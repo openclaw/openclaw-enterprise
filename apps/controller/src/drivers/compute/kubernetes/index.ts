@@ -3751,7 +3751,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (error instanceof ComputeGatewaySettingError) {
         throw error;
       }
-      // Other refusals (trustedProxy.allowUsers until open #906) stay with preparation.
+      // Invalid proxy allowlists and other preparation-only refusals stay with preparation.
     }
   }
 
@@ -11597,12 +11597,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must be ${TRUSTED_PROXY_HEADER} when set`,
       );
     }
+    const allowUsers = trustedProxy.allowUsers;
     if (
-      trustedProxy.allowUsers !== undefined &&
-      !isDeepStrictEqual(trustedProxy.allowUsers, [TRUSTED_PROXY_IDENTITY])
+      allowUsers !== undefined &&
+      (!Array.isArray(allowUsers) ||
+        !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
+        allowUsers.some((user) => typeof user !== "string" || user.trim() !== user || user === ""))
     ) {
       throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain only ${TRUSTED_PROXY_IDENTITY}.`,
+        `Kubernetes native trustedProxy.allowUsers must contain nonblank, trimmed identities including ${TRUSTED_PROXY_IDENTITY}.`,
       );
     }
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {
@@ -11613,12 +11616,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     if (
       identityScopes !== undefined &&
-      (!isDeepStrictEqual(Object.keys(identityScopes).sort(), [TRUSTED_PROXY_IDENTITY]) ||
-        !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"]))
+      !isDeepStrictEqual(identityScopes[TRUSTED_PROXY_IDENTITY], ["operator.admin"])
     ) {
       throw new GatewaySettingFailure(
         "gateway.auth.identityScopes",
-        `must grant only ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
+        `must retain ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
       );
     }
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
@@ -11656,9 +11658,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           trustedProxy: {
             ...trustedProxy,
             userHeader: TRUSTED_PROXY_HEADER,
-            allowUsers: [TRUSTED_PROXY_IDENTITY],
+            allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
-          identityScopes: { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
+          identityScopes: identityScopes ?? { [TRUSTED_PROXY_IDENTITY]: ["operator.admin"] },
         },
       },
     };
@@ -11679,8 +11681,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       Array.isArray(identityScopes) &&
       identityScopes.includes("operator.admin") &&
       deviceAutoApprove?.enabled === true &&
-      Array.isArray(deviceAutoApprove.scopes) &&
-      deviceAutoApprove.scopes.includes("operator.admin") &&
       controlUi?.enabled === true &&
       Array.isArray(controlUi.allowedOrigins) &&
       controlUi.allowedOrigins.some(
