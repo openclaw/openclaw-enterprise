@@ -4104,47 +4104,115 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
+// Each section keeps its newest matching lines within its own budget, so the Harness and
+// OpenShell supervisor lines still fit the 16 KiB failure message after the Gateway's.
+// Workspace-node disconnects (finding 1496) need the node host's close line and the
+// supervisor's connection events, so those sources keep timestamps.
+const turnDiagnosticLineChars = 400;
+const turnDiagnosticNoise =
+  /identity scope grant elevated connection identity=occ-workspace-files|authenticated user (?:connected|disconnected) .*user=occ-workspace-files/u;
+
+function turnDiagnosticLines(logs, pattern, budget) {
+  const kept = [];
+  let length = 0;
+  for (const line of logs.split("\n").reverse()) {
+    if (!pattern.test(line) || turnDiagnosticNoise.test(line)) {
+      continue;
+    }
+    const shown =
+      line.length > turnDiagnosticLineChars ? `${line.slice(0, turnDiagnosticLineChars)}…` : line;
+    if (length + shown.length + 1 > budget) {
+      break;
+    }
+    kept.push(shown);
+    length += shown.length + 1;
+  }
+  return kept.reverse().join("\n");
+}
+
+async function openShellSupervisorPod(topology) {
+  const sandboxIds = new Set(
+    [
+      topology.harnessPod.metadata.labels?.["openshell.ai/sandbox-id"],
+      topology.sandbox?.metadata?.labels?.["openshell.ai/sandbox-id"],
+    ].filter((id) => typeof id === "string" && id.length > 0),
+  );
+  const supervisors = (await resources("pods", topology.placement)).filter(
+    (pod) => pod.metadata.labels?.["openshell.ai/component"] === "supervisor",
+  );
+  const matching = supervisors.filter((pod) =>
+    sandboxIds.has(pod.metadata.labels?.["openshell.ai/sandbox-id"]),
+  );
+  // Without a matching label, the newest supervisor is the one serving this Harness.
+  return (matching.length > 0 ? matching : supervisors).sort((a, b) =>
+    String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
+  )[0];
+}
+
 async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
   const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
     (secret) => typeof secret === "string" && secret.length > 0,
   );
-  const sections = [];
-  for (const source of [
+  const sources = [
     {
       label: "Gateway",
       name: topology.gatewayPod.metadata.name,
       namespace: topology.gatewayPlacement,
-      containerArguments: [],
+      logArguments: ["--tail=2000"],
+      budget: 5_000,
+      pattern:
+        /error|warn|workspace|model|openai|worker|node|inference|turn|fetch|network|policy|disconnect|close|pair|reload|skill/iu,
     },
     {
       label: "Harness",
       name: topology.harnessPod.metadata.name,
       namespace: topology.placement,
-      containerArguments: ["--container", "agent"],
+      logArguments: ["--container", "agent", "--tail=2000", "--timestamps"],
+      budget: 4_000,
+      pattern:
+        /error|warn|workspace|model|openai|worker|node host|inference|turn|fetch|network|policy|disconnect|close|reconnect|frozen|mediation/iu,
     },
-  ]) {
+  ];
+  try {
+    const pod = await openShellSupervisorPod(topology);
+    if (pod === undefined) {
+      sources.push({ label: "OpenShell supervisor", unavailable: new Error("no supervisor Pod") });
+    } else {
+      sources.push({
+        label: `OpenShell supervisor ${pod.metadata.name}`,
+        name: pod.metadata.name,
+        namespace: topology.placement,
+        logArguments: ["--container", "supervisor", "--tail=2000", "--timestamps"],
+        budget: 4_000,
+        pattern:
+          /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire/iu,
+      });
+    }
+  } catch (error) {
+    sources.push({ label: "OpenShell supervisor", unavailable: error });
+  }
+  const sections = [];
+  for (const source of sources) {
+    if (source.unavailable !== undefined) {
+      sections.push(
+        `${source.label} diagnostics unavailable: ${source.unavailable?.message ?? String(source.unavailable)}`,
+      );
+      continue;
+    }
     try {
       let logs = await kubectl(
         "logs",
         source.name,
         "--namespace",
         source.namespace,
-        ...source.containerArguments,
-        "--tail=300",
+        ...source.logArguments,
       );
       for (const secret of redactions) {
         logs = logs.replaceAll(secret, "[REDACTED]");
       }
-      const relevant = logs
-        .split("\n")
-        .filter((line) =>
-          /error|warn|workspace|model|openai|worker|node host|inference|turn|fetch|network|policy/iu.test(
-            line,
-          ),
-        )
-        .slice(-80)
-        .join("\n");
-      sections.push(`${source.label} diagnostics:\n${relevant}`);
+      sections.push(
+        `${source.label} diagnostics:\n${turnDiagnosticLines(logs, source.pattern, source.budget)}`,
+      );
     } catch (error) {
       sections.push(`${source.label} diagnostics unavailable: ${error?.message ?? String(error)}`);
     }
