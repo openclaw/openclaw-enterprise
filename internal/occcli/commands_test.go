@@ -437,6 +437,7 @@ func TestAgentRevisionsToleratesUnreadableDeploymentStatus(t *testing.T) {
 func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	out, requested, err := runOCC(t, map[string]string{
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
 			`","namespaceId":"` + testNamespaceID + `","status":"failed","error":{"code":"CONVERGENCE_DEADLINE_EXCEEDED","message":"Deployment did not converge."}}`,
@@ -472,7 +473,23 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
 			"GET " + agentPath + "/revisions/" + testRevision1ID:   `{"id":"` + testRevision1ID + `","revision":1}`,
 			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
-		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + "; pass " + testRevision1ID + " for the active revision's status\n"},
+		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + `; run "occ agent deployment-status ` + testAgentID + " " + testRevision1ID + `" for the active revision` + "\n"},
+		{"older than the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/revisions/" + testRevision2ID:   `{"id":"` + testRevision2ID + `","revision":2}`,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", older than the active revision " + testRevision2ID + `; run "occ agent deployment-status ` + testAgentID + " " + testRevision2ID + `" for the active revision` + "\n"},
+		{"active metadata unavailable", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; the active revision is " + testRevision2ID + "\n"},
+		{"Agent unreadable", map[string]string{
+			"GET " + agentPath:                                     forbidden,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read\n"},
 		{"the active revision", map[string]string{
 			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
