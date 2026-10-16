@@ -1058,16 +1058,14 @@ for (const c of [
     const { page, read } = await startHeldLoad(t, c, "Busy Agent");
     const held = page.locator(heldView);
     await held.waitFor();
-    // CSS animations run on real time, not the paused page clock: read the held page's look
-    // with the content's animations set to `at` ms in, or as it is now.
+    // The CSS cue uses real time, not the paused page clock. Check that it plays on its own
+    // before seeking to `at` ms to inspect the dimmed state without a real-time sleep.
     const look = (at) =>
       held.evaluate((view, time) => {
         const [animation] = view.getAnimations();
-        if (time !== null) {
-          for (const running of view.parentElement.getAnimations({ subtree: true })) {
-            running.pause();
-            running.currentTime = time;
-          }
+        if (time !== null && animation) {
+          animation.pause();
+          animation.currentTime = time;
         }
         const style = view.ownerDocument.defaultView.getComputedStyle(view);
         const main = view.ownerDocument.defaultView.getComputedStyle(view.parentElement);
@@ -1076,12 +1074,18 @@ for (const c of [
           opacity: Number(style.opacity),
           cursor: main.cursor,
           delay: animation?.effect.getTiming().delay ?? null,
+          playState: animation?.playState ?? null,
           box: [box.x, box.y, box.width, box.height],
         };
       }, at);
     const first = await look(null);
     // The cue waits 300 ms, so a fast hold never flashes it.
     assert.equal(first.delay, c.cue ? 300 : null);
+    assert.notEqual(
+      first.playState,
+      "paused",
+      "the busy cue must not depend on the test advancing it",
+    );
     const later = await look(700);
     if (c.cue) {
       assert.ok(later.opacity < 0.7, `the held page dims: ${later.opacity}`);
