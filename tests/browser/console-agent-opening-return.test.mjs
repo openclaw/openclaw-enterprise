@@ -126,7 +126,10 @@ test("A double press on Back to Agents goes back once and stays in the console",
   // A second traversal, if queued, lands within a few frames; give it real time to show.
   await delay(750);
   assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, listUrl);
-  assert.equal(await page.locator(activeView).getByRole("link", { name: "Double Agent" }).isVisible(), true);
+  assert.equal(
+    await page.locator(activeView).getByRole("link", { name: "Double Agent" }).isVisible(),
+    true,
+  );
   read.release();
 });
 

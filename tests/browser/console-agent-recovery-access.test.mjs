@@ -157,24 +157,28 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
   );
   // Log text has its own grant (read_logs); this reader's log read is denied.
-  await page.route(
-    new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`),
-    (route) =>
-      route.fulfill({
-        status: 403,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "FORBIDDEN", message: "Access denied." },
-          meta: { requestId: "req_test_recovery_logs" },
-        }),
+  await page.route(new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`), (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Access denied." },
+        meta: { requestId: "req_test_recovery_logs" },
       }),
+    }),
   );
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-  await recovery.getByText("v2 failed its startup model check. Check the failed version’s logs before deploying a new version.").waitFor();
+  await recovery
+    .getByText(
+      "v2 failed its startup model check. Check the failed version’s logs before deploying a new version.",
+    )
+    .waitFor();
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
-  await page.getByText("Log text requires Agent read_logs (or administer) and read access.").waitFor();
+  await page
+    .getByText("Log text requires Agent read_logs (or administer) and read access.")
+    .waitFor();
 
   // Leaving Logs for another tab of the same version keeps the page; the recovery now says
   // who can check the logs instead of steering the reader into another denied read.
