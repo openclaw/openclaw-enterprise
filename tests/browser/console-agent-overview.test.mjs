@@ -1024,28 +1024,38 @@ test("A recovery link left before its page opens does not scroll a later visit",
 
 // A recovery link whose draft page is restored for Back mounts it at its old scroll position,
 // at the top: the restored page brings the tab into view too.
-test("A recovery link to a draft restored for Back brings it into view", async (t) => {
+test("A recovery link to a draft retained from an earlier visit brings it into view", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Recovery restored", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Restored Agent", nativeValues("v1"));
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const namespace = await fixture.createNamespace("Recovery retained", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Retained Agent", nativeValues("v1"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 900 } },
   });
   await routeFailedRecord(page, fixture, namespace, agent, failed);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
   const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await settled.waitFor();
+  // Visit the draft through the page's own control, so leaving it retains its view.
+  await page.locator(".revision-create").click();
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await settled.waitFor();
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
   await page.evaluate(() => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.restoreTag = "draft";
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag =
+      "draft";
   });
   await page.locator('.revision-selector [aria-label^="View version v1"]').click();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await settled.waitFor();
+  await page.evaluate(() => globalThis.scrollTo(0, 0));
   await page
     .getByRole("region", { name: "Deployment needs attention" })
     .getByRole("link", { name: "Open Configuration" })
@@ -1054,10 +1064,10 @@ test("A recovery link to a draft restored for Back brings it into view", async (
   await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
   await page.waitForFunction(versionDetailInView);
   assert.equal(await focusedTab(page), "Configuration");
-  // The restored page, not a rebuilt one.
+  // The retained page, not a rebuilt one.
   assert.equal(
     await page.evaluate(
-      () => globalThis.document.querySelector('.content [aria-live="polite"]').dataset.restoreTag,
+      () => globalThis.document.querySelector('.content [aria-live="polite"]').dataset.retainedTag,
     ),
     "draft",
   );
