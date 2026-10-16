@@ -5062,24 +5062,20 @@ async function untrustedUpstreamFailureDetail(
     encodedPassword === undefined ? undefined : Buffer.from(encodedPassword, "base64").toString();
   const secrets = turnFailureSecrets(topology, gatewayPassword);
   const shown = redactLogLine(String(text), secrets, untrustedTurnObservationChars);
-  let detail = `\nTurn observation: ${shown}`;
-  if (
-    observed.turnRejected &&
-    observed.tlsFailures === 0 &&
-    observed.handshakes === 0 &&
-    observed.requests === 0
-  ) {
-    // The diagnostic reads the replacement's Harness and the Gateway Pod that ran the turn.
-    detail += await gatewayTurnFailureDiagnostic(
-      {
-        ...topology,
-        harnessPod,
-        gatewayPod: { metadata: { name: gatewayPod } },
-      },
-      gatewayPassword,
-    );
+  const detail = `\nTurn observation: ${shown}`;
+  if (observed.tlsFailures !== 0 || observed.handshakes !== 0 || observed.requests !== 0) {
+    return detail;
   }
-  return detail;
+  if (gatewayPod === undefined) {
+    // The turn never ran: finding no running Gateway Pod counted as the refusal.
+    return `${detail}\nNo running Agent Gateway Pod was found for the turn.`;
+  }
+  // The diagnostic reads the replacement's Harness and the Gateway Pod that ran the turn.
+  const diagnostic = await gatewayTurnFailureDiagnostic(
+    { ...topology, harnessPod, gatewayPod: { metadata: { name: gatewayPod } } },
+    gatewayPassword,
+  );
+  return `${detail}${diagnostic}`;
 }
 
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {

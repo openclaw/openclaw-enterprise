@@ -1183,10 +1183,10 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
 // (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
 async function retirementWait(name, operation) {
   const started = Date.now();
-  let outcome = "failed";
+  let outcome = "FAILED";
   try {
     const result = await operation();
-    outcome = "done";
+    outcome = "ok";
     return result;
   } finally {
     log(
