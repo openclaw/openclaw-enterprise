@@ -1,7 +1,8 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
-import { isStaleGeneration, namespacePath } from "./list.mjs";
+import { namespacePath } from "./list.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
+import { isStaleGeneration } from "./list.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },

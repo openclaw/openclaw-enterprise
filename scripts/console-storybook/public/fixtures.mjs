@@ -610,8 +610,7 @@ export function installFixture(scenario, evidence) {
       }),
       { status, headers: { "content-type": "application/json" } },
     );
-  const error = (status, code, message, details) =>
-    response(null, status, code, {}, message, details);
+  const error = (status, code, message) => response(null, status, code, {}, message);
   window.fetch = async (input, options = {}) => {
     const url = new URL(typeof input === "string" ? input : input.url, location.origin);
     const path = url.pathname;
@@ -677,7 +676,7 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (rule.status) {
-        return error(rule.status, rule.code, rule.message, rule.details);
+        return response(null, rule.status, rule.code, {}, rule.message, rule.details);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {
