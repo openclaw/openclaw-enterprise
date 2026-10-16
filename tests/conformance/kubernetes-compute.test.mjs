@@ -877,7 +877,13 @@ test("activation refuses a missing or foreign workspace node before changing the
 // With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
 // observation advances it by its whole wait, or to `state.pairAtMs` if the node
 // pairs within the wait, and never sleeps.
-function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint } = {}) {
+function dedicatedFirstDeployFixture({
+  statusProxy = true,
+  clock,
+  modelEndpoint,
+  sandboxDriver,
+  revision: revisionOverrides = {},
+} = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
@@ -910,6 +916,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
     }),
     {
+      sandboxDriver,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -982,6 +989,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
         "codex-plugin:example": { enabled: true, toolDefaults: { approval: "provider_default" } },
       },
     },
+    ...revisionOverrides,
   });
   const operatorSuppliedConfiguration = {
     ...revision.configuration,
@@ -1137,6 +1145,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
     const labels = Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("=")));
     const role = labels["openclaw.dev/workload-role"];
+    if (role === "agent" && sandboxDriver !== undefined) {
+      return { items: state.providerPod === undefined ? [] : [structuredClone(state.providerPod)] };
+    }
     return {
       items: [
         {
@@ -1388,6 +1399,157 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       modelProvider: "openai-compatible",
     });
   }
+});
+
+test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+  };
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  const {
+    driver,
+    revision,
+    state,
+    namespace,
+    gatewayName,
+    markReady,
+    prepare,
+    read,
+    objects,
+    key,
+    save,
+    clients,
+  } = fixture;
+  const suffix = digest(revision.agentId);
+  const predecessor = new KubernetesComputeDriver(
+    {
+      ...driver.options,
+      network: {
+        ...driver.options.network,
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    },
+    { sandboxDriver },
+  );
+  // A switch from Codex inherits its provider grant until native activation
+  // pins enrollment to its own supervisor and removes that obsolete grant.
+  const stale = predecessor
+    .agentNetworkPolicies(
+      { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+      { name: namespace, plane: "execution" },
+    )
+    .find(({ resource }) => resource.metadata.name === `allow-gateway-agent-${suffix}`).resource;
+  stale.metadata.uid = "predecessor-harness-egress-uid";
+  save(stale);
+  const deleted = [];
+  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
+    assert.equal(target, namespace);
+    assert.equal(body.preconditions.uid, read("NetworkPolicy", name, target).metadata.uid);
+    deleted.push(name);
+    objects.delete(key("NetworkPolicy", name, target));
+  };
+  assert.equal(driver.options.network.providerHarness, undefined);
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  const nativeConfig = JSON.parse(
+    provisions[0].requirements.environment.find(
+      ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
+    ).value,
+  );
+  assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
+    source: "env",
+    provider: "model",
+    id: "OPENAI_API_KEY",
+  });
+  assert.deepEqual(
+    nativeConfig.models.providers.openai.models.map(({ id }) => id),
+    ["gpt-5"],
+  );
+  // The provider's observed Pod readiness and enrolled node are independent of provisioning.
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  state.connected = true;
+  assert.equal((await prepare()).ready, true);
+  assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
+  assert.deepEqual(deleted, []);
+  await assert.rejects(
+    driver.activateRevision(revision, authContext(revision)),
+    /gateway is not ready/,
+  );
+  markReady(gatewayName);
+  await driver.activateRevision(revision, authContext(revision));
+
+  assert.deepEqual(deleted, [stale.metadata.name]);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-agent-runtime-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-agent-auth-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-workspace-node-gateway-${suffix}`)), false);
+  const inbound = read("NetworkPolicy", `allow-gateway-workspace-node-${suffix}`);
+  assert.deepEqual(inbound.spec.ingress, [
+    {
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": namespace },
+          },
+          podSelector: { matchLabels: supervisorPeerLabels(revision.id) },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
+    },
+  ]);
+  const gateway = read("Deployment", gatewayName).spec.template.spec.containers[0];
+  assert.equal(
+    gateway.env.some(({ name }) =>
+      ["APP_SERVER_URL", "APP_SERVER_TOKEN", "OPENAI_API_KEY"].includes(name),
+    ),
+    false,
+  );
+  const harness = read("Service", `agent-${suffix}`);
+  assert.equal(harness.spec.selector["app.kubernetes.io/name"], `agent-${suffix}-inactive`);
 });
 
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
@@ -7478,7 +7640,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     undefined,
     { configuration: JSON.stringify(nativeInference) },
   );
-  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, revision);
+  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, undefined);
   assertExecStringsWithinBudget([gatewayDeployment, workerDeployment]);
   const gateway = gatewayDeployment.spec.template.spec.containers[0];
   const worker = workerDeployment.spec.template.spec.containers[0];
@@ -7509,7 +7671,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   assert.equal(workerProgram.includes('"--pair-if-needed"'), false);
   assert.equal(workerProgram.includes('"--session-host"'), false);
   assert.equal(
-    workerProgram.includes("writeFileSync(connectTargetPath, setupCode, { mode: 0o600 })"),
+    workerProgram.includes("writeFileSync(connectTargetPath, target, { mode: 0o600 })"),
     true,
   );
   assert.equal(
@@ -12272,6 +12434,18 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
           subPath: "media",
           readOnly: false,
         },
+        {
+          name: privateVolume.name,
+          mountPath: "/home/node/.openclaw/worktrees",
+          subPath: "worktrees",
+          readOnly: false,
+        },
+        {
+          name: privateVolume.name,
+          mountPath: "/home/node/.openclaw/worktree-sources",
+          subPath: "worktree-sources",
+          readOnly: false,
+        },
         ...(!embedded
           ? [
               {
@@ -15068,7 +15242,11 @@ function workspaceSetupFixture(
   driverDependencies = {},
   { adopted = false } = {},
 ) {
-  const state = { ready: false, secretFailure: false, failedInitializer: false };
+  const state = {
+    ready: false,
+    secretFailure: false,
+    failedInitializer: false,
+  };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(network === undefined ? {} : { network }),
@@ -15284,37 +15462,35 @@ function workspaceSetupFixture(
         return { items: structuredClone(state.jobPods) };
       }
       return {
-        items: state.failedInitializer
-          ? [
-              {
-                apiVersion: "v1",
-                kind: "Pod",
-                metadata: {
-                  name: "failed-initializer",
-                  namespace,
-                  labels: {
-                    "openclaw.dev/agent": revision.agentId,
-                    "openclaw.dev/revision": revision.id,
-                    "openclaw.dev/workload-role": embedded ? "gateway" : "agent",
+        items:
+          state.failedInitializer &&
+          labels["openclaw.dev/workload-role"] === (embedded ? "gateway" : "agent")
+            ? [
+                {
+                  apiVersion: "v1",
+                  kind: "Pod",
+                  metadata: {
+                    name: "failed-initializer",
+                    namespace,
+                    labels,
                   },
-                },
-                status: {
-                  initContainerStatuses: [
-                    {
-                      name: "initialize-workspace",
-                      state: {
-                        terminated: {
-                          exitCode: 1,
-                          finishedAt: "2026-09-22T00:00:00Z",
-                          message: "private-content-must-not-escape",
+                  status: {
+                    initContainerStatuses: [
+                      {
+                        name: "initialize-workspace",
+                        state: {
+                          terminated: {
+                            exitCode: 1,
+                            finishedAt: "2026-09-22T00:00:00Z",
+                            message: "private-content-must-not-escape",
+                          },
                         },
                       },
-                    },
-                  ],
+                    ],
+                  },
                 },
-              },
-            ]
-          : [],
+              ]
+            : [],
       };
     },
     async deleteNamespacedSecret({ name, body }) {

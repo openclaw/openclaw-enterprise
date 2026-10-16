@@ -1,8 +1,8 @@
 # OpenShell Credential Gateway
 
 The OpenShell Credential Gateway stores OCC [credential sources](../credential-sources.md)
-as OpenShell providers. Its supervisor substitutes credentials at the egress proxy,
-keeping them outside the Harness. It implements the
+as providers. Its supervisor substitutes credentials at the egress proxy, outside
+the Harness. It implements the
 [CredentialGatewayDriver contract](credential-gateway.md) and works only with the
 [OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
 [Backend](../backends.md#openshell-gateway).
@@ -42,6 +42,7 @@ drivers:
     configuration:
       binaries:
         - /path/to/codex
+        - /usr/local/bin/node
       toolBinaries:
         - /usr/bin/curl
   credential_refresh:
@@ -49,13 +50,12 @@ drivers:
     configuration: {}
 ```
 
-`binaries` is required and closed: a nonempty list of absolute executable paths
-inside the Harness image. OpenShell releases a credential only to requests made
-by those binaries and the processes they start. Use the exact native Codex
-executable, not a wrapper script.
-The development profile lists the pinned runtime's x64 and ARM64 executables;
-it does not infer the container architecture from the launcher host.
-A stale path fails the Codex startup model probe: the deployment fails with
+`binaries` requires a nonempty list of absolute executable paths inside the Harness
+image. OpenShell releases credentials to those binaries and their child processes.
+Use the exact native Codex executable or `/usr/local/bin/node` for OpenClaw.
+The development profile lists Node and both
+x64/ARM64 Codex paths independently of the launcher host.
+A stale path fails the Harness startup model probe with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
 rejects the missing credential, and the active revision keeps serving.
 
@@ -248,10 +248,12 @@ reports `absent`, one that no longer lists the provider in
 `SandboxSpec.providers` reports `revoked` without a mutation, and only a listed
 provider is detached again.
 
-For API-key Codex, Compute selects a named compatible provider with the source endpoint
-and HTTPS Responses transport. Other Harness consumers retain their default endpoint limit.
+For API-key Codex, Compute selects a named provider with the source endpoint and
+HTTPS Responses transport. Native OpenClaw requires the default OpenAI endpoint.
 The Harness receives an `openshell:resolve:env:` placeholder as `OPENAI_API_KEY`
-or `CODEX_ACCESS_TOKEN`; native Codex stores it using the selected authentication path.
+for API keys or `CODEX_ACCESS_TOKEN` for Codex PATs. Codex stores it through native
+login; OpenClaw reads it through node-local model configuration. The supervisor
+substitutes the credential on matching requests.
 
 ## Trust requirements
 
@@ -339,7 +341,7 @@ and selection rules.
 | Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                                                  |
 | Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                                             |
 | The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                                          |
-| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the exact Codex executable, Codex trusts the Sandbox CA, and the key is valid.                                       |
+| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the selected Harness executable (Codex or Node), the Harness trusts the Sandbox CA, and the credential is valid.     |
 
 ## Related
 

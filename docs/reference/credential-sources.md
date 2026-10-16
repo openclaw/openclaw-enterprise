@@ -9,9 +9,10 @@ Harness never receives the real credential. An Agent uses a model source through
 
 Credential sources require a selected Credential Gateway. The only implementation
 is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
-Its `openai` API-key and `codex-pat` personal-access-token types authenticate
-dedicated Codex models; `bearer-token` carries a static token to one API endpoint.
-Selecting a [Credential Refresh Driver](drivers/credential-refresh.md) also enables
+Its `openai` API-key type authenticates dedicated Codex and native OpenClaw models;
+`codex-pat` personal or service-account tokens authenticate dedicated Codex only.
+The `bearer-token` type carries a static token to one API endpoint. Selecting a
+[Credential Refresh Driver](drivers/credential-refresh.md) also enables
 experimental `codex-oauth` device login and the `oauth2-client-credentials` and
 `oauth2-refresh-token` types, whose access tokens the gateway mints and refreshes.
 OpenShell is not a supported production Agent path; see its
@@ -127,10 +128,18 @@ list retains sources, deployment instead returns `409 RESOURCE_CONFLICT`:
 "Agent credential sources require a selected Sandbox Driver." See
 [Harness execution](harness-execution.md#harness-authentication).
 
-While a Credential Gateway is selected, deployment rejects `api_key` and
-`codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
-provisioning rejects credential sources with `400`; create the Agent, then
-deploy it.
+While a Credential Gateway is selected, deployment and guided provisioning reject
+`api_key` and `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`.
+Guided provisioning accepts a ready model source in `harnessAuth`, records it in
+the Agent's `credentialSources`, and grants its service principal exact source
+`operate` access. The caller needs source `operate`; the Agent receives no
+permission on the underlying model Secret. Queued and running provisioning jobs
+keep their source referenced before the Agent exists.
+
+The Console uses the selected gateway catalog from Installation capabilities.
+For supported Dedicated API-key creation, it registers the selected model Secret
+before submitting the provisioning request; the provider and Secret controls are
+shared by both Harnesses. See [Console creation](console/create-and-deploy.md).
 
 ## Update a source
 
@@ -217,16 +226,8 @@ covers the request, its retries, and maintenance.
 `DELETE /namespaces/:namespaceId/credential-sources/:credentialSourceId`
 requires exact `delete` and returns `204`:
 
-- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, or
-  pending deployment references the source. Remove it from those Agents and
-  redeploy, or delete them.
-- When only a withdrawal attempt or retry series, queued or running for a
-  revision that held the source, blocks it, the `409` is
-  `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps
-  its series queued for up to about an hour, even after a redeploy, and the
-  withdraw request no longer applies once the active revision drops the
-  source. Wait for the series to finish, or delete the Agent: a completed Agent
-  deletion drops that work.
+- It returns `409 RESOURCE_CONFLICT` while an Agent draft, active revision, pending deployment, or queued/running provisioning request references the source. Wait for provisioning, remove the binding and redeploy, or delete the Agent.
+- When only a queued/running withdrawal attempt or retry series blocks it, the `409` is `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`. A withdrawal that never confirms keeps its series queued for up to about an hour, even after redeployment; the request no longer applies once the active revision drops the source. Wait for the series to finish, or delete the Agent: completed deletion drops that work.
 - On an Installation with no Credential Gateway it returns
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.

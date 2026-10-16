@@ -37,6 +37,9 @@ export function harnessAuthDescription(binding) {
   if (!binding) {
     return "None selected";
   }
+  if (binding.method === "credential_source") {
+    return `Credential Source · ${binding.sourceId}`;
+  }
   if (binding.method === "runtime") {
     return "Operator-managed credentials";
   }
@@ -44,9 +47,6 @@ export function harnessAuthDescription(binding) {
     return binding.source.kind === "service_account"
       ? `ChatGPT service account · ${binding.source.id}`
       : "Service Accounts · Secret configured";
-  }
-  if (binding.method === "credential_source") {
-    return "Credential source configured";
   }
   return "API key · Secret configured";
 }

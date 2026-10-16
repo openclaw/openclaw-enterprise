@@ -81,16 +81,18 @@ official operator-mTLS access-token retrieval. Synthetic issuer results do not
 prove real ChatGPT login or model execution; repeat credentialed qualification
 against the exact selected images.
 
-The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` and an
-`OCC_TEST_OPENAI_MODEL` that the token can use. Do not put the token in a command,
-logs, or shell history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
+The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` for Codex and
+`OPENAI_API_KEY` for the native OpenClaw first-Agent case. Both must permit
+`OCC_TEST_OPENAI_MODEL`. Keep these credentials separate; a Codex PAT cannot
+authenticate native OpenClaw. Do not put either value in a command, logs, or shell
+history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
 network access to the pinned assets. The CI preparation creates a disposable
 cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
 immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
 sufficient. See the [CI lane guide](ci.md#manual-full-integration-lanes) for the hosted run.
 
-To run the same lane locally, export the token and model through your approved
-credential workflow. Preparation builds the controller unless
+To run the same lane locally, export both credentials and the model through your
+approved credential workflow. Preparation builds the controller unless
 `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` selects an approved, immutable prebuilt
 controller. For a local build, choose an approved digest-pinned Node 24 build
 image for `NODE_BASE_IMAGE`. Hosted CI uses its configured
@@ -123,10 +125,10 @@ Run cleanup even if preparation or a test fails:
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
-The Codex case uses the production Driver path, but the test does not qualify a
-production installation. The native OpenClaw case uses a test-only compatibility
-bridge and is not a supported production path. Use the k3d helper below to run
-that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
+The Codex Sandbox case and guided native OpenClaw first-Agent case use production
+Drivers, but neither qualifies a production installation. The separate native
+Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
+run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
 describes the remaining limits.
 
 ### Native OpenClaw with k3d
@@ -142,7 +144,11 @@ the native test and builds the sibling `../openclaw` checkout. Set
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
-proven environment running. Run `./scripts/k3d down --harness openclaw` to remove it.
+proven environment running and opens the Control UI and OCE console on loopback.
+It leaves the dedicated worker slot free for the first browser session.
+Run `./scripts/k3d down --harness openclaw` to remove it. Codex and native OpenClaw
+use separate helper-owned state; without `--harness`, `copy` selects the active
+demo and `down` removes both environments.
 
 ## First-Agent proof
 
@@ -159,6 +165,31 @@ A successful model turn prints `Model response verified:`. An active revision or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
 `--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.
+
+### Guided native OpenClaw redeployment
+
+`tests/integration/local-first-agent-real.test.mjs` runs in both Compose-plus-k3d
+and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
+source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
+native OpenClaw provisioning. The native case uses the pinned runtime and
+production Drivers without the k3d helper's compatibility bridge.
+
+The case edits `USER.md` through the workspace API and verifies its marker through
+real model execution and `exec`. That turn writes a unique file in its session
+worktree. After a normal redeployment, the case checks replacement Sandbox and
+Pod UIDs, the retained workspace PVC/subpath, and every owner file's bytes. It
+then resumes the same session ID and key, requiring another model turn and `exec`
+to read the original file with its original hash. Run placement must identify the
+replacement Harness and the required worker profile. A fresh session alone would
+miss lost worktrees even when session metadata survives.
+
+Previously captured guided live proof covers native OpenClaw only and predates
+the current Sandbox-owned initialization. It does not establish fresh proof
+for the merged images, guided Codex, or ChatGPT OAuth.
+
+For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
+[Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
+an API-key Secret; the Codex PAT used by the starter is a separate credential.
 
 ## Troubleshooting
 

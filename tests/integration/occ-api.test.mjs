@@ -689,7 +689,10 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
-  assert.deepEqual(singleton.data, installation);
+  assert.deepEqual(singleton.data, {
+    ...installation,
+    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
+  });
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");
@@ -825,7 +828,10 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   assert.equal(auditEndpoint.status, 404);
 
   const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, installation);
+  assert.deepEqual(unchanged.data, {
+    ...installation,
+    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
+  });
 });
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
@@ -2826,7 +2832,10 @@ test("Installation API exposes Agent provisioning capabilities without configure
 
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
+  assert.deepEqual(installation.data.capabilities, {
+    ...bootstrapped.capabilities,
+    nativeWorkers: { support: "pinned-runtime" },
+  });
 
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);

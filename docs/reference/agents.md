@@ -219,7 +219,10 @@ partial map of the four filenames below to strings. Replace the example Configur
 {
   "name": "Support assistant",
   "configurationId": "cfg_12345678-1234-4123-8123-123456789abc",
-  "initialWorkspaceFiles": { "AGENTS.md": "Answer support questions.\n", "USER.md": "" }
+  "initialWorkspaceFiles": {
+    "AGENTS.md": "Answer support questions.\n",
+    "USER.md": ""
+  }
 }
 ```
 
@@ -236,7 +239,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.8` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.
@@ -377,11 +380,7 @@ deployed Agent still owns its gateway and stable service principal.
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The optional
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other combinations are rejected.
-Stock OpenShell lacks some required workload credentials; check its
-compatibility limits first.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 

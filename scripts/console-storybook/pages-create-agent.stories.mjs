@@ -70,7 +70,14 @@ export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "W
 export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
+export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
+export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
+export const CreateOpenclawWithoutNativeWorkers = {
+  ...story("createOpenclawWithoutNativeWorkers"),
+  name: "OpenClaw without native worker support",
+};
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),
   name: "Experimental Dedicated OpenClaw",

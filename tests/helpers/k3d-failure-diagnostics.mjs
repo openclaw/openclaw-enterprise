@@ -323,3 +323,68 @@ export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
   const omitted = shown.length - head.length - tail.length;
   return [...head, `[${omitted} steps omitted]`, ...tail].join(separator);
 }
+
+// Ask again only when no recognized probe or unsettled command was observed. requestTurn
+// owns the transport, the pause before another turn, and checking the raw result for secrets.
+export async function observeSandboxProbe({ nonce, requestTurn, traceSecrets }) {
+  const traces = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await requestTurn(attempt);
+    // Settle every command before looking for the probe. Shell quoting alone can
+    // hide its literal name in a start event, and a turn can end before its command.
+    const completed = completedSandboxCommands(result.items);
+    const probes = completed?.filter(({ command }) => command.includes(nonce));
+    if (probes?.length === 1) {
+      return { result, run: probes[0], traces };
+    }
+    if (probes === undefined || probes.length > 1) {
+      // A completed turn is not a completed command. Preserve the unknown outcome
+      // rather than send the model another request that could run the probe twice.
+      const trace = codexTurnTrace(result.items, traceSecrets, 1_500);
+      throw new Error(
+        `OpenShell probe outcome is unknown; not sending another turn. Attempt ${attempt}: ${trace}`,
+      );
+    }
+    traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+  }
+  return { traces };
+}
+
+// Return terminal commands, or undefined if any command's outcome is uncertain.
+// A completion can settle a command even when its start was not in the transcript.
+function completedSandboxCommands(messages) {
+  const pending = new Map();
+  const completed = new Map();
+  for (const { method, params } of messages) {
+    const item = params?.item;
+    if (
+      item?.type !== "commandExecution" ||
+      (method !== "item/started" && method !== "item/completed")
+    ) {
+      continue;
+    }
+    const { id, command } = item;
+    if (typeof id !== "string" || !id.trim() || completed.has(id)) {
+      return undefined;
+    }
+    if (method === "item/started") {
+      if (pending.has(id)) {
+        return undefined;
+      }
+      pending.set(id, command);
+    } else {
+      const startedCommand = pending.get(id);
+      if (
+        typeof command !== "string" ||
+        !command.trim() ||
+        !Number.isSafeInteger(item.exitCode) ||
+        (startedCommand && command !== startedCommand)
+      ) {
+        return undefined;
+      }
+      pending.delete(id);
+      completed.set(id, item);
+    }
+  }
+  return pending.size === 0 ? [...completed.values()] : undefined;
+}

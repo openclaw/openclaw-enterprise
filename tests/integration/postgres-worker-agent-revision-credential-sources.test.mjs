@@ -379,7 +379,10 @@ test(
     // The Harness source the active revision still uses keeps the reference refusal.
     await assert.rejects(deleteSource(owner.harnessAuth.sourceId), (error) => {
       assert.equal(error.name, "ResourceStateConflictError");
-      assert.match(error.message, /^An Agent, active revision, or pending deployment/);
+      assert.match(
+        error.message,
+        /^An Agent, active revision, pending deployment, or provisioning request/,
+      );
       return true;
     });
     const blocking = (sourceId) =>

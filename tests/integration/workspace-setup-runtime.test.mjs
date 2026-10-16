@@ -136,6 +136,8 @@ test("workspace completion verification uses the Sandbox runtime path and retain
     JSON.stringify({ ...identity, agentId: "another-agent" }),
   );
   failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }));
+  rmSync(join(sandboxWorkspace, ".oce-workspace-setup.json"));
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }));
 });
 
 const native = {

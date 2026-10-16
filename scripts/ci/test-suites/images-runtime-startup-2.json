@@ -50,8 +50,10 @@
     {
       "path": "tests/integration/sandbox-driver-startup.test.mjs",
       "expectedTests": [
-        "OpenShell reconciles renewed workspace-node setup into its revision provider",
-        "OpenShell delivers initial workspace files privately after supervisor readiness",
+        "OpenShell reconciles renewed codex workspace-node setup into its revision provider",
+        "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
+        "OpenShell delivers codex initial workspace files privately after supervisor readiness",
+        "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",
         "native initializer serializes retries and preserves later edits"
       ]
     }

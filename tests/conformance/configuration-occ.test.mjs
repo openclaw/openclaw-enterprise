@@ -14,7 +14,6 @@ import {
   DependencyUnavailableError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
-  NativeWorkerSupportError,
   OpenClawController,
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
   ResourceStateConflictError,
@@ -1850,9 +1849,8 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     configurationId: openclawConfiguration.id,
     executionMode: "dedicated",
   });
-  // The pinned runtime cannot run dedicated OpenClaw, so admission refuses it before
-  // any revision exists unless the Installation declares a native-worker runtime image.
-  assert.equal(PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS, false);
+  // Native runtime support does not waive the required Sandbox containment.
+  // Refusal leaves the existing embedded revision unchanged.
   await assert.rejects(
     controller.deployAgent(
       administrator,
@@ -1860,13 +1858,14 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
       resolveApprovedProductionHarness,
     ),
     (error) =>
-      error instanceof NativeWorkerSupportError &&
-      /cloudWorkers\.requiredProfile/.test(error.message) &&
-      /docs-enterprise\.openclaw\.org\/reference\/harness-execution\/#native-worker-support/.test(
+      error instanceof DependencyUnavailableError &&
+      /requires a provisioning SandboxDriver with networking, filesystem, and process containment/.test(
         error.message,
       ),
   );
-  assert.equal((await controller.getInstallation(administrator)).capabilities, undefined);
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
+    nativeWorkers: { support: "pinned-runtime" },
+  });
   // Listing returns the revision's summary: no saved settings.
   assert.deepEqual(
     (await controller.listRevisions(administrator, namespace.id, agent.id)).revisions,
@@ -1912,10 +1911,11 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
   );
 });
 
-test("Installation native worker support admits dedicated OpenClaw to Sandbox checks", async () => {
-  const { agent, controller, namespace } = await fixture({ nativeWorkerSupport: "custom-image" });
+test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox containment", async () => {
+  const { agent, controller, namespace } = await fixture();
+  assert.equal(PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS, true);
   assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
-    nativeWorkers: { support: "custom-image" },
+    nativeWorkers: { support: "pinned-runtime" },
   });
   const openclawConfiguration = await controller.createConfiguration(administrator, {
     namespaceId: namespace.id,
@@ -1928,7 +1928,7 @@ test("Installation native worker support admits dedicated OpenClaw to Sandbox ch
     configurationId: openclawConfiguration.id,
     executionMode: "dedicated",
   });
-  // The declaration lifts only the runtime refusal: dedicated OpenClaw still fails closed
+  // Native runtime support does not grant containment: dedicated OpenClaw still fails closed
   // without a provisioning SandboxDriver that declares networking, filesystem, and process containment.
   await assert.rejects(
     controller.deployAgent(

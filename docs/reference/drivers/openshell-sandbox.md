@@ -1,15 +1,19 @@
 # OpenShell SandboxDriver
 
-The OpenShell SandboxDriver pairs its Gateway with dedicated Codex/native
-OpenClaw Harnesses and [Kubernetes Compute](kubernetes-compute.md). OCC owns
-Agents, revisions, Namespaces, routing, credentials, and authorization.
+The OpenShell SandboxDriver pairs its Gateway, dedicated Codex/native OpenClaw
+Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
+revisions, Namespaces, routing, credentials, and authorization.
 
-Development supplies plugin-free dedicated Codex with
-[`v0.1.4`](https://github.com/NVIDIA/OpenShell/tree/v0.1.4). The paired
-[OpenShell Credential Gateway](openshell-credential-gateway.md) delivers the
-model key; a revision-owned provider supplies Codex files and the workspace-node
-credential. Embedded execution is unsupported. These APIs are experimental and
-unqualified for production.
+Development supports native OpenClaw and plugin-free Codex with
+[`v0.1.4`](https://github.com/NVIDIA/OpenShell/tree/v0.1.4). The pinned
+OCE runtime declares native Dedicated support. The paired
+[Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
+revision-owned providers supply node enrollment and Codex files. These APIs remain
+experimental and unqualified for production.
+
+Embedded OpenClaw is unsupported. The Driver supplies native OpenClaw's three
+containment facets; see
+[qualification](#qualification-contract).
 
 ## Ownership model
 
@@ -28,8 +32,8 @@ routing, and the per-Agent Gateway. Sandbox owns these provider operations:
   exposes its loopback app-server port in the
   same request; native OpenClaw requests no inbound service. The Driver adds each
   [credential attachment](#credential-attachments) to the Sandbox's providers,
-  plus a revision-owned Codex runtime provider when applicable,
-  validates the route, and returns the stable Sandbox reference.
+  plus the selected Harness's revision-owned runtime provider,
+  validates any Codex route, and returns the stable Sandbox reference.
   Private [workspace initialization](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution) completes before Harness execution.
 - OpenShell's controller creates and owns the provider Harness Pod behind that
   Sandbox.
@@ -54,11 +58,10 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
-including `best_effort`, fails Installation startup.
+including `best_effort`, fails Installation startup. Hosts lacking the requested Landlock operations fail launch.
 
-There is no `exec` facet; command-level authorization and per-tool dynamic
-sandbox creation are deferred. `exec` remains a tool invocation inside the
-selected Harness sandbox.
+There is no `exec` facet. Command-level authorization and per-tool sandbox
+creation are deferred; `exec` runs inside the selected Harness sandbox.
 
 ## Configuration
 
@@ -67,7 +70,7 @@ bundled Kubernetes Compute Driver; installed Compute Drivers fail startup.
 Select an [`openshell` Backend](../backends.md#openshell-gateway) whose
 `drivers.sandbox` matches this ID and its
 [Credential Gateway](openshell-credential-gateway.md#configure-the-driver) member.
-The Backend owns the connection; Sandbox configuration rejects `endpoint`,
+The Backend owns connections; Sandbox configuration rejects `endpoint`,
 `scheme`, `serviceName`, `port`, `auth`, `requestTimeoutMs`, and
 `rootCertificatePath` in `gateway`.
 
@@ -89,6 +92,7 @@ drivers:
         networkPolicyResources: []
       kubernetes:
         runtimeClassName: openshell-sandbox
+        userNamespaces: false
         serviceAccount:
           mode: gatewayConfigured
         sandboxDataMount:
@@ -113,9 +117,8 @@ drivers:
 When `policy.filesystem` is omitted, the Driver sends OpenShell's permissive
 runtime baseline: `/bin`, `/usr`, `/lib`, `/proc`, `/dev/urandom`, `/etc`,
 `/var/log`, and `/app` are read-only; `/tmp`, `/dev/null`, the image workdir,
-approved mounts, and `/sandbox/.openclaw-runtime` are writable. Set an explicit
-`filesystem` block to replace the baseline when tightening the Sandbox. The
-Driver still adds its required mounts, runtime root, and `/tmp`.
+approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `filesystem` block replaces the baseline; the Driver still adds
+required mounts, runtime root, and `/tmp`.
 
 The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
 OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
@@ -154,9 +157,8 @@ runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once
 into trusted Installation configuration; the Driver applies it for each OCC
 Namespace before creating its Workspace, without per-Namespace Helm releases.
 
-The disposable profile enables OpenShell's unauthenticated development mode.
-The pinned release serves control-plane RPCs and provider-advertised Harness
-traffic on the same Gateway port. NetworkPolicies limit access to trusted OCE,
+The disposable profile uses unauthenticated development mode. The pinned release
+shares one Gateway port for control-plane RPCs and provider-advertised Harness traffic. NetworkPolicies limit access to trusted OCE,
 OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
 service-only authority on that shared listener. Accept this only in an owned
 disposable development cluster; never qualify this topology for production.
@@ -174,7 +176,10 @@ OpenShell credentials must not appear in startup YAML.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
-under `/sandbox/`.
+under `/sandbox/`. For native OpenClaw, the permission preparer creates that subpath
+before Sandbox creation. After supervisor readiness, Sandbox initializes
+[private workspace inputs](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
+through private stdin; the Harness verifies completion at its effective path.
 
 For dedicated Codex, OpenShell's `configureAgent` hook removes
 `appServer.networkProxy` and adds this before OCC validates and freezes the revision:
@@ -223,34 +228,35 @@ static `providers` entries that use the OCC shape, so operator-configured
 providers cannot impersonate a credential source. After the Harness is ready,
 Compute requires every attachment to report `ready` before activation.
 
-## Dedicated Codex runtime provider
+<span id="dedicated-codex-runtime-provider"></span>
 
 For external ChatGPT authentication, the Sandbox stores account metadata but
 omits static `CODEX_ACCESS_TOKEN`. Only the attached OpenShell provider supplies
 its bound alias. Withdrawal therefore leaves no placeholder on restart, and the
 Harness holds its authentication failure without starting Codex or using cached state.
 
-Compute emits bounded, nonsecret `runtime.json` and `config.toml`; a
-revision-owned provider exposes them read-only and supplies their paths through
-`OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and `OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`.
-Provisioning waits for the first fail-closed Gateway to issue its workspace-node
-setup Secret, so the provider starts with final setup.
+## Dedicated runtime providers
 
-Development also places the expiring setup envelope in that provider. The token
-is visible inside the Sandbox, so this is not a production credential guarantee.
-Policy limits node egress to the Gateway destination and executable. Compute
-waits for the provider route before enrollment. If Compute renews an expired
-setup, `provisionHarness` uses a version-fenced OpenShell update limited to
-`node_setup_json`; the endpoint, TLS fingerprint, runtime files, CA, labels, and
-ownership must remain exact. The Harness rereads the provider file before each
-node retry and retains the latest valid value during projection gaps. The raw
-app-server token stays outside the provider. Plugins and repository broker
-configuration fail before creation.
+Revision-owned providers use `oce-codex-runtime` or `oce-openclaw-runtime` profiles.
+Both expose node-enrollment and Gateway CA files after the Agent Gateway issues
+setup. Codex additionally requires bounded, nonsecret `runtime.json` and
+`config.toml`, addressed through `OPENCLAW_PLUGIN_RUNTIME_MANIFEST` and
+`OPENCLAW_PLUGIN_CODEX_CONFIG_TOML`; native OpenClaw rejects them. Ordinary
+Secret-backed environment projections remain unsupported.
 
-Revision cleanup deletes the Sandbox before its runtime provider. Namespace
-cleanup then removes the shared profile. Replays adopt only exact
-Namespace-, Agent-, and revision-owned providers with identical nonsecret
-configuration except the narrowly reconciled expired setup envelope. A failed
+The expiring setup token is visible inside the Sandbox, without a production
+credential guarantee. Policy limits node egress to the Gateway and executable.
+Codex waits for its provider route; native OpenClaw connects outbound. Renewal
+version-fences `node_setup_json`; endpoint, TLS fingerprint, runtime files, CA,
+labels, and ownership stay exact. Native startup reads the envelope; the Codex
+supervisor rereads it before node retries and retains valid setup during projection
+gaps. The raw app-server token stays outside the provider. Plugins and repository
+broker configuration fail before creation.
+
+Revision cleanup deletes the Sandbox before its runtime provider; Namespace
+cleanup removes unused profiles. Replays adopt only exact Namespace-, Agent-,
+and revision-owned providers with identical nonsecret configuration except the
+reconciled expired setup envelope. A failed
 or timed-out Sandbox create does not eagerly delete that provider because the
 remote mutation may still have completed; the normal revision cleanup path owns
 both resources.
@@ -286,9 +292,8 @@ exempts the whole Pod, a fail-closed policy must restrict it to digest-pinned
 OpenShell images, expected ServiceAccounts, Namespaces, labels, and capabilities.
 
 Do not grant wildcard tenant permissions. The Driver uses the Kubernetes Compute
-client; there is no provider-specific adapter. The controller and worker need
-Compute access, namespace-scoped policy apply, and Gateway readiness, but no
-Sandbox custom-resource permission.
+client. Controller and worker need Compute access, namespace-scoped policy apply,
+and Gateway readiness, without Sandbox custom-resource permission.
 
 Kubernetes Compute retains default-deny policies. In the development profile,
 provider transport grants the Agent Gateway egress only to the configured
@@ -309,8 +314,8 @@ and this scoping. See the
 
 ## Qualification contract
 
-OpenShell remains an experimental development path. The current implementation
-satisfies the local contract changes below; protected cluster proof remains.
+OpenShell remains experimental. Local contracts below are implemented; protected
+cluster proof remains.
 
 ### Workload identity
 
@@ -320,29 +325,30 @@ supervisor credential must remain inaccessible to the Agent. If a deployment
 requests an Agent ServiceAccount and projected token, the Driver must preserve
 both exactly or reject the revision.
 
-A Kubernetes ServiceAccount token cannot identify one OCE Agent across cluster
-trust domains. Future exchange must scope evidence to the Agent ServicePrincipal
-and revision; Gateway and Harness authenticate separately. See
+Kubernetes ServiceAccount tokens cannot identify an OCE Agent across cluster
+trust domains. Future exchange must scope evidence to its ServicePrincipal and
+revision; Gateway and Harness authenticate separately. See
 [authorization](../authorization.md#principals).
 
 ### Writable runtime state
 
-The Sandbox contract requires bounded, revision-local writable state rather than
-a specific path or volume kind. Persistent data remains in explicit Agent-owned
-mounts.
+OpenShell mounts `/sandbox/.openclaw-runtime` from a bounded revision subpath,
+never the PVC root. Persistent categories use separate subpaths below
+`/sandbox/.openclaw-mounts`. Exact mount paths, including
+`OPENCLAW_NODE_STATE_DIR`, use a process-created `state` child so atomic writes
+avoid symlinks and permission changes on root-owned mounts. PVC quota bounds
+runtime storage; Agent deletion removes it.
 
-OpenShell mounts a revision-scoped Agent PVC subpath at
-`/sandbox/.openclaw-runtime`, never the PVC root. Persistent categories retain
-separate subpaths; non-workspace mounts live below `/sandbox/.openclaw-mounts`.
-An exact mount environment path such as `OPENCLAW_NODE_STATE_DIR` points to a
-process-created `state` child, avoiding atomic replacement through a symlink or
-permission changes on a root-owned mount. The Agent PVC quota bounds the runtime
-root, and Agent deletion removes it.
-OpenShell uses the image's existing `/tmp` for temporary files because the
-supervisor probes `TMPDIR` before the Harness can create a nested directory;
-Kubernetes ephemeral-storage limits bound that writable layer.
-Ordinary Kubernetes Compute may retain bounded `emptyDir` volumes at
-`/home/node` and `/tmp`.
+The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
+`tmp` child without changing supervisor directory permissions. Codex retains
+bounded ephemeral temporary storage. Native provisioning preserves
+retained entries while privatizing writable PVC subpaths in a restricted,
+revision-owned Deployment. Ownership/mode verification, foreground deletion,
+and writer termination precede Sandbox creation. This temporary preparation
+requires `kubernetes.userNamespaces: false` and the pinned Gateway's default
+identity selection, without UID/GID overrides.
+Ordinary Kubernetes Compute may use bounded `/home/node` and `/tmp` `emptyDir`
+volumes.
 
 ### Remaining qualification work
 

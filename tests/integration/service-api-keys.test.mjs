@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { renameSync } from "node:fs";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,6 +84,14 @@ test("service API keys authenticate scoped automation without replacing sessions
       });
       return controller;
     },
+  });
+  let rotateKeyBeforeResponse;
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    if (rotateKeyBeforeResponse && reply.statusCode === 403) {
+      rotateKeyBeforeResponse();
+      rotateKeyBeforeResponse = undefined;
+    }
+    done(null, payload);
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
@@ -794,6 +803,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     assert.equal(JSON.parse(deletingAgent.stdout).status, "deleting");
 
+    // Rotate after admission refuses the Namespace key, before the CLI receives that refusal.
+    rotateKeyBeforeResponse = () => renameSync(adminKeyFile, keyFile);
     await assert.rejects(
       run(occCli, ["installation", "get", "--output", "json"], { env }),
       (error) => {
@@ -801,9 +812,13 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
+        assert.ok(error.stderr.includes(`is scoped to Namespace ${namespaceId};`));
         return true;
       },
     );
+    // A new command reads the replacement Installation key; only the refused one used the old key.
+    assert.equal(rotateKeyBeforeResponse, undefined, "rotated the key before delivering the 403");
+    await run(occCli, ["iam", "service-principal", "list"], { env });
   });
 
   await t.test(

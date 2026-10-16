@@ -58,6 +58,7 @@ test(
     // command. Copy source over argv so this also works with a remote Docker engine.
     const paths = [
       "tests/conformance/workspace-node-supervisor.test.mjs",
+      "tests/helpers/available-port.mjs",
       "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
       "apps/controller/src/drivers/compute/node-program.ts",
       "apps/controller/src/drivers/compute/runtime-startup.ts",

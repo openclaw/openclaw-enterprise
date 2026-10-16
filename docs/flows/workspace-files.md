@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-13
-last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
+updated: 2026-10-16
+last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 ---
 
 # Agent Workspace Files Flow
@@ -9,15 +9,14 @@ last_updated_session: authoring-run/fd902939-ed58-4508-8d33-95a863d966af
 ## Overview
 
 OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
-`IDENTITY.md`, and `USER.md`. Compute initializes durable storage before execution;
-activation retains completion metadata.
+`IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
+initializes it before activation.
 
 Subsequent file operations authorize the exact active Agent and use its
 Compute-resolved private endpoint through Envoy Gateway.
 
-Dedicated execution uses Kubernetes Codex; see
-[workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
-Dedicated OpenClaw worker execution remains pending.
+Dedicated execution initializes the Harness workspace for Codex and native
+OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -94,37 +93,36 @@ textarea values use LF newlines.
 
 Bundled Drivers use
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
-Kubernetes delivers an Agent-owned Secret to the workspace owner's init
-container: Gateway when embedded, Harness when dedicated. Docker uses a setup
-container and durable volumes; SSH uses the protected Agent directory. Unsupported
-placement fails before staging inputs. With a provider-owned Harness, Compute
-requires the selected Sandbox's `validateWorkspaceSetup(harness, configuration)`
-capability and delegates validation to that owner; otherwise admission returns
-`409`. The Sandbox validates its relocated workspace rather than Compute's
-canonical mount path. Preparation retains the same check.
+Kubernetes delivers an Agent-owned Secret to the workspace owner's init container
+(Gateway when embedded, Harness when dedicated); Docker uses a setup container
+and durable volumes; SSH uses the protected Agent directory. Provider-owned
+Harnesses require the Sandbox's `validateWorkspaceSetup(harness, configuration)`:
+Compute delegates validation of the relocated workspace, or returns `409` before
+staging inputs. Preparation repeats this check.
 
-For a provider-owned Harness,
-`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment` hands Sandbox the
-[setup identity and exact Secret reference](../reference/drivers/sandbox.md#provisioning-inputs).
-`apps/controller/src/drivers/sandbox/openshell.ts:initializeWorkspace` waits
-for OpenShell Sandbox readiness, verifies the private Secret's Namespace,
-Agent and setup identity, then calls authenticated `ExecSandbox` with a fixed
-initializer and JSON stdin. File contents never enter provider configuration,
-arguments, or environment values; remote stdout and stderr are discarded.
-The launcher waits for the completion marker. A workspace `flock` serializes
-initializers even when an RPC acknowledgement is lost. The Harness verifier uses
-`OPENCLAW_WORKSPACE_DIR`, preserving OpenShell's actual mount location.
+OpenShell separately prepares native OpenClaw's private writable PVC subpaths,
+preserving retained entries. Ownership/mode checks, UID-fenced deletion and writer
+termination precede Sandbox creation. This permission setup carries no documents;
+see [OpenShell preparation](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
 
-The runner validates identity, paths, OpenClaw `2026.9.8`, and template digest
-against Console defaults; defaults identities must match, and links or conflicts
-fail. Native `setup` initializes the workspace and Git without starting the
-Gateway. Kubernetes init containers use the Gateway resource budget to load the
-native CLI. The runner atomically writes supplied files, including empty
-strings, only over absent, stock, or already-submitted content. It reruns setup
-for the `BOOTSTRAP.md` lifecycle, verifies results, and writes
-`.oce-workspace-setup.json` atomically.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
+hands Sandbox the [setup identity and exact Secret reference](../reference/drivers/sandbox.md#provisioning-inputs).
+After Sandbox readiness, `apps/controller/src/drivers/sandbox/openshell.ts:initializeWorkspace`
+verifies the Secret's Namespace, Agent and setup identity, then calls authenticated
+`ExecSandbox` with a fixed initializer and JSON stdin. Contents stay out of provider
+configuration, arguments and environment; remote output is discarded. The launcher
+waits for completion. A workspace `flock` serializes attempts after lost
+acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 
-Matching markers skip replay; incomplete writes retry with the same checks.
+The runner validates identity, paths, OpenClaw `2026.9.9`, and template digest
+against Console defaults; identities must match, and links or conflicts fail.
+Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
+containers use Gateway resource budgets. Supplied files, including empty strings,
+atomically replace only absent, stock, or already-submitted content. The runner
+reruns setup for `BOOTSTRAP.md`, verifies results, and atomically writes
+`.oce-workspace-setup.json`.
+
+Matching markers skip replay; incomplete writes retry the same checks.
 Missing or mismatched markers after recorded completion block startup, preserving
 later edits. Errors omit document contents.
 
@@ -363,6 +361,8 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Changelog
 
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
+
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
@@ -374,6 +374,8 @@ replays it. The native client closes in the operation's cleanup path.
 - 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
 
 - 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
+
+- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
 
 - 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
 
