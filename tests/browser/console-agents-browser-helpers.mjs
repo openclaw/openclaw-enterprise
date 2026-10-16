@@ -337,3 +337,78 @@ export function repositoryCheckbox(page, name) {
     .filter({ has: page.getByText(name, { exact: true }) })
     .getByRole("checkbox");
 }
+
+// Holds requests matching `url` until release(). `requested` resolves when the first one is
+// held and rejects after 10 s if none is, so a test fails instead of hanging. With `once`, only
+// the first match is held; with `method`, only matches with that method. Requests not held fall
+// through to earlier routes. `once` is a hand-written flag, not Playwright's { times: 1 }: that
+// turns interception off once no routes remain, which silently releases other held requests.
+// With `afterServer`, the server answers first and the page gets that answer on release (a
+// write that landed while the page waits). With `fulfill`, the held request gets that response.
+export async function holdRequests(
+  t,
+  page,
+  url,
+  { once = false, method, afterServer = false, fulfill = null } = {},
+) {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markRequested;
+  let timer;
+  const requested = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`No ${url} request was held`)), 10_000);
+    markRequested = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
+  requested.catch(() => {});
+  let taken = false;
+  await page.route(url, async (route) => {
+    if ((once && taken) || (method !== undefined && route.request().method() !== method)) {
+      await route.fallback();
+      return;
+    }
+    taken = true;
+    const response = afterServer ? await route.fetch().catch(() => null) : null;
+    markRequested();
+    await held;
+    await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
+      () => {},
+    );
+  });
+  t.after(() => {
+    clearTimeout(timer);
+    release();
+  });
+  return { requested, release, wasRequested: () => taken };
+}
+
+// Records layout shifts from the first paint, naming the elements that moved. Install it with
+// page.addInitScript() before a full load, so no recent input excuses a shift.
+export function recordLayoutShifts() {
+  globalThis.__layoutShifts = [];
+  new globalThis.PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      if (!entry.hadRecentInput) {
+        globalThis.__layoutShifts.push({
+          value: entry.value,
+          sources: entry.sources.map((source) => ({
+            node: `${source.node?.nodeName}.${source.node?.className}`,
+            text: source.node?.textContent?.slice(0, 40),
+            from: [source.previousRect.y, source.previousRect.height],
+            to: [source.currentRect.y, source.currentRect.height],
+          })),
+        });
+      }
+    }
+  }).observe({ type: "layout-shift", buffered: true });
+}
+
+// Returns the layout shifts recorded since the last call, and their total.
+export async function takeLayoutShifts(page) {
+  const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
+}
