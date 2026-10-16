@@ -4387,6 +4387,69 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
     assert.deepEqual(rendered.gateway.auth, auth);
     assert.deepEqual(revision.configuration, original);
 
+    // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
+    // A human allowlist must not silently inherit the pilot's admin device grant.
+    assert.throws(
+      () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: {
+                  ...auth.trustedProxy,
+                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+                },
+              },
+            },
+          },
+        }),
+      (error) =>
+        error instanceof ComputeGatewaySettingError &&
+        error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+    );
+    for (const scopes of ["operator.read", null, {}, ["operator.read", 42]]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: {
+                    ...auth.identityScopes,
+                    "oidc:member-01": scopes,
+                  },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes",
+      );
+    }
+    // Machine-only pilot Agents retain their existing admin auto-approval contract.
+    assert.doesNotThrow(() =>
+      driver.validateAgentProvisioning({
+        executionMode: "dedicated",
+        configuration: {
+          gateway: {
+            auth: {
+              ...auth,
+              trustedProxy: {
+                ...auth.trustedProxy,
+                allowUsers: ["occ-workspace-files"],
+                deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+              },
+            },
+          },
+        },
+      }),
+    );
+
     // An empty list means "allow every proxy user" upstream. Additional humans
     // must not turn explicit admission into a wildcard or remove machine access.
     for (const allowUsers of [[], ["oidc:member-01"], ["occ-workspace-files", " "], null]) {

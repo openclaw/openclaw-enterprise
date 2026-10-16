@@ -692,6 +692,39 @@ test(
       false,
       "provisioning must carry only saved Secret references, not Slack token values",
     );
+    // Reject unsafe legacy enrollment and malformed human grants at the real
+    // provisioning boundary, before committing an Agent or queuing deployment.
+    for (const [auth, setting] of [
+      [
+        {
+          ...gatewayAuth,
+          trustedProxy: {
+            ...gatewayAuth.trustedProxy,
+            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+          },
+        },
+        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      ],
+      [
+        {
+          ...gatewayAuth,
+          identityScopes: { ...gatewayAuth.identityScopes, "oidc:member-01": "operator.read" },
+        },
+        "gateway.auth.identityScopes",
+      ],
+    ]) {
+      const invalid = structuredClone(body);
+      invalid.configuration.values.gateway.auth = auth;
+      const denied = await fixture.request(
+        "POST",
+        `/namespaces/${namespaceOwner.id}/agents/provision`,
+        invalid,
+      );
+      assert.equal(denied.status, 409, JSON.stringify(denied.body));
+      assert.equal(denied.body.error.code, "RESOURCE_CONFLICT");
+      assert.ok(denied.body.error.message.includes(setting));
+      assert.equal(denied.data, undefined);
+    }
     const admitted = await fixture.request(
       "POST",
       `/namespaces/${namespaceOwner.id}/agents/provision`,

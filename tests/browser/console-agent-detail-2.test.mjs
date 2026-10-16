@@ -3457,6 +3457,11 @@ async function holdNextStatusResponse(page, url) {
 
 test("Gateway people show native roles and recover from a failed refresh", async (t) => {
   let fail = false;
+  let releaseFirstRead;
+  const firstRead = new Promise((resolve) => {
+    releaseFirstRead = resolve;
+  });
+  t.after(() => releaseFirstRead());
   let people = [
     { id: "profile-alice", displayName: "Alice Team", role: "member", hasAvatar: true },
     { id: "profile-bob", displayName: "Bob Team", role: "maintainer", hasAvatar: true },
@@ -3464,6 +3469,7 @@ test("Gateway people show native roles and recover from a failed refresh", async
   const fixture = await createConsoleAppFixture(t, {
     gatewayPeopleAccess: {
       async list() {
+        await firstRead;
         if (fail) {
           throw new Error("Gateway unavailable");
         }
@@ -3488,6 +3494,13 @@ test("Gateway people show native roles and recover from a failed refresh", async
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  // An optional WS-backed read must settle before its card becomes visible;
+  // unavailable/denied installations must never flash an empty loading card.
+  const pendingCard = page.locator(".gateway-people");
+  await pendingCard.waitFor({ state: "attached" });
+  assert.equal(await pendingCard.isVisible(), false);
+  assert.equal(await pendingCard.getAttribute("hidden"), "");
+  releaseFirstRead();
   const card = page.getByRole("region", { name: "People" });
   await card.getByText("Alice Team", { exact: true }).waitFor();
   assert.equal(await card.getByText("member", { exact: true }).count(), 1);

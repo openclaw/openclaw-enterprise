@@ -92,6 +92,14 @@ and overwrite identity headers. This adds no browser route or Keycloak integrati
 Private operator routes retain the machine identity. Named roles must also permit
 machine admin.
 
+When `allowUsers` includes humans, `deviceAutoApprove.scopes` must exclude
+`operator.admin`. OpenClaw unions device and identity scopes, so retaining the
+pilot's admin auto-approval would elevate every admitted browser. Grant human
+administrators explicitly through `identityScopes`; use read/write for automatic
+device approval. Machine-only Agents may retain admin auto-approval. Each
+`identityScopes` value must be an array of strings. Invalid combinations fail
+preflight with `409 RESOURCE_CONFLICT`, naming the setting and requirement.
+
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
 refuse any other bind, `custom` unless `customBindHost` is `0.0.0.0`, and any

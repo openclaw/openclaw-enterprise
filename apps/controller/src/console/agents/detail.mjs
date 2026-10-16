@@ -2006,9 +2006,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
-          revealDetail,
-        );
+        void Promise.all([
+          nativeAdmin.ready,
+          gatewayPeople.ready,
+          failed ? callerPermissionsRead : null,
+        ]).then(revealDetail);
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(

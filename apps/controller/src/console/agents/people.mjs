@@ -120,7 +120,11 @@ export function renderGatewayPeople(context, path) {
 
   const section = element(
     "section",
-    { className: "agent-card gateway-people", "aria-labelledby": "gateway-people-title" },
+    {
+      className: "agent-card gateway-people",
+      "aria-labelledby": "gateway-people-title",
+      hidden: true,
+    },
     element(
       "div",
       { className: "gateway-people-heading" },
@@ -192,9 +196,9 @@ export function renderGatewayPeople(context, path) {
         return;
       }
       status.textContent = "";
+      section.hidden = cause.status === 403;
       if (cause.status === 403) {
         context.deniedReads?.remember(endpoint);
-        section.hidden = true;
       } else if (cause.status === 409) {
         status.textContent = "People will appear when this Agent has a serving Gateway.";
       } else {

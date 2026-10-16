@@ -11623,6 +11623,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         `must retain ${TRUSTED_PROXY_IDENTITY} operator.admin when set`,
       );
     }
+    if (
+      identityScopes !== undefined &&
+      Object.values(identityScopes).some(
+        (scopes) => !Array.isArray(scopes) || scopes.some((scope) => typeof scope !== "string"),
+      )
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.identityScopes",
+        "must map each identity to an array of scope strings",
+      );
+    }
+    const deviceAutoApprove = asRecord(trustedProxy.deviceAutoApprove);
+    if (
+      Array.isArray(allowUsers) &&
+      allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY) &&
+      Array.isArray(deviceAutoApprove?.scopes) &&
+      deviceAutoApprove.scopes.includes("operator.admin")
+    ) {
+      // Upstream unions device and identity grants; an admin device grant would
+      // silently elevate every admitted human, regardless of identityScopes.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+        "must exclude operator.admin when allowUsers includes human identities; grant administrators through identityScopes instead",
+      );
+    }
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
     // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
     // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.

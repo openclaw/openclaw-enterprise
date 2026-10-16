@@ -1,7 +1,7 @@
 ---
 created: "2026-10-16"
 updated: "2026-10-16"
-last_updated_session: authoring-run/roster-2596
+last_updated_session: authoring-run/review-2596
 ---
 
 # Gateway people flow
@@ -67,6 +67,8 @@ return `404`; roster and avatar responses use `no-store`.
 `apps/controller/src/console/agents/people.mjs:renderGatewayPeople`
 `apps/controller/src/console/agents/detail.mjs:updateCurrentAgent`
 
+The first read keeps the card hidden and participates in the Agent overview
+reveal gate. Disabled and denied reads therefore never flash a loading card.
 The card renders names as text, native role labels, and local authenticated
 avatar URLs with initials as fallback. The overview previews six profiles sorted
 by display name. Larger rosters offer a modal side panel with the full sorted
@@ -105,6 +107,8 @@ without turning normal unavailability into a failed Console read.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 11:07: Gate initial roster visibility with the Agent overview. (authoring-run/review-2596 - 0c0ed82a373e0608de3e59414f0bd18fb2eedbdb)
 
 - 2026-10-16 10:27: Added the compact preview and searchable full roster panel. (authoring-run/roster-2596 - 1e905edea40d2624dfdb456f311d8e7c475a67fb)
 

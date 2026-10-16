@@ -9,7 +9,7 @@ identity-provider admission; use the installed Gateway proof for that boundary.
 1. Build Storybook from the candidate source and open **Pages/Agent detail / Gateway People**.
 2. Capture the desktop roster and the same card at 390px. Verify both names and role labels.
 3. Open **Gateway People Error**. Select **Refresh people** and verify the two profiles return.
-4. Inspect **Empty**, **Not Configured**, **Loading**, **Denied**, **Stopped**, **Avatar**, **50 People**, **Search People**, and **No Matching People**.
+4. Inspect **Empty**, **Not Configured**, **Loading And Hidden**, **Denied**, **Stopped**, **Avatar**, **50 People**, **Search People**, and **No Matching People**.
 5. Open **50 People**. Confirm the overview shows six profiles and the total count.
    Open the panel, search by name, clear the search, scroll, and close with Escape
    and Close. Check focus returns to the launch button; repeat at 390px with a

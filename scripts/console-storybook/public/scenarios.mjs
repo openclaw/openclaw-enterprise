@@ -5106,13 +5106,13 @@ export const scenarios = {
     group: "Components/Gateway people",
     path: revision,
     deployed: true,
-    name: "Loading",
+    name: "Loading and hidden",
     gatewayPeople: [
       { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
       { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
     ],
     rules: [{ method: "GET", suffix: "/gateway/people", hold: true }],
-    description: "Review the Gateway people loading state.",
+    description: "The optional roster stays hidden while its first Gateway read is pending.",
     steps: ["Inspect the people card and its refresh control."],
   },
   gatewayPeopleError: {
