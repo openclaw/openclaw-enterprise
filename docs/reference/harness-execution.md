@@ -161,11 +161,11 @@ HTTPS Responses streaming, including during the probe that ignores user config.
 For Secret-backed dedicated Codex, select the endpoint through the Kubernetes
 Compute Driver's [runtime configuration](drivers/kubernetes-compute.md#configuration);
 an OpenShell credential source supplies its own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
-subprocess timeout once after one second. Each attempt has a 30-second cap within
-one 61-second budget, including the delay. Authentication rejection, malformed
-output, tool events, and external signals without timeout evidence do not retry.
-Wrappers run under `tini`, so termination during a probe, its delay, or a held
-failure exits at once without another probe. Exhausted or nonretryable failure
+subprocess timeout, or a transient failure (provider 5xx or overload, dropped
+stream or connection, external kill), once after one second. Each attempt has a
+30-second cap within one 61-second budget, including the delay. Other failures
+do not retry. Under `tini`, termination during a probe, its delay, or a held
+failure exits at once. Exhausted or nonretryable failure
 holds the process unready until restart or Pod stop; readiness polling never
 starts another model call.
 

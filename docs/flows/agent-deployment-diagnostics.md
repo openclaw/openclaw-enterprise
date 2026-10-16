@@ -133,7 +133,10 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
   exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
-  `RUNTIME_MODEL_PROBE_FAILED`. The
+  `RUNTIME_MODEL_PROBE_FAILED`. A cause detail ending `-attempt2`, such as
+  `turn-failed-attempt2`, means a transient failure was retried once and the
+  second attempt failed that way. While it holds a failure, the Harness answers
+  the Agent Gateway's connection with `503` naming the held code. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
   decisions; an operator can read the
   [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).

@@ -390,6 +390,19 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 500 }),
     },
     {
+      name: "a rate limit with an overload marker is not retried",
+      events: [started, failedTurn("rate limit reached while servers are overloaded")],
+      result: { status: 1 },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }),
+    },
+    {
+      // spawnSync kills a probe whose output overflows; that is not an outside kill.
+      name: "a probe killed for oversized output is not retried",
+      events: [],
+      result: { status: null, signal: "SIGKILL", error: { code: "ENOBUFS" } },
+      expect: probeFailure({ kind: "PROCESS_EXIT", detail: "error-ENOBUFS" }),
+    },
+    {
       name: "tool event despite completed assistant turn",
       events: completedTurn({
         type: "item.completed",
@@ -425,7 +438,12 @@ test("Codex runtime retries a transient startup model probe failure once", async
   const killed = probe([], { status: null, signal: "SIGKILL" });
   // Each transient class, by the one marker that makes it transient.
   const transient = [
-    ["a provider 5xx", failedWith("unexpected status 502: upstream"), "turn-failed", { status: 502 }],
+    [
+      "a provider 5xx",
+      failedWith("unexpected status 502: upstream"),
+      "turn-failed",
+      { status: 502 },
+    ],
     [
       "a provider server error",
       erroredWith('{"error":{"type":"server_error"}}'),
@@ -446,7 +464,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
     ],
     [
       "a dropped stream",
-      failedWith("stream disconnected before completion: connection reset by peer"),
+      failedWith("stream disconnected before completion: response ended early"),
       "turn-failed",
     ],
     [
@@ -518,7 +536,10 @@ test("Codex runtime retries a transient startup model probe failure once", async
       name: "a timeout then a transient failure holds without a second retry",
       native: [login(), probe([], timedOut, 30000), failedWith("unexpected status 503")],
       retryAfterMs: 1000,
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed-attempt2" }, { status: 503 }),
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
+        { status: 503 },
+      ),
       lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
     },
