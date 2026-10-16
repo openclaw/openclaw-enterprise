@@ -126,7 +126,7 @@ stops reads. Missing provenance stays explicit.
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
 from the list immediately shows **Loading agent details…** and **Back to Agents**.
 Access checks finish before the Agent’s name, actions, and overview appear together.
-Other ways into an Agent keep the shown page until then; a fresh load shows loading after 250 ms.
+Other ways into an Agent keep the shown page until then; a fresh load shows loading after 400 ms.
 Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A held page keeps its own navigation and header.
@@ -287,7 +287,8 @@ preflight.
 
 **Open vN Logs** selects the failed revision, even from a draft or another version.
 The tab keeps its height while loading; Stop and Delete appear in place. If the view
-is still current, focus moves to Logs and the output scrolls into view. Clicking the
+is still current, focus moves to Logs and the output scrolls into view; an address or reload
+shows the page already there. Clicking the
 Logs tab instead keeps the strip in place when the output is already visible.
 [Agent runtime logs](agent-runtime-logs.md) covers status, output, and access errors.
 
@@ -301,7 +302,7 @@ opened from the list focuses its heading when the title renders. Tabs and
 focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
-Other pages revalidate before reuse; forms defer refocus. Draft save baselines and
+Other pages revalidate before reuse, a shown 403 or 404 included; forms defer refocus. Draft save baselines and
 Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
@@ -367,9 +368,8 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
 - 2026-10-16 14:30: Scroll a Logs view that loads before its Agent page shows to its newest output. (flake-fix-1016)
-- 2026-10-16 13:00: Keep the shown page until an entered Agent reveals; keep a held page's selector disabled on the way to another page. (ui-jank-code-10)
-- 2026-10-16 12:00: Paint Create Agent with its permission answer; keep a clicked Logs tab's strip in place. (ui-jank-code-9)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
