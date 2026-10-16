@@ -2530,7 +2530,14 @@ test("container empty checkpoint recovery suppresses the next single untimed sna
   assert.equal(lineRecords(replay.data).length, 0);
 });
 
-test("container checkpoints preserve the existing overlap through backend processing delay", async () => {
+// The Driver fakes below cut lines against the clock, as kubelet `sinceSeconds` does. The
+// clock is frozen so the windows do not depend on how long the host takes between reads.
+function freezeClock(t) {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+}
+
+test("container checkpoints preserve the existing overlap through backend processing delay", async (t) => {
+  freezeClock(t);
   let calls = 0;
   const route = await logsRoute({
     label: "container-processing-delay",
@@ -2546,7 +2553,7 @@ test("container checkpoints preserve the existing overlap through backend proces
             );
           }
           const chunk = await read(binding, request);
-          // Equivalent backend processing time, without changing the host clock or reader.
+          // Equivalent backend processing time, without changing the reader.
           const floor = Date.now() + (calls === 1 ? 0 : 1800) - request.sinceSeconds * 1000;
           return { ...chunk, lines: chunk.lines.filter(({ time }) => Date.parse(time) >= floor) };
         },
@@ -2559,7 +2566,8 @@ test("container checkpoints preserve the existing overlap through backend proces
   assert.deepEqual([...rowIds(first.data), ...rowIds(next.data)], range(60));
 });
 
-test("container checkpoint windows remain stable when relative seconds round outward", async () => {
+test("container checkpoint windows remain stable when relative seconds round outward", async (t) => {
+  freezeClock(t);
   for (const skew of [0, 2000]) {
     const route = await logsRoute({
       label: "container-relative-window",
