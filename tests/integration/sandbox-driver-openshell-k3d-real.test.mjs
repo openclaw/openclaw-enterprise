@@ -43,7 +43,7 @@ import {
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
-import { codexTurnTrace } from "../helpers/k3d-failure-diagnostics.mjs";
+import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -4764,52 +4764,34 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     ...(topology.toolSources ?? []).map(({ token }) => token),
     topology.untrustedTlsSource?.token,
   ].filter(Boolean);
-  // The model occasionally answers without calling the exec tool, most often on the first turn
-  // after cluster DNS for the model host was restored. That says nothing about OpenShell, so the
-  // turn is asked again after a pause; the probe's own results are never retried.
-  let result;
-  let run;
-  let completed = [];
-  // Finding 1575: each turn's steps, so a skipped probe shows what the turn did instead.
-  const traces = [];
   const traceSecrets = failureSecrets([
     process.env,
     Object.fromEntries(secrets.map((value, index) => [`PROBE_CREDENTIAL_${index}`, value])),
   ]);
-  for (let attempt = 1; attempt <= 3 && run === undefined; attempt += 1) {
-    if (attempt > 1) {
-      await delay(20_000);
-    }
-    result = await requestCodexTurnFromGatewayPod({
-      namespace: topology.gatewayPlacement,
-      gatewayPod: await currentGatewayPod(topology),
-      providerModel,
-      prompt:
-        `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
-        `Then reply with exactly ${nonce}.`,
-    });
-    const serialized = JSON.stringify(result);
-    assert.equal(
-      secrets.some((value) => serialized.includes(value)),
-      false,
-      "a probe turn must not expose a credential.",
-    );
-    completed = result.items
-      .filter(({ method }) => method === "item/completed")
-      .map(({ params }) => params?.item);
-    // Codex may change into the workspace first, so the script is recognized by its unique name.
-    run = completed.find(
-      (item) => item?.type === "commandExecution" && String(item.command).includes(nonce),
-    );
-    if (run === undefined) {
-      traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
-    } else if (traces.length > 0) {
-      // How often the model skips the tool, even when a retry recovers.
-      process.stderr.write(
-        `OpenShell integration: the probe ran on attempt ${attempt} after skipped turns:\n${traces.join("\n")}\n`,
+  const { result, run, traces } = await observeSandboxProbe({
+    nonce,
+    traceSecrets,
+    async requestTurn(attempt) {
+      if (attempt > 1) {
+        await delay(20_000);
+      }
+      const turn = await requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: await currentGatewayPod(topology),
+        providerModel,
+        prompt:
+          `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
+          `Then reply with exactly ${nonce}.`,
+      });
+      const serialized = JSON.stringify(turn);
+      assert.equal(
+        secrets.some((value) => serialized.includes(value)),
+        false,
+        "a probe turn must not expose a credential.",
       );
-    }
-  }
+      return turn;
+    },
+  });
   if (run === undefined) {
     process.stderr.write(
       `OpenShell integration: turns that skipped the probe:\n${traces.join("\n")}\n`,
@@ -4835,16 +4817,12 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       `OpenShell integration: Harness log after a skipped probe:\n${relevant.join("\n")}\n`,
     );
   }
-  assert.ok(
-    run,
-    `the Harness must run the probe script; completed items: ${JSON.stringify(
-      completed.map((item) => item?.type ?? null),
-    )}; messages: ${JSON.stringify(
-      completed
-        .filter((item) => item?.type === "agentMessage")
-        .map((item) => String(item.text ?? "").slice(0, 400)),
-    )}; turns:\n${traces.join("\n")}`,
-  );
+  assert.ok(run, `No probe command was observed in three turns.\n${traces.join("\n")}`);
+  if (traces.length > 0) {
+    process.stderr.write(
+      `OpenShell integration: the probe ran after these turns without a probe command:\n${traces.join("\n")}\n`,
+    );
+  }
   assert.match(result.assistant, new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
   const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;

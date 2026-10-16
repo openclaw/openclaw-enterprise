@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
-import { codexTurnTrace, podFailureDiagnostic } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  codexTurnTrace,
+  observeSandboxProbe,
+  podFailureDiagnostic,
+} from "../helpers/k3d-failure-diagnostics.mjs";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
 
@@ -580,4 +584,54 @@ test("a long turn trace keeps its start and end", () => {
   assert.match(trace, / > turn\/completed failed: boom$/);
   assert.match(trace, /\[\d+ steps omitted\]/);
   assert.equal(codexTurnTrace(undefined), "");
+});
+
+test("OpenShell asks for another probe only after a turn without that command", async (t) => {
+  const nonce = "fixture-probe";
+  const probe = { command: `cd /work && bash ${nonce}.sh ${syntheticSecret}`, id: "probe" };
+  const event = (phase, item) => ({
+    method: `item/${phase}`,
+    params: { item: { type: "commandExecution", ...item } },
+  });
+  const start = event("started", probe);
+  const end = event("completed", { ...probe, exitCode: 52 });
+  const unrelated = event("completed", { command: "pwd", id: "other", exitCode: 0 });
+  for (const [name, turns, expected] of [
+    ["start without completion", [[start]], "unknown"],
+    ["start followed by another command's result", [[start, unrelated]], "unknown"],
+    ["inconclusive command identity", [[event("started", { id: "probe" })]], "unknown"],
+    ["completion without exit status", [[start, event("completed", probe)]], "unknown"],
+    ["unrelated command, then completed probe", [[unrelated], [start, end]], "completed"],
+    ["no probe observed in three turns", [[], [], []], "absent"],
+  ]) {
+    await t.test(name, async () => {
+      let calls = 0;
+      const observation = observeSandboxProbe({
+        nonce,
+        traceSecrets: secrets,
+        async requestTurn() {
+          const events = turns[calls++];
+          assert.ok(events, "must not send another turn after a possible probe effect");
+          return {
+            items: [
+              ...events,
+              { method: "turn/completed", params: { turn: { status: "completed" } } },
+            ],
+          };
+        },
+      });
+      if (expected === "unknown") {
+        await assert.rejects(observation, (error) => {
+          assert.match(error.message, /outcome is unknown; not sending another turn/);
+          assert.ok(!error.message.includes(syntheticSecret), "do not expose command text");
+          return true;
+        });
+      } else {
+        const { run, traces } = await observation;
+        assert.equal(run, expected === "completed" ? end.params.item : undefined);
+        assert.equal(traces.length, expected === "completed" ? calls - 1 : calls);
+      }
+      assert.equal(calls, turns.length);
+    });
+  }
 });

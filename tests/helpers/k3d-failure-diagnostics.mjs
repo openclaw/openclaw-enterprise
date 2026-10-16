@@ -323,3 +323,53 @@ export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
   const omitted = shown.length - head.length - tail.length;
   return [...head, `[${omitted} steps omitted]`, ...tail].join(separator);
 }
+
+// Ask again only when the turn contained no sign of the probe command. requestTurn
+// owns the transport, the pause before another turn, and checking the raw result for secrets.
+export async function observeSandboxProbe({ nonce, requestTurn, traceSecrets }) {
+  const traces = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await requestTurn(attempt);
+    // The Harness may run an unrelated command first. If a command has no text,
+    // we cannot rule out that it was the probe, so do not discard that observation.
+    const commands = result.items.filter(({ method, params }) => {
+      if (method !== "item/started" && method !== "item/completed") {
+        return false;
+      }
+      const item = params?.item;
+      return (
+        item?.type === "commandExecution" && (!item.command || String(item.command).includes(nonce))
+      );
+    });
+    if (commands.length > 0) {
+      const {
+        method,
+        params: { item },
+      } = commands.at(-1);
+      const start = commands[0];
+      const sameCommand =
+        commands.length === 1 ||
+        (commands.length === 2 &&
+          start.method === "item/started" &&
+          typeof item.id === "string" &&
+          item.id.length > 0 &&
+          start.params.item.id === item.id);
+      if (
+        sameCommand &&
+        method === "item/completed" &&
+        String(item.command).includes(nonce) &&
+        Number.isSafeInteger(item.exitCode)
+      ) {
+        return { result, run: item, traces };
+      }
+      // A completed turn is not a completed command. Preserve the unknown outcome
+      // rather than send the model another request that could run the probe twice.
+      const trace = codexTurnTrace(result.items, traceSecrets, 1_500);
+      throw new Error(
+        `OpenShell probe outcome is unknown; not sending another turn. Attempt ${attempt}: ${trace}`,
+      );
+    }
+    traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+  }
+  return { traces };
+}
