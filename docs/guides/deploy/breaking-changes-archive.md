@@ -60,8 +60,10 @@ settings. A later change applies the header rule to MCP server `headers`
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
-A stored Configuration with such a user name or password does not deploy until
-it is edited.
+A stored Configuration with such a user name or password, or with a `baseUrl`,
+`api`, `models` or header name these rules refuse, does not deploy on any
+Compute until it is edited (since 2026-10-16): deployment answers `400` with
+the save's message.
 
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,

@@ -161,6 +161,7 @@ import {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
@@ -169,6 +170,7 @@ import {
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
+  ModelProviderSettingError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -294,6 +296,7 @@ export {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
   configurationSettingMessage,
@@ -770,6 +773,8 @@ export interface UpdateConfigurationInput {
   readonly configurationId: string;
   readonly values: Readonly<OpenClawConfigurationDocument>;
   readonly secretBindings?: SecretBindings;
+  /** Refuses the update unless the Configuration is still at this generation. */
+  readonly expectedGeneration?: number;
 }
 
 export interface DeployAgentInput {
@@ -1115,7 +1120,8 @@ function provisioningFailureMessage(code: string, error: unknown): string {
     if (
       error instanceof PluginPolicyValidationError ||
       error instanceof NativeWorkerSupportError ||
-      error instanceof ConfigurationHarnessError
+      error instanceof ConfigurationHarnessError ||
+      error instanceof ModelProviderSettingError
     ) {
       // A Configuration refusal can name a submitted key; status stores the message as is.
       const characters = Array.from(error.message.replace(/[\p{Cc}\p{Cf}]|\p{Cs}/gu, "?"));
@@ -2807,7 +2813,10 @@ export class OpenClawController {
             // the same way on every attempt, as HTTP retry does with a 400. A Compute plan
             // refusal arrives as a ResourceConflictError (409) and is rejected the same way.
             error instanceof PluginPolicyValidationError ||
-            error instanceof NativeWorkerSupportError))
+            error instanceof NativeWorkerSupportError ||
+            // Deployment refuses a model provider setting a rule tightened after the request
+            // was queued; every attempt would (finding 1549).
+            error instanceof ModelProviderSettingError))
       ) {
         code = "PROVISIONING_REJECTED";
       }
@@ -5489,6 +5498,14 @@ export class OpenClawController {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
+      // Compared under the row lock, so a save that read an older generation cannot replace a
+      // newer one (finding 1505).
+      if (
+        input.expectedGeneration !== undefined &&
+        input.expectedGeneration !== metadata.generation
+      ) {
+        throw new ConfigurationGenerationConflictError();
+      }
       const previous = await this.lockedConfiguration(driver, metadata);
       let secretBindings: SecretBindings;
       if (input.secretBindings === undefined) {
@@ -7085,8 +7102,11 @@ export class OpenClawController {
         compute,
         sandbox,
       );
-      // The Compute rules first, as on Configuration save, so a stored Configuration that
-      // predates a rule both refuse gets the message its next save would.
+      // The model provider settings, then the Compute rules, as on Configuration save, so a
+      // stored Configuration that predates a rule gets the message its next save would. A
+      // baseUrl or api the runtime cannot use would otherwise fail later, as an unexplained
+      // model probe failure (finding 1549).
+      validateModelProviderSettings(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
@@ -10327,6 +10347,11 @@ export class OpenClawController {
     namespaceId: string,
     target?: ResourceRef,
   ): Promise<void> {
+    if (this.selectedDriver("iam").namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "Namespace policy mutations require transactional IAM Driver support.",
+      );
+    }
     await this.lockNamespace(state, namespaceId);
     if (!(await state.installations.holdPrincipalAccount(principalId))) {
       throw new AuthorizationDeniedError("The acting account is disabled.");

@@ -1179,19 +1179,37 @@ process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); proce
   return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
 }
 
+// One line per proveRetirement sub-wait, so a slow retirement step names its slow wait
+// (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
+async function retirementWait(name, operation) {
+  const started = Date.now();
+  let outcome = "FAILED";
+  try {
+    const result = await operation();
+    outcome = "ok";
+    return result;
+  } finally {
+    log(
+      `reader retirement: ${name} ${outcome} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
+    );
+  }
+}
+
 async function proveRetirement(stack, selected, control, reader) {
   const old = await revisionHarness(stack, selected.agent, selected.revisionId);
   const live = await revisionHarness(stack, control.agent, control.revisionId);
   const held = holdReaderSocket(stack, old, reader.peer.address, 28);
   const stillSelected = holdReaderSocket(stack, live, reader.peer.address, 30);
   try {
-    await waitFor(
-      "both selected Harness sockets",
-      async () => ({
-        done: held.count() >= 2 && stillSelected.count() >= 2,
-        state: { held: held.count(), control: stillSelected.count() },
-      }),
-      minute,
+    await retirementWait("held sockets", () =>
+      waitFor(
+        "both selected Harness sockets",
+        async () => ({
+          done: held.count() >= 2 && stillSelected.count() >= 2,
+          state: { held: held.count(), control: stillSelected.count() },
+        }),
+        minute,
+      ),
     );
     const before = await readerEvents(stack);
     const oldRequests = before.filter(
@@ -1217,7 +1235,9 @@ async function proveRetirement(stack, selected, control, reader) {
       controlRequests.filter((event) => event.connection === controlConnection).length >= 2,
       "control Harness did not complete two requests on its held socket",
     );
-    await observeReaderPeer(stack, selected, "withdraw");
+    await retirementWait("observeReaderPeer withdraw", () =>
+      observeReaderPeer(stack, selected, "withdraw"),
+    );
     const deployment = `agent-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
     const { stdout: oldDeployment } = await kubectl(stack, [
       "-n",
@@ -1230,22 +1250,24 @@ async function proveRetirement(stack, selected, control, reader) {
       "name",
     ]);
     assert.equal(oldDeployment.trim(), "", "withdrawn revision still has a Deployment");
-    await waitFor(
-      "old Harness Pod to terminate",
-      async () => {
-        const { stdout } = await kubectl(stack, [
-          "-n",
-          old.metadata.namespace,
-          "get",
-          "pods",
-          "-l",
-          `openclaw.dev/agent=${selected.agent.id},openclaw.dev/revision=${selected.revisionId},openclaw.dev/workload-role=agent`,
-          "-o",
-          "json",
-        ]);
-        return { done: JSON.parse(stdout).items.length === 0 };
-      },
-      2 * minute,
+    await retirementWait("old Harness Pod termination", () =>
+      waitFor(
+        "old Harness Pod to terminate",
+        async () => {
+          const { stdout } = await kubectl(stack, [
+            "-n",
+            old.metadata.namespace,
+            "get",
+            "pods",
+            "-l",
+            `openclaw.dev/agent=${selected.agent.id},openclaw.dev/revision=${selected.revisionId},openclaw.dev/workload-role=agent`,
+            "-o",
+            "json",
+          ]);
+          return { done: JSON.parse(stdout).items.length === 0 };
+        },
+        2 * minute,
+      ),
     );
     const policy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
     const { stdout: oldPolicy } = await kubectl(stack, [
@@ -1267,26 +1289,28 @@ async function proveRetirement(stack, selected, control, reader) {
     const oldProviderAtBarrier = count(barrier, "provider", 28);
     const controlReaderAtBarrier = count(barrier, "reader", 30);
     const controlProviderAtBarrier = count(barrier, "provider", 30);
-    await waitFor(
-      "retired Harness process and sockets to close",
-      async () => {
-        const events = await readerEvents(stack);
-        const connections = new Set(
-          events
-            .filter((event) => event.event === "reader" && event.path.endsWith("/28"))
-            .map((event) => event.connection),
-        );
-        const closed = new Set(
-          events.filter((event) => event.event === "closed").map((event) => event.connection),
-        );
-        return {
-          done:
-            held.closed() &&
-            connections.size > 0 &&
-            [...connections].every((connection) => closed.has(connection)),
-        };
-      },
-      minute,
+    await retirementWait("retired sockets closed", () =>
+      waitFor(
+        "retired Harness process and sockets to close",
+        async () => {
+          const events = await readerEvents(stack);
+          const connections = new Set(
+            events
+              .filter((event) => event.event === "reader" && event.path.endsWith("/28"))
+              .map((event) => event.connection),
+          );
+          const closed = new Set(
+            events.filter((event) => event.event === "closed").map((event) => event.connection),
+          );
+          return {
+            done:
+              held.closed() &&
+              connections.size > 0 &&
+              [...connections].every((connection) => closed.has(connection)),
+          };
+        },
+        minute,
+      ),
     );
     assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
     const unselected = structuredClone(selected.values);
@@ -1296,7 +1320,9 @@ async function proveRetirement(stack, selected, control, reader) {
       `/namespaces/${stack.namespaceId}/configurations/${selected.configurationId}`,
       { values: unselected },
     );
-    const successor = await deployAgent(stack, selected.agent);
+    const successor = await retirementWait("successor deploy", () =>
+      deployAgent(stack, selected.agent),
+    );
     const current = await revisionHarness(stack, selected.agent, successor);
     const successorPolicy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(successor)}`;
     const { stdout: currentPolicy } = await kubectl(stack, [
@@ -1362,18 +1388,20 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
       ],
       { timeout: 15_000 },
     );
-    await waitFor(
-      "selected control after unselected probe",
-      async () => {
-        const events = await readerEvents(stack);
-        return {
-          done:
-            stillSelected.count() > controlBeforeNegative &&
-            count(events, "reader", 30) > controlReaderAtBarrier &&
-            count(events, "provider", 30) > controlProviderAtBarrier,
-        };
-      },
-      minute,
+    await retirementWait("selected control after unselected probe", () =>
+      waitFor(
+        "selected control after unselected probe",
+        async () => {
+          const events = await readerEvents(stack);
+          return {
+            done:
+              stillSelected.count() > controlBeforeNegative &&
+              count(events, "reader", 30) > controlReaderAtBarrier &&
+              count(events, "provider", 30) > controlProviderAtBarrier,
+          };
+        },
+        minute,
+      ),
     );
     const after = await readerEvents(stack);
     assert.equal(

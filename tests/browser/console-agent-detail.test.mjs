@@ -18,10 +18,12 @@ import {
   settlePageRequests,
   nonAuthWriteRequests,
   pathRequests,
+  recordLayoutShifts,
   revealNativeConfiguration,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  takeLayoutShifts,
   trackSettledFetches,
   waitForInputValue,
   waitForSettledFetches,
@@ -834,7 +836,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   const patched = configurationPatchRequests(requests, namespace.id, agent.configurationId);
   assert.deepEqual(
     patched.map((request) => request.body),
-    [{ values: editedValues }],
+    [{ values: editedValues, expectedGeneration: 4 }],
   );
   const currentConfiguration = await fixture.request(
     "GET",
@@ -1224,7 +1226,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   assert.equal((await deniedResponse).status(), 403);
   await page
     .getByText(
-      "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account.",
+      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
     )
     .waitFor();
   assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
@@ -2564,6 +2566,90 @@ test("a read-only principal sees Agent mutation controls disabled before any den
     assert.equal(deniedActions.includes(action), false, action);
   }
 });
+
+// A member's full load of Agents painted Create Agent enabled, then disabled it and put the note
+// above the table: 59 px at 390x844, 36 px on desktop (finding 1517). In an empty Namespace the
+// copy then invited creating, and Create Agent by URL refused only at submit (finding 1521).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`a member without Agent create is refused from the first paint at ${viewport.width}x${viewport.height}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const listed = await fixture.createNamespace("Member list", { ready: true });
+    const empty = await fixture.createNamespace("Member empty", { ready: true });
+    await fixture.createAgent(listed.id, "Member visible Agent", nativeValues("m1"));
+    const member = await fixture.createAccountWithPolicy("agent-list-member", (principal) => {
+      for (const namespace of [listed, empty]) {
+        fixture.policy.roles.push({
+          id: `role-agent-list-member-${namespace.id}`,
+          namespaceId: namespace.id,
+          permissions: [
+            { action: "read", resourceKind: "namespace" },
+            { action: "read", resourceKind: "agent" },
+          ],
+        });
+        fixture.policy.bindings.push({
+          id: `binding-agent-list-member-${namespace.id}`,
+          namespaceId: namespace.id,
+          subjectKind: "identity",
+          subjectId: principal.id,
+          roleId: `role-agent-list-member-${namespace.id}`,
+        });
+      }
+    });
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(page, fixture, `/console/agents?namespace=${listed.id}`, member.credentials);
+    await page.getByText("Member visible Agent", { exact: true }).waitFor();
+
+    // A full load has no recent input to excuse a shift.
+    await page.addInitScript(recordLayoutShifts);
+    await page.addInitScript(() => {
+      const states = [];
+      globalThis.__createStates = states;
+      new globalThis.MutationObserver(() => {
+        const create = [...globalThis.document.querySelectorAll("button")].find(
+          (node) => node.textContent === "Create Agent",
+        );
+        const state = create ? (create.disabled ? "disabled" : "enabled") : null;
+        if (state && states.at(-1) !== state) {
+          states.push(state);
+        }
+      }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
+    });
+    await page.reload();
+    const note = page.getByText("Your access does not include creating Agents in this Namespace.");
+    await note.waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+    assert.deepEqual(await page.evaluate(() => globalThis.__createStates), ["disabled"]);
+    const { shifts } = await takeLayoutShifts(page);
+    // Headless Chromium reports a body entry when the page gets shorter; the list must not move.
+    const listShifts = shifts.filter((entry) =>
+      entry.sources.some((source) => !source.node.startsWith("BODY")),
+    );
+    assert.deepEqual(listShifts, []);
+
+    // An empty Namespace does not invite creating under the note.
+    await page.goto(`${fixture.origin}/console/agents?namespace=${empty.id}`);
+    await page.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    await note.waitFor();
+    await page
+      .getByText("Agents in this Namespace that are shared with you appear here.")
+      .waitFor();
+    assert.equal(await page.getByText(/Create an Agent in this Namespace/).count(), 0);
+
+    // Create Agent by URL refuses up front instead of at submit.
+    await page.goto(`${fixture.origin}/console/agents/new?namespace=${empty.id}`);
+    await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+    await page
+      .getByText(/Your access does not include creating Agents in this Namespace\./)
+      .waitFor();
+    assert.equal(await page.getByRole("button", { name: "Start without Preset" }).count(), 0);
+    assert.equal(await page.getByRole("link", { name: "← Agents" }).isVisible(), true);
+  });
+}
 
 test("a version editor without Agent update can open the draft, save it, and deploy", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Version editor");

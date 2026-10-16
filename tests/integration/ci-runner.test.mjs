@@ -2143,6 +2143,112 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
   assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
 });
 
+test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
+  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
+  // Synthetic values only; none is in the env or has a known token shape.
+  for (const [line, expected] of [
+    [
+      String.raw`body {\"password\":\"plainvalue123\"} end`,
+      String.raw`body {\"password\":\"[redacted]\"} end`,
+    ],
+    [
+      String.raw`{\"client_secret\":\"syntheticClientValue0123\",\"realm\":\"occ\"}`,
+      String.raw`{\"client_secret\":\"[redacted]\",\"realm\":\"occ\"}`,
+    ],
+    [
+      String.raw`{\\\"api_key\\\":\\\"syntheticApiValue456\\\"}`,
+      String.raw`{\\\"api_key\\\":\\\"[redacted]\\\"}`,
+    ],
+    [
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"syntheticDeepValue789\\\\\\\"}`,
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"[redacted]\\\\\\\"}`,
+    ],
+    // Unescaped forms keep their behaviour, and a backslash inside a value is redacted with it.
+    [`{"password":"plainvalue123"}`, `{"password":"[redacted]"}`],
+    [String.raw`password=synthetic\value tail`, "password=[redacted] tail"],
+    // Prose that names a keyword without assigning it is untouched.
+    ["SyntaxError: Unexpected token in JSON at position 3", null],
+    ["SyntaxError: Unexpected token '}'", null],
+  ]) {
+    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line);
+  }
+  assert.doesNotMatch(
+    redactFailureDetail(
+      { message: String.raw`config {\"password\":\"plainvalue123\"}` },
+      secrets,
+      "/repo",
+    ).message,
+    /plainvalue123/,
+  );
+
+  // A private key's body line that matches the filter is masked before the filter keeps it.
+  const logs = [
+    "worker start",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "MIIEsyntheticWorkerBodyLineAAAA",
+    "syntheticBodyLineTwoBBBBBBBB",
+    "-----END RSA PRIVATE KEY-----",
+    "worker turn failed: ECONNRESET",
+    "debug noise",
+  ].join("\n");
+  const shown = newestMatchingLogLines(logs, secrets, {
+    pattern: /worker|turn/iu,
+    exclude: /noise/u,
+    budget: 1_000,
+    lineChars: 400,
+  });
+  assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  // Newest lines win the budget, and each kept line is clipped after redaction.
+  assert.equal(
+    newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
+      pattern: /turn/u,
+      budget: 20,
+      lineChars: 400,
+    }),
+    "turn two\nturn three",
+  );
+  assert.equal(
+    newestMatchingLogLines(`turn password=${"x".repeat(50)}`, secrets, {
+      pattern: /turn/u,
+      budget: 1_000,
+      lineChars: 20,
+    }),
+    "turn password=[redac... [truncated]",
+  );
+});
+
+test("secret redaction preserves JSON quoting, not pieces of the quoted value", async () => {
+  const { redactLogLine, redactFailureDetail } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const redacted = "[redacted]";
+  // Serialize actual values instead of guessing how many backslashes the log contains.
+  for (const value of [
+    'first "middle", last',
+    "first, last",
+    "first last",
+    "last\\",
+    "",
+    "é\n🎈",
+  ]) {
+    let input = JSON.stringify({ password: value, phase: "after" });
+    let expected = JSON.stringify({ password: redacted, phase: "after" });
+    for (let depth = 0; depth < 4; depth++) {
+      assert.equal(redactLogLine(input, [], 2_000), expected);
+      assert.equal(redactFailureDetail({ message: input }, [], "/repo").message, expected);
+      input = JSON.stringify(input);
+      expected = JSON.stringify(expected);
+    }
+  }
+  // Logs can end mid-value. Neither a space nor an escaped quote ends the secret.
+  assert.equal(
+    redactLogLine('password="first part, still private', [], 200),
+    'password="[redacted]',
+  );
+});
+
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
@@ -2158,7 +2264,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      '  assert.fail(`${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture, private-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
     ].join("\n"),
@@ -2198,14 +2304,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
-  assert.doesNotMatch(failed.error.message, /decisive line/);
+  assert.match(failed.error.message, /password="\[redacted\]" phase=after/);
+  assert.doesNotMatch(failed.error.message, /private-tail|decisive line/);
   assert.equal(failed.error.stack, undefined);
   assert.match(
     result.stderr,
     /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details-attempt-(?:\d+|<N>)\)/,
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output/);
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);

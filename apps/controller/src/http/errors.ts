@@ -9,6 +9,7 @@ import {
   DeletionRetryOwnedError,
   ChannelDirectoryError,
   ChannelCredentialError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
@@ -825,6 +826,13 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+  }
+  if (error instanceof ConfigurationGenerationConflictError) {
+    // The detail marks a stale read, which a reread fixes, apart from other Configuration
+    // conflicts such as a provisioning reservation, which a reread does not (finding 1511).
+    return failure(409, "RESOURCE_CONFLICT", error.message, [
+      { path: "/expectedGeneration", code: "INVALID_VALUE" },
+    ]);
   }
   if (error instanceof ResourceStateConflictError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);

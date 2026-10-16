@@ -163,7 +163,7 @@ Configuration on their next deployment.
 
 Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and revision navigation. Save checks Configuration association and
-generation, but another write can race afterward. Reload stale drafts; after an
+generation, and the API refuses later races. Reload stale drafts; after an
 unknown outcome, successfully reload saved state before retrying. Invalid JSON
 and failed saves retain text for correction.
 Backend, execution mode, and Harness authentication are Agent fields, not native

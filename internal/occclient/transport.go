@@ -306,6 +306,25 @@ func readServiceKey(path string) (string, error) {
 	return key, nil
 }
 
+// ServiceKeyNamespace returns the Namespace a service-key file's key was issued
+// for, as recorded in the file by issuance, or "" when the file names none or
+// cannot be read. It is local information for error hints, not authorization.
+func ServiceKeyNamespace(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var envelope struct {
+		Data struct {
+			NamespaceID string `json:"namespaceId"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(contents, &envelope) != nil {
+		return ""
+	}
+	return envelope.Data.NamespaceID
+}
+
 func httpTransport(caBundle string) (*http.Transport, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if caBundle == "" {

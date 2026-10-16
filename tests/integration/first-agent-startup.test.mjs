@@ -206,25 +206,26 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
   const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
   const prior = values("workspace-write");
   assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_saved"), true);
-  assert.equal(
-    firstAgentPriorPatPolicy(values("danger-full-access"), record, "rev_saved", "rev_saved"),
-    false,
-  );
+  for (const sandbox of ["danger-full-access", "read-only"]) {
+    assert.equal(
+      firstAgentPriorPatPolicy(values(sandbox), record, "rev_saved", "rev_saved"),
+      false,
+      sandbox,
+    );
+  }
   assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved"), false, "a new deployment");
   assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_other"), false);
   assert.equal(
     firstAgentPriorPatPolicy(prior, { ...record, authMethod: "api_key" }, "rev_saved", "rev_saved"),
     false,
   );
-  assert.equal(
-    firstAgentPriorPatPolicy(
-      prior,
-      { ...record, sandboxDriver: undefined },
-      "rev_saved",
-      "rev_saved",
-    ),
-    false,
-  );
+  for (const other of [{ sandboxDriver: undefined }, { harness: "openclaw" }]) {
+    assert.equal(
+      firstAgentPriorPatPolicy(prior, { ...record, ...other }, "rev_saved", "rev_saved"),
+      false,
+      JSON.stringify(other),
+    );
+  }
   const warning = firstAgentPriorPatPolicyWarning("rev_saved");
   assert.match(warning, /rev_saved/);
   assert.match(warning, /workspace-write/);

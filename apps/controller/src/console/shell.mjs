@@ -264,6 +264,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       observabilityUrl,
       namespaceAdmissionPending = true,
     } = state);
+    // A page held during a navigation shows Namespace recovery only if it already did.
+    const recovery = state.recovery ?? true;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
     const menuFocus = menuControls?.account.contains(document.activeElement)
@@ -381,6 +383,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
+    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
     const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
     refresh.disabled = true;
     const header = element(
@@ -395,13 +398,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         { className: "page-actions" },
-        feature === "namespaces" ? null : namespaceSelector(),
+        scopeSelector,
         feature === "settings" ? null : refresh,
       ),
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (session && feature !== "agents" && namespaceId !== null && !selected) {
+    if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
       if (feature === "namespaces" && namespaces.length) {
         main.append(
           element(
@@ -476,7 +479,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuControls?.close();
       }
     }
-    return { view, refresh, diagnostics };
+    return { view, refresh, diagnostics, scopeSelector };
   }
 
   function sameControl(node, root) {

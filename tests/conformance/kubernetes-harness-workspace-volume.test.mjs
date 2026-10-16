@@ -160,6 +160,14 @@ test("provider projection rejects unexpected node and persistent authentication 
   ]) {
     assert.throws(() => project(bad));
   }
+  // The node subPath names exactly one Agent node directory.
+  assert.throws(
+    () =>
+      project(
+        mounts.map((mount) => (mount === node ? { ...mount, subPath: `${nodeName}/../x` } : mount)),
+      ),
+    /node directory/,
+  );
 });
 
 test("requirements require node state only when node wiring was selected", async (t) => {

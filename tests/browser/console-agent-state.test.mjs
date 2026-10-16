@@ -5,10 +5,13 @@ import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/det
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
   persistedDeploymentError,
+  recordLayoutShifts,
+  takeLayoutShifts,
   trackSettledFetches,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -978,29 +981,18 @@ test("Deployment activity appears once with its recorded status, not as an empty
   const agent = await fixture.createAgent(namespace.id, "Layout Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let releaseStatus;
-  const statusHeld = new Promise((resolve) => {
-    releaseStatus = resolve;
-  });
-  let statusRequested;
-  const requested = new Promise((resolve) => {
-    statusRequested = resolve;
-  });
-  await page.route(
+  const status = await holdRequests(
+    t,
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
-    async (route) => {
-      statusRequested();
-      await statusHeld;
-      await route
-        .fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: deploymentBody(namespace.id, agent.id, revision.id, "running"),
-        })
-        .catch(() => {});
+    {
+      fulfill: {
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "running"),
+      },
     },
   );
-  t.after(() => releaseStatus());
   await login(
     page,
     fixture,
@@ -1010,7 +1002,7 @@ test("Deployment activity appears once with its recorded status, not as an empty
   // The version list has loaded and the newest version's status read is held.
   await summary.getByText("Reading recorded deployment status.").waitFor();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
-  await requested;
+  await status.requested;
 
   // The loading placeholder stays: no empty panel (disabled Refreshing... and "has not
   // loaded") pushes the sharing panel and version tabs down before the status arrives.
@@ -1020,7 +1012,7 @@ test("Deployment activity appears once with its recorded status, not as an empty
   assert.equal(await activity.getByText("Deployment status has not loaded.").count(), 0);
   assert.equal(await activity.getByRole("button", { name: /Refresh/ }).count(), 0);
 
-  releaseStatus();
+  status.release();
   await activity.getByText("Recorded status: running").waitFor();
   await activity.getByRole("button", { name: "Refresh deployment" }).waitFor();
   await summary.getByText("v1 · In progress").waitFor();
@@ -1082,22 +1074,16 @@ test("Agent detail does not move shown sections when Deployment activity first s
   const agent = await fixture.createAgent(namespace.id, "Steady detail Agent", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  let releaseRecord;
-  const recordHeld = new Promise((resolve) => {
-    releaseRecord = resolve;
-  });
-  t.after(() => releaseRecord());
-  await page.route(
+  const record = await holdRequests(
+    t,
+    page,
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
-    async (route) => {
-      await recordHeld;
-      await route
-        .fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
-        })
-        .catch(() => {});
+    {
+      fulfill: {
+        status: 200,
+        contentType: "application/json",
+        body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+      },
     },
   );
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -1105,22 +1091,14 @@ test("Agent detail does not move shown sections when Deployment activity first s
   // A paused clock keeps the reveal waiting for the read instead of FIRST_ACTIVITY_WAIT_MS.
   await page.clock.install();
   await page.clock.pauseAt(new Date(Date.now() + 60_000));
-  await page.addInitScript(() => {
-    globalThis.__layoutShifts = [];
-    new globalThis.PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        if (!entry.hadRecentInput) {
-          globalThis.__layoutShifts.push({
-            value: entry.value,
-            sources: entry.sources.map((source) => source.node?.className ?? source.node?.nodeName),
-          });
-        }
-      }
-    }).observe({ type: "layout-shift", buffered: true });
-  });
+  await page.addInitScript(recordLayoutShifts);
   // A full load, so no recent input excuses a shift.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
-  await page.getByRole("link", { name: "← Agents", exact: true }).waitFor();
+  // The Agent page renders hidden behind the startup status until its overview reveals
+  // (finding 1537).
+  await page
+    .getByRole("link", { name: "← Agents", exact: true, includeHidden: true })
+    .waitFor({ state: "attached" });
   // The version's own reads finish while Deployment activity's first read is still held.
   await page
     .locator(".agent-version-heading", { hasText: "Version v1" })
@@ -1131,15 +1109,13 @@ test("Agent detail does not move shown sections when Deployment activity first s
   // must not shift either; then measure the first read settling on its own.
   await page.evaluate(() => globalThis.document.fonts.ready);
   await new Promise((resolve) => setTimeout(resolve, 300));
-  const loadShifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
-  const loadShift = loadShifts.reduce((sum, entry) => sum + entry.value, 0);
+  const { shift: loadShift, shifts: loadShifts } = await takeLayoutShifts(page);
   assert.ok(loadShift < 0.01, `load shift ${loadShift}: ${JSON.stringify(loadShifts)}`);
 
-  releaseRecord();
+  record.release();
   await page.getByText("v1 · Completed", { exact: true }).waitFor();
   await page.locator(".agent-version-layout").waitFor();
   await new Promise((resolve) => setTimeout(resolve, 300));
-  const shifts = await page.evaluate(() => globalThis.__layoutShifts);
-  const shift = shifts.reduce((sum, entry) => sum + entry.value, 0);
+  const { shift, shifts } = await takeLayoutShifts(page);
   assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
 });

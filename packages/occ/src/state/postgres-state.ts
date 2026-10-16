@@ -58,6 +58,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy, immutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
+  AuthorizationDeniedError,
   AGENT_NAME_CONFLICT,
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
@@ -828,6 +829,13 @@ function databaseError(error: unknown): Error {
   }
 
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  if (
+    code === "23514" &&
+    "constraint" in error &&
+    error.constraint === "held_authentication_session_is_current"
+  ) {
+    return new AuthorizationDeniedError("The assigning session is no longer current.");
+  }
   if (code === "23505") {
     const constraint =
       "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
@@ -1916,6 +1924,25 @@ export class PostgresPlatformState implements PlatformStateStore {
           ).rows,
         );
         return account === undefined || account.disabled === false;
+      },
+      holdAuthenticationSession: async (sessionId, userId) => {
+        // Account and method revocation lock the user first. Take the same order
+        // before Namespace/policy locks; deleting a held session then waits for COMMIT.
+        const user = await client.query('SELECT id FROM occ."user" WHERE id = $1 FOR SHARE', [
+          userId,
+        ]);
+        if (user.rowCount !== 1) {
+          return false;
+        }
+        // The unchanged UPDATE both holds this row and queues its deferred
+        // currentness constraint. No session timestamp or lifetime is extended.
+        const session = await client.query(
+          `UPDATE occ.session SET updated_at = updated_at
+           WHERE id = $1 AND user_id = $2 AND expires_at > clock_timestamp()
+           RETURNING id`,
+          [sessionId, userId],
+        );
+        return session.rowCount === 1;
       },
     };
 

@@ -249,6 +249,28 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
+  // Gating only: an unknown answer keeps the start page, and the API still decides.
+  if (context.permissions?.agents?.create === false) {
+    context.view.replaceChildren(
+      link("← Agents", "agents", context),
+      element(
+        "section",
+        { className: "state-panel" },
+        element("h2", {}, "Creating Agents is not available"),
+        element(
+          "p",
+          { role: "status" },
+          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
+        ),
+      ),
+    );
+    // Start over re-enters here from the form; keep focus on the page, not the document.
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
+    return;
+  }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
   const startForm = (rendered, options, draft) => {
@@ -1347,6 +1369,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       drawerContext: {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
+        operatorId: context.operatorId,
         namespaceId,
         request,
         agentName: () => name.value,
@@ -1583,6 +1606,23 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
+  // The pressed control disables while its request runs. Keep focus on the line that reports
+  // progress, then on the outcome, rather than drop it to the page (finding 1490). Focus the
+  // reader moved elsewhere stays there.
+  function focusFeedbackLine(line) {
+    const active = document.activeElement;
+    if (
+      line.textContent &&
+      (!active ||
+        active === document.body ||
+        active.disabled ||
+        active === savedStatus ||
+        active === feedback)
+    ) {
+      line.tabIndex = -1;
+      line.focus({ preventScroll: true });
+    }
+  }
   function showSavedStatus() {
     savedStatus.replaceChildren(
       ...[
@@ -1662,12 +1702,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     let mutationStarted = false;
     try {
       mutationStarted = true;
-      const { agentId, revisionId } = await finishProvisioningAttempt({
+      const finishing = finishProvisioningAttempt({
         request,
         status: savedStatus,
         namespaceId,
         attempt,
       });
+      focusFeedbackLine(savedStatus);
+      const { agentId, revisionId } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
@@ -1724,6 +1766,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = rejectionMessage(error, mutationStarted);
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      // A job that ended keeps its final status; any other progress line spoke for the request
+      // that just ended (finding 1490).
+      if (!error.provisioningTerminal) {
+        if (savedSecret || savedConfiguration || savedAgent) {
+          showSavedStatus();
+        } else {
+          savedStatus.textContent = "";
+        }
+      }
       if (error.provisioningStopped) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
@@ -1746,6 +1797,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ) {
         feedback.append(link(" Open Agent", `agents/${error.provisioningAgentId}`, context));
       }
+      focusFeedbackLine(feedback);
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.
       requestAdmitted =
@@ -2010,6 +2062,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         recovery.hidden = true;
       }
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      focusFeedbackLine(feedback);
     } finally {
       if (context.isCurrent()) {
         pending = false;
