@@ -92,10 +92,10 @@ Its bodyless POST requires Agent `read`/`operate` and exact AgentRevision `read`
 Configuration and Agent plugin selections. **Edit current Configuration** does
 not copy historical values. Stop and deletion target the Agent.
 
-In the draft, **Edit Configuration** PATCHes only `{ values }` from a JSON
-object to the exact Namespace Configuration, preserving `secretBindings`.
+In the draft, **Edit Configuration** PATCHes only `{ values, expectedGeneration }`
+from a JSON object to the exact Namespace Configuration, preserving `secretBindings`.
 It rereads Agent and Configuration, rejecting changed ID or generation.
-Writes can race after these reads; the API owns authorization and generation.
+A write racing these reads gets `409` and also requires Reload draft.
 
 **Enable gateway password access** stages `gateway.auth.password` referencing
 `OPENCLAW_GATEWAY_PASSWORD` through this editor. Other settings, Secret bindings, and
@@ -181,7 +181,7 @@ recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
 Saving channels rereads Agent and Configuration; a changed association or
-generation offers Reload draft. The PATCH sends `{ values: updatedValues }`, adding
+generation offers Reload draft. The PATCH sends `{ values, expectedGeneration }`, adding
 `secretBindings` only for changed selections. A rejected PATCH writes no Secret grant.
 
 After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
@@ -189,7 +189,7 @@ grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
 and asks a Namespace administrator to grant access without repeating the
 channel save. New Secrets remain Namespace-owned after cancellation or failure.
-Preflight reads cannot prevent a later race. An uncertain PATCH blocks another
+A later race gets `409` and Reload draft. An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)

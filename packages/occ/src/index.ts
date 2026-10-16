@@ -769,6 +769,8 @@ export interface UpdateConfigurationInput {
   readonly configurationId: string;
   readonly values: Readonly<OpenClawConfigurationDocument>;
   readonly secretBindings?: SecretBindings;
+  /** Refuses the update unless the Configuration is still at this generation. */
+  readonly expectedGeneration?: number;
 }
 
 export interface DeployAgentInput {
@@ -5483,6 +5485,16 @@ export class OpenClawController {
       );
       if (!metadata) {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
+      }
+      // Compared under the row lock, so a save that read an older generation cannot replace a
+      // newer one (finding 1505).
+      if (
+        input.expectedGeneration !== undefined &&
+        input.expectedGeneration !== metadata.generation
+      ) {
+        throw new ResourceStateConflictError(
+          "The Configuration changed since it was read. Read its current generation before updating it.",
+        );
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       const previous = await this.lockedConfiguration(driver, metadata);

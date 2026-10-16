@@ -833,3 +833,67 @@ test("a Configuration save that lands late does not move the cards below the edi
   );
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
+
+// A save from another browser that landed between a save's reread and its PATCH was silently
+// overwritten (finding 1505). The PATCH now names the generation the page read, and the API's
+// 409 leaves Reload draft as the next step, as a conflict found by the reread does.
+const racedSaveCases = [
+  {
+    name: "Channels",
+    tab: "channels",
+    async act(page) {
+      await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+      const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+      await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+      await dialog.getByRole("button", { name: "Save configuration" }).click();
+    },
+  },
+  {
+    name: "Configuration editor",
+    tab: "configuration",
+    async act(page) {
+      await page.getByRole("button", { name: "Edit Configuration" }).click();
+      await openAdvancedSettings(page);
+      const values = nativeValues("raced", { harnessId: "codex" });
+      await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
+      await page.getByRole("button", { name: "Save Configuration" }).click();
+    },
+  },
+];
+
+for (const c of racedSaveCases) {
+  test(`a ${c.name} save raced after its reread is refused and offers Reload draft`, async (t) => {
+    const context = await slackAgent(t, `Raced ${c.name}`);
+    const { fixture, namespace, agent } = context;
+    const patches = [];
+    const before = (await fixture.request("GET", configurationPath(context))).data.values;
+    const page = await openTab(t, fixture, namespace, agent, c.tab, {
+      // Another browser saves after the page's preflight reread, just before its PATCH.
+      beforeLogin: (routed) =>
+        routed.route(`**${configurationPath(context)}`, async (route) => {
+          if (route.request().method() === "PATCH") {
+            patches.push(route.request().postDataJSON());
+            await changeElsewhere(context);
+          }
+          await route.continue().catch(() => {});
+        }),
+    });
+    await page.getByRole("heading", { name: `Raced ${c.name}` }).waitFor();
+    await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+    await c.act(page);
+    const message =
+      "The saved Configuration changed while you were editing. Reload this draft before saving.";
+    await page.getByText(message).first().waitFor();
+    assert.equal(await focusedText(page), "Reload draft");
+    assert.equal(patches.length, 1);
+    assert.equal(patches[0].expectedGeneration, 1);
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    // The other browser's save stands; the page's edit did not replace it.
+    const saved = (await fixture.request("GET", configurationPath(context))).data;
+    assert.equal(saved.generation, 2);
+    assert.deepEqual(saved.values, before);
+
+    await page.getByRole("button", { name: "Reload draft" }).click();
+    await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
+  });
+}
