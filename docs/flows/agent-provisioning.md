@@ -65,8 +65,7 @@ The Slack channel setup modal sends each new token to ordinary `POST /namespaces
 A selected Credential Gateway's catalog directs Console to register the model
 Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
 reuses confirmed sources and safely retries uncertain registration.
-`GET /installation` preserves the selected catalog's refresh rotation,
-issuer-rotated Secret metadata, and API-key or Codex PAT login modes.
+Installation discovery preserves catalog metadata.
 
 Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
 

@@ -5,7 +5,7 @@ Harnesses, and [Kubernetes Compute](kubernetes-compute.md). OCC owns Agents,
 revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports native OpenClaw and plugin-free Codex with
-[`v0.1.3-pre.2`](https://github.com/NVIDIA/OpenShell/tree/v0.1.3-pre.2). The pinned
+[`v0.1.4`](https://github.com/NVIDIA/OpenShell/tree/v0.1.4). The pinned
 OCE runtime declares native Dedicated support. The paired
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 revision-owned providers supply node enrollment and Codex files. These APIs remain
@@ -55,7 +55,7 @@ The Driver configures all three available
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy; v0.1.3-pre.2 ignores its run-as user and group.                     |
+| `process`    | OpenShell process policy; v0.1.4 ignores its run-as user and group.                           |
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -129,23 +129,27 @@ Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
 
-Each v0.1.3-pre.2 network policy needs a unique name and nonempty executable path. `workspace-node-enrollment` is reserved. Optional
+Each v0.1.4 network policy needs a unique name and a nonempty executable
+path. `workspace-node-enrollment` is reserved. Optional
 values are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`. The Driver rejects the old `passthrough`
 spelling; use `skip` for uninspected TLS relay.
-`gatewayConfigured` is the only ServiceAccount mode for `v0.1.3-pre.2`; the
+`gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
-Optional readiness observes a Service and Pods in the OCC namespace and requires
-positive `timeoutMs`; a paired Gateway normally uses a Backend `endpoint`.
-Development sets `startupDelayMs: 30000` because v0.1.3-pre.2 exposes its service
-before listening.
+Optional readiness observes a Service and Pods in the OCC namespace; a paired
+Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
+positive `timeoutMs`. Development sets `startupDelayMs` to
+30 seconds because v0.1.4 exposes its service before the process listens.
 
-Install OpenShell separately. Required `gateway.workspaceMode` accepts `operator`
-or `managed`; deferred managed mode fails before Kubernetes mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator` and a namespace selector
-matching `operatorNamespaceLabels`. The Workspace name must equal its pre-provisioned Kubernetes namespace. OCC uses
-`oce-` plus a stable 15-character digest for v0.1.3-pre.2's 19-character limit.
+Install the OpenShell gateway separately. Required `gateway.workspaceMode`
+accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
+mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator` and a namespace selector
+matching `operatorNamespaceLabels`. In this mode the OpenShell Workspace name
+must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
+`oce-` name with a 15-character digest to stay within OpenShell v0.1.4's
+19-character Workspace limit.
 
 The Kubernetes development profile acts as the operator for its disposable
 cluster. With Kubernetes Compute, `OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell`

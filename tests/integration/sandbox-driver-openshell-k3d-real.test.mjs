@@ -38,10 +38,12 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   diagnosticDeadlineMs,
+  diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
+import { codexTurnTrace } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -72,7 +74,7 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.3-pre.2";
+const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.4";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -2592,6 +2594,9 @@ async function prepareProductionInstallation(
                 .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
                 .slice(-12);
               for (const line of lines) {
+                if (diagnosticDeadlinePassed()) {
+                  return false;
+                }
                 process.stderr.write(
                   `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
                 );
@@ -2599,12 +2604,15 @@ async function prepareProductionInstallation(
             }
           }
         } catch {
+          if (diagnosticDeadlinePassed()) {
+            return false;
+          }
           process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
         }
       }
       return false;
     };
-    if (await withinDiagnosticDeadline(startupDiagnostic(), { timedOut: true })) {
+    if (await withinDiagnosticDeadline(startupDiagnostic, { timedOut: true })) {
       process.stderr.write(
         `OpenShell startup Pod diagnostics timed out after ${diagnosticDeadlineMs / 1_000} s\n`,
       );
@@ -4267,7 +4275,7 @@ function turnFailureSecrets(topology, gatewayPassword) {
 // Without a Harness Pod (a replacement that never started one) only the Gateway is read.
 function gatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets) {
   return withinDiagnosticDeadline(
-    readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
+    () => readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
     { timedOut: `\nGateway turn diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
   );
 }
@@ -4762,6 +4770,12 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
   let result;
   let run;
   let completed = [];
+  // Finding 1575: each turn's steps, so a skipped probe shows what the turn did instead.
+  const traces = [];
+  const traceSecrets = failureSecrets([
+    process.env,
+    Object.fromEntries(secrets.map((value, index) => [`PROBE_CREDENTIAL_${index}`, value])),
+  ]);
   for (let attempt = 1; attempt <= 3 && run === undefined; attempt += 1) {
     if (attempt > 1) {
       await delay(20_000);
@@ -4787,8 +4801,19 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     run = completed.find(
       (item) => item?.type === "commandExecution" && String(item.command).includes(nonce),
     );
+    if (run === undefined) {
+      traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+    } else if (traces.length > 0) {
+      // How often the model skips the tool, even when a retry recovers.
+      process.stderr.write(
+        `OpenShell integration: the probe ran on attempt ${attempt} after skipped turns:\n${traces.join("\n")}\n`,
+      );
+    }
   }
   if (run === undefined) {
+    process.stderr.write(
+      `OpenShell integration: turns that skipped the probe:\n${traces.join("\n")}\n`,
+    );
     // Codex logs why a tool call did not run, such as a dropped model stream. Lines that could
     // carry a credential or placeholder are dropped.
     const logs = await kubectl(
@@ -4818,7 +4843,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       completed
         .filter((item) => item?.type === "agentMessage")
         .map((item) => String(item.text ?? "").slice(0, 400)),
-    )}`,
+    )}; turns:\n${traces.join("\n")}`,
   );
   assert.match(result.assistant, new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
@@ -5867,23 +5892,42 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   try {
     await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request(
-        "GET",
-        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
-      );
+      const observed = await topology.request("GET", agentPath);
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
+      // good on its first attempt. Stop then: the error names the probe's classified cause, and
+      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
+      const deployment = await topology.request("GET", deploymentPath);
+      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
+      // original activation deadline; only the Agent naming this revision can satisfy the wait.
+      const { status } = deployment;
+      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
+        return undefined;
+      }
+      assert.equal(status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(
+        deployment.data.status,
+        "failed",
+        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
+      );
+      return undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);
     // A diagnostic that fails or stalls itself must not replace the timeout it explains.
     const detail = await withinDiagnosticDeadline(
-      replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
-        (diagnosticError) =>
-          `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-      ),
+      () =>
+        replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
+          (diagnosticError) =>
+            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+        ),
       { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
     );
     // Keep the timeout's own stack, which names this wait, and add the evidence to its message.

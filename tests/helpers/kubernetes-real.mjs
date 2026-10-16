@@ -1,5 +1,6 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -15,9 +16,22 @@ export function kubectlArguments({ kubeconfigPath, kubernetesContext }, args) {
   return ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args];
 }
 
+// The deadline signal of the failure diagnostic running in this async context, if any.
+const diagnosticDeadline = new AsyncLocalStorage();
+
+// Whether the failure diagnostic this code runs in has passed its deadline, so it should
+// write nothing more.
+export function diagnosticDeadlinePassed() {
+  return diagnosticDeadline.getStore()?.aborted === true;
+}
+
 async function kubectlFor(selection, ...args) {
+  // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
+  const signal = diagnosticDeadline.getStore();
+  signal?.throwIfAborted();
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
+    signal,
   });
   return stdout;
 }
@@ -32,6 +46,10 @@ const transientKubectlFailure =
   /^error: EOF$|"https?:\/\/[^"\s]+": EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
 
 export function isTransientKubectlFailure(error) {
+  // A read a diagnostic deadline stopped is not retried, whatever kubectl wrote first.
+  if (error?.name === "AbortError") {
+    return false;
+  }
   // A spawn failure (ENOENT, EACCES) has empty stderr: kubectl never ran.
   const stderr = String(error?.stderr ?? "");
   return !/command terminated with exit code/.test(stderr) && transientKubectlFailure.test(stderr);
@@ -74,19 +92,29 @@ export async function retryKubectlRead(
 export const diagnosticRequestTimeout = "--request-timeout=20s";
 export const diagnosticDeadlineMs = 60_000;
 
+// Runs `diagnostic(signal)` within the deadline. At the deadline the signal aborts: a kubectl
+// read it started is killed and a later one refused, so no read outlives the deadline or keeps
+// the test process alive, and the diagnostic checks diagnosticDeadlinePassed() before it
+// writes (finding 1557). A diagnostic nested in another one also stops at the outer deadline.
 export async function withinDiagnosticDeadline(
   diagnostic,
   { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out" } = {},
 ) {
   const deadline = new AbortController();
+  const outer = diagnosticDeadline.getStore();
+  const signal = outer === undefined ? deadline.signal : AbortSignal.any([outer, deadline.signal]);
+  const timer = new AbortController();
   try {
     return await Promise.race([
-      diagnostic,
-      delay(timeoutMs, undefined, { signal: deadline.signal }).then(() => timedOut),
+      diagnosticDeadline.run(signal, () => diagnostic(signal)),
+      delay(timeoutMs, undefined, { signal: timer.signal }).then(() => {
+        deadline.abort();
+        return timedOut;
+      }),
     ]);
   } finally {
     // Stops the timer once the diagnostic settles, so it does not hold the event loop.
-    deadline.abort();
+    timer.abort();
   }
 }
 

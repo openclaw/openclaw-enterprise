@@ -1927,6 +1927,29 @@ function validateCodexSeccompProfile(value: unknown): string {
   return profile;
 }
 
+function observedPodMatchingSelector(
+  item: unknown,
+  namespace: string,
+  labels: Readonly<Record<string, string>>,
+): KubernetesRecord | undefined {
+  const pod = asRecord(item);
+  const metadata = asRecord(pod?.metadata);
+  const podLabels = asRecord(metadata?.labels);
+  if (
+    pod === undefined ||
+    (pod.apiVersion !== undefined && pod.apiVersion !== "v1") ||
+    (pod.kind !== undefined && pod.kind !== "Pod") ||
+    metadata === undefined ||
+    !isNonEmptyString(metadata.name) ||
+    metadata.namespace !== namespace ||
+    podLabels === undefined ||
+    Object.entries(labels).some(([key, value]) => podLabels[key] !== value)
+  ) {
+    return undefined;
+  }
+  return pod;
+}
+
 function labelsToSelector(labels: Readonly<Record<string, string>>): string {
   return Object.entries(labels)
     .map(([key, value]) => `${key}=${value}`)
@@ -4880,10 +4903,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const desired = this.manifest("v1", "Namespace", name.name, ownership);
         desired.metadata.labels = {
           ...desired.metadata.labels,
-          ...this.gatewayMembershipLabels(this.options.executionCluster?.harnessRouting),
-          ...(this.options.executionCluster === undefined
-            ? { "openclaw.dev/gateway-namespace": ownership.namespaceId }
-            : {}),
+          ...this.executionNamespaceGatewayLabels(ownership.namespaceId),
           "pod-security.kubernetes.io/enforce": "restricted",
           "pod-security.kubernetes.io/audit": "restricted",
           "pod-security.kubernetes.io/warn": "restricted",
@@ -4941,6 +4961,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return revision.harness.mode === "embedded" || this.options.executionCluster === undefined
       ? harnessNamespace
       : { name: kubernetesGatewayNamespaceName(revision.namespaceId), plane: "control" };
+  }
+
+  private executionNamespaceGatewayLabels(namespaceId: string): Record<string, string> {
+    return {
+      ...this.gatewayMembershipLabels(this.options.executionCluster?.harnessRouting),
+      ...(this.options.executionCluster === undefined
+        ? { "openclaw.dev/gateway-namespace": namespaceId }
+        : {}),
+    };
   }
 
   private gatewayNamespaceManifest(ownership: Ownership): ManagedKubernetesObject<"Namespace"> {
@@ -7331,19 +7360,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       for (const item of observed.items) {
-        const pod = asRecord(item);
-        const podMetadata = asRecord(pod?.metadata);
-        const podLabels = asRecord(podMetadata?.labels);
-        if (
-          pod === undefined ||
-          (pod.apiVersion !== undefined && pod.apiVersion !== "v1") ||
-          (pod.kind !== undefined && pod.kind !== "Pod") ||
-          podMetadata === undefined ||
-          !isNonEmptyString(podMetadata.name) ||
-          podMetadata.namespace !== namespace.name ||
-          podLabels === undefined ||
-          Object.entries(labels).some(([key, value]) => podLabels[key] !== value)
-        ) {
+        if (observedPodMatchingSelector(item, namespace.name, labels) === undefined) {
           throw new OwnershipFailure("Refusing an ambiguous AgentRevision workload Pod.");
         }
       }
@@ -8510,15 +8527,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `Existing Kubernetes namespace ${namespace.metadata.name} belongs to another tenant: its ${foreignMarker[1]} ${foreignMarker[0]} names a different Namespace.`,
       );
     }
-    const requiredLabels = {
-      ...this.gatewayMembershipLabels(this.options.executionCluster?.harnessRouting),
-      ...(this.options.executionCluster === undefined
-        ? { "openclaw.dev/gateway-namespace": ownership.namespaceId }
-        : {}),
-    };
-    const hasGatewayMembership = Object.entries(requiredLabels).every(
-      ([key, value]) => labels[key] === value,
-    );
+    const hasGatewayMembership = Object.entries(
+      this.executionNamespaceGatewayLabels(ownership.namespaceId),
+    ).every(([key, value]) => labels[key] === value);
     return (
       existingLabel === ownership.namespaceId &&
       existingId === ownership.namespaceId &&
@@ -8576,10 +8587,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                   resourceVersion,
                   labels: {
                     "openclaw.dev/namespace": ownership.namespaceId,
-                    ...this.gatewayMembershipLabels(this.options.executionCluster?.harnessRouting),
-                    ...(this.options.executionCluster === undefined
-                      ? { "openclaw.dev/gateway-namespace": ownership.namespaceId }
-                      : {}),
+                    ...this.executionNamespaceGatewayLabels(ownership.namespaceId),
                   },
                   annotations: { "openclaw.dev/namespace-id": ownership.namespaceId },
                 },
@@ -9042,19 +9050,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     return Object.freeze(
       pods.items.map((item) => {
-        const pod = asRecord(item);
-        const podMetadata = asRecord(pod?.metadata);
-        const podLabels = asRecord(podMetadata?.labels);
-        if (
-          pod === undefined ||
-          (pod.apiVersion !== undefined && pod.apiVersion !== "v1") ||
-          (pod.kind !== undefined && pod.kind !== "Pod") ||
-          podMetadata === undefined ||
-          !isNonEmptyString(podMetadata.name) ||
-          podMetadata.namespace !== namespace.name ||
-          podLabels === undefined ||
-          Object.entries(labels).some(([key, value]) => podLabels[key] !== value)
-        ) {
+        const pod = observedPodMatchingSelector(item, namespace.name, labels);
+        if (pod === undefined) {
           throw new DependencyUnavailableError("The Kubernetes client returned an invalid Pod.");
         }
         return pod;

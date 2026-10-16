@@ -13559,6 +13559,7 @@ function stopOrderFixture(id) {
     deploymentPresent: true,
     gatewayPodsLeft: 0,
     agentPodsLeft: 0,
+    otherRevisionPod: false,
     gatewayReads: 0,
   };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
@@ -13599,7 +13600,11 @@ function stopOrderFixture(id) {
         }
         if (role === "agent" && fixture.agentPodsLeft > 0) {
           fixture.agentPodsLeft -= 1;
-          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(agentPod)] };
+          const pod = structuredClone(agentPod);
+          if (fixture.otherRevisionPod) {
+            pod.metadata.labels["openclaw.dev/revision"] = "another-revision";
+          }
+          return { apiVersion: "v1", kind: "PodList", items: [pod] };
         }
         return { apiVersion: "v1", kind: "PodList", items: [] };
       },
@@ -13625,6 +13630,25 @@ function stopOrderFixture(id) {
 
   return Object.assign(fixture, { driver, revision });
 }
+
+// The termination wait refuses a listed Pod outside its selector at once instead of waiting
+// for it to end (finding 1581). The Pod would be gone after two polls, so a wait that accepts
+// it finishes the stop instead.
+test("a workload termination wait refuses a Pod of another revision", async () => {
+  const fixture = stopOrderFixture("revision-other-revision-pod");
+  const { driver, revision } = fixture;
+  fixture.agentPodsLeft = 2;
+  fixture.otherRevisionPod = true;
+  await assert.rejects(
+    driver.stopRevision(revision),
+    /Refusing an ambiguous AgentRevision workload Pod\./u,
+  );
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+});
 
 test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
   // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
@@ -19134,6 +19158,13 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
           foreign.metadata.labels["openclaw.dev/agent"] = "another-agent";
           items.push(foreign);
         }
+        if (state.foreignNamespacePod) {
+          // Nor a Pod whose metadata names another namespace, even with this Agent's labels.
+          const foreign = pod(role);
+          foreign.metadata.name = "foreign-namespace-pod";
+          foreign.metadata.namespace = "another-namespace";
+          items.push(foreign);
+        }
         return { apiVersion: "v1", kind: "PodList", items };
       },
       async listNamespacedEvent({ namespace, fieldSelector, limit, _continue }) {
@@ -19310,6 +19341,13 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
 
   // A Pod of another Agent in the same namespace fails the whole description.
   fixture.state.foreignPod = true;
+  await assert.rejects(
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
+    /invalid Pod/,
+  );
+  // So does a listed Pod that names another namespace (finding 1581).
+  fixture.state.foreignPod = false;
+  fixture.state.foreignNamespacePod = true;
   await assert.rejects(
     fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
     /invalid Pod/,

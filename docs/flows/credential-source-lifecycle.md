@@ -1,17 +1,16 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-14
-last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
+updated: 2026-10-15
+last_updated_session: authoring-run/openshell-014-rebase-20261015
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-Authorized callers register, bind, deploy, update, withdraw and delete Namespace
-credential sources.
+Authorized callers manage Namespace credential sources.
 The gateway holds Secret values; OCC stores metadata and references. Admission
-freezes identity in the AgentRevision; the worker passes the live record to Compute.
+freezes AgentRevision identity; the worker passes live records to Compute.
 [OpenShell Sandbox provisioning](openshell-sandbox-provisioning.md) covers attachment and readiness.
 
 ## Entry Points
@@ -275,7 +274,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   endpoint lifecycle. Gateway storage and Compute placement are test doubles;
   this does not prove OpenShell runtime execution.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
-  provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.3-pre.2`
+  provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.4`
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
@@ -310,6 +309,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 

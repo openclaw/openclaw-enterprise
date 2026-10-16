@@ -5,6 +5,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
+import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -724,6 +725,7 @@ function clearPrivate() {
   installationAdmin = null;
   clearRetainedViews();
   clearResolvedSecretNames();
+  clearRuntimeDenials();
 }
 
 function clearDrafts() {

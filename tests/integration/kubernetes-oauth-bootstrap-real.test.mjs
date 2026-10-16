@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import test, { after } from "node:test";
-import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { podFailureDiagnostic } from "../helpers/k3d-failure-diagnostics.mjs";
+import {
+  createKubernetesClient,
+  diagnosticDeadlineMs,
+  withinDiagnosticDeadline,
+} from "../helpers/kubernetes-real.mjs";
 import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import {
   kubeconfigPath,
@@ -34,7 +40,8 @@ test(
   { ...requiresKubernetesAndPostgres, timeout: 300_000 },
   async (context) => {
     await assertKubernetesFixtureAvailable();
-    const { applyManifest } = createKubernetesClient({
+    // Its kubectl stops at a failure diagnostic's deadline (finding 1557).
+    const { applyManifest, kubectl: diagnosticKubectl } = createKubernetesClient({
       selection: { kubeconfigPath, kubernetesContext },
     });
     const installationId = `ins_${randomUUID()}`;
@@ -311,6 +318,8 @@ test(
         },
       }),
     );
+    // The rollout normally takes seconds of this test's 65 s p50, so a 60 s timeout is a stall,
+    // not a slow runner: its error carries the writer Pod's state and events (finding 1573).
     await kubectl(
       "rollout",
       "status",
@@ -318,7 +327,24 @@ test(
       "--namespace",
       placement,
       "--timeout=60s",
-    );
+    ).catch(async (error) => {
+      const detail = await withinDiagnosticDeadline(
+        () =>
+          podFailureDiagnostic({
+            kubectl: diagnosticKubectl,
+            namespace: placement,
+            selector: `app.kubernetes.io/name=${initialJob.metadata.name}`,
+            eventPrefix: initialJob.metadata.name,
+            secrets: failureSecrets([process.env]),
+          }).catch(
+            (diagnosticError) =>
+              `\nRollout diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+          ),
+        { timedOut: `\nRollout diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+      );
+      error.message = `${error.message}${detail}`;
+      throw error;
+    });
     await fixture.startWorker();
     // Stop at the bootstrap handoff boundary: this fixture deliberately has no
     // native Codex or private Gateway route, so it cannot prove runtime activation.

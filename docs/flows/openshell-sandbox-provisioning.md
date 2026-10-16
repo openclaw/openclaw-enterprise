@@ -11,12 +11,12 @@ last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 Kubernetes Compute delegates dedicated Codex and native OpenClaw to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
 Agent Secret permission. Codex authenticates Gateway requests through revision-owned
-provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
+files and OpenShell's bearer-passthrough endpoint, replacing the
 Harness Service.
 
-Workspace-node setup exposes a scoped bootstrap token through a revision-owned
-provider file; it remains development-only. Both local control-plane profiles
-install the pinned Gateway and workspace chart.
+Development workspace-node setup exposes a scoped bootstrap token through a
+revision-owned provider file. Both local control-plane profiles install the pinned
+Gateway and workspace chart.
 
 ## Entry Points
 
@@ -191,7 +191,7 @@ selects a named provider with the normalized endpoint and HTTPS Responses transp
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 Only dedicated Codex/OpenClaw revisions pinned to this Driver are accepted.
-Policies use the `v0.1.3-pre.2` wire contract and require Landlock. Unsupported enums,
+Policies use the `v0.1.4` wire contract and require Landlock. Unsupported enums,
 inherited keys, old `passthrough` TLS spelling and missing executables fail before
 launch. Readiness `timeoutMs` requires a positive safe integer; the loader names
 it, while startup logs `startup-error` / `STARTUP_FAILED` before Kubernetes calls.
@@ -335,6 +335,7 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 ## Changelog
 
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 - 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
