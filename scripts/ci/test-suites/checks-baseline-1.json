@@ -64,6 +64,7 @@
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.mjs",
+    "tests/conformance/k3d-failure-diagnostics.test.mjs",
     "tests/conformance/secret-occ.test.mjs",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
@@ -165,6 +166,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+    },
+    {
+      "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"

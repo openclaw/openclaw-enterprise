@@ -43,6 +43,7 @@ import {
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
+import { codexTurnTrace } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -4813,6 +4814,12 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
   let result;
   let run;
   let completed = [];
+  // Finding 1575: each turn's steps, so a skipped probe shows what the turn did instead.
+  const traces = [];
+  const traceSecrets = failureSecrets([
+    process.env,
+    Object.fromEntries(secrets.map((value, index) => [`PROBE_CREDENTIAL_${index}`, value])),
+  ]);
   for (let attempt = 1; attempt <= 3 && run === undefined; attempt += 1) {
     if (attempt > 1) {
       await delay(20_000);
@@ -4838,8 +4845,19 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     run = completed.find(
       (item) => item?.type === "commandExecution" && String(item.command).includes(nonce),
     );
+    if (run === undefined) {
+      traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+    } else if (traces.length > 0) {
+      // How often the model skips the tool, even when a retry recovers.
+      process.stderr.write(
+        `OpenShell integration: the probe ran on attempt ${attempt} after skipped turns:\n${traces.join("\n")}\n`,
+      );
+    }
   }
   if (run === undefined) {
+    process.stderr.write(
+      `OpenShell integration: turns that skipped the probe:\n${traces.join("\n")}\n`,
+    );
     // Codex logs why a tool call did not run, such as a dropped model stream. Lines that could
     // carry a credential or placeholder are dropped.
     const logs = await kubectl(
@@ -4869,7 +4887,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       completed
         .filter((item) => item?.type === "agentMessage")
         .map((item) => String(item.text ?? "").slice(0, 400)),
-    )}`,
+    )}; turns:\n${traces.join("\n")}`,
   );
   assert.match(result.assistant, new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
