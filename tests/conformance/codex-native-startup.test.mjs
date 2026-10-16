@@ -122,12 +122,6 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_TIMEOUT"],
     },
     {
-      name: "external SIGKILL is not a timeout or retried",
-      events: [],
-      result: { status: null, signal: "SIGKILL" },
-      expect: probeFailure({ kind: "PROCESS_EXIT", detail: "signal-SIGKILL" }),
-    },
-    {
       name: "malformed model output is not retried",
       events: [],
       result: { stdout: "not-json" },
@@ -290,12 +284,6 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       result: { status: 1 },
       expect: probeAuthenticationFailure,
     },
-    {
-      name: "provider server error is not an authentication failure",
-      events: [started, failedTurn("unexpected status 503 Service Unavailable")],
-      result: { status: 1 },
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
-    },
     // A provider usage limit, quota or 429 is rate_limit, not a generic error-event or
     // failed turn. The log line keeps the HTTP status and a known code, never the text.
     {
@@ -382,6 +370,26 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 400 }),
     },
     {
+      name: "a missing model is not retried",
+      events: [
+        started,
+        failedTurn(
+          'unexpected status 404 Not Found: {"error":{"code":"model_not_found","message":"no such model"}}',
+        ),
+      ],
+      result: { status: 1 },
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed" },
+        { status: 404, code: "model_not_found" },
+      ),
+    },
+    {
+      name: "a server error naming the credential is not retried",
+      events: [started, failedTurn("unexpected status 500: invalid api key for this server")],
+      result: { status: 1 },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 500 }),
+    },
+    {
       name: "tool event despite completed assistant turn",
       events: completedTurn({
         type: "item.completed",
@@ -394,6 +402,137 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       events: completedTurn(),
       result: { status: 1 },
       expect: probeFailure({ kind: "PROCESS_EXIT", detail: "exit-1" }),
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, (t) => {
+      checkCodexStartup(t, scenario);
+    });
+  }
+});
+
+// Finding 1576: one provider 5xx or dropped stream must not fail a deployment for good.
+// A transient failure gets the single retry a model timeout gets, inside the same 61 s
+// budget; the held cause is the last attempt's, marked as retried.
+test("Codex runtime retries a transient startup model probe failure once", async (t) => {
+  const started = { type: "turn.started" };
+  const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
+  const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
+  const success = probe([started, assistant, completed]);
+  const failedWith = (message, elapsed) =>
+    probe([started, failedTurn(message)], { status: 1 }, undefined, elapsed);
+  const erroredWith = (message) => probe([started, errorEvent(message)], { status: 1 });
+  const killed = probe([], { status: null, signal: "SIGKILL" });
+  // Each transient class, by the one marker that makes it transient.
+  const transient = [
+    ["a provider 5xx", failedWith("unexpected status 502: upstream"), "turn-failed", { status: 502 }],
+    [
+      "a provider server error",
+      erroredWith('{"error":{"type":"server_error"}}'),
+      "error-event",
+      { code: "server_error" },
+    ],
+    [
+      "an overloaded provider",
+      erroredWith('{"error":{"type":"overloaded_error"}}'),
+      "error-event",
+      { code: "overloaded_error" },
+    ],
+    ["a model at capacity", failedWith("Selected model is at capacity."), "turn-failed"],
+    [
+      "provider high demand",
+      failedWith("We're currently experiencing high demand, which may cause temporary errors."),
+      "turn-failed",
+    ],
+    [
+      "a dropped stream",
+      failedWith("stream disconnected before completion: connection reset by peer"),
+      "turn-failed",
+    ],
+    [
+      "a transport error",
+      erroredWith("error sending request for url (https://api.openai.com/v1/responses)"),
+      "error-event",
+    ],
+    ["a failed connection", erroredWith("connection refused"), "error-event"],
+    ["a broken pipe", erroredWith("broken pipe"), "error-event"],
+    ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
+    [
+      "a terminated probe",
+      probe([], { status: null, signal: "SIGTERM" }),
+      "signal-SIGTERM",
+      undefined,
+      "PROCESS_EXIT",
+    ],
+  ];
+  const scenarios = [
+    ...transient.map(([description, first]) => ({
+      name: `${description} recovers on the second attempt`,
+      native: [login(), first, success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    })),
+    ...transient.map(([description, first, detail, provider, kind = "PROBE_STATUS"]) => ({
+      name: `${description} twice holds the second cause, marked as retried`,
+      native: [login(), first, first],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind, detail: `${detail}-attempt2` }, provider),
+      lastProbeCause: { kind, detail },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+    })),
+    {
+      name: "a deterministic second attempt holds its own cause, marked as retried",
+      native: [
+        login(),
+        failedWith("unexpected status 503"),
+        probe([started, { type: "item.completed", item: { type: "command_execution" } }]),
+      ],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event-attempt2" }),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "tool-event" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+    },
+    {
+      name: "a transient failure then a credential rejection is an authentication failure",
+      native: [
+        login(),
+        killed,
+        probe([started, failedTurn("unexpected status 401 Unauthorized: Incorrect API key")], {
+          status: 1,
+        }),
+      ],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
+      probeCodes: ["MODEL_PROBE_FAILED", "AUTHENTICATION_FAILED"],
+    },
+    {
+      name: "a transient failure then a timeout holds the timeout",
+      native: [login(), failedWith("unexpected status 503"), probe([], timedOut, 30000)],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
+    },
+    {
+      // The one retry is shared: a timeout spends it, so a transient failure after it holds.
+      name: "a timeout then a transient failure holds without a second retry",
+      native: [login(), probe([], timedOut, 30000), failedWith("unexpected status 503")],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed-attempt2" }, { status: 503 }),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
+    },
+    {
+      name: "a transient retry gets only the remaining budget",
+      native: [login(), failedWith("unexpected status 503", 40000), probe([], timedOut, 20000)],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
+    },
+    {
+      name: "a transient failure with no budget left for a retry holds at once",
+      native: [login(), failedWith("unexpected status 503", 60500)],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
     },
   ];
   for (const scenario of scenarios) {

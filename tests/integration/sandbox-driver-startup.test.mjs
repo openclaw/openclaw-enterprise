@@ -2888,7 +2888,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   );
   handshake = false;
 
-  // A held failure refuses the upgrade; it is returned unvalidated for Compute.
+  // A held failure answers the upgrade 503; it is returned unvalidated for Compute.
   const runtimeFailure = {
     component: "agent",
     check: "model-probe",
@@ -2902,6 +2902,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   // Only a 200 status document with a runtime failure counts; anything else is starting.
   for (const other of [
     { status: 404, json: { runtimeFailure } },
+    { status: 503, json: { runtimeFailure } },
     { status: 200, json: { error: "x" } },
     { status: 200, json: ["runtimeFailure"] },
     { status: 200 },

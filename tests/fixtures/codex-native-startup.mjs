@@ -26,7 +26,8 @@ export const timedOut = { status: null, signal: "SIGKILL", error: { code: "ETIME
 export function login(result = { status: 0 }) {
   return { operation: "login", result };
 }
-export function probe(events, result = {}, timeout) {
+// elapsed advances the fixture clock by a probe's run time when it does not time out.
+export function probe(events, result = {}, timeout, elapsed) {
   return {
     operation: "probe",
     result: {
@@ -35,6 +36,7 @@ export function probe(events, result = {}, timeout) {
       ...result,
     },
     timeout,
+    elapsed,
   };
 }
 
@@ -217,6 +219,7 @@ export function createCodexStartup(
                 if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
                   clock += options.timeout;
                 }
+                clock += step.elapsed ?? 0;
               }
               return step.result;
             } catch (error) {
@@ -331,7 +334,9 @@ export function checkCodexStartup(t, scenario) {
       assert.ok(expected.cause);
     }
     assert.deepEqual(status.runtimeFailure.cause, expected.cause);
-    assert.deepEqual(probes.at(-1)?.cause, expected.cause);
+    // The probe log line names each attempt's own cause; only the held cause says
+    // that the check was retried.
+    assert.deepEqual(probes.at(-1)?.cause, scenario.lastProbeCause ?? expected.cause);
     assert.deepEqual(
       [probes.at(-1)?.providerStatus, probes.at(-1)?.providerCode],
       [expected.provider?.status, expected.provider?.code],
