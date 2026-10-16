@@ -19992,23 +19992,28 @@
                       "additionalProperties": false,
                       "properties": {
                         "people": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "displayName": { "maxLength": 256, "type": "string" },
-                              "hasAvatar": { "type": "boolean" },
-                              "id": { "maxLength": 200, "minLength": 1, "type": "string" },
-                              "role": {
-                                "anyOf": [
-                                  { "maxLength": 128, "type": "string" },
-                                  { "type": "null" }
-                                ]
-                              }
+                          "anyOf": [
+                            {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "displayName": { "maxLength": 256, "type": "string" },
+                                  "hasAvatar": { "type": "boolean" },
+                                  "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                                  "role": {
+                                    "anyOf": [
+                                      { "maxLength": 128, "type": "string" },
+                                      { "type": "null" }
+                                    ]
+                                  }
+                                },
+                                "required": ["id", "displayName", "role", "hasAvatar"],
+                                "type": "object"
+                              },
+                              "type": "array"
                             },
-                            "required": ["id", "displayName", "role", "hasAvatar"],
-                            "type": "object"
-                          },
-                          "type": "array"
+                            { "type": "null" }
+                          ]
                         }
                       },
                       "required": ["people"],
@@ -20058,12 +20063,6 @@
             "description": "Default Response"
           },
           "500": {
-            "content": {
-              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
-            },
-            "description": "Default Response"
-          },
-          "501": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
             },

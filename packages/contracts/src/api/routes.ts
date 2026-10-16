@@ -1518,7 +1518,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: AgentParams,
-      response: { 200: AgentGatewayPeopleResponse, ...readErrors, 501: ErrorResponseRef },
+      response: { 200: AgentGatewayPeopleResponse, ...readErrors },
     },
   },
   {

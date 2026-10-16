@@ -3212,7 +3212,6 @@ List human profiles known to one active Agent Gateway
 | `403` | Forbidden |
 | `404` | Not Found |
 | `500` | Internal Server Error |
-| `501` | Not Implemented |
 | `503` | Service Unavailable |
 
 **`200` response body:** `application/json`
@@ -3220,11 +3219,7 @@ List human profiles known to one active Agent Gateway
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
-| `data.people` | `array<object>` | Yes | — |
-| `data.people[].displayName` | `string` | Yes | max length: 256 |
-| `data.people[].hasAvatar` | `boolean` | Yes | — |
-| `data.people[].id` | `string` | Yes | min length: 1; max length: 200 |
-| `data.people[].role` | `string or null` | Yes | — |
+| `data.people` | `array<object> or null` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 

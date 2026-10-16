@@ -55,6 +55,10 @@ export function renderGatewayPeople(context, path) {
       if (!context.isCurrent()) {
         return;
       }
+      section.hidden = data.people === null;
+      if (data.people === null) {
+        return;
+      }
       const people = [...data.people].sort(
         (a, b) => a.displayName.localeCompare(b.displayName) || a.id.localeCompare(b.id),
       );
@@ -115,8 +119,6 @@ export function renderGatewayPeople(context, path) {
       status.textContent = "";
       if (cause.status === 403) {
         context.deniedReads?.remember(endpoint);
-        section.hidden = true;
-      } else if (cause.status === 501) {
         section.hidden = true;
       } else if (cause.status === 409) {
         status.textContent = "People will appear when this Agent has a serving Gateway.";

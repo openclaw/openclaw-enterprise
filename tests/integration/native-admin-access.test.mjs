@@ -1277,6 +1277,25 @@ for (const changedField of [undefined, "id", "implementation"]) {
   });
 }
 
+test("Gateway people report an unconfigured adapter without exposing it to unauthorized callers", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["gateway-reader"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfigured Gateway people", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const denied = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  assert.equal((await fixture.request("GET", path, { session: denied })).status, 403);
+  const result = await fixture.request("GET", path);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { people: null });
+  assert.equal(result.headers.get("cache-control"), "no-store");
+  assert.equal((await fixture.request("GET", path + "/profile-alice/avatar")).status, 501);
+});
+
 test("Gateway people HTTP reads require exact Agent administration and omit adapter internals", async (t) => {
   // The adapter is injected here to isolate HTTP authorization and serialization.
   // Installed Gateway profile/role behavior is covered by the real-runtime proof.

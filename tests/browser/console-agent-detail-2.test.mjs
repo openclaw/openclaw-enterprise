@@ -3492,7 +3492,9 @@ test("Gateway people show native roles and recover from a failed refresh", async
   await card.getByText("Alice Team", { exact: true }).waitFor();
   assert.equal(await card.getByText("member", { exact: true }).count(), 1);
   assert.equal(await card.getByText("maintainer", { exact: true }).count(), 1);
-  await page.waitForFunction(() => document.querySelector(".gateway-people img")?.naturalWidth > 0);
+  await page.waitForFunction(
+    () => globalThis.document.querySelector(".gateway-people img")?.naturalWidth > 0,
+  );
   await card.getByText("BT", { exact: true }).waitFor();
   // A failed read removes stale results and leaves a working, explicit retry.
   fail = true;

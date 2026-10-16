@@ -5,8 +5,9 @@
 `people`: native profile IDs, display names, effective OpenClaw roles (or `null`
 when no named role applies), and avatar availability. The corresponding
 `/gateway/people/:profileId/avatar` operation has the same permission and returns
-a raster image or `404`. Both responses prohibit caching. An installation without the runtime adapter
-returns `501` after authorization; the Console hides the card.
+a raster image or `404`. Both responses prohibit caching. An installation without
+the runtime adapter returns `people: null` after authorization; the Console hides
+the card. Its avatar operation returns `501`.
 
 The roster omits merged aliases and the shared workspace/loopback owner profiles.
 It exposes no linked identity aliases, emails or GitHub metadata. It lists profiles

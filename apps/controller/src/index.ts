@@ -2474,6 +2474,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             lifetime.signal,
             controller.getAdministerableAgent(context.actorId, namespaceId, agentId),
           );
+          if (operation.operationId === "getAgentGatewayPeople") {
+            reply
+              .header("cache-control", "no-store")
+              .send({ data: { people: null }, meta: { requestId: request.id } });
+            return;
+          }
           throw failure(
             501,
             "NOT_IMPLEMENTED",
@@ -2495,9 +2501,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               throw dependencyUnavailable();
             }),
           );
-          reply
-            .header("cache-control", "no-store")
-            .send({ data: { people }, meta: { requestId: request.id } });
+          reply.header("cache-control", "no-store").send({
+            data: {
+              people: people.map(({ id, displayName, role, hasAvatar }) => ({
+                id,
+                displayName,
+                role,
+                hasAvatar,
+              })),
+            },
+            meta: { requestId: request.id },
+          });
         } else {
           const avatar = await withGatewayRequestSignal(
             lifetime.signal,

@@ -1715,7 +1715,7 @@ export const AgentGatewayPersonSchema = Type.Object(
 export const AgentGatewayPeopleResponse = Type.Object(
   {
     data: Type.Object(
-      { people: Type.Array(AgentGatewayPersonSchema) },
+      { people: Type.Union([Type.Array(AgentGatewayPersonSchema), Type.Null()]) },
       { additionalProperties: false },
     ),
     meta: Meta,
