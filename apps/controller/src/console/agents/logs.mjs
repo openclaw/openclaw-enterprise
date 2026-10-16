@@ -245,7 +245,9 @@ export function renderAgentLogs(
   let followTimer;
   let statusTimer;
   let reading = false;
-  let statusReading = false;
+  // Counts status reads. A newer read supersedes one in flight: its answer, success or
+  // failure, may predate a revocation the newer one sees.
+  let statusRead = 0;
   // Set once a log read was allowed: a refusal after that is a revocation.
   let logsAllowed = false;
   // A source, Pod or instance change while a read is in flight restarts the view after it.
@@ -337,9 +339,10 @@ export function renderAgentLogs(
     renderPickers();
     onLogsDenied();
     // One revoke often removes operate too: ask for status once now, so the Pod cards it showed
-    // do not stay under the log refusal until the next status poll (finding 1597). A status
-    // read in flight answers that already; a first read refused revokes nothing.
-    if (logsAllowed && !statusDenied && !statusReading && description !== null) {
+    // do not stay under the log refusal until the next status poll (finding 1597). This read
+    // supersedes one in flight, which may have been authorized before the revoke. A first
+    // read refused revokes nothing.
+    if (logsAllowed && !statusDenied && description !== null) {
       void loadStatus();
     }
   }
@@ -484,13 +487,15 @@ export function renderAgentLogs(
       }
     }
     if (!document.hidden) {
-      statusReading = true;
+      const ticket = ++statusRead;
+      const superseded = () => ticket !== statusRead;
       try {
         const first = description === null;
-        description = await read(base);
-        if (!current()) {
+        const answer = await read(base);
+        if (!current() || superseded()) {
           return;
         }
+        description = answer;
         statusDenied = false;
         renderStrip();
         renderPickers();
@@ -498,7 +503,7 @@ export function renderAgentLogs(
           firstLogRead = readLogs({ restart: true });
         }
       } catch (error) {
-        if (!current()) {
+        if (!current() || superseded()) {
           return;
         }
         if (error.status === 401) {
@@ -529,8 +534,6 @@ export function renderAgentLogs(
           }
           return;
         }
-      } finally {
-        statusReading = false;
       }
     }
     statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);

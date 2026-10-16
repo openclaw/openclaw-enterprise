@@ -1850,6 +1850,72 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
   assert.equal(statusReads(), before + 1);
 });
 
+// A status read authorized before the revoke can answer after the log refusal. The refusal's
+// own status read supersedes it, so its stale answer neither brings the Pod cards back after a
+// refused status nor overrides a fresh one (finding 1597).
+for (const { name, revoked, podsKept } of [
+  { name: "operate revoked too", revoked: ["read_logs", "operate"], podsKept: false },
+  { name: "only read_logs revoked", revoked: ["read_logs"], podsKept: true },
+]) {
+  test(`a status read in flight at a log refusal yields to a fresh one: ${name}`, async (t) => {
+    const logs = await logsFixture(t);
+    logs.computeDriver.state.lines = [line(1, "read before the revoke")];
+    const { account, role } = await logsMember(logs.fixture, logs.namespace, "stale-status", [
+      "read",
+      "operate",
+      "read_logs",
+    ]);
+    const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    await pane.getByText("read before the revoke").waitFor();
+    const pods = page.locator(".runtime-pod");
+    await pods.first().waitFor();
+    await page.getByRole("button", { name: "Follow" }).click();
+    const statusPath = `/deployments/${logs.revisionId}/runtime`;
+    const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
+    // The next status poll is answered with the grants it was authorized under, then held.
+    const stale = await holdRequests(t, page, `**${statusPath}`, {
+      once: true,
+      afterServer: true,
+    });
+    await page.clock.runFor(10_000);
+    await stale.requested;
+    // The follow poll due at the same time settles first, so the next one is on the clock.
+    await page.waitForFunction(() => globalThis.inFlightFetchCount() === 1);
+    const before = statusReads();
+
+    for (const permission of revoked) {
+      changeGrant(role, permission, false);
+    }
+    const fresh = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(statusPath) && response.status() === (podsKept ? 200 : 403),
+    );
+    await page.clock.runFor(2_000);
+    await page.getByText(/Log text requires Agent read_logs/).waitFor();
+    await fresh;
+    const arriving = page.waitForResponse(
+      (response) => response.url().endsWith(statusPath) && response.status() === 200,
+    );
+    stale.release();
+    await arriving;
+    await waitForIdleFetches(page);
+    assert.equal(await pane.locator(":scope > *").count(), 0);
+    assert.equal(statusReads(), before + 1);
+    if (podsKept) {
+      assert.ok((await pods.count()) > 0, "a fresh status answer keeps the Pod cards");
+      assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+    } else {
+      assert.equal(await pods.count(), 0, "the stale answer does not bring the Pod cards back");
+      await page.getByText(/Runtime status requires Agent operate/).waitFor();
+    }
+    // The fresh read alone schedules the next poll: nothing more within the poll interval.
+    await page.clock.runFor(9_000);
+    await waitForIdleFetches(page);
+    assert.equal(statusReads(), before + 1);
+  });
+}
+
 // Losing operate hides the last status, not log text the member still has permission to read.
 test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
   const logs = await logsFixture(t);
