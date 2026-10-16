@@ -56,6 +56,7 @@ export const ChannelsReadOnly = { ...story("channelsReadOnly"), name: "Revision 
 export const ChannelConflict = { ...story("channelConflict"), name: "Save conflict" };
 export const ChannelSaveRejected = { ...story("channelSaveRejected"), name: "Save rejected" };
 export const ChannelChangedElsewhere = story("channelChangedElsewhere");
+export const ChannelChangedElsewhereWithEdits = story("channelChangedElsewhereWithEdits");
 export const ChannelSavePending = { ...story("channelSavePending"), name: "Channel save pending" };
 export const ChannelSaveUnknown = {
   ...story("channelSaveUnknown"),

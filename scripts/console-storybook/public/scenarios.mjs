@@ -4064,6 +4064,24 @@ export const scenarios = {
       "Select Reload draft: the tab rebuilds in place with Draft reloaded., and Edit Slack saves again.",
     ],
   },
+  channelChangedElsewhereWithEdits: {
+    group: "Components/Channels",
+    name: "Configuration changed elsewhere with unsaved edits",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      click("Save configuration"),
+    ],
+    description:
+      "Another browser saved this Configuration while Edit Slack had unsaved changes. The alert says Reload draft reopens them over the saved settings.",
+    steps: [
+      "Check that focus is on Reload draft and the alert ends with Reload draft reopens your Slack edits over the saved settings.",
+      "Select Reload draft: Edit Slack reopens with Direct-message policy still Disabled and says the edits are applied over the reloaded settings; Save configuration saves them.",
+    ],
+  },
   channelSavePending: {
     group: "Components/Channels",
     name: "Channel save pending",
