@@ -1935,6 +1935,91 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   assert.equal(await page.getByText(/Log text requires Agent read_logs/).count(), 0);
 });
 
+// Switching tabs rebuilds Logs. A remembered status denial is compared with a fresh permission
+// answer there, so an operate grant shows without a page rebuild; with nothing denied, the
+// switch reads no permission answer (finding 1579).
+test("a Logs tab rebuilt after an operate grant reads status again without a page rebuild", async (t) => {
+  const logs = await logsFixture(t);
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "regranted", [
+    "read",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  const statusReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
+  const permissionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
+  const reopenLogs = async () => {
+    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("button", { name: "Logs", exact: true }).click();
+  };
+  assert.equal(statusReads(), 1);
+
+  changeGrant(role, "operate", true);
+  await reopenLogs();
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), 2);
+  assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+
+  const permissionsBefore = permissionReads();
+  await reopenLogs();
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), 3);
+  assert.equal(permissionReads(), permissionsBefore);
+});
+
+// A status refusal while the answer allows operate is not asked again on the page (a fresh
+// answer that still allows operate changes nothing), but a new sign-in asks again.
+test("a status refusal taken while operate is allowed is asked again after a new sign-in", async (t) => {
+  const logs = await logsFixture(t);
+  const { account } = await logsMember(logs.fixture, logs.namespace, "refused-with-operate", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  const statusPath = `/namespaces/${logs.namespace.id}/agents/${logs.agent.id}/deployments/${logs.revisionId}/runtime`;
+  const statusReads = () => requests.filter(({ path }) => path === statusPath).length;
+  const permissionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
+  const reopenLogs = async () => {
+    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByText(/Runtime status requires Agent operate/).waitFor();
+    await waitForIdleFetches(page);
+  };
+  await page.route(`${logs.fixture.origin}${statusPath}`, (route) =>
+    route.fulfill(refusedRoute(403)),
+  );
+  await reopenLogs();
+  const refusedReads = statusReads();
+  const permissionsBefore = permissionReads();
+  await reopenLogs();
+  assert.equal(statusReads(), refusedReads);
+  assert.equal(permissionReads(), permissionsBefore + 1);
+
+  await page.unroute(`${logs.fixture.origin}${statusPath}`);
+  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByLabel("Username").fill(account.credentials.email);
+  await page.getByLabel("Password").fill(account.credentials.password);
+  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.waitForURL(/\/console\/agents/);
+  const url = detailUrl(logs.fixture, logs.namespace.id, logs.agent.id, logs.revisionId, "logs");
+  await page.evaluate((target) => {
+    globalThis.history.pushState(null, "", target);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, url.pathname + url.search);
+  await page.locator(".runtime-pod").first().waitFor();
+  assert.equal(statusReads(), refusedReads + 1);
+});
+
 // An unfollowed view's Back check reads on from its cursor; the view shows that page instead
 // of discarding an audited read (finding 1564).
 test("Back shows the lines its check read in an unfollowed Logs view", async (t) => {
