@@ -586,7 +586,7 @@ test("a long turn trace keeps its start and end", () => {
   assert.equal(codexTurnTrace(undefined), "");
 });
 
-test("OpenShell asks for another probe only after a turn without that command", async (t) => {
+test("OpenShell settles observed commands before deciding whether to ask for another probe", async (t) => {
   const nonce = "fixture-probe";
   const probe = { command: `cd /work && bash ${nonce}.sh ${syntheticSecret}`, id: "probe" };
   const event = (phase, item) => ({
@@ -596,7 +596,26 @@ test("OpenShell asks for another probe only after a turn without that command", 
   const start = event("started", probe);
   const end = event("completed", { ...probe, exitCode: 52 });
   const unrelated = event("completed", { command: "pwd", id: "other", exitCode: 0 });
+  const otherStart = event("started", unrelated.params.item);
+  // The shell joins these fragments into fixture-probe.sh; the event text does not contain the nonce.
+  const splitStart = event("started", { ...probe, command: "bash fixture-'probe'.sh" });
   for (const [name, turns, expected] of [
+    ["split shell spelling, no completion", [[splitStart]], "unknown"],
+    ["unsettled command before completed probe", [[otherStart, start, end]], "unknown"],
+    ["unsettled command after completed probe", [[start, end, otherStart]], "unknown"],
+    ["duplicate start", [[start, start, end]], "unknown"],
+    ["duplicate completion", [[start, end, end]], "unknown"],
+    ["conflicting command for the same id", [[splitStart, end]], "unknown"],
+    [
+      "completed unrelated start, then probe",
+      [
+        [otherStart, unrelated],
+        [start, end],
+      ],
+      "completed",
+    ],
+    ["no commands, then nonzero probe completion", [[], [start, end]], "completed"],
+    ["only a probe completion was observed", [[end]], "completed"],
     ["start without completion", [[start]], "unknown"],
     ["start followed by another command's result", [[start, unrelated]], "unknown"],
     ["inconclusive command identity", [[event("started", { id: "probe" })]], "unknown"],
