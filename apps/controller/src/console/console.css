@@ -1193,16 +1193,6 @@ select:not([multiple])[size="1"] {
 .agent-table td {
   vertical-align: top;
 }
-.agent-table .resource-id {
-  display: block;
-  margin-top: 7px;
-  max-width: 310px;
-  overflow-wrap: anywhere;
-}
-.agent-table a {
-  font-weight: 550;
-  text-decoration: none;
-}
 /* A set width and a one-line note, so a landing deployment read neither grows its row nor
    re-flows the columns (finding 1488). The note adds nothing to the column's width. */
 .agent-table .agent-deployment::before {
@@ -1215,6 +1205,16 @@ select:not([multiple])[size="1"] {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.agent-table .resource-id {
+  display: block;
+  margin-top: 7px;
+  max-width: 310px;
+  overflow-wrap: anywhere;
+}
+.agent-table a {
+  font-weight: 550;
+  text-decoration: none;
 }
 .agent-tabs {
   display: flex;
