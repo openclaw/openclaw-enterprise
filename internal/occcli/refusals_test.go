@@ -159,7 +159,8 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent runtime" needs Agent operate, Agent read and revision read; ask an administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
 		t.Fatalf("runtime refusal = %v", err)
 	}
-	// A list filtered per item needs no grant, so its refusal names nothing to ask for.
+	// A list filtered per item needs no grant, so a generic refusal (an identity
+	// OCC no longer admits) names nothing to ask for.
 	err = runRefused(t, keyFile, denied, "namespace", "list")
 	if err == nil || strings.Contains(err.Error(), "hint:") {
 		t.Fatalf("namespace list refusal = %v, want no hint", err)

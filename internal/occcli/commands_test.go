@@ -498,7 +498,7 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
 		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read\n"},
 		{"Agent without an active revision", map[string]string{
-			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":null}`,
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `"}`,
 			"GET " + agentPath + "/revisions":                      olderOnly,
 			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
 		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; agent " + testAgentID + " has no active revision\n"},
