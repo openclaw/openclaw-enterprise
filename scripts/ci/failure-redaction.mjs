@@ -30,11 +30,11 @@ const publicEnvNames = new Set([
 const privateKeyShape =
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
 // An auth scheme's value stops at a quote, backslash or closing bracket that ends it, so a quoted
-// header keeps its closing quote (finding 1556); one followed by more of the value (`\/`, `a)b`)
-// is part of it. A quote may open the value and is kept. A short value is redacted when it has
-// a digit, so "Bearer token expired" stays readable.
-// A run of delimiters followed by more value (including a log-escaped quote) belongs to it.
-const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|["'\\)\]}]+(?=[^\s"'\\)\]}]))`;
+// header keeps its closing quote (finding 1556). A run of those followed by more token text
+// (`\/`, `a)b`, a log-escaped quote) belongs to the value; one followed by punctuation, as a
+// closing quote before `,"status"` is, ends it. A quote may open the value and is kept. A short
+// value is redacted when it has a digit, so "Bearer token expired" stays readable.
+const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|["'\\)\]}]+(?=[\w.~+/=-]))`;
 const authSchemeShape = new RegExp(
   String.raw`\b(?:[Bb]earer|BEARER|Basic|Token)\s+(["']?)(?:${authSchemeValueChar}{8,}|(?=${authSchemeValueChar}*\d)${authSchemeValueChar}+)`,
   "gu",

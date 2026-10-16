@@ -2273,6 +2273,15 @@ test("a quoted auth header keeps the failure text after it", async () => {
       String.raw`{\"authorization\":\"[redacted]\"}`,
     ],
     ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
+    // A sibling field after the closing quote is not part of the value.
+    [
+      '{"authorization":"Bearer syntheticBearer0123","status":503}',
+      '{"authorization":"[redacted]","status":503}',
+    ],
+    [
+      "headers: { authorization: 'Bearer syntheticBearer0123', status: 503 }",
+      "headers: { authorization: '[redacted]', status: 503 }",
+    ],
     // Logs can escape or repeat delimiters inside the value. Keep only the actual closing ones.
     [String.raw`got Bearer synthetic0\"private-tail`, "got [redacted]"],
     ["map[Authorization:[Basic synthetic0))private-tail]]", "map[Authorization:[redacted]]"],
