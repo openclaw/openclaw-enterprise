@@ -556,7 +556,8 @@ test("Back to a changed Agent keeps the held page until the overview reveals", a
   );
   await page.goBack();
   await record.requested;
-  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  // The Agent page has rendered, waiting for its overview.
+  await page.locator(".content .agent-detail-pending").waitFor({ state: "attached" });
   record.release();
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await shownFrames(page), [
@@ -584,7 +585,8 @@ test("Create new version keeps the Agent page until the draft's overview reveals
     .getByRole("button", { name: "Create new version" })
     .click();
   await record.requested;
-  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  // The Agent page has rendered, waiting for its overview.
+  await page.locator(".content .agent-detail-pending").waitFor({ state: "attached" });
   record.release();
   await page.waitForURL(/revision=draft/);
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
