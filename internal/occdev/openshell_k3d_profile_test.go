@@ -21,7 +21,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"
+const profileTestDigest = "sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.

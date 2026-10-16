@@ -1782,9 +1782,7 @@ export class OpenClawController {
   }
 
   async getNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     await this.authorize(principalId, "read", {
       kind: "namespace",
       id: namespaceId,
@@ -7504,9 +7502,7 @@ export class OpenClawController {
    * Driver effects remain deferred to handleNamespaceLifecycle().
    */
   async deleteNamespace(principalId: string, namespaceId: string): Promise<Readonly<Namespace>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespaceForPolicyDelete(state, principalId, {
         kind: "namespace",
@@ -7798,9 +7794,7 @@ export class OpenClawController {
     if (!isNonEmptyString(actorId)) {
       throw new ScopeViolationError("The lifecycle actor is missing.");
     }
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     if (target !== "ready" && target !== "deleted") {
       throw new ScopeViolationError("The Namespace lifecycle target is invalid.");
     }
@@ -8258,9 +8252,7 @@ export class OpenClawController {
     state: PlatformReadView,
     namespaceId: string,
   ): Promise<Readonly<Namespace>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     const namespace = await state.namespaces.findNamespace(namespaceId);
     if (!namespace) {
       throw new ScopeViolationError(
@@ -8274,9 +8266,7 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     namespaceId: string,
   ): Promise<Readonly<Namespace>> {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     const namespace = await state.namespaces.lockNamespace(namespaceId);
     if (!namespace) {
       throw new ScopeViolationError(
@@ -10484,9 +10474,7 @@ export class OpenClawController {
   }
 
   private configurationIdentity(namespaceId: string, configurationId: string): void {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     if (!isNonEmptyString(configurationId)) {
       throw new ScopeViolationError("The exact Configuration identity is missing.");
     }
@@ -10499,9 +10487,7 @@ export class OpenClawController {
   }
 
   private serviceAccountIdentity(namespaceId: string, serviceAccountId: string): void {
-    if (!isNonEmptyString(namespaceId)) {
-      throw new ScopeViolationError("The exact Namespace identity is missing.");
-    }
+    this.namespaceIdentity(namespaceId);
     if (!isNonEmptyString(serviceAccountId)) {
       throw new ScopeViolationError("The exact ServiceAccount identity is missing.");
     }

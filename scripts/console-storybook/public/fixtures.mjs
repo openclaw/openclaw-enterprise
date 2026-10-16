@@ -1200,7 +1200,14 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "/permissions" && method === "GET") {
           const allowed = !scenario.readOnlyPermissionSummary;
-          return response({ update: allowed, deploy: allowed, operate: allowed, delete: allowed });
+          return response(
+            scenario.agentPermissionSummary ?? {
+              update: allowed,
+              deploy: allowed,
+              operate: allowed,
+              delete: allowed,
+            },
+          );
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";

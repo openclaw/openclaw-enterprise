@@ -872,8 +872,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return;
   }
   context.setTitle(agent.name);
-  // A missing summary leaves each control on its usual path, except the failed-version
-  // recovery's draft link, which needs update (finding 1478). The API authorizes the actual request.
+  // A missing summary leaves each control on its usual path, except failed-version
+  // recovery, which waits for a positive answer before offering a draft link.
   let callerPermissions = null;
   let callerPermissionsSettled = false;
   const callerPermissionsRead = request(`${path}/permissions`)
@@ -888,8 +888,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
-  // Only the latest draft refresh's answer replaces the summary.
+  // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
+  // The newest permission read. Logs compares a remembered status denial with it, so an
+  // operate grant read since the page was built applies (finding 1579).
+  let latestPermissionsRead = callerPermissionsRead;
+  let permissionsReadSettled = false;
+  void callerPermissionsRead.then(() => {
+    permissionsReadSettled = latestPermissionsRead === callerPermissionsRead;
+  });
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -1641,8 +1648,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const logsAllowed =
         !logTextDenied(context, agentId) &&
         !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
-      // Only an answer that allows update offers the draft; a failed answer offers none.
-      const draftAllowed = callerPermissions?.update === true;
+      // Agent permissions can support opening a draft; they do not grant Configuration access.
+      const configurationId = currentAgent.configurationId;
+      const configurationAvailable =
+        typeof configurationId === "string" &&
+        configurationId.length > 0 &&
+        !currentAgent.configurationReadError &&
+        !context.deniedReads?.has(
+          `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`,
+        );
       let impact = logsAllowed
         ? "Check the failed version’s logs before deploying a new version."
         : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
@@ -1659,19 +1673,26 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
-      const tab =
-        !draftAllowed || (guidance === "credentials" && agent.harnessAuth?.method === "runtime")
-          ? null
-          : guidance;
-      const actionsFor = `${latest.id}/${tab}/${logsAllowed}`;
+      const canOpenConfiguration =
+        guidance === "configuration" &&
+        configurationAvailable &&
+        (callerPermissions?.update === true || callerPermissions?.deploy === true);
+      const canOpenCredentials =
+        guidance === "credentials" &&
+        callerPermissions?.update === true &&
+        currentAgent.harnessAuth?.method !== "runtime";
+      const tab = canOpenConfiguration || canOpenCredentials ? guidance : null;
+      const nextLabel =
+        canOpenConfiguration && callerPermissions?.update !== true
+          ? "Open version draft"
+          : DEPLOYMENT_FAILURE_LINK_LABELS[tab];
+      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}`;
       if (recoveryTarget !== actionsFor) {
         recoveryTarget = actionsFor;
         const logs = logsAllowed
           ? link(`Open ${version} Logs`, target(latest.id, "logs"), context)
           : null;
-        const next = tab
-          ? link(DEPLOYMENT_FAILURE_LINK_LABELS[tab], target("draft", tab), context)
-          : null;
+        const next = tab ? link(nextLabel, target("draft", tab), context) : null;
         const actions = [logs, next].filter(Boolean);
         if (actions.length) {
           actions[0].className = "overview-primary";
@@ -2394,23 +2415,38 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
 
+  // Reads the caller's permission answer again; a failed read keeps the last answer.
+  function rereadPermissions() {
+    const previous = latestPermissionsRead;
+    const reread = ++permissionsRereads;
+    const read = request(`${path}/permissions`).then(
+      (permissions) => {
+        if (context.isCurrent() && reread === permissionsRereads) {
+          callerPermissions = permissions;
+          if (latestDeploymentStatus === "failed" && !deleting) {
+            renderLatestDeployment();
+          }
+        }
+        return permissions;
+      },
+      () => previous,
+    );
+    latestPermissionsRead = read;
+    permissionsReadSettled = false;
+    const settle = () => {
+      permissionsReadSettled = latestPermissionsRead === read;
+    };
+    void read.then(settle, settle);
+    return read;
+  }
+
   async function refreshDraft(freshAgent, saved, focus) {
     if (freshAgent) {
       agent = freshAgent;
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
-    // The rebuilt editors take the fresh answer; a failed read keeps the last one.
-    const previousUpdateAllowed = agentUpdateAllowed;
-    const reread = ++permissionsRereads;
-    agentUpdateAllowed = request(`${path}/permissions`).then(
-      (permissions) => {
-        if (context.isCurrent() && reread === permissionsRereads) {
-          callerPermissions = permissions;
-        }
-        return permissions?.update;
-      },
-      () => previousUpdateAllowed,
-    );
+    // The rebuilt editors take the fresh answer.
+    agentUpdateAllowed = rereadPermissions().then((permissions) => permissions?.update);
     const next = loadDetails();
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
@@ -2560,6 +2596,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         agent,
         revisionId: selected,
         shown: revealed,
+        // A rebuilt view asks for a fresh answer when it remembers a status denial; a read
+        // still in flight is that answer.
+        permissions: ({ fresh = false } = {}) =>
+          fresh && permissionsReadSettled ? rereadPermissions() : latestPermissionsRead,
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.hidden) {

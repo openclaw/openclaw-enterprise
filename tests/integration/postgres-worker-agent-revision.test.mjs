@@ -2286,7 +2286,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.3-pre.2 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell v0.1.4 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {

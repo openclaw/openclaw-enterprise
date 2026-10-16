@@ -3244,11 +3244,24 @@ export const scenarios = {
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     readOnlyPermissionSummary: true,
     description:
-      "The same failed model check for a viewer whose permission answer denies Agent update. Recovery offers Open v7 Logs only, not the draft Configuration.",
+      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
+  },
+  deploymentModelProbeFailedDeployOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    description:
+      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+    steps: ["Select Open version draft and confirm the Configuration tab opens without deploying."],
+    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",

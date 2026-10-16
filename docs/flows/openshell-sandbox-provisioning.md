@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-15
-last_updated_session: authoring-run/7eb24321-3670-4154-adde-41a0f1b36728
+last_updated_session: authoring-run/openshell-014-rebase-20261015
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -11,11 +11,11 @@ last_updated_session: authoring-run/7eb24321-3670-4154-adde-41a0f1b36728
 Kubernetes Compute delegates dedicated Harnesses to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
 Agent Secret permission. Codex authenticates Gateway requests through revision-owned
-provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
+files and OpenShell's bearer-passthrough endpoint, replacing the
 Harness Service.
 
-Workspace-node setup exposes a scoped bootstrap token through a revision-owned
-provider file; it remains development-only.
+Development workspace-node setup exposes a scoped bootstrap token through a
+revision-owned provider file.
 
 ## Entry Points
 
@@ -199,7 +199,7 @@ selects a named provider with the normalized endpoint and HTTPS Responses transp
 
 Only dedicated Codex or OpenClaw revisions pinned to this Driver are accepted.
 Kubernetes, filesystem, process and binary-scoped network policy use the
-`v0.1.3-pre.2` wire contract. Landlock is required; unsupported enums, inherited
+`v0.1.4` wire contract. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
 launch. Readiness `timeoutMs` must be a positive safe integer. The Installation
 loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
@@ -355,6 +355,7 @@ ClusterIP and the Agent Gateway must use `ws://*.openshell.localhost:8080/`.
 
 ## Changelog
 
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 - 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)

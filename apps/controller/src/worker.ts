@@ -2422,7 +2422,7 @@ export class ControllerWorker {
           result.outcome === "permanent" ||
           (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
         if (result.decision !== undefined) {
-          await this.appendAgentDeletionDenial(unit, claim, result);
+          await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
           await this.appendAgentDeletionOutcome(unit, claim, result);
         }
@@ -2482,32 +2482,6 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentDeletionDenial(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    result: AgentDeletionDispatchResult,
-  ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent deletion authorization context is unavailable.");
-    }
-    await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      kind: "authorization_denial",
-      actorId: claim.actorId,
-      source: "occ",
-      action: "openclaw.agents.delete",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
-      reasonCode: result.code,
-      outcome: "denied",
-    });
-  }
-
   private async finalizeAgentStop(
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
@@ -2536,7 +2510,7 @@ export class ControllerWorker {
         result.outcome === "permanent" ||
         (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       if (result.decision !== undefined) {
-        await this.appendAgentStopDenial(unit, claim, result);
+        await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
         await this.appendAgentStopOutcome(unit, claim, result);
       }
@@ -2614,13 +2588,14 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentStopDenial(
+  private async appendAgentDenial(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
-    result: AgentStopDispatchResult,
+    result: DispatchResult,
+    operation: "deletion" | "stop",
   ): Promise<void> {
     if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent stop authorization context is unavailable.");
+      throw new Error(`The worker Agent ${operation} authorization context is unavailable.`);
     }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
@@ -2630,7 +2605,7 @@ export class ControllerWorker {
       kind: "authorization_denial",
       actorId: claim.actorId,
       source: "occ",
-      action: "openclaw.agents.stop",
+      action: operation === "deletion" ? "openclaw.agents.delete" : "openclaw.agents.stop",
       resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
       iamDriverId: this.iamDriverId,
       ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
