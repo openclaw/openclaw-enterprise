@@ -1643,6 +1643,7 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   const { page, requests, leave } = await openRetainedLogs(t, logs, account.credentials);
   const pane = page.getByRole("log", { name: "Runtime log output" });
   await pane.getByText("read before revoke").waitFor();
+  await page.getByText(/Showing gateway in/).waitFor();
   await page.getByRole("button", { name: "Follow" }).click();
   changeGrant(role, "read_logs", false);
   await page.clock.runFor(2_000);
@@ -1751,7 +1752,7 @@ for (const delayed of ["follow", "download"]) {
 
 // Back checks runtime status itself, not only through the permission answer: a status read
 // refused since, with that answer unchanged, keeps the cached Pod cards off screen. The answer
-// still allows operate, so the rebuilt view asks once and then remembers the refusal.
+// still allows operate, so the refusal is not a lost grant: nothing asks again.
 test("Back rebuilds a Logs view whose status read alone is refused since", async (t) => {
   const logs = await logsFixture(t);
   logs.computeDriver.state.lines = [line(1, "operator output")];
@@ -1789,15 +1790,15 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   await waitForIdleFetches(page);
   assert.equal(await viewKept(page), false);
   assert.deepEqual(await page.evaluate(() => globalThis.__podSeen), []);
-  // Back's check and the rebuilt view's one more ask.
-  assert.equal(refusals, 2);
+  // Only Back's check asked: the rebuilt view takes its refusal.
+  assert.equal(refusals, 1);
   await leave();
   await page.goBack();
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await waitForIdleFetches(page);
   await page.clock.runFor(10_000);
   await waitForIdleFetches(page);
-  assert.equal(refusals, 2);
+  assert.equal(refusals, 1);
 });
 
 // Losing operate hides the last status, not log text the member still has permission to read.
@@ -1904,7 +1905,7 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   assert.equal(logReads(), 1);
   await page.getByText(/Log text requires Agent read_logs/).waitFor();
 
-  // A denied answer that stays denied is never asked again, even with operate allowed.
+  // Operate revoked: the status read is refused once, then remembered across Backs.
   await leave();
   changeGrant(role, "operate", false);
   await page.goBack();

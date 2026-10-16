@@ -10,8 +10,9 @@ const TAIL_LINES = 200;
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
 // time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
-// allowed operate when it was last shown: once a later answer allows it again, the view asks
-// once more. The answer has no read_logs bit, so a log text denial lasts until sign-out.
+// allowed operate when it was last shown (null until an answer is compared): once a later
+// answer allows operate where it did not, the view asks once more. The answer has no read_logs
+// bit, so a log text denial lasts until sign-out.
 const deniedLogViews = new Set();
 const deniedStatusViews = new Map();
 // Denials are per signed-in operator: another user signing in on this tab asks again.
@@ -28,6 +29,7 @@ export function clearRuntimeDenials() {
   deniedLogViews.clear();
   deniedStatusViews.clear();
 }
+
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
 function runtimeErrorText(error, tier, source) {
@@ -449,10 +451,11 @@ export function renderAgentLogs(
     }
     if (deniedStatusViews.has(statusKey)) {
       const operate = (await permissions)?.operate === true;
-      if (!current()) {
+      // Another status load may have taken the denial while this one waited.
+      if (!current() || !deniedStatusViews.has(statusKey)) {
         return;
       }
-      if (operate && !deniedStatusViews.get(statusKey)) {
+      if (operate && deniedStatusViews.get(statusKey) === false) {
         // Operate is granted again since the denial: ask once more, never on a timer.
         deniedStatusViews.delete(statusKey);
       } else {
@@ -469,6 +472,7 @@ export function renderAgentLogs(
         if (!current()) {
           return;
         }
+        statusDenied = false;
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
@@ -489,7 +493,12 @@ export function renderAgentLogs(
         // Authorization and support failures do not change on their own.
         if ([403, 404, 501].includes(error.status)) {
           if (error.status === 403) {
-            deniedStatusViews.set(statusKey, (await permissions)?.operate === true);
+            deniedStatusViews.set(statusKey, null);
+            void permissions.then((answer) => {
+              if (deniedStatusViews.get(statusKey) === null) {
+                deniedStatusViews.set(statusKey, answer?.operate === true);
+              }
+            });
           }
           return;
         }
@@ -850,8 +859,8 @@ export function renderAgentLogs(
           // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
           if (error.status === 403) {
             if (path === base) {
-              // Not yet compared with a permission answer: the rebuilt view does that.
-              deniedStatusViews.set(statusKey, false);
+              // Not yet compared with a permission answer: the rebuilt view takes its answer.
+              deniedStatusViews.set(statusKey, null);
             } else {
               deniedLogViews.add(deniedKey);
             }
