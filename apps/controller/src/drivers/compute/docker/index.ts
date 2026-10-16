@@ -76,7 +76,7 @@ interface DockerContainerInspect {
   };
 }
 
-interface DockerNetworkInspect {
+interface DockerLabeledResourceInspect {
   readonly Labels?: Readonly<Record<string, string>>;
 }
 
@@ -802,9 +802,7 @@ export class DockerComputeDriver implements ComputeDriver {
     const ownership = this.gatewayOwnership(revision);
     const mounts = this.workspaceMounts(ownership);
     for (const mount of new Map(mounts.map((mount) => [mount.Source, mount])).values()) {
-      let volume = await this.inspect<{ Labels?: Readonly<Record<string, string>> }>(
-        `/volumes/${encodeURIComponent(mount.Source)}`,
-      );
+      let volume = await this.volume(mount.Source);
       if (volume === undefined) {
         if (setup.completed) {
           throw new ConfigurationFailure("Initialized workspace storage is missing.");
@@ -942,19 +940,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         continue;
       }
       // Reinspect immediately before deletion rather than trusting the list response.
-      let current: { Labels?: Readonly<Record<string, string>> };
-      try {
-        current = (await this.request(
-          "GET",
-          `/volumes/${encodeURIComponent(volume.Name)}`,
-          undefined,
-          [200],
-        )) as typeof current;
-      } catch (error) {
-        if (statusCode(error) === 404) {
-          continue;
-        }
-        throw error;
+      const current = await this.volume(volume.Name);
+      if (current === undefined) {
+        continue;
       }
       this.verifyOwnership(current.Labels, ownership, `volume ${volume.Name}`);
       if (current.Labels?.[ROLE_LABEL] !== "workspace") {
@@ -1336,8 +1324,8 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     await this.request("GET", `/images/${encodeURIComponent(ref)}/json`, undefined, [200]);
   }
 
-  private async network(name: string): Promise<DockerNetworkInspect | undefined> {
-    return this.inspect<DockerNetworkInspect>(`/networks/${encodeURIComponent(name)}`);
+  private async network(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/networks/${encodeURIComponent(name)}`);
   }
 
   private async removeNetwork(name: string): Promise<void> {
@@ -1346,6 +1334,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {
     return this.inspect<DockerContainerInspect>(`/containers/${encodeURIComponent(name)}/json`);
+  }
+
+  private async volume(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/volumes/${encodeURIComponent(name)}`);
   }
 
   private async inspect<T>(path: string): Promise<T | undefined> {

@@ -155,11 +155,13 @@ specific holds; record the reason for the bypass. Do not bypass an unresolved
 finding or claim a missing review succeeded.
 
 An RFC is needed for architectural changes that the team needs to understand,
-not for ordinary bug fixes, small features, or polish. Request human review early,
-but do not wait to write or revise the implementation. Keep the RFC consistent
-with the final code and land them together when ready, either in one PR or as
-linked PRs merged in dependency order. Core team members do not wait for an RFC
-response unless a specific decision or hold requires it.
+not for ordinary bug fixes, small features, or polish. Request human review early.
+For a Driver contract change, submit the proposed contract for human review
+before writing the implementation. Once submitted, implementation and RFC review
+can proceed in parallel unless a specific decision or hold requires waiting.
+Keep the RFC consistent with the final code and land them together when ready,
+either in one PR or as linked PRs merged in dependency order. Core team members
+do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
 checks. The command is read-only; it does not establish merge readiness. After

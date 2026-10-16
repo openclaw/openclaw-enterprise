@@ -70,7 +70,14 @@ export const CreateWorkspaceFiles = { ...story("createWorkspaceFiles"), name: "W
 export const CreatePresetMultiline = story("createPresetMultiline");
 export const CreatePresetMultilineApplied = story("createPresetMultilineApplied");
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
+export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
+export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
+export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
+export const CreateOpenclawWithoutNativeWorkers = {
+  ...story("createOpenclawWithoutNativeWorkers"),
+  name: "OpenClaw without native worker support",
+};
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),
   name: "Experimental Dedicated OpenClaw",
@@ -126,6 +133,10 @@ export const CreatePresetInvalidField = {
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Agent creation needs an administrator",
+};
+export const CreateRestricted = {
+  ...story("createRestricted"),
+  name: "Create Agent unavailable for this caller",
 };
 export const CreateCapabilitiesError = {
   ...story("createCapabilitiesError"),

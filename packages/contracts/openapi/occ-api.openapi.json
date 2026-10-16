@@ -10838,6 +10838,88 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
+                              "type": "object"
+                            },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -11081,6 +11163,88 @@
                                 }
                               },
                               "required": ["executionModes"],
+                              "type": "object"
+                            },
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
                               "type": "object"
                             },
                             "nativeWorkers": {
@@ -12123,31 +12287,6 @@
                                       {
                                         "additionalProperties": false,
                                         "properties": {
-                                          "method": { "const": "oauth", "type": "string" },
-                                          "source": {
-                                            "additionalProperties": false,
-                                            "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                            "properties": {
-                                              "id": {
-                                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              },
-                                              "kind": { "const": "secret", "type": "string" },
-                                              "namespaceId": {
-                                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": ["kind", "namespaceId", "id"],
-                                            "type": "object"
-                                          }
-                                        },
-                                        "required": ["method", "source"],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
                                           "method": {
                                             "const": "credential_source",
                                             "type": "string"
@@ -12582,31 +12721,6 @@
                           {
                             "additionalProperties": false,
                             "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
                               "method": { "const": "credential_source", "type": "string" },
                               "sourceId": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -12868,31 +12982,6 @@
                                           "type": "object"
                                         }
                                       ]
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
                                     }
                                   },
                                   "required": ["method", "source"],
@@ -13165,7 +13254,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -13174,6 +13263,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -13192,7 +13298,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -13420,7 +13526,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -13429,6 +13535,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -13447,7 +13570,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -13724,16 +13847,15 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                      "oauthLogin": {
+                      "credentialSource": {
                         "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                         "properties": {
                           "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "kind": { "const": "secret", "type": "string" },
+                          "kind": { "const": "credential_source", "type": "string" },
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -13742,9 +13864,10 @@
                         "required": ["kind", "namespaceId", "id"],
                         "type": "object"
                       },
+                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["oauthLogin"],
+                    "required": ["credentialSource"],
                     "type": "object"
                   },
                   {
@@ -14013,15 +14136,15 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "oauthLogin": {
+                      "credentialSource": {
                         "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                         "properties": {
                           "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "kind": { "const": "secret", "type": "string" },
+                          "kind": { "const": "credential_source", "type": "string" },
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -14032,7 +14155,7 @@
                       },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["oauthLogin", "pluginId"],
+                    "required": ["credentialSource", "pluginId"],
                     "type": "object"
                   },
                   {
@@ -14417,31 +14540,6 @@
                           {
                             "additionalProperties": false,
                             "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
                               "method": { "const": "credential_source", "type": "string" },
                               "sourceId": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -14455,7 +14553,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it."
+                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -15443,31 +15541,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -15822,31 +15895,6 @@
                                               "type": "object"
                                             }
                                           ]
-                                        }
-                                      },
-                                      "required": ["method", "source"],
-                                      "type": "object"
-                                    },
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
-                                        "method": { "const": "oauth", "type": "string" },
-                                        "source": {
-                                          "additionalProperties": false,
-                                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                          "properties": {
-                                            "id": {
-                                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                              "type": "string"
-                                            },
-                                            "kind": { "const": "secret", "type": "string" },
-                                            "namespaceId": {
-                                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                              "type": "string"
-                                            }
-                                          },
-                                          "required": ["kind", "namespaceId", "id"],
-                                          "type": "object"
                                         }
                                       },
                                       "required": ["method", "source"],
@@ -16295,31 +16343,6 @@
                           {
                             "additionalProperties": false,
                             "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
                               "method": { "const": "credential_source", "type": "string" },
                               "sourceId": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16550,31 +16573,6 @@
                                           "type": "object"
                                         }
                                       ]
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
                                     }
                                   },
                                   "required": ["method", "source"],
@@ -17313,31 +17311,6 @@
                                       "type": "object"
                                     }
                                   ]
-                                }
-                              },
-                              "required": ["method", "source"],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
-                                "method": { "const": "oauth", "type": "string" },
-                                "source": {
-                                  "additionalProperties": false,
-                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                  "properties": {
-                                    "id": {
-                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    },
-                                    "kind": { "const": "secret", "type": "string" },
-                                    "namespaceId": {
-                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": ["kind", "namespaceId", "id"],
-                                  "type": "object"
                                 }
                               },
                               "required": ["method", "source"],
@@ -19399,7 +19372,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -19408,6 +19381,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -19426,7 +19416,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -19674,7 +19664,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -19683,6 +19673,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -19701,7 +19708,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -20040,16 +20047,15 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                  "oauthLogin": {
+                  "credentialSource": {
                     "additionalProperties": false,
-                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
                       "id": {
-                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "kind": { "const": "secret", "type": "string" },
+                      "kind": { "const": "credential_source", "type": "string" },
                       "namespaceId": {
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
@@ -20058,6 +20064,7 @@
                     "required": ["kind", "namespaceId", "id"],
                     "type": "object"
                   },
+                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
                   "q": { "maxLength": 1024, "type": "string" }
                 },
                 "type": "object"
@@ -20478,15 +20485,15 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "oauthLogin": {
+                  "credentialSource": {
                     "additionalProperties": false,
-                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
                       "id": {
-                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "kind": { "const": "secret", "type": "string" },
+                      "kind": { "const": "credential_source", "type": "string" },
                       "namespaceId": {
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
@@ -21197,31 +21204,6 @@
                                           "type": "object"
                                         }
                                       ]
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
                                     }
                                   },
                                   "required": ["method", "source"],
@@ -22028,31 +22010,6 @@
                                           "type": "object"
                                         }
                                       ]
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
                                     }
                                   },
                                   "required": ["method", "source"],

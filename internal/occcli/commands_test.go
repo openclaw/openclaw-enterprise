@@ -497,6 +497,11 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			"GET " + agentPath + "/revisions":                      olderOnly,
 			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
 		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read\n"},
+		{"Agent without an active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; agent " + testAgentID + " has no active revision\n"},
 		{"the active revision", map[string]string{
 			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
@@ -613,6 +618,14 @@ func TestDeploymentStatusTableShowsErrorAsCodeAndMessage(t *testing.T) {
 				`{"component":"gateway","check":"model-probe","checkedAt":"2026-10-03T08:00:00.000Z","code":"MODEL_PROBE_FAILED",` +
 				`"cause":{"kind":"PROBE_STATUS","detail":"rate_limit"}}}}`,
 			want: "RUNTIME_MODEL_PROBE_FAILED: Deployment runtime startup model check failed. (cause: PROBE_STATUS rate_limit)",
+		},
+		{
+			// The cause's detail token is optional; its kind alone is still the cause.
+			name: "model check cause without detail",
+			error: `{"code":"RUNTIME_MODEL_PROBE_FAILED","message":"Deployment runtime startup model check failed.","data":{"runtimeFailure":` +
+				`{"component":"gateway","check":"model-probe","checkedAt":"2026-10-03T08:00:00.000Z","code":"MODEL_PROBE_FAILED",` +
+				`"cause":{"kind":"PROCESS_EXIT"}}}}`,
+			want: "RUNTIME_MODEL_PROBE_FAILED: Deployment runtime startup model check failed. (cause: PROCESS_EXIT)",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

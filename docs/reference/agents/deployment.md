@@ -160,8 +160,7 @@ the setting and what is accepted, never its value, before any revision is create
 ### Pending deployment progress
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `HARNESS_CREDENTIAL_BOOTSTRAP_PENDING`
-while an OAuth bootstrap Job runs, `REVISION_UNSCHEDULABLE` when a live Pod
+when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live Pod
 of the revision has `PodScheduled` `False` with reason `Unschedulable`, for
 example for want of node memory, and `WORKSPACE_NODE_PENDING` when the Harness
 and gateway are ready and only the workspace node's gateway connection is
@@ -170,7 +169,7 @@ outstanding. Activation of a dedicated revision reports
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
 not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
 pending until it is ready, a held runtime failure ends it, or the convergence
-deadline passes, which also retires a pending bootstrap. The worker rechecks an
+deadline passes. The worker rechecks an
 unready revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never

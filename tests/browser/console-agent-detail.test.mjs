@@ -12,16 +12,20 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  holdRequests,
   login,
   nativeValues,
   newPage,
   settlePageRequests,
   nonAuthWriteRequests,
   pathRequests,
+  persistedDeploymentError,
+  recordLayoutShifts,
   revealNativeConfiguration,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  takeLayoutShifts,
   trackSettledFetches,
   waitForInputValue,
   waitForSettledFetches,
@@ -1224,7 +1228,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   assert.equal((await deniedResponse).status(), 403);
   await page
     .getByText(
-      "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account.",
+      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
     )
     .waitFor();
   assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);
@@ -1390,7 +1394,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
     .getByText(
-      "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     )
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
@@ -2565,7 +2569,91 @@ test("a read-only principal sees Agent mutation controls disabled before any den
   }
 });
 
-test("a version editor without Agent update can open the draft, save it, and deploy", async (t) => {
+// A member's full load of Agents painted Create Agent enabled, then disabled it and put the note
+// above the table: 59 px at 390x844, 36 px on desktop (finding 1517). In an empty Namespace the
+// copy then invited creating, and Create Agent by URL refused only at submit (finding 1521).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`a member without Agent create is refused from the first paint at ${viewport.width}x${viewport.height}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const listed = await fixture.createNamespace("Member list", { ready: true });
+    const empty = await fixture.createNamespace("Member empty", { ready: true });
+    await fixture.createAgent(listed.id, "Member visible Agent", nativeValues("m1"));
+    const member = await fixture.createAccountWithPolicy("agent-list-member", (principal) => {
+      for (const namespace of [listed, empty]) {
+        fixture.policy.roles.push({
+          id: `role-agent-list-member-${namespace.id}`,
+          namespaceId: namespace.id,
+          permissions: [
+            { action: "read", resourceKind: "namespace" },
+            { action: "read", resourceKind: "agent" },
+          ],
+        });
+        fixture.policy.bindings.push({
+          id: `binding-agent-list-member-${namespace.id}`,
+          namespaceId: namespace.id,
+          subjectKind: "identity",
+          subjectId: principal.id,
+          roleId: `role-agent-list-member-${namespace.id}`,
+        });
+      }
+    });
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(page, fixture, `/console/agents?namespace=${listed.id}`, member.credentials);
+    await page.getByText("Member visible Agent", { exact: true }).waitFor();
+
+    // A full load has no recent input to excuse a shift.
+    await page.addInitScript(recordLayoutShifts);
+    await page.addInitScript(() => {
+      const states = [];
+      globalThis.__createStates = states;
+      new globalThis.MutationObserver(() => {
+        const create = [...globalThis.document.querySelectorAll("button")].find(
+          (node) => node.textContent === "Create Agent",
+        );
+        const state = create ? (create.disabled ? "disabled" : "enabled") : null;
+        if (state && states.at(-1) !== state) {
+          states.push(state);
+        }
+      }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
+    });
+    await page.reload();
+    const note = page.getByText("Your access does not include creating Agents in this Namespace.");
+    await note.waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+    assert.deepEqual(await page.evaluate(() => globalThis.__createStates), ["disabled"]);
+    const { shifts } = await takeLayoutShifts(page);
+    // Headless Chromium reports a body entry when the page gets shorter; the list must not move.
+    const listShifts = shifts.filter((entry) =>
+      entry.sources.some((source) => !source.node.startsWith("BODY")),
+    );
+    assert.deepEqual(listShifts, []);
+
+    // An empty Namespace does not invite creating under the note.
+    await page.goto(`${fixture.origin}/console/agents?namespace=${empty.id}`);
+    await page.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    await note.waitFor();
+    await page
+      .getByText("Agents in this Namespace that are shared with you appear here.")
+      .waitFor();
+    assert.equal(await page.getByText(/Create an Agent in this Namespace/).count(), 0);
+
+    // Create Agent by URL refuses up front instead of at submit.
+    await page.goto(`${fixture.origin}/console/agents/new?namespace=${empty.id}`);
+    await page.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+    await page
+      .getByText(/Your access does not include creating Agents in this Namespace\./)
+      .waitFor();
+    assert.equal(await page.getByRole("button", { name: "Start without Preset" }).count(), 0);
+    assert.equal(await page.getByRole("link", { name: "← Agents" }).isVisible(), true);
+  });
+}
+
+test("a version editor without Agent update can recover a failed deployment from the draft", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Version editor");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -2576,6 +2664,7 @@ test("a version editor without Agent update can open the draft, save it, and dep
     },
   );
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
   const editor = await fixture.createAccountWithPolicy("version-editor", (principal) => {
     fixture.policy.roles.push({
       id: "role-version-editor",
@@ -2599,6 +2688,25 @@ test("a version editor without Agent update can open the draft, save it, and dep
   });
   const path = "/namespaces/" + namespace.id + "/agents/" + agent.id;
   const { page } = await newPage(t, fixture);
+  // The fixture has no deployment worker; supply its persisted failure record for v2.
+  await page.route(`${fixture.origin}${path}/deployments/${failed.id}`, (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        data: {
+          deploymentId: failed.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "failed",
+          error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_test_version_editor_failure" },
+      },
+    }),
+  );
+  const requests = apiRequests(page, fixture.origin);
   const summary = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
   await login(
     page,
@@ -2615,14 +2723,28 @@ test("a version editor without Agent update can open the draft, save it, and dep
     delete: false,
   });
 
-  // This button in the header opens the draft. It is not an Agent update.
-  const openDraft = page
+  // The header label confirms the page applied the permission answer before recovery is used.
+  await page
     .locator(".agent-toolbar-actions")
-    .getByRole("button", { name: "Open version draft" });
-  await openDraft.click();
+    .getByRole("button", { name: "Open version draft" })
+    .waitFor();
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+  await recovery.getByRole("link", { name: "Open version draft" }).click();
+  await recovery.getByRole("link", { name: "Open version draft" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("edited")));
+  // Hold the real reread after revoking deploy so the refreshed details render first.
+  const permission = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
+    afterServer: true,
+    once: true,
+  });
+  const role = fixture.policy.roles.find(({ id }) => id === "role-version-editor");
+  const originalPermissions = role.permissions;
+  role.permissions = originalPermissions.filter(
+    ({ action, resourceKind }) => action !== "deploy" || resourceKind !== "agent",
+  );
   const saving = page.waitForResponse(
     (r) =>
       r.request().method() === "PATCH" &&
@@ -2632,6 +2754,17 @@ test("a version editor without Agent update can open the draft, save it, and dep
   const saved = await saving;
   assert.equal(saved.status(), 200);
   assert.deepEqual((await saved.json()).data.values, nativeValues("edited"));
+  await permission.requested;
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).isVisible(), true);
+  const reread = page.waitForResponse((r) => r.url().endsWith(path + "/permissions"));
+  permission.release();
+  assert.equal((await (await reread).json()).data.deploy, false);
+  await recovery.getByRole("link", { name: "Open version draft" }).waitFor({ state: "detached" });
+  await recovery.getByRole("link", { name: "Open v2 Logs" }).waitFor();
+
+  role.permissions = originalPermissions;
+  await page.reload();
 
   const deploying = page.waitForResponse(
     (r) => r.request().method() === "POST" && r.url().endsWith(path + "/deploy"),
@@ -2640,6 +2773,10 @@ test("a version editor without Agent update can open the draft, save it, and dep
   const deployed = await deploying;
   assert.equal(deployed.status(), 202);
   assert.equal((await deployed.json()).data.agentId, agent.id);
+  assert.equal(
+    requests.filter((request) => request.method === "PATCH" && request.path === path).length,
+    0,
+  );
 });
 
 test("a negative permission answer reaching an open Stop or Delete dialog prevents submission", async (t) => {
@@ -2715,4 +2852,34 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await page.locator("dialog[open]").waitFor({ state: "detached" });
     await page.unroute(permissionPath);
   }
+});
+
+// A `null` passed to replaceChildren is painted as the text "null" (finding 1567).
+test("the draft Configuration card paints no stray text beside its controls", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Configuration card", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Configuration Card Agent",
+    nativeValues("card"),
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Configuration Card Agent" }).waitFor();
+  const card = page.locator(".configuration-draft-editor");
+  const strayText = () =>
+    card.evaluate((node) =>
+      [...node.childNodes]
+        .filter((child) => child.nodeType === child.TEXT_NODE)
+        .map((child) => child.textContent),
+    );
+
+  await card.getByText("View native Configuration").waitFor();
+  assert.deepEqual(await strayText(), []);
+
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await card.getByText("View native Configuration").waitFor();
+  assert.deepEqual(await strayText(), []);
 });

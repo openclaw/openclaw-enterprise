@@ -18,31 +18,7 @@ const runtimeHelp = {
 };
 
 function oauthCredential(isFedramp = false) {
-  const claims = Buffer.from(
-    JSON.stringify({
-      "https://api.openai.com/auth": {
-        chatgpt_account_id: "account_oauth_fixture",
-        ...(isFedramp ? { chatgpt_account_is_fedramp: true } : {}),
-      },
-    }),
-  ).toString("base64url");
-  return {
-    kind: "oauth",
-    value: JSON.stringify({
-      version: 1,
-      provider: "codex",
-      state: "ready",
-      auth: {
-        auth_mode: "chatgpt",
-        tokens: {
-          access_token: "oauth-access-fixture",
-          refresh_token: "oauth-refresh-fixture",
-          account_id: "account_oauth_fixture",
-          id_token: `e30.${claims}.fixture`,
-        },
-      },
-    }),
-  };
+  return { accessToken: "oauth-access-fixture", accountId: "account_oauth_fixture", isFedramp };
 }
 
 // Plugin Service's PluginDirectoryDetailItem and AppBatchRecord wire contracts.
@@ -208,11 +184,11 @@ for (const isFedramp of [false, true]) {
     });
     const driver = new CodexPluginDriver();
     const credential = oauthCredential(isFedramp);
-    const page = await driver.discoverCatalog({ credential });
+    const page = await driver.discoverCatalog(credential);
     assert.equal(page.plugins[0].remoteId, pluginId);
-    const search = await driver.discoverCatalog({ credential, q: "hosted tools" });
+    const search = await driver.discoverCatalog({ ...credential, q: "hosted tools" });
     assert.equal(search.plugins[0].remoteId, pluginId);
-    const detail = await driver.getCatalogPlugin({ credential, pluginId });
+    const detail = await driver.getCatalogPlugin({ ...credential, pluginId });
     assert.equal(detail.tools[0].id, "connector_fixture/search");
     assert.equal(detail.available, true);
     assert.deepEqual(requests, [
@@ -225,36 +201,27 @@ for (const isFedramp of [false, true]) {
   });
 }
 
-test("hosted OAuth discovery rejects handed-off, invalid and conflicting credentials before provider calls", async (t) => {
+test("hosted OAuth discovery rejects incomplete or unsafe warm identity before provider calls", async (t) => {
   const request = t.mock.method(globalThis, "fetch", async () => {
-    assert.fail("Rejected OAuth credentials must not reach the provider");
+    assert.fail("Rejected credentials must not reach the provider");
   });
-  const ready = JSON.parse(oauthCredential().value);
   for (const credential of [
-    { kind: "oauth", value: JSON.stringify({ ...ready, state: "consumed" }) },
-    { kind: "oauth", value: "invalid native login state" },
-    {
-      kind: "oauth",
-      value: JSON.stringify({
-        ...ready,
-        auth: { ...ready.auth, tokens: { ...ready.auth.tokens, account_id: "different_account" } },
-      }),
-    },
+    { accessToken: "oauth-access-fixture" },
+    { ...oauthCredential(), accountId: "" },
+    { ...oauthCredential(), accountId: "account\nforged-header" },
+    { ...oauthCredential(), accessToken: "token\nforged-header" },
+    { ...oauthCredential(), isFedramp: "true" },
   ]) {
     const driver = new CodexPluginDriver();
-    await assert.rejects(driver.discoverCatalog({ credential }), {
+    await assert.rejects(driver.discoverCatalog(credential), {
       name: "PluginDiscoveryError",
       reason: "credentials_rejected",
     });
-    await assert.rejects(driver.getCatalogPlugin({ credential, pluginId }), {
+    await assert.rejects(driver.getCatalogPlugin({ ...credential, pluginId }), {
       name: "PluginDiscoveryError",
       reason: "credentials_rejected",
     });
   }
-  await assert.rejects(
-    new CodexPluginDriver().discoverCatalog({ accessToken, credential: oauthCredential() }),
-    { name: "PluginDiscoveryError", reason: "credentials_rejected" },
-  );
   assert.equal(request.mock.callCount(), 0);
 });
 
@@ -265,7 +232,7 @@ test("hosted OAuth discovery rejects provider metadata that echoes its bearer cr
       pagination: { next_page_token: null },
     }),
   );
-  await assert.rejects(new CodexPluginDriver().discoverCatalog({ credential: oauthCredential() }), {
+  await assert.rejects(new CodexPluginDriver().discoverCatalog(oauthCredential()), {
     name: "PluginDiscoveryError",
     reason: "invalid_response",
   });

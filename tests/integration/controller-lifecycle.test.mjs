@@ -15,7 +15,6 @@ import {
   InMemoryPlatformState,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
-  NativeWorkerSupportError,
   OpenClawController,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -342,7 +341,7 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
-  for (const hook of ["ensureNamespace", "provisionHarness", "cleanup"]) {
+  for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
         controller.registerDriver({
@@ -1141,22 +1140,17 @@ for (const facets of [["networking"], ["filesystem"], ["process"], ["networking"
   });
 }
 
-test("dedicated native OpenClaw requires native worker support and a full-facet provisioning Sandbox", async () => {
-  for (const [name, sandbox, nativeWorkerSupport, refusal] of [
-    ["pinned runtime", createSandboxDriver(), undefined, NativeWorkerSupportError],
-    ["missing", undefined, "custom-image", DependencyUnavailableError],
+test("dedicated native OpenClaw with the pinned runtime requires a full-facet provisioning Sandbox", async () => {
+  for (const [name, sandbox, refusal] of [
+    ["complete", createSandboxDriver(), undefined],
+    ["missing", undefined, DependencyUnavailableError],
     [
       "partial",
       createSandboxDriver({ facets: ["networking", "filesystem"] }),
-      "custom-image",
       DependencyUnavailableError,
     ],
-    ["complete", createSandboxDriver(), "custom-image", undefined],
   ]) {
-    const { controller } = createController(
-      undefined,
-      nativeWorkerSupport === undefined ? {} : { nativeWorkerSupport },
-    );
+    const { controller } = createController();
     if (sandbox !== undefined) {
       controller.registerDriver(sandbox);
       controller.selectDriver("sandbox", sandbox.id);
@@ -1232,33 +1226,8 @@ async function createDedicatedNativeAgentWithUngrantedSecret(controller, name) {
   return { namespace, agent, secret };
 }
 
-test("dedicated native OpenClaw reports missing native worker support before Agent principal grants", async () => {
-  const { controller } = createController();
-  const sandbox = createSandboxDriver();
-  controller.registerDriver(sandbox);
-  controller.selectDriver("sandbox", sandbox.id);
-  const { namespace, agent } = await createDedicatedNativeAgentWithUngrantedSecret(
-    controller,
-    "Unsupported native before grants",
-  );
-
-  // Granting the Agent principal would not make this deployable, so the capability refusal wins.
-  await assert.rejects(
-    controller.deployAgent(
-      "principal-admin",
-      { namespaceId: namespace.id, agentId: agent.id },
-      resolveApprovedDevelopmentHarness,
-    ),
-    NativeWorkerSupportError,
-  );
-  assert.deepEqual(
-    await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
-    [],
-  );
-});
-
 test("deploy names the Agent service principal and the permission it lacks", async () => {
-  const { controller } = createController(undefined, { nativeWorkerSupport: "custom-image" });
+  const { controller } = createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
@@ -1706,7 +1675,10 @@ test("IAM decision reasons must be strings before returning Installation data", 
   for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
     await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
       transform = (decision) => ({ ...decision, reason });
-      assert.deepEqual(await controller.getInstallation("principal-admin"), installation);
+      assert.deepEqual(await controller.getInstallation("principal-admin"), {
+        ...installation,
+        capabilities: { nativeWorkers: { support: "pinned-runtime" } },
+      });
     });
   }
   await t.test("wrong Driver remains unavailable", async () => {

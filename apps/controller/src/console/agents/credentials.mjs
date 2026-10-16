@@ -1,6 +1,6 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
 import { configurationConflictMessage, isStaleGeneration, namespacePath } from "./list.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
@@ -122,6 +122,18 @@ function applyCarriedSecrets(state, carried) {
   if (carried.configurationId !== state.configuration.id) {
     state.carriedNote =
       "Your channel Secret choices were not reapplied: this Agent now uses another Configuration.";
+    return;
+  }
+  // No Slack token form renders for these, so the note shows in the section instead
+  // (finding 1525).
+  if (!slackEnabled(state.values)) {
+    state.carriedNote =
+      "Your channel Secret choices were not reapplied: Slack is off in the reloaded Configuration.";
+    return;
+  }
+  if (namedSlackAccountKeys(state.values) !== null) {
+    state.carriedNote =
+      "Your channel Secret choices were not reapplied: the reloaded Configuration uses named Slack accounts.";
     return;
   }
   const saved = state.configuration.secretBindings ?? {};
@@ -319,9 +331,16 @@ export function createChannelSecretsPanel({
     }
     if (namedSlackAccountKeys(state.values) !== null) {
       return element(
-        "p",
-        { className: "hint" },
-        "Named Slack accounts use their own token keys. Bind them through the Configuration API.",
+        "div",
+        {},
+        element(
+          "p",
+          { className: "hint" },
+          "Named Slack accounts use their own token keys. Bind them through the Configuration API.",
+        ),
+        state.carriedNote
+          ? element("p", { className: "hint", role: "status" }, state.carriedNote)
+          : null,
       );
     }
     const formId = "runtime-channel-secrets-form";
@@ -483,7 +502,7 @@ export function createChannelSecretsPanel({
         onConfigurationChange?.(state.configuration);
         const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
         for (const secret of grantTargets) {
-          await ensureSecretOperateBinding(context, state.agent, secret);
+          await ensureCredentialOperateBinding(context, state.agent, secret);
           markSecretGrantConfirmed(secret);
         }
         if (!context.isCurrent()) {
@@ -585,6 +604,14 @@ export function createChannelSecretsPanel({
     shown.outcome = state.saveError
       ? error
       : (reloadMessage ?? unknownMessage ?? (shown.status?.textContent ? shown.status : null));
+    if (!slackEnabled(state.values) && state.carriedNote) {
+      // Shown only to say carried Secret choices were not reapplied (finding 1525).
+      section.replaceChildren(
+        element("h2", {}, "Channel Secrets"),
+        element("p", { className: "hint", role: "status" }, state.carriedNote),
+      );
+      return;
+    }
     section.replaceChildren(
       ...[
         element("h2", {}, "Channel Secrets"),
@@ -606,7 +633,7 @@ export function createChannelSecretsPanel({
 
   render();
   return {
-    section: slackEnabled(values) ? section : null,
+    section: slackEnabled(values) || state.carriedNote ? section : null,
     canDeploy,
     deployGateMessage,
     isSaving: () => state.saving,

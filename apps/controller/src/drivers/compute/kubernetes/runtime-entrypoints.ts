@@ -330,6 +330,7 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       ...(cause === undefined ? {} : { cause }),
     },
   });
+  const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
   const server = pluginCreateServer((request, response) => {
     const authorization = typeof request.headers.authorization === "string"
       ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
@@ -343,9 +344,11 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       return;
     }
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    // Anything else, such as the Agent Gateway's app-server upgrade, is told the
+    // Harness is unavailable and why, by code only, not that the route is missing.
     if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
-      response.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ error: "not_found" }));
+      response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(unavailable);
       return;
     }
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
@@ -3087,122 +3090,6 @@ if (followsPeerStatus) {
 }
 `;
 
-const CODEX_OAUTH_BOOTSTRAP_WRITER = String.raw`
-try {
-const fs = require("node:fs");
-const path = require("node:path");
-const directory = process.env.CODEX_HOME;
-const expected = {
-  sourceUid: process.env.OCE_CODEX_OAUTH_SOURCE_UID,
-  volumeUid: process.env.OCE_CODEX_OAUTH_VOLUME_UID,
-};
-if (!directory || !expected.sourceUid || !expected.volumeUid) {
-  throw new Error("OAuth bootstrap identity is missing.");
-}
-const authPath = path.join(directory, "auth.json");
-const receiptPath = path.join(directory, ".oce-oauth.json");
-const validAuth = (auth) => auth?.auth_mode === "chatgpt" &&
-  [auth.tokens?.id_token, auth.tokens?.access_token, auth.tokens?.refresh_token]
-    .every((value) => typeof value === "string" && value.trim().length > 0);
-const readRegularJson = (target) =>
-  fs.lstatSync(target, { throwIfNoEntry: false })?.isFile()
-    ? JSON.parse(fs.readFileSync(target, "utf8"))
-    : undefined;
-if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() === false) {
-  fs.rmSync(directory, { force: true });
-}
-fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-let receipt;
-try {
-  receipt = readRegularJson(receiptPath);
-} catch {
-  // An unreadable receipt proves nothing; seeding below replaces the directory contents.
-}
-if (receipt?.sourceUid === expected.sourceUid) {
-  if (receipt.volumeUid !== expected.volumeUid || !validAuth(readRegularJson(authPath))) {
-    throw new Error("OAuth runtime credentials require reconnect.");
-  }
-} else {
-  const auth = JSON.parse(fs.readFileSync(process.env.OCE_CODEX_OAUTH_SEED_PATH, "utf8"));
-  if (!validAuth(auth)) {
-    throw new Error("OAuth bootstrap credentials are invalid.");
-  }
-  // A new source starts from an empty Codex home: no previous login, sessions, or links.
-  // rmSync removes symbolic links themselves and never follows them.
-  for (const entry of fs.readdirSync(directory)) {
-    // Keep the locked inode: deleting it would let another writer lock a new file.
-    if (entry === ".oce-oauth-bootstrap.lock") continue;
-    fs.rmSync(path.join(directory, entry), { recursive: true, force: true });
-  }
-  const writeJson = (target, value) => {
-    const temporary = target + ".bootstrap";
-    // Exclusive creation fails on any existing path, including a planted symbolic link.
-    const descriptor = fs.openSync(temporary, "wx", 0o600);
-    try {
-      fs.writeFileSync(descriptor, JSON.stringify(value));
-      fs.fsyncSync(descriptor);
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    fs.renameSync(temporary, target);
-  };
-  writeJson(authPath, auth);
-  writeJson(receiptPath, expected);
-  const descriptor = fs.openSync(directory, "r");
-  try {
-    fs.fsyncSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
-  }
-  // Successful exit reports only a verified final state.
-  const written = readRegularJson(receiptPath);
-  if (
-    !validAuth(readRegularJson(authPath)) ||
-    written?.sourceUid !== expected.sourceUid ||
-    written.volumeUid !== expected.volumeUid
-  ) {
-    throw new Error("OAuth bootstrap could not verify private credentials.");
-  }
-}
-} catch {
-  throw new Error("OAuth bootstrap could not initialize private credentials.");
-}
-`;
-
-export const CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT = String.raw`
-try {
-const fs = require("node:fs");
-const path = require("node:path");
-const { spawnSync } = require("node:child_process");
-const directory = process.env.CODEX_HOME;
-if (!directory) throw new Error();
-if (fs.lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() === false) {
-  throw new Error();
-}
-fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-const descriptor = fs.openSync(
-  path.join(directory, ".oce-oauth-bootstrap.lock"),
-  fs.constants.O_CREAT | fs.constants.O_RDWR | fs.constants.O_NOFOLLOW,
-  0o600,
-);
-try {
-  if (!fs.fstatSync(descriptor).isFile()) throw new Error();
-  // The pinned runtime base supplies flock. Kernel locks release on process
-  // death, so an interrupted Pod cannot leave a stale ownership marker. Pass
-  // the already-opened inode to avoid following a link planted in the home.
-  const result = spawnSync("/usr/bin/flock", [
-    "--exclusive", "--timeout", "60", "/proc/self/fd/3",
-    process.execPath, "-e", ${JSON.stringify(CODEX_OAUTH_BOOTSTRAP_WRITER)},
-  ], { stdio: ["ignore", "inherit", "inherit", descriptor] });
-  if (result.error || result.status !== 0) throw new Error();
-} finally {
-  fs.closeSync(descriptor);
-}
-} catch {
-  throw new Error("OAuth bootstrap could not initialize private credentials.");
-}
-`;
-
 // Codex 0.158 app-server hard-codes FmtSpan::FULL on its stderr layer, so each
 // instrumented call prints span "new" and "close" records, and each poll of an
 // instrumented future a span "enter" and "exit" record, at the span's level:
@@ -3389,7 +3276,11 @@ startPluginRuntimeStatusServer(agentRuntimeReady);
 const loginMode = process.env.CODEX_LOGIN_MODE;
 const apiKey = process.env.OPENAI_API_KEY;
 const accessToken = process.env.CODEX_ACCESS_TOKEN;
+const externalAccount = process.env.OCE_CODEX_CHATGPT_ACCOUNT;
 const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
+if (loginMode !== "chatgptAuthTokens" && externalAccount !== undefined) {
+  throw new Error("External ChatGPT metadata requires external authentication.");
+}
 if (loginMode === "api_key") {
   if (!nonempty(apiKey) || accessToken !== undefined) {
     throw new Error("Codex API-key authentication configuration is invalid.");
@@ -3398,9 +3289,9 @@ if (loginMode === "api_key") {
   if (!nonempty(accessToken) || apiKey !== undefined) {
     throw new Error("Codex service account token authentication configuration is invalid.");
   }
-} else if (loginMode === "oauth") {
-  if (apiKey !== undefined || accessToken !== undefined) {
-    throw new Error("Codex OAuth authentication configuration is invalid.");
+} else if (loginMode === "chatgptAuthTokens") {
+  if ((accessToken !== undefined && !nonempty(accessToken)) || !nonempty(externalAccount) || apiKey !== undefined) {
+    throw new Error("Codex external authentication configuration is invalid.");
   }
 } else {
   throw new Error("Codex authentication mode is missing or unsupported.");
@@ -3448,20 +3339,56 @@ function codexAuthenticationRejected(message) {
 }
 const loginStartedAt = Date.now();
 let login;
-if (loginMode === "oauth") {
+let externalAuthenticationUnavailable = false;
+if (loginMode === "chatgptAuthTokens") {
+  let temporary;
   try {
     const fs = require("node:fs");
-    const receipt = JSON.parse(fs.readFileSync(process.env.CODEX_HOME + "/.oce-oauth.json", "utf8"));
-    const auth = JSON.parse(fs.readFileSync(process.env.CODEX_HOME + "/auth.json", "utf8"));
-    const valid = receipt.sourceUid === process.env.OCE_CODEX_OAUTH_SOURCE_UID &&
-      receipt.volumeUid === process.env.OCE_CODEX_OAUTH_VOLUME_UID &&
-      typeof receipt.sourceUid === "string" && typeof receipt.volumeUid === "string" &&
-      auth.auth_mode === "chatgpt" &&
-      [auth.tokens?.id_token, auth.tokens?.access_token, auth.tokens?.refresh_token]
-        .every((value) => typeof value === "string" && value.trim().length > 0);
-    login = { status: valid ? 0 : 1 };
+    const account = JSON.parse(externalAccount);
+    if (!account || !nonempty(account.accountId) || !nonempty(account.planType) ||
+        (account.email !== undefined && !nonempty(account.email)) ||
+        (account.userId !== undefined && !nonempty(account.userId)) ||
+        (account.accountUserId !== undefined && !nonempty(account.accountUserId)) ||
+        (account.isFedramp !== undefined && typeof account.isFedramp !== "boolean")) {
+      throw new Error("Invalid external account metadata.");
+    }
+    // External custody can withhold material after withdrawal. Keep the failure
+    // observable without starting Codex or using authentication left by an earlier run.
+    if (accessToken === undefined) {
+      externalAuthenticationUnavailable = true;
+      throw new Error("External authentication material is unavailable.");
+    }
+    // The trusted egress layer owns the real tokens. This JWT carries local metadata only;
+    // keep its access placeholder byte-for-byte so the provider can recognize and replace it.
+    const claims = {
+      email: account.email,
+      "https://api.openai.com/auth": {
+        chatgpt_account_id: account.accountId,
+        chatgpt_plan_type: account.planType,
+        chatgpt_user_id: account.userId,
+        chatgpt_account_is_fedramp: account.isFedramp ?? false,
+      },
+    };
+    const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const auth = {
+      auth_mode: "chatgptAuthTokens",
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: encode({ alg: "none", typ: "JWT" }) + "." + encode(claims) + ".placeholder",
+        access_token: accessToken,
+        refresh_token: "",
+        account_id: account.accountId,
+      },
+      last_refresh: new Date().toISOString(),
+    };
+    temporary = mkdtempSync(process.env.CODEX_HOME + "/.external-auth-");
+    fs.writeFileSync(temporary + "/auth.json", JSON.stringify(auth), { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary + "/auth.json", process.env.CODEX_HOME + "/auth.json");
+    login = { status: 0 };
   } catch {
     login = { status: 1 };
+  } finally {
+    if (temporary !== undefined) rmSync(temporary, { recursive: true, force: true });
   }
 } else {
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -3483,11 +3410,13 @@ logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication(
     "login",
-    login.error === undefined && codexAuthenticationRejected(login.stderr) ? "AUTHENTICATION_FAILED" : "LOGIN_FAILED",
+    externalAuthenticationUnavailable || (login.error === undefined && codexAuthenticationRejected(login.stderr))
+      ? "AUTHENTICATION_FAILED" : "LOGIN_FAILED",
   );
 } else {
 delete process.env.CODEX_ACCESS_TOKEN;
 delete process.env.OPENAI_API_KEY;
+delete process.env.OCE_CODEX_CHATGPT_ACCOUNT;
 
 // Codex reports an in-turn stream retry as a top-level error before retrying the
 // same sampling request. Only that exact transient shape, within Codex's small
@@ -3509,8 +3438,23 @@ function codexRateLimited(message) {
   return typeof message === "string" &&
     /too many requests|\bstatus:? 429\b|rate[ _-]?limit|usage[ _-]?limit|spend cap|insufficient_quota|exceeded your current quota|(?<!disk )quota exceeded/i.test(message);
 }
+// A provider 5xx, overload or server error, or a dropped stream or connection can
+// pass on its own, so the startup probe tries such a failure once more. A rate limit,
+// a credential marker or a Reconnecting notice the recovered-stream rule refused is
+// never transient: the provider account or the event shape failed, not the transport.
+function codexTransientFailure(message, summary) {
+  if (typeof message !== "string" || codexRateLimited(message) ||
+    /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b|Reconnecting\.\.\./i.test(message)) return false;
+  return summary.providerStatus >= 500 ||
+    /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
+}
 function codexProbeStatusFailure(message, detail) {
-  return { ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail), ...providerErrorSummary(message) };
+  const summary = providerErrorSummary(message);
+  return {
+    ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail),
+    ...summary,
+    ...(codexTransientFailure(message, summary) ? { transient: true } : {}),
+  };
 }
 
 function probeCodexAuthentication(timeout) {
@@ -3594,8 +3538,18 @@ function probeCodexAuthentication(timeout) {
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
+    // A transient failure is only a retry candidate: a later deterministic failure in
+    // the same attempt (a tool event, a rate limit) still holds at once. A transient
+    // message is never a Reconnecting notice, so no recovered stream error lands here.
+    let transientFailure;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
+      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
+        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
+      if (failure?.transient === true) {
+        transientFailure ??= failure;
+        continue;
+      }
       if (event.type === "error") {
         if (!turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
@@ -3608,9 +3562,14 @@ function probeCodexAuthentication(timeout) {
       }
       if (event.type === "turn.completed") turnCompleted = true;
     }
+    if (transientFailure !== undefined) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
-    if (result.status !== 0 || result.error) return finish(probeExitFailure(result));
+    // A probe killed from outside (not by its own timeout) may pass on a second try.
+    if (result.status !== 0 || result.error) {
+      const exit = probeExitFailure(result);
+      return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
+    }
     return finish(events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
@@ -3652,9 +3611,18 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
     return;
   }
+  // A transient failure gets the same single retry; every other failure is
+  // deterministic and held at once.
+  if (result.transient === true && attempt === 1 && performance.now() + 1000 < deadline) {
+    setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
+    return;
+  }
   if (result.code !== undefined) {
     logStartupPhase("model-probe", modelProbeStartedAt, "failed");
-    holdFailedAuthentication("model-probe", result.code, result.cause);
+    // The held cause is the last attempt's, and its detail says the check was retried.
+    holdFailedAuthentication("model-probe", result.code, attempt > 1 && result.cause?.detail !== undefined
+      ? { ...result.cause, detail: result.cause.detail + "-attempt" + attempt }
+      : result.cause);
     return;
   }
   logStartupPhase("model-probe", modelProbeStartedAt);
@@ -3712,7 +3680,7 @@ const child = spawn(
     "shell_environment_policy.experimental_use_profile=false",
     "-c",
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
-    ...(loginMode === "oauth" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
+    ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
     "app-server",
     "--listen",
     "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
@@ -4067,13 +4035,14 @@ ${OPENCLAW_AUTH_PROBE_HELPERS}
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 const state = process.env.OPENCLAW_NODE_STATE_DIR;
 const setupCode = process.env.OPENCLAW_NODE_SETUP_CODE;
+const setupEnvelopePath = process.env.OPENCLAW_NODE_SETUP_ENVELOPE;
 const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
 const temporary = process.env.TMPDIR;
 const workerCapacity = Number(process.env.OPENCLAW_NATIVE_WORKER_CAPACITY);
 if (
   !inferenceConfig ||
   !state ||
-  !setupCode ||
+  [Boolean(setupCode), Boolean(setupEnvelopePath)].filter(Boolean).length !== 1 ||
   !workspace?.startsWith("/") ||
   !temporary ||
   !Number.isSafeInteger(workerCapacity) ||
@@ -4115,7 +4084,11 @@ function nativeWorkerReady() {
   });
 }
 
-startRuntimeReadinessServer(nativeWorkerReady);
+// Compute-owned Pods use this private probe; Sandbox providers own their readiness
+// and intentionally receive no Compute status endpoint configuration.
+if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
+  startRuntimeReadinessServer(nativeWorkerReady);
+}
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
@@ -4149,20 +4122,25 @@ const nodeEnv = {
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };
-if (process.env.OPENCLAW_NODE_CA_PEM) {
+const gatewayCa = process.env.OPENCLAW_NODE_CA_PEM || (
+  process.env.OPENCLAW_NODE_CA_PATH
+    ? readFileSync(process.env.OPENCLAW_NODE_CA_PATH, "utf8")
+    : undefined
+);
+if (gatewayCa) {
   const caPath = join(state, "gateway-ca.pem");
+  // The node needs both Gateway trust and the Sandbox's model-egress trust.
   const inheritedCa = process.env.NODE_EXTRA_CA_CERTS
     ? readFileSync(process.env.NODE_EXTRA_CA_CERTS, "utf8")
     : "";
-  writeFileSync(
-    caPath,
-    [inheritedCa, process.env.OPENCLAW_NODE_CA_PEM].filter(Boolean).join("\n"),
-    { mode: 0o600 },
-  );
+  writeFileSync(caPath, [inheritedCa, gatewayCa].filter(Boolean).join("\n"), { mode: 0o600 });
   nodeEnv.NODE_EXTRA_CA_CERTS = caPath;
 }
+// Provider files carry the exact revision's setup envelope. Convert it to the
+// private one-shot target file consumed by connect, without exposing it in argv.
+const target = setupCode ?? Buffer.from(readFileSync(setupEnvelopePath, "utf8")).toString("base64url");
 const connectTargetPath = join(state, "connect-target");
-writeFileSync(connectTargetPath, setupCode, { mode: 0o600 });
+writeFileSync(connectTargetPath, target, { mode: 0o600 });
 const child = spawn(
   process.execPath,
   [

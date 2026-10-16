@@ -40,9 +40,9 @@ graph TD
 `apps/controller/src/console/console.mjs:showLogin`, `loadPage`
 
 On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
-before any script runs; CSS shows it only after 250 ms, so a fast load never
+before any script runs; CSS shows it only after 400 ms, so a fast load never
 flashes it. `loadPage` takes that status over in place while checking the session
-and announces “Checking session…” only if still pending after 300 ms.
+and announces “Checking session…” only if still pending after 400 ms.
 The result can render immediately: sign-in for a missing session, the console
 for a confirmed session, or a retry if the check failed.
 

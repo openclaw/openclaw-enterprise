@@ -900,9 +900,8 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
   for (const { harness, executionMode, status, code, message, atSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
-    // Kubernetes delivers repository credentials to no dedicated OpenClaw runtime, so Agent
-    // save refuses the pair (finding 1117); deployment would refuse it first because the
-    // pinned runtime lacks native worker support.
+    // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
+    // refuses this Harness/mode pair before deployment admission.
     {
       harness: "openclaw",
       executionMode: "dedicated",

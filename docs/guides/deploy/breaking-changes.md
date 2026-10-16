@@ -15,6 +15,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-16: stored model provider settings are checked at deploy
+
+**What breaks.** On every Compute, deploying or redeploying an Agent runs the
+Configuration save's model provider rules on the stored Configuration. A
+Configuration an older build stored with a provider or model `baseUrl` that is
+not an absolute `http` or `https` URL (`ftp://models.example/v1`, `/v1`,
+`https:/v1`), an `api` the runtime does not support, or a header name that is
+not a valid HTTP field name used to deploy, and then failed at the model probe
+or not at all. Deployment now answers `400` and creates no revision, even for a
+provider the Agent does not use. A provisioning attempt queued before the
+upgrade is rejected without retry.
+
+**Who is affected.** Agents whose stored Configuration holds such a value.
+Header names were already checked at deploy on Kubernetes Compute.
+
+**How to tell.** The deploy `400` carries the save's message, such as
+`Configuration field /models/providers/<provider>/baseUrl must be an absolute http or https URL.`
+or `... must name a model API the runtime supports, ...`. A rejected queued
+attempt records `PROVISIONING_REJECTED` with the same message.
+
+**Steps.** Edit the Configuration: fix or remove the field the message names,
+save, and deploy again.
+
 ## 2026-10-14: OAuth2 token_url hosts must be DNS names
 
 **What breaks.** Creating an OpenShell `oauth2-client-credentials` or
@@ -280,44 +303,3 @@ or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 addres
 **Steps.** Write the proxy's own address, an IPv4 host as four decimal octets
 (`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and
 restart.
-
-## 2026-10-13: shorthand observability IPv4 hosts are refused
-
-**What breaks.** An observability URL whose IPv4 host is not four decimal
-octets from 0 to 255, with no leading zeros, is refused. Shorthand, hex, a
-single integer, and leading zeros used to be stored as a different address
-(`192.168.1` became `192.168.0.1`; `2130706433` became `127.0.0.1`).
-
-**Who is affected.** Profiles with `controlPlane.observabilityUrl`, and
-Installations whose startup `observability.url` uses one of those spellings.
-A canonical host such as `192.168.1.1`, and any DNS name, still loads.
-
-**How to tell.** The profile reports `controlPlane.observabilityUrl IPv4 host
-must be four decimal octets from 0 to 255 with no leading zeros; other
-spellings parse as a different address.` API and worker startup log
-`OBSERVABILITY_URL_INVALID`.
-
-**Steps.** Write the four decimal octets you mean, then render or restart.
-
-## 2026-10-13: IP database hosts are verified against the certificate
-
-**What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS
-mode verifies the server (`sslmode=verify-full`; without `uselibpqcompat=true`
-also `prefer`, `require` and `verify-ca`; or `PGSSLMODE` set to one of those)
-now requires the server certificate to list that IP as an IP subjectAltName, as
-libpq does. Before, the check ran against the name `localhost`, so any
-certificate for `localhost` signed by the database CA was accepted.
-
-**Who is affected.** Installations that reach PostgreSQL by IP with a
-certificate issued only for DNS names. DNS hosts, Unix sockets,
-`sslmode=disable`, `no-verify`, and libpq-compatible `prefer`, `require` and
-`verify-ca` are unchanged.
-
-**How to tell.** The API logs `startup-error` and the worker logs
-`worker.startup-error`, both with code `DATABASE_TLS_CERTIFICATE_INVALID` and
-reason `ERR_TLS_CERT_ALTNAME_INVALID`. Bootstrap logs `PERSISTENCE_UNAVAILABLE`
-and the migrator `MIGRATION_FAILED`.
-
-**Steps.** Reissue the server certificate with `IP:<address>` in its
-subjectAltName, or connect by a DNS name the certificate carries, then restart
-the API and worker.

@@ -9,7 +9,7 @@ const candidateVersion =
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
-const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
+const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
@@ -21,6 +21,21 @@ const readyForm = [
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   ...createModelSecret("storybook-model-api-key"),
+];
+const modelCredentialSourceTypes = [
+  {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  },
+];
+const dedicatedOpenclawForm = [
+  ...readyForm,
+  { selector: "#agent-harness", value: "openclaw" },
+  { selector: ".launch-runtime summary", click: true },
+  { selector: "#execution-mode", value: "dedicated" },
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -660,7 +675,7 @@ export const scenarios = {
       { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
     ],
     description:
-      "Open an Agent from the list. The URL and page change together; details appear when access and the Agent read are confirmed. Read times are simulated.",
+      "Open an Agent from the list. The destination and Back to Agents appear immediately. The Agent’s name, actions, and overview appear together after the access checks. Read times are simulated.",
     steps: [
       "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
       "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
@@ -820,6 +835,14 @@ export const scenarios = {
       "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
     ],
   },
+  agentsCreateRestrictedEmpty: {
+    group: "Pages/Agents",
+    name: "Empty, Create Agent unavailable",
+    emptyAgents: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -955,7 +978,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; supported Installations also offer Dedicated under Runtime details. No model is selected by default.",
+      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; Runtime details also offers Dedicated. No model is selected by default.",
     steps: [
       "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
@@ -1769,20 +1792,60 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    nativeWorkerSupport: "custom-image",
-    actions: [
-      ...readyForm,
-      { selector: "#agent-harness", value: "openclaw" },
-      { selector: ".launch-runtime summary", click: true },
-      { selector: "#execution-mode", value: "dedicated" },
-    ],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: dedicatedOpenclawForm,
     description:
-      "Experimental Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation declares custom-image native worker support. A model and dummy API-key Secret are selected; channel controls remain available.",
+      "Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation has the default runtime's native worker support and a model Credential Source catalog. Its selected dummy Secret is registered before provisioning; the Harness receives a placeholder.",
     steps: [
       "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
+  createDedicatedCodexCredentialSource: {
+    group: "Pages/Create Agent",
+    name: "Codex with model Credential Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "The same model Secret picker and Credential Gateway guidance apply to dedicated Codex. Creating the Agent registers its model source before guided provisioning.",
+    steps: [
+      "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
+      "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationUnknown: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration outcome unknown",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "ready",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The registration response is unavailable after the simulated Credential Source becomes ready. The form preserves the model Secret and asks the operator to check registration before retrying.",
+    steps: [
+      "Select Check credential registration. The saved source is found ready and Create Agent becomes available.",
+      "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
+    ],
+  },
+  createCredentialRegistrationCleanup: {
+    group: "Pages/Create Agent",
+    name: "Remove failed model credential registration",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "deleting",
+    actions: [
+      ...dedicatedOpenclawForm,
+      click("Create Agent"),
+      click("Check credential registration"),
+    ],
+    description:
+      "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
+    steps: [
+      "Select Remove failed credential registration and confirm that the model Secret remains saved.",
+      "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
     ],
   },
   createEmbedded: {
@@ -1796,6 +1859,23 @@ export const scenarios = {
     ],
     description:
       "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+  },
+  createOpenclawWithoutNativeWorkers: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw without native worker support",
+    path: create,
+    nativeWorkerSupport: false,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
+    steps: [
+      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing runtime support.",
+      "Select Codex and confirm Dedicated remains available.",
+    ],
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
@@ -2307,6 +2387,14 @@ export const scenarios = {
       "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
     gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
   },
+  createRestricted: {
+    group: "Pages/Create Agent",
+    name: "Create Agent unavailable for this caller",
+    path: create,
+    readOnlyPermissionSummary: true,
+    description:
+      "Opened by URL, Create Agent refuses up front when the permission summary says this caller cannot create an Agent here. The API still decides.",
+  },
   createCapabilitiesError: {
     group: "Pages/Create Agent",
     name: "Capability check failure",
@@ -2383,7 +2471,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: oauthForm,
     description:
-      "Experimental first-deploy login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+      "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",
@@ -2402,10 +2490,10 @@ export const scenarios = {
     pluginCapabilities,
     actions: startOAuthLogin,
     description:
-      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+      "The fixture completes login after one poll. Agent creation includes the source in both Harness authentication and its credentialSources list. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
-      "Choose a model and create the Agent. Deployment is simulated; the runtime token handoff is not proved here.",
+      "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",
     ],
   },
   createOAuthDenied: {
@@ -2446,16 +2534,15 @@ export const scenarios = {
   },
   pluginsOAuthRevision: {
     group: "Pages/Agent detail",
-    name: "Separate ChatGPT login for plugin editing (Experimental)",
+    name: "Saved ChatGPT login for plugin editing (Experimental)",
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "oauth",
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
     pluginDiscovery,
-    actions: [click("Sign in with OAuth")],
     description:
-      "A separate configuration login enables plugin browsing while the deployed Agent retains its own credential. Saving plugin selections never replaces authentication.",
+      "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -2463,9 +2550,16 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    actions: [click("Sign in with OAuth")],
+    credentialSources: [
+      { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
+      { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
+    ],
     description:
-      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+      "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
+    steps: [
+      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
+      "Inspect the PATCH: credentialSources keeps the tool entry, removes the old Harness entry, and adds the new Harness source once.",
+    ],
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
@@ -2758,7 +2852,8 @@ export const scenarios = {
         status: 403,
       },
     ],
-    description: "A denied save retains the draft and does not change the saved Configuration.",
+    description:
+      "A denied save names the Configuration update grant it needs, retains the draft and does not change the saved Configuration.",
   },
   gatewayPasswordSaving: {
     group: "Pages/Agent detail",
@@ -2774,6 +2869,20 @@ export const scenarios = {
     ],
     description:
       "A pending save blocks further Configuration edits and deployment; a timed-out write requires draft readback.",
+  },
+  pluginsUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections, viewer cannot update the Agent",
+    path: `${draft}&tab=plugins`,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
@@ -2999,6 +3108,20 @@ export const scenarios = {
     description:
       "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
   },
+  repositoryEditorUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Repository access, viewer cannot update the Agent",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
     name: "Repository access in current version",
@@ -3199,11 +3322,24 @@ export const scenarios = {
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     readOnlyPermissionSummary: true,
     description:
-      "The same failed model check for a viewer whose permission answer denies Agent update. Recovery offers Open v7 Logs only, not the draft Configuration.",
+      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
+  },
+  deploymentModelProbeFailedDeployOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    description:
+      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+    steps: ["Select Open version draft and confirm the Configuration tab opens without deploying."],
+    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -4107,6 +4243,23 @@ export const scenarios = {
     description:
       "A rejected Configuration write keeps the drawer and feedback visible, with focus back on Save configuration.",
   },
+  channelSaveDenied: {
+    group: "Components/Channels",
+    name: "Save denied",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "A caller without Configuration update is refused. The drawer stays open with the edits and names the grant to ask an administrator for; the text is the same for every refusal.",
+  },
   channelChangedElsewhere: {
     group: "Components/Channels",
     name: "Configuration changed elsewhere",
@@ -4210,6 +4363,15 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     description:
       "The saved harness authentication source can be reviewed or changed before deployment.",
+  },
+  credentialsUpdateDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, viewer cannot update the Agent",
+    path: `${draft}&tab=credentials`,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlack: {
     group: "Components/Credentials",
@@ -4554,6 +4716,22 @@ export const scenarios = {
     ],
     description: "Unauthorized reads do not enable blank overwrites.",
   },
+  workspaceSaveDenied: {
+    group: "Components/Workspace",
+    name: "Save denied",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [{ suffix: "/AGENTS.md", method: "PUT", status: 403 }],
+    actions: [
+      {
+        selector: '[id="workspace-AGENTS.md"]',
+        value: "# Updated guidance\nReview changes before applying them.",
+      },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
+  },
   workspaceMissing: {
     group: "Components/Workspace",
     name: "Missing file",
@@ -4735,7 +4913,7 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "Check the inset arrows on the Namespace, Provider, Harness, and Authentication method controls. Use the controls with a mouse and keyboard.",
-      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Dedicated requires an Installation with native worker support; the separate Dedicated OpenClaw stories simulate that prerequisite.",
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Expand Runtime details and select Dedicated; the OpenClaw harness stays selected and channel controls become available.",
       "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
       "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",

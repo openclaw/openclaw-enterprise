@@ -16,7 +16,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { AGENT_WITH_NODE_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_WITH_NODE_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { availablePort } from "../helpers/available-port.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
 // Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
@@ -80,7 +84,11 @@ const pendingIdentityProbe = [
 //   that replace other external bodies.
 // - Events: children append JSON rows to `directory`/events.jsonl.
 // - Cleanup kills the supervisor and every recorded pid, then removes `directory`.
-async function startSupervisor(t, directory, { child, stubs = [], env }) {
+async function startSupervisor(
+  t,
+  directory,
+  { child, stubs = [], env, entrypoint = AGENT_WITH_NODE_ENTRYPOINT },
+) {
   const eventsPath = join(directory, "events.jsonl");
   const childPath = join(directory, "child.cjs");
   await writeFile(childPath, child.join("\n"));
@@ -93,10 +101,9 @@ async function startSupervisor(t, directory, { child, stubs = [], env }) {
       JSON.stringify(eventsPath) +
       ', args[0] === "/app/openclaw.mjs" ? "node" : "codex", JSON.stringify(args)], options);',
     ...stubs,
-    AGENT_WITH_NODE_ENTRYPOINT.replace(
-      "\ninitializeRuntimeAssets();\npublishAgentPluginSkillPath();\n",
-      "\n",
-    ),
+    entrypoint
+      .replace("\ninitializeRuntimeAssets();\n", "\n")
+      .replace("\npublishAgentPluginSkillPath();\n", "\n"),
   ].join("\n");
   // Launch through the same bounded program pieces the container receives.
   const supervisor = spawn(process.execPath, ["-e", ...nodeProgramArguments(launch)], {
@@ -458,6 +465,105 @@ test(
     assert.deepEqual(await readdir(workspace), []);
   },
 );
+
+// The model probe uses the inherited proxy CA before the native child adds the
+// provider Gateway CA. Both must survive in the real child's environment.
+for (const topology of ["Compute-owned", "provider-owned"]) {
+  test(
+    `native worker preserves model-proxy and Gateway CAs when ${topology}`,
+    { timeout: 15_000 },
+    async (t) => {
+      const directory = await mkdtemp(join(tmpdir(), "oce-native-worker-ca-"));
+      const inheritedCaPath = join(directory, "model-proxy-ca.pem");
+      const providerCaPath = join(directory, "provider-gateway-ca.pem");
+      await writeFile(inheritedCaPath, "model-proxy-public-ca");
+      await writeFile(providerCaPath, "provider-gateway-public-ca");
+      const setupEnvelopePath = join(directory, "node-setup.json");
+      const setupEnvelope = JSON.stringify({
+        url: "wss://gateway.example.test/node",
+        bootstrapToken: "synthetic-provider-bootstrap-token",
+        expiresAtMs: Date.now() + 60_000,
+      });
+      await writeFile(setupEnvelopePath, setupEnvelope);
+      const inference = {
+        agents: { defaults: { model: "openai/native-ca" } },
+        models: {
+          providers: {
+            openai: {
+              apiKey: "OPENAI_API_KEY",
+              api: "openai-responses",
+              baseUrl: "https://model-proxy.example.test/v1",
+              models: [
+                {
+                  id: "native-ca",
+                  name: "Native CA fixture",
+                  api: "openai-responses",
+                  contextWindow: 128_000,
+                  maxTokens: 8_192,
+                },
+              ],
+            },
+          },
+        },
+      };
+      const statusPort =
+        topology === "Compute-owned" ? await availablePort({ host: "0.0.0.0" }) : undefined;
+      const { supervisor, exited, waitFor, output } = await startSupervisor(t, directory, {
+        entrypoint: NATIVE_WORKER_ENTRYPOINT,
+        child: [
+          'const { appendFileSync } = require("node:fs");',
+          "const [events, kind, args] = process.argv.slice(2);",
+          "appendFileSync(events, JSON.stringify({ kind, pid: process.pid, args: JSON.parse(args),",
+          "caPath: process.env.NODE_EXTRA_CA_CERTS }) + '\\n');",
+          "setInterval(() => {}, 1_000);",
+        ],
+        // The model service is external to this process proof. The production
+        // probe preparation and success branch still run before the real child.
+        stubs: [
+          "cp.spawnSync = (command, args, options) => {",
+          '  require("node:assert/strict").ok(args.includes("--probe"));',
+          `  require("node:assert/strict").equal(options.env.NODE_EXTRA_CA_CERTS, ${JSON.stringify(inheritedCaPath)});`,
+          '  return { status: 0, stdout: JSON.stringify({ auth: { probes: { results: [{ provider: "openai", model: "openai/native-ca", source: "env", status: "ok" }] } } }) };',
+          "};",
+        ],
+        env: {
+          OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify(inference),
+          OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
+          ...(statusPort === undefined ? {} : { OPENCLAW_RUNTIME_STATUS_PORT: String(statusPort) }),
+          OPENCLAW_NODE_SETUP_ENVELOPE: setupEnvelopePath,
+          OPENCLAW_NODE_CA_PATH: providerCaPath,
+          NODE_EXTRA_CA_CERTS: inheritedCaPath,
+          OPENCLAW_HARNESS_MODEL: "openai/native-ca",
+          OPENCLAW_HARNESS_PROVIDER: "openai",
+          OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+          OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify(inference),
+          OPENAI_API_KEY: "synthetic-model-key",
+          TMPDIR: join(directory, "tmp"),
+        },
+      });
+      const [node] = await waitFor("native worker started after the probe", (rows) =>
+        rows.some(({ kind }) => kind === "node"),
+      );
+      assert.equal(
+        await readFile(node.caPath, "utf8"),
+        "model-proxy-public-ca\nprovider-gateway-public-ca",
+      );
+      assert.equal((await stat(node.caPath)).mode & 0o777, 0o600);
+      assert.equal(node.args[1], "connect");
+      const targetPath = node.args[node.args.indexOf("--target-file") + 1];
+      assert.equal(
+        await readFile(targetPath, "utf8"),
+        Buffer.from(setupEnvelope).toString("base64url"),
+      );
+      assert.equal((await stat(targetPath)).mode & 0o777, 0o600);
+      if (statusPort !== undefined) {
+        assert.equal((await fetch(`http://127.0.0.1:${statusPort}/readyz`)).status, 503);
+      }
+      supervisor.kill("SIGTERM");
+      assert.deepEqual(await exited, [0, null], output());
+    },
+  );
+}
 
 // A Deployment-backed Codex Harness starts before its node setup Secret exists
 // and receives the code through an optional volume. Real child processes prove

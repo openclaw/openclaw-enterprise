@@ -9,6 +9,10 @@ export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
 export const NamespaceMissing = { ...story("namespaceMissing"), name: "Namespace unavailable" };
 export const CreateRestricted = story("agentsCreateRestricted");
+export const CreateRestrictedEmpty = {
+  ...story("agentsCreateRestrictedEmpty"),
+  name: "Empty, Create Agent unavailable",
+};
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {

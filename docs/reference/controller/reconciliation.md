@@ -239,8 +239,7 @@ continues after worker restart and does not reopen the failed deployment. The
 selected Compute Driver owns the external failure condition and resource cleanup.
 It may supply bounded preparation evidence through the public contracts type;
 OCC validates and persists it before deleting resources. Deployment status exposes
-cleanup separately and retains failure evidence after cleanup and restart;
-see [Kubernetes OAuth bootstrap](../drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
+cleanup separately and retains failure evidence after cleanup and restart.
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its
 revision-specific workload before the worker switches the Agent Service, but the

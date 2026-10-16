@@ -97,7 +97,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.deepEqual(await optionValues(page.getByLabel("Authentication method", { exact: true })), [
     { value: "api_key", text: "OpenAI API key" },
     { value: "codex_pat", text: "Service Accounts" },
-    { value: "oauth", text: "ChatGPT OAuth (Experimental)" },
+    { value: "credential_source", text: "ChatGPT OAuth (Experimental)" },
   ]);
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
@@ -436,6 +436,11 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     effect: "deny",
   });
   requests.length = 0;
+  // With the permission answer the start page refuses at once (finding 1521). Without one the
+  // form opens, and the API still refuses the creation itself.
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+  );
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
@@ -656,6 +661,11 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   });
   const { page: deniedPage } = await newPage(t, deniedFixture);
   const deniedRequests = apiRequests(deniedPage, deniedFixture.origin);
+  // Without a permission answer the form opens (with one it refuses at once, finding 1521), so
+  // the repository and creation reads show their own denials.
+  await deniedPage.route(`**/namespaces/${deniedNamespace.id}/permissions`, (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+  );
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
@@ -860,13 +870,14 @@ test("Agent repository selection enforces the 16-item limit without narrow viewp
   assert.equal(await selected.isChecked(), false);
   await page.getByLabel("Find a repository").fill("example/repository-17");
   await repositoryCheckbox(page, "example/repository-17").check();
-  assert.deepEqual(
-    await page.locator("html").evaluate((node) => ({
-      clientWidth: node.clientWidth,
-      scrollWidth: node.scrollWidth,
-    })),
-    { clientWidth: 360, scrollWidth: 360 },
-  );
+  // The page keeps a stable scrollbar gutter, so its content may be narrower than the viewport;
+  // it must not overflow it.
+  const width = await page.locator("html").evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+  }));
+  assert.equal(width.clientWidth, 360);
+  assert.ok(width.scrollWidth <= width.clientWidth, JSON.stringify(width));
 });
 
 test("Agent creation recovers from stale authoritative admission without replacing its Configuration", async (t) => {
@@ -2025,8 +2036,10 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pinned runtime", { ready: true });
   const installation = await fixture.request("GET", "/installation");
-  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  assert.deepEqual(installation.data.capabilities?.nativeWorkers, { support: "pinned-runtime" });
   const { page } = await newPage(t, fixture);
+  // An older server without the capability still disables Dedicated in the client.
+  await routeInstallationWithoutProvisioning(page, fixture);
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
@@ -2074,29 +2087,6 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
     "Runtime details · Dedicated",
   );
 
-  // The API refuses the same choice at deploy admission, naming the missing support. The
-  // operator declaration is startup-only: an Agent Configuration cannot carry it in.
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Refused native",
-    { ...nativeValues("refused"), runtime: { nativeWorkerSupport: "custom-image" } },
-    { executionMode: "dedicated" },
-  );
-  const deployed = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
-  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-  assert.equal(deployed.body.error.code, "INVALID_REQUEST");
-  assert.match(
-    deployed.body.error.message,
-    /required worker placement \(cloudWorkers\.requiredProfile\).*docs-enterprise\.openclaw\.org\/reference\/harness-execution\/#native-worker-support/,
-  );
-  assert.equal(
-    (await fixture.request("GET", "/installation")).data.capabilities?.nativeWorkers,
-    undefined,
-  );
-
   // Bootstrap, the only Installation write, cannot declare the capability either.
   const other = await createConsoleAppFixture(t);
   const declared = await other.request("POST", "/installation/bootstrap", {
@@ -2107,10 +2097,9 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   });
   assert.equal(declared.status, 400, JSON.stringify(declared.body));
   await other.bootstrap();
-  assert.equal(
-    (await other.request("GET", "/installation")).data.capabilities?.nativeWorkers,
-    undefined,
-  );
+  assert.deepEqual((await other.request("GET", "/installation")).data.capabilities?.nativeWorkers, {
+    support: "pinned-runtime",
+  });
 });
 
 test("Agent creation preserves unrelated edited JSON across model changes and resets to the selected template", async (t) => {

@@ -36,7 +36,8 @@ writing output. Paths resolve against Markdown source files; README pages map to
 folder indexes and links outside `docs/` point to the Enterprise GitHub source.
 Fragments on those links must match a GitHub heading slug or HTML anchor in the
 target (`github-anchors.mjs`). HTML examples in code and comments do not create
-fragment targets; only parsed HTML elements do. `scripts/check-specs.mjs` applies the same check to
+fragment targets. Parsed HTML elements contribute `id` targets; only `<a>` elements
+contribute `name` targets. `scripts/check-specs.mjs` applies the same check to
 spec links.
 Markdown links in full-line comments under `deploy/examples/` (`.yaml` and
 `.yml`) use the same validation.

@@ -4,7 +4,7 @@ import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
@@ -249,6 +249,28 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
+  // Gating only: an unknown answer keeps the start page, and the API still decides.
+  if (context.permissions?.agents?.create === false) {
+    context.view.replaceChildren(
+      link("← Agents", "agents", context),
+      element(
+        "section",
+        { className: "state-panel" },
+        element("h2", {}, "Creating Agents is not available"),
+        element(
+          "p",
+          { role: "status" },
+          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
+        ),
+      ),
+    );
+    // Start over re-enters here from the form; keep focus on the page, not the document.
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
+    return;
+  }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
   const startForm = (rendered, options, draft) => {
@@ -476,7 +498,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { id: "agent-auth-method" },
     element("option", { value: "api_key" }, "OpenAI API key"),
     element("option", { value: "codex_pat" }, "Service Accounts"),
-    element("option", { value: "oauth" }, "ChatGPT OAuth (Experimental)"),
+    element("option", { value: "credential_source" }, "ChatGPT OAuth (Experimental)"),
   );
   authMethod.value = passwordAuth?.method ?? authDefault ?? binding?.method ?? "api_key";
   if (passwordAuth) {
@@ -568,9 +590,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
-    hint: "Sign in for this dedicated Codex Agent. You can browse plugins before deployment. Deployment transfers the login to the Agent; later plugin edits use a separate login.",
+    hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
     onChange(source) {
-      if (authMethod.value === "oauth") {
+      if (authMethod.value === "credential_source") {
         modelCredentialSource = source;
         modelCredentialSecret = source;
         resetPluginDiscovery();
@@ -634,7 +656,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   harness.value =
     configuredHarnessId(rendered.configuration?.values) ??
     (mode.value === "dedicated" ? "codex" : "openclaw");
-  if (["codex_pat", "oauth"].includes(authMethod.value)) {
+  if (["codex_pat", "credential_source"].includes(authMethod.value)) {
     nativeProvider.value = "openai";
     harness.value = "codex";
     mode.value = "dedicated";
@@ -822,7 +844,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (
       !binding &&
       harness.value === "openclaw" &&
-      ["codex_pat", "oauth"].includes(authMethod.value)
+      ["codex_pat", "credential_source"].includes(authMethod.value)
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
@@ -861,7 +883,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
     }
     if (typeof ref === "string" && /^(openai|anthropic|codex)\//.test(ref)) {
-      if (!savedSecret && !hasBoundModelCredential) {
+      if (
+        !savedSecret &&
+        !savedCredentialSource &&
+        !credentialRegistration &&
+        !hasBoundModelCredential
+      ) {
         const selectedProvider = ref.startsWith("anthropic/") ? "anthropic" : "openai";
         if (
           !binding &&
@@ -905,15 +932,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (
       nativeProvider.value !== "openai" ||
       harness.value !== "codex" ||
-      !["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value)
+      !["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value)
     ) {
       return null;
     }
     const secretRef = binding?.source ?? modelCredentialSource;
+    if (secretRef?.kind === "credential_source") {
+      return { credentialSource: secretRef };
+    }
     if (secretRef?.kind === "secret") {
-      return (binding?.method ?? authMethod.value) === "oauth"
-        ? { oauthLogin: secretRef }
-        : { secretRef };
+      return { secretRef };
     }
     return apiKey.value.trim() ? { accessToken: apiKey.value } : null;
   }
@@ -937,7 +965,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     canDiscover: () => Boolean(discoveryCredential()),
     canPrefetch: () =>
       pluginDiscoveryCredential !== null &&
-      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
+      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       Boolean(binding?.source ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
     requestBody: (body) => ({ ...discoveryCredential(), ...body }),
@@ -1031,6 +1059,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let capabilityDiscoveryDenied = false;
   const provisionableExecutionModes = new Set();
   let nativeWorkersAvailable = false;
+  let credentialSourceTypes;
+  let savedCredentialSource;
+  let credentialRegistration;
+  let failedCredentialSource;
   let provisioningRequestId = createClientRequestId();
   // The API admitted (or may have admitted) a job under provisioningRequestId. Create Agent
   // must then resend the same plan: the API answers an edited one with 409 "different plan".
@@ -1066,6 +1098,89 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     void submitProvisioningAttempt(provisioningAttempt);
+  });
+  const checkCredentialRegistration = button("Check credential registration", async () => {
+    if (!credentialRegistration || pending) {
+      return;
+    }
+    pending = true;
+    updateControls();
+    try {
+      const sources = await request(`${namespacePath(namespaceId)}/credential-sources`);
+      if (!context.isCurrent()) {
+        return;
+      }
+      const expected = credentialRegistration;
+      const source = sources.find(
+        (item) =>
+          item.name === expected.name &&
+          item.type === expected.type &&
+          JSON.stringify(item.config ?? {}) === JSON.stringify(expected.config ?? {}) &&
+          Object.keys(item.secrets).length === Object.keys(expected.secrets).length &&
+          Object.entries(expected.secrets).every(
+            ([key, ref]) =>
+              item.secrets[key]?.id === ref.id &&
+              item.secrets[key]?.namespaceId === ref.namespaceId,
+          ),
+      );
+      if (!source) {
+        failedCredentialSource = null;
+        // Reuse the frozen, unique Source name: an earlier request that commits
+        // later conflicts before gateway effects, rather than registering a copy.
+        outcomeUnknown = false;
+        feedback.textContent =
+          "No credential registration is visible. Select Create Agent to retry the same registration.";
+      } else if (source.state === "ready") {
+        failedCredentialSource = null;
+        savedCredentialSource = source;
+        credentialRegistration = null;
+        outcomeUnknown = false;
+        feedback.textContent = "Credential Source is ready. Select Create Agent to continue.";
+        showSavedStatus();
+      } else {
+        failedCredentialSource = source;
+        feedback.textContent = `Credential Source ${source.id} is ${source.state}. Remove the failed registration before retrying; the model Secret remains saved.`;
+      }
+    } catch (error) {
+      if (context.isCurrent()) {
+        feedback.textContent = message(error);
+      }
+    } finally {
+      if (context.isCurrent()) {
+        pending = false;
+        updateControls();
+      }
+    }
+  });
+  const removeCredentialRegistration = button("Remove failed credential registration", async () => {
+    if (!failedCredentialSource || pending) {
+      return;
+    }
+    pending = true;
+    updateControls();
+    try {
+      await request(
+        `${namespacePath(namespaceId)}/credential-sources/${encodeURIComponent(failedCredentialSource.id)}`,
+        { method: "DELETE", expectedStatus: 204 },
+      );
+      if (!context.isCurrent()) {
+        return;
+      }
+      failedCredentialSource = null;
+      credentialRegistration = null;
+      outcomeUnknown = false;
+      feedback.textContent =
+        "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
+    } catch (error) {
+      if (context.isCurrent()) {
+        feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+      }
+    } finally {
+      if (context.isCurrent()) {
+        pending = false;
+        updateControls();
+      }
+    }
   });
   const retryCapabilityDiscovery = button("Retry capability check", () => {
     void loadInstallationCapabilities();
@@ -1145,6 +1260,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     button("Cancel", () => context.navigate("agents")),
     startOver,
     retryProvisioning,
+    checkCredentialRegistration,
+    removeCredentialRegistration,
     submit,
   );
   const channelEditor = element("div", { className: "create-channels" });
@@ -1319,7 +1436,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       if (!context.isCurrent()) {
         throw new Error("This view has changed. Reopen Agent creation before binding Secrets.");
       }
-      await ensureSecretOperateBinding(context, agent, secret);
+      await ensureCredentialOperateBinding(context, agent, secret);
     }
   }
   function renderChannelEditor() {
@@ -1400,8 +1517,27 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));
     updateControls();
   }
+  // Device-login sources keep their create-then-deploy flow; API-key and PAT
+  // registration can hand their exact source to guided provisioning.
   const shouldProvision = () =>
-    mode.value === "dedicated" && provisionableExecutionModes.has(mode.value);
+    (binding?.method ?? authMethod.value) !== "credential_source" &&
+    mode.value === "dedicated" &&
+    provisionableExecutionModes.has(mode.value);
+  function modelSourceType() {
+    const candidates = (credentialSourceTypes ?? []).filter(
+      (type) =>
+        type.harnessAuth?.modelProvider === nativeProvider.value &&
+        type.harnessAuth.loginMode === (binding?.method ?? authMethod.value) &&
+        !type.config.some((field) => field.required) &&
+        type.secrets.length === 1 &&
+        type.secrets[0].required,
+    );
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+  const credentialSourceRefused = () =>
+    credentialSourceTypes !== undefined &&
+    (binding?.method ?? authMethod.value) !== "credential_source" &&
+    (!shouldProvision() || !modelSourceType());
   const updateControls = () => {
     const saved = Boolean(savedConfiguration || savedAgent || provisioningAttempt);
     const planLocked =
@@ -1437,7 +1573,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
-    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
+    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
     if (usesOAuth && !binding) {
       modelCredentialSource = oauthLogin.source;
       modelCredentialSecret = oauthLogin.source;
@@ -1486,14 +1622,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
     }
-    nativeProvider.disabled ||= Boolean(savedSecret) || hasBoundModelCredential;
-    authMethod.disabled ||= Boolean(savedSecret);
+    nativeProvider.disabled ||=
+      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
+      hasBoundModelCredential;
+    authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
     const patOption = authMethod.querySelector('[value="codex_pat"]');
     patOption.hidden = harness.value !== "codex";
     patOption.disabled = harness.value !== "codex";
-    const oauthOption = authMethod.querySelector('[value="oauth"]');
+    const oauthOption = authMethod.querySelector('[value="credential_source"]');
     oauthOption.hidden = harness.value !== "codex";
     oauthOption.disabled = harness.value !== "codex";
     credentialLabel.textContent = passwordAuth
@@ -1514,7 +1652,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       : "API key Secret";
     modelCredentialPicker.setRequired(!binding && !passwordAuth && !usesOAuth);
     modelCredentialPicker.setDisabled(
-      planLocked || Boolean(binding || passwordAuth || usesOAuth || savedConfiguration),
+      planLocked ||
+        Boolean(
+          binding ||
+          passwordAuth ||
+          usesOAuth ||
+          savedConfiguration ||
+          savedCredentialSource ||
+          credentialRegistration,
+        ),
     );
     if (usesPat) {
       apiKey.placeholder = "at-…";
@@ -1546,9 +1692,22 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       apiKey.placeholder = "sk-ant-…";
       credentialHelp.textContent = "Use an Anthropic API key for embedded OpenClaw.";
     }
+    if (credentialSourceTypes !== undefined && !usesOAuth) {
+      credentialHelp.textContent = credentialSourceRefused()
+        ? "This installation requires a supported model Credential Source and Dedicated provisioning. Choose an authentication method offered by its Credential Gateway."
+        : "The selected Secret is registered with this installation's Credential Gateway before deployment. The Harness receives a placeholder instead of the real model key.";
+      credentialHelp.hidden = false;
+      if (credentialHelp.parentElement !== authSection) {
+        authSection.append(credentialHelp);
+      }
+    }
     apiKey.required = Boolean(passwordAuth && !usesOAuth);
     apiKey.disabled ||= Boolean(savedSecret || binding || usesOAuth || (!passwordAuth && !usesPat));
-    startOver.disabled = pending || outcomeUnknown || saved || Boolean(savedSecret);
+    startOver.disabled =
+      pending ||
+      outcomeUnknown ||
+      saved ||
+      Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     if (useModelChoices) {
       choiceField.hidden = manualModel;
       modelField.hidden = !manualModel;
@@ -1572,7 +1731,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       outcomeUnknown ||
       !capabilityDiscoveryDone ||
       !nativeWorkersUnavailable.hidden ||
+      credentialSourceRefused() ||
       Boolean(provisioningAttempt);
+    checkCredentialRegistration.hidden = !credentialRegistration;
+    checkCredentialRegistration.disabled = pending;
+    removeCredentialRegistration.hidden = !failedCredentialSource;
+    removeCredentialRegistration.disabled = pending;
     retryProvisioning.hidden = !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
@@ -1601,6 +1765,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...[
         [
           savedSecret ? `Secret saved: ${savedSecret.id}.` : "",
+          savedCredentialSource ? `Credential Source saved: ${savedCredentialSource.id}.` : "",
           savedConfiguration ? `Configuration saved: ${savedConfiguration.id}.` : "",
           savedAgent ? `Agent saved: ${savedAgent.id}.` : "",
           "Retries reuse these resources. Saved provider and Configuration settings are fixed.",
@@ -1633,6 +1798,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         defaultApprovers.refreshNames();
       }
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
+      credentialSourceTypes = installation.capabilities?.credentialSources?.types;
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
         []) {
@@ -1805,6 +1971,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       provisioningAttempt ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilityDiscoveryDone ||
+      credentialSourceRefused() ||
       !form.reportValidity()
     ) {
       return;
@@ -1853,7 +2020,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     if (
-      ["codex_pat", "oauth"].includes(binding?.method ?? authMethod.value) &&
+      ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       (nativeProvider.value !== "openai" || harness.value !== "codex" || mode.value !== "dedicated")
     ) {
       feedback.textContent =
@@ -1883,8 +2050,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
-    const usesOAuth = (binding?.method ?? authMethod.value) === "oauth";
-    if (!binding && (!passwordAuth || usesOAuth) && modelCredentialSource?.kind !== "secret") {
+    const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
+    if (
+      !binding &&
+      (!passwordAuth || usesOAuth) &&
+      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+    ) {
       feedback.textContent = usesOAuth
         ? "Complete ChatGPT sign-in before creating the Agent."
         : "Choose a model credential Secret before creating the Agent.";
@@ -1914,7 +2085,37 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       const selectedCredentialSource =
         passwordAuth && !usesOAuth ? savedSecret?.ref : modelCredentialSource;
-      body.harnessAuth = binding ?? { method: authMethod.value, source: selectedCredentialSource };
+      body.harnessAuth =
+        binding ??
+        (usesOAuth
+          ? { method: "credential_source", sourceId: selectedCredentialSource.id }
+          : { method: authMethod.value, source: selectedCredentialSource });
+      if (credentialSourceTypes !== undefined && !usesOAuth) {
+        if (!savedCredentialSource) {
+          const type = modelSourceType();
+          const secret = body.harnessAuth.source;
+          credentialRegistration ??= {
+            name: `${body.name.slice(0, 150)} model ${provisioningRequestId}`,
+            type: type.type,
+            secrets: { [type.secrets[0].name]: secret },
+          };
+          mutationStarted = true;
+          savedCredentialSource = await request(
+            `${namespacePath(namespaceId)}/credential-sources`,
+            {
+              method: "POST",
+              body: credentialRegistration,
+            },
+          );
+          if (!context.isCurrent()) {
+            return;
+          }
+          credentialRegistration = null;
+          failedCredentialSource = null;
+          showSavedStatus();
+        }
+        body.harnessAuth = { method: "credential_source", sourceId: savedCredentialSource.id };
+      }
       if (shouldProvision()) {
         provisioningAttempt = {
           acknowledged: false,
@@ -1930,6 +2131,18 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         };
         await submitProvisioningAttempt(provisioningAttempt);
         return;
+      }
+      if (agent.credentialSources !== undefined) {
+        body.credentialSources = agent.credentialSources;
+      }
+      if (
+        body.harnessAuth.method === "credential_source" &&
+        !body.credentialSources?.some((source) => source.sourceId === body.harnessAuth.sourceId)
+      ) {
+        body.credentialSources = [
+          ...(body.credentialSources ?? []),
+          { sourceId: body.harnessAuth.sourceId },
+        ];
       }
       if (!savedConfiguration) {
         mutationStarted = true;
@@ -1966,8 +2179,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         modelCredentialSecret ??
         presetExistingSecret ??
         (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
-      if (modelSecret) {
-        await ensureSecretOperateBinding(context, savedAgent, modelSecret);
+      if (body.harnessAuth?.method === "credential_source") {
+        await ensureCredentialOperateBinding(context, savedAgent, {
+          kind: "credential_source",
+          namespaceId,
+          id: body.harnessAuth.sourceId,
+        });
+      } else if (modelSecret?.kind === "secret" || modelSecret?.ref?.kind === "secret") {
+        await ensureCredentialOperateBinding(context, savedAgent, modelSecret);
       }
       await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {
@@ -1981,15 +2200,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         context.onExpired();
         return;
       }
-      const detail = savedAgent
-        ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
-        : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-          ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
-          : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
-            ? error.serverMessage === AGENT_NAME_CONFLICT
-              ? AGENT_NAME_CONFLICT
-              : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-            : rejectionMessage(error, mutationStarted);
+      const detail = credentialRegistration
+        ? `Credential Source registration could not be confirmed. ${message(error)} Check credential registration before retrying; the selected Secret remains saved.`
+        : savedAgent
+          ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
+            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+            : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
+              ? error.serverMessage === AGENT_NAME_CONFLICT
+                ? AGENT_NAME_CONFLICT
+                : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
+              : rejectionMessage(error, mutationStarted);
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status);
       if (!savedAgent && savedConfiguration && knownRejection) {

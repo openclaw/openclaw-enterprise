@@ -6,7 +6,6 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { withYieldingComputeStop } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -627,14 +626,18 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   const agent = f.consumer();
   const gateway = f.deployments().find((deployment) => deployment !== agent);
   const gatewayConfiguration = JSON.parse(preparedNativeDocument(f));
-  // Compute adds the hook callback independently of repository credential custody.
+  // Compute owns the hook callback and Gateway's local logical workspace
+  // independently of repository credential custody.
   // Repository material must leave every other Gateway setting unchanged.
   delete gatewayConfiguration.plugins.entries.codex.config.appServer.nativeHookRelay;
+  const expectedGatewayConfiguration = JSON.parse(original);
+  expectedGatewayConfiguration.agents.defaults.workspace = "/home/node/workspace";
   assert.deepEqual(
     gatewayConfiguration,
-    JSON.parse(original),
+    expectedGatewayConfiguration,
     "repository material does not change the separate Gateway's execution configuration",
   );
+  assert.equal(JSON.stringify(f.revision.configuration), original);
   const assertGatewayIsolated = (deployment) => {
     const pod = deployment.spec.template.spec;
     assert.equal(
@@ -1584,48 +1587,6 @@ test("stop and retirement fence an admitted reader when the Sandbox is unavailab
     assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
     assert.equal(publicReaderPolicies(f).length, 0);
   }
-});
-
-test("yielding stop starts foreground deletion before OAuth cleanup", async () => {
-  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
-  delete f.revision.repositoryCredentials;
-  f.revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
-    enabled: true,
-    domains: { [publicReader.address]: "allow" },
-  };
-  f.revision.compute.admission = f.driver.admitRevision(f.revision);
-  await f.driver.prepareRevision(f.revision, f.context(undefined));
-  const selected = f.consumer();
-  // Exercise the OAuth stop branch with the same admitted Compute-owned workload.
-  f.revision.harnessAuth = { method: "oauth" };
-  const read = f.clients.apps.readNamespacedDeployment;
-  const remove = f.clients.apps.deleteNamespacedDeployment;
-  let deletion;
-  let reachedOAuth = false;
-  f.clients.apps.deleteNamespacedDeployment = async (request) => {
-    if (request.name === selected.metadata.name) {
-      deletion = request;
-      return; // Foreground deletion is still in progress at the API server.
-    }
-    return remove(request);
-  };
-  f.clients.apps.readNamespacedDeployment = async (request) => {
-    if (deletion) {
-      if (request.name === selected.metadata.name) {
-        throw new Error("waited for Deployment before OAuth cleanup");
-      }
-      reachedOAuth = true;
-      throw new Error("OAuth cleanup reached");
-    }
-    return read(request);
-  };
-  await assert.rejects(
-    withYieldingComputeStop(() => f.driver.stopRevision(f.revision)),
-    /OAuth cleanup reached/,
-  );
-  assert.equal(deletion.body.preconditions.uid, selected.metadata.uid);
-  assert.equal(deletion.body.propagationPolicy, "Foreground");
-  assert.equal(reachedOAuth, true);
 });
 
 test("reader withdrawal refuses an ambiguous workload profile", async () => {

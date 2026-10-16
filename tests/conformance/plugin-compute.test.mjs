@@ -2877,6 +2877,18 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
     [{ kind: "PROBE_STATUS", detail: "rate_limit" }, "MODEL_PROBE_FAILED", true],
     [{ kind: "WRAPPER_ERROR" }, "MODEL_PROBE_FAILED", true],
     [{ kind: "PROCESS_EXIT", detail: "exit-1" }, "MODEL_PROBE_FAILED", true],
+    // A retried transient failure keeps its token with the second attempt's suffix.
+    [{ kind: "PROBE_STATUS", detail: "turn-failed-attempt2" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROCESS_EXIT", detail: "signal-SIGKILL-attempt2" }, "MODEL_PROBE_FAILED", true],
+    [{ kind: "PROBE_STATUS", detail: "turn-failed-attempt3" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "attempt2" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "PROBE_STATUS", detail: "-attempt2" }, "MODEL_PROBE_FAILED", false],
+    [{ kind: "WRAPPER_ERROR", detail: "-attempt2" }, "MODEL_PROBE_FAILED", false],
+    [
+      { kind: "PROBE_STATUS", detail: "turn-failed-attempt2-attempt2" },
+      "MODEL_PROBE_FAILED",
+      false,
+    ],
     [{ kind: "PROBE_STATUS", detail: "sk-fixture-credential" }, "MODEL_PROBE_FAILED", false],
     [{ kind: "PROCESS_EXIT", detail: "HTTP 404 model not found" }, "MODEL_PROBE_FAILED", false],
     [{ kind: "WRAPPER_ERROR", detail: "json" }, "MODEL_PROBE_FAILED", false],

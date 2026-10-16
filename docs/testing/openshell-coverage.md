@@ -51,6 +51,30 @@ turn must fail with the upstream receiving no request, and DNS is restored
 before the next phase. An endpoint selected by IP address cannot be redirected
 this way, so the suite reports this check as not run.
 
+## Outages
+
+Next, the Codex scenario takes each dependency away and restores it before
+asserting:
+
+- **Tool upstream.** The echo Service selects no Pod. OpenShell must end the
+  request without a response (curl exit 52), and the upstream must receive the
+  source's own token again once the Service is restored.
+- **Model provider.** For a DNS endpoint, cluster DNS sends the model host to a
+  Service with no endpoints. The turn must fail without exposing the model
+  credential, and the same revision must serve the next turn once DNS is
+  restored. An IP endpoint reports this check as not run.
+- **OpenShell gateway.** The Namespace's gateway StatefulSet is scaled to zero.
+  While it is down, the running Agent cannot serve a turn, a source read
+  reports `failed`, registration returns `503 DEPENDENCY_UNAVAILABLE`, and a
+  redeploy fails at least one attempt and stays queued. Once the gateway is
+  back, the redeploy activates and serves a turn without operator action.
+
+After the restart, an OAuth2 source whose refresh was due may fail with
+`refresh_configuration_invalid` and be retried only an hour later
+([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526)).
+The test accepts that state and requires a forced rotation to restore the
+token.
+
 ## Absence checks and a second Agent
 
 After the tool-source turns, the Codex scenario deploys a second Agent that
@@ -72,7 +96,3 @@ same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. Full
 manual integration lanes run from `main`; trusted pull requests also run the
 OpenShell advisory job described in [Tests in each workflow](ci.md#tests-in-each-workflow).
-
-## Not covered
-
-The suite does not test an OpenShell gateway or model-provider outage.

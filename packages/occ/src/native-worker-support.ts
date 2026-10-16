@@ -9,7 +9,7 @@
  * tests/conformance/configuration-occ.test.mjs and the native worker notes in
  * docs/reference/harness-execution.md and deploy/runtime/README.md.
  */
-export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = false;
+export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = true;
 
 /**
  * Operator declaration in the Installation startup file (`runtime.nativeWorkerSupport`)

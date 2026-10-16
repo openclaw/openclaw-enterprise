@@ -44,6 +44,9 @@
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 14px;
+  /* Keep the scrollbar's space whether or not the page scrolls, so the header and content do not
+     move sideways between short and long pages with classic scrollbars (finding 1520). */
+  scrollbar-gutter: stable;
 }
 * {
   box-sizing: border-box;
@@ -151,8 +154,10 @@ p {
   padding: calc(14vh + 28px) 28px;
   color: var(--muted);
   text-align: center;
-  /* A load that settles within the loading delay never flashes its status (finding 1444). */
-  animation: loading-delay 250ms;
+  /* A load that settles within the loading delay never flashes its status (finding 1444). Full
+     loads took up to 274 ms, past the 250 ms other statuses wait, so the boot status waits
+     400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
+  animation: loading-delay 400ms;
 }
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing

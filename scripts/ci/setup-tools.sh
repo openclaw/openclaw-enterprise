@@ -2,12 +2,12 @@
 set -euo pipefail
 
 profile="${1:-baseline}"
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+root_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 bin_dir="${RUNNER_TEMP:-/tmp/claw-ent-ci-implementation}/bin"
 platform="$(uname -s)-$(uname -m)"
 
 mkdir -p "${bin_dir}"
-cd "${root_dir}"
+CDPATH="" cd "${root_dir}"
 export PATH="${bin_dir}:${PATH}"
 
 need_command() {

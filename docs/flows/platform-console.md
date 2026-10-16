@@ -124,12 +124,16 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
-from the list shows its destination immediately, without Agent data or detail actions.
-**Back to Agents** cancels the read and returns to the list; a second press does
+from the list immediately shows **Loading agent details…** and **Back to Agents**.
+Access checks finish before the Agent’s name, actions, and overview appear together.
+Other ways into an Agent keep the shown page until then; a fresh load shows loading after 400 ms.
+Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
-Refresh show loading after 250 ms. A return to a retained view or a refocus keeps the
-shown page inert and says **Still checking…** after one second. The Console retains up
-to 16 views by route, Namespace, and session owner, excluding passwords and discovery
+Refresh show loading after 250 ms. A held page keeps its own navigation and header.
+A page held for another page keeps its Namespace selector disabled.
+A return to a retained view or a refocus keeps the shown page inert and says
+**Still checking…** after one second. The Console retains up to 16 views by route,
+Namespace, and session owner, excluding passwords and discovery
 state. An interrupted return keeps its view; an interrupted Refresh discards it.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
@@ -178,11 +182,11 @@ Installation-wide collection. No readable selection means no Agent request.
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes Provider,
-Harness, Preset, Configuration, and workspace inputs. Provider/Harness changes
-reset incompatible credentials and model choices while retaining unrelated JSON. The
-[creation reference](../reference/console/create-and-deploy.md) owns combinations,
-Preset constraints, token handling, permissions, and recovery.
+Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
+is false, both explain the restriction. If the read fails, creation stays available;
+the API authorizes every create. Changing Provider or Harness resets incompatible
+credentials and model choices, preserving unrelated JSON. See
+[Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
@@ -281,15 +285,14 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
-`agents/detail.mjs:renderAgentDetail` passes an `agents/list.mjs:link` to
-`deploymentFailure` for **Open vN Logs**. Client navigation selects the failed
-revision's `tab=logs`, even from the draft or a different version. Once the
-snapshot read and the panel's first reads settle, it focuses the Logs tab and
-scrolls the panel into view if the view is still current. Until then the tab keeps
-its height and hides Stop and Delete, which appear in place. The panel's
-`agents/logs.mjs:renderAgentLogs` reads that revision's runtime status and output,
-or displays its access or availability error;
-[Agent runtime logs](agent-runtime-logs.md) owns those reads.
+**Open vN Logs** opens the failed revision from any version or draft. Logs reserves space;
+Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
+the tab leaves visible output in place.
+
+[Runtime logs](agent-runtime-logs.md) explains access. A status `403` hides Pod details,
+not separately authorized logs. Denials last until logout; newly granted `operate` permits
+another status read. A refused log read or download clears the rows. A late success cannot
+restore them or start a download. Back rebuilds a refused view; otherwise it shows the page it checked.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -301,7 +304,7 @@ opened from the list focuses its heading when the title renders. Tabs and
 focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
-Other pages revalidate before reuse; forms defer refocus. Draft save baselines and
+Other pages revalidate before reuse, a shown 403 or 404 included; forms defer refocus. Draft save baselines and
 Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
@@ -367,19 +370,8 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
-- 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
-- 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
-- 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
-- 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
-- 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
-
-- 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
-- 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
-- 2026-10-07 12:30: Explain a disabled account's provider sign-in (`authReason=account-disabled`). (fix-member-1007/d534)
-
-- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
-- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
-- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
+- 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
+- 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
+- 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

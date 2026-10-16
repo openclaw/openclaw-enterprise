@@ -3,6 +3,7 @@ import { story } from "./story.mjs";
 export default { title: "Components/Credentials" };
 
 export const Credentials = { ...story("credentials"), name: "Model authentication" };
+export const CredentialsUpdateDenied = story("credentialsUpdateDenied");
 export const CredentialsSlack = { ...story("credentialsSlack"), name: "Slack tokens missing" };
 export const CredentialsSlackStored = {
   ...story("credentialsSlackStored"),
