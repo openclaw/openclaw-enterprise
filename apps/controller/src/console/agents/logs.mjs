@@ -245,6 +245,9 @@ export function renderAgentLogs(
   let followTimer;
   let statusTimer;
   let reading = false;
+  let statusReading = false;
+  // Set once a log read was allowed: a refusal after that is a revocation.
+  let logsAllowed = false;
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
@@ -333,6 +336,12 @@ export function renderAgentLogs(
     setFollow(false);
     renderPickers();
     onLogsDenied();
+    // One revoke often removes operate too: ask for status once now, so the Pod cards it showed
+    // do not stay under the log refusal until the next status poll (finding 1597). A status
+    // read in flight answers that already; a first read refused revokes nothing.
+    if (logsAllowed && !statusDenied && !statusReading && description !== null) {
+      void loadStatus();
+    }
   }
 
   function renderStrip() {
@@ -475,6 +484,7 @@ export function renderAgentLogs(
       }
     }
     if (!document.hidden) {
+      statusReading = true;
       try {
         const first = description === null;
         description = await read(base);
@@ -519,6 +529,8 @@ export function renderAgentLogs(
           }
           return;
         }
+      } finally {
+        statusReading = false;
       }
     }
     statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);
@@ -613,6 +625,7 @@ export function renderAgentLogs(
         throw new Error("The log download did not return text.");
       }
       showLogError(null);
+      logsAllowed = true;
       const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
       const link = element("a", {
         href: url,
@@ -703,6 +716,7 @@ export function renderAgentLogs(
         return;
       }
       showLogError(null);
+      logsAllowed = true;
       cursor = page.cursor;
       appendRecords(page.records);
       if (statusDenied) {

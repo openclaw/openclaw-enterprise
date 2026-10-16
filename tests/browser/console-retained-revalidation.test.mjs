@@ -585,17 +585,23 @@ for (const c of [
 // empty overview for up to 2 s (finding 1537). The startup status now stands in until the
 // overview reveals, and gives way to loading if the delay passes first. Reads that straddled the
 // 250 ms delay painted the loading page for 1-2 frames before the Agent (finding 1554): the blank
-// startup status now stands in until its own text would show, at 400 ms.
-for (const { elapsed, pastDelay } of [
-  { elapsed: 0, pastDelay: false },
-  { elapsed: 250, pastDelay: false },
-  { elapsed: 400, pastDelay: true },
+// startup status now stands in until its own text would show, at 400 ms. Reads that settled just
+// after that still flashed the loading page for under 100 ms (finding 1587): once shown, it now
+// stays 300 ms, and a later Agent is not held back.
+for (const { elapsed, held } of [
+  { elapsed: 0 },
+  { elapsed: 250 },
+  { elapsed: 450, held: 250 },
+  { elapsed: 1500, held: 0 },
 ]) {
-  const when = pastDelay
-    ? " past the loading delay"
-    : elapsed
+  const pastDelay = held !== undefined;
+  const when = !pastDelay
+    ? elapsed
       ? ` ${elapsed} ms in, before the startup text shows`
-      : "";
+      : ""
+    : held
+      ? ` ${elapsed} ms in, holding the loading page its minimum time`
+      : ` ${elapsed} ms in, past the loading page's minimum time`;
   test(`A fresh load of an Agent page keeps a stand-in until the overview reveals${when}`, async (t) => {
     const { fixture, namespace, agent, page } = await openList(
       t,
@@ -615,7 +621,19 @@ for (const { elapsed, pastDelay } of [
     } else {
       assert.equal(await page.locator("#app > .startup").count(), 1);
     }
+    const settled = page.waitForResponse((response) =>
+      response.url().includes(`/agents/${agent.id}/deployments/`),
+    );
     record.release();
+    if (held) {
+      await settled;
+      // The overview's reads have settled; give its reveal steps time to run.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.equal(await page.locator(activeView).getByText("Reading this Agent.").count(), 1);
+      await page.clock.runFor(held - 1);
+      assert.equal(await page.locator(activeView).getByText("Reading this Agent.").count(), 1);
+      await page.clock.runFor(1);
+    }
     await agentShown(page);
     assert.deepEqual(await shownFrames(page), [
       "none | none | no selector | none",

@@ -32,6 +32,51 @@ export function replaceChildrenIfChanged(parent, children) {
   }
 }
 
+/**
+ * Makes `parent`'s children match `children` (nodes; null and undefined skipped), changing only
+ * what differs: an unchanged render touches no node, and a changed one rewrites only the changed
+ * text and attributes, position by position (finding 1598). A kept node keeps its listeners, so
+ * use this only where a rebuilt node would get the same handlers. Returns whether it changed
+ * anything.
+ */
+export function patchChildren(parent, children) {
+  const next = children.filter((child) => child !== null && child !== undefined);
+  let changed = false;
+  for (const [index, child] of next.entries()) {
+    const shown = parent.childNodes[index];
+    if (!shown) {
+      parent.append(child);
+      changed = true;
+    } else if (shown.nodeType !== child.nodeType || shown.nodeName !== child.nodeName) {
+      shown.replaceWith(child);
+      changed = true;
+    } else if (shown.nodeType !== Node.ELEMENT_NODE) {
+      if (shown.nodeValue !== child.nodeValue) {
+        shown.nodeValue = child.nodeValue;
+        changed = true;
+      }
+    } else if (!shown.isEqualNode(child)) {
+      changed = true;
+      for (const name of shown.getAttributeNames()) {
+        if (!child.hasAttribute(name)) {
+          shown.removeAttribute(name);
+        }
+      }
+      for (const name of child.getAttributeNames()) {
+        if (shown.getAttribute(name) !== child.getAttribute(name)) {
+          shown.setAttribute(name, child.getAttribute(name));
+        }
+      }
+      patchChildren(shown, [...child.childNodes]);
+    }
+  }
+  while (parent.childNodes.length > next.length) {
+    parent.lastChild.remove();
+    changed = true;
+  }
+  return changed;
+}
+
 export function button(label, action, attributes = {}) {
   const node = element("button", { type: "button", ...attributes }, label);
   node.addEventListener("click", action);

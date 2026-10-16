@@ -463,6 +463,9 @@ const loadingDelayMs = 250;
 // The startup status stays blank this long (console.css). A fresh load keeps it, not the loading
 // page, until then, so reads that settle between the two delays never flash loading (finding 1554).
 const startupStatusDelayMs = 400;
+// Once the loading page replaces a stand-in, it stays at least this long: an Agent whose reads
+// settle just after it appears never flashes it for a frame or two (finding 1587).
+const loadingMinimumMs = 300;
 // A return or refocus keeps its page until the recheck settles; past this delay it says so.
 const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
@@ -1044,6 +1047,8 @@ async function loadPage({
   let standInTitle = null;
   // The shell that says it is checking Namespace access, while it is the one shown.
   let pendingNamespaceShell = null;
+  // When the loading delay put a loading page on screen (performance.now()), or null.
+  let loadingShownAt = null;
   let sessionResolved = false;
   let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -1128,6 +1133,7 @@ async function loadPage({
               return;
             }
             held = false;
+            loadingShownAt = performance.now();
             if (!accessResolved) {
               shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
               return;
@@ -1284,8 +1290,9 @@ async function loadPage({
       // until the delay passes or the first reads settle.
       if (!shell && openingAgent && !startup) {
         showOpeningPanel();
-      } else {
-        shell ??= pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+      } else if (!shell) {
+        shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+        loadingShownAt = performance.now();
       }
     }
     // Read the admin-only destination once per session owner. Non-administrators
@@ -1692,18 +1699,44 @@ async function loadPage({
         const detailView = shell.view;
         shownStandIn = standIn;
         lifetime.signal.addEventListener("abort", () => markRevealed(), { once: true });
+        // Runs once the Agent's page is on screen: the page's own reveal steps (scroll, focus).
+        const afterReveal = [];
+        const runAfterReveal = () => {
+          for (const then of afterReveal.splice(0)) {
+            then();
+          }
+        };
+        let revealWait = null;
         // The overview's first reads settled, or its bounded wait ran out: replace the stand-in
-        // with the Agent's shell, heading, toolbar and overview in one frame.
-        agentContext.revealed = () => {
+        // with the Agent's shell, heading, toolbar and overview in one frame, then run `then`.
+        agentContext.revealed = (then) => {
+          if (then) {
+            afterReveal.push(then);
+          }
+          if (revealWait !== null) {
+            return;
+          }
           // The stand-in may have given way to the loading page since (finding 1537).
           const shownNow = shownStandIn;
           if (shownNow === null || !lifetime.isCurrent(active)) {
+            runAfterReveal();
+            return;
+          }
+          // A loading page that has just appeared stays its minimum time (finding 1587).
+          const wait =
+            loadingShownAt === null ? 0 : loadingShownAt + loadingMinimumMs - performance.now();
+          if (wait > 0) {
+            revealWait = setTimeout(() => {
+              revealWait = null;
+              agentContext.revealed();
+            }, wait);
             return;
           }
           shownStandIn = null;
           stopLoadingTimer();
           if (!detailView.isConnected) {
             markRevealed();
+            runAfterReveal();
             return;
           }
           // Focus in the stand-in (its heading, or the opening panel's Back to Agents) moves to
@@ -1727,6 +1760,7 @@ async function loadPage({
             heading.focus({ preventScroll: true });
           }
           markRevealed();
+          runAfterReveal();
         };
       } else {
         markRevealed();
