@@ -18,6 +18,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresHumanAuthentication,
+  AuthorizationDeniedError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -29,6 +30,7 @@ import {
   type SchemaAuthAdapterOptionsV1,
   type PostgresPlatformState,
   type PreparedPasswordAccount,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import {
@@ -44,6 +46,7 @@ import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
+import { sessionAuthority } from "./session-authority.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
@@ -383,6 +386,12 @@ export interface ControllerAuth {
   signOut(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   session(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   resolveSession(request: FastifyRequest): Promise<AuthenticatedSession | undefined>;
+  withSessionAuthority<T>(session: AuthenticatedSession, work: () => Promise<T>): Promise<T>;
+  holdSession(
+    unit: PlatformUnitOfWork,
+    session: AuthenticatedSession,
+    request: FastifyRequest,
+  ): Promise<void>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
     readonly name: string;
@@ -1002,6 +1011,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     cookiePrefix,
   );
   const issuer = betterAuthIssuer(options.installationId);
+  const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
@@ -1589,15 +1599,19 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           }
           requireSessionKey(headers, options.secret, current);
         }
+        // Guarded logout already holds the user in its original State transaction.
         if (humanLogin) {
           return runPrivateEndpoint(request, "/oce/sign-out");
         }
-        return api.signOut({
-          headers,
-          asResponse: false,
-          returnHeaders: true,
-          returnStatus: true,
-        });
+        const current = await resolveSession(request);
+        const revoke = () =>
+          api.signOut({
+            headers,
+            asResponse: false,
+            returnHeaders: true,
+            returnStatus: true,
+          });
+        return current === undefined ? revoke() : withSessionAuthority(current.id, revoke);
       },
       (response) => response,
       "The controller session could not be revoked.",
@@ -1692,6 +1706,13 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     signOut,
     session,
     resolveSession,
+    withSessionAuthority: (session, work) => withSessionAuthority(session.id, work),
+    holdSession: async (_unit, session, request) => {
+      const current = await resolveSession(request);
+      if (current?.id !== session.id || current.userId !== session.userId) {
+        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+      }
+    },
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.
@@ -1984,6 +2005,14 @@ export async function createPostgresControllerAuth(
   }
   return {
     ...auth,
+    holdSession: async (unit, session) => {
+      if (guarded) {
+        await persistence!.holdSession(unit, session.userId, session.id);
+      }
+      if (!(await unit.installations.holdAuthenticationSession(session.id, session.userId))) {
+        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+      }
+    },
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

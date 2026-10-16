@@ -106,6 +106,8 @@ export interface InstallationRepository extends InstallationReadRepository {
    * no human account (its IAM bindings alone decide).
    */
   holdPrincipalAccount(principalId: string): Promise<boolean>;
+  /** Holds the user/session through COMMIT and validates expiry at commit; authentication validates its profile. */
+  holdAuthenticationSession(sessionId: string, userId: string): Promise<boolean>;
 }
 
 export interface NamespaceReadRepository {
@@ -1283,6 +1285,8 @@ function repositories(
     },
     // In-memory State has no human accounts, and its units are serialized.
     holdPrincipalAccount: async () => true,
+    // Memory authentication owns its sessions outside platform State.
+    holdAuthenticationSession: async () => false,
   };
 
   const namespaces: NamespaceRepository = {
