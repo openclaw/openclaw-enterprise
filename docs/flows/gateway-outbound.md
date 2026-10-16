@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
 updated: 2026-10-16
-last_updated_session: authoring-run/05789d5b-74d1-470e-874f-94028b6d6115
+last_updated_session: authoring-run/fea49e8b-1a66-42da-af1c-9a184f0f09a7
 ---
 
 # Gateway Outbound Flow
@@ -177,10 +177,12 @@ retirement and deletion remove it afterward. Old cleanup cannot match a successo
 Existing tunnels end with the proxy process rather than surviving a policy change.
 
 `retireGatewayChannelGrant` removes the retired Agent-wide channel grant before
-Gateway deployment reconciliation and during access withdrawal. The grant stays
-as the retry obligation until fenced Deployment deletion, Gateway Pod termination
-and Deployment absence are confirmed. A newer Gateway is preserved. This cleanup
-accepts no retired channel-proxy configuration.
+Gateway deployment reconciliation and during access withdrawal. For those callers,
+the grant stays as the retry obligation until fenced Deployment deletion, Gateway
+Pod termination and Deployment absence are confirmed. Historical stop and
+retirement preserve a newer Gateway and leave its grant for its owner to remove;
+withdrawal remains pending. This cleanup accepts no retired channel-proxy
+configuration.
 
 ## Debugging and Verification
 
@@ -202,6 +204,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 17:45: Leave historical channel-grant cleanup to the newer Gateway owner. (authoring-run/fea49e8b-1a66-42da-af1c-9a184f0f09a7 - 8f34dbb61e953bd6882f450b1c3b0b1ac995cdbc)
 
 - 2026-10-16 13:35: Preserve permanent Secret-context refusal and retire obsolete channel grants before access completion. (authoring-run/05789d5b-74d1-470e-874f-94028b6d6115 - e2dc3023d8c2369dab0a0f200051ff5e84096077)
 

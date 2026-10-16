@@ -7063,7 +7063,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
       await this.removeGatewayOutbound(revision, gatewayNamespace);
-      await this.retireGatewayChannelGrant(revision, gatewayNamespace);
+      await this.retireGatewayChannelGrant(revision, gatewayNamespace, {
+        preserveNewerGateway: true,
+      });
       return;
     }
     this.verifyNamespaceOwnership(
@@ -7096,7 +7098,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.shutdownRevisionRuntime(revision, namespace);
     }
     await this.removeGatewayOutbound(revision, gatewayNamespace);
-    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace, {
+      preserveNewerGateway: true,
+    });
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -7129,7 +7133,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
       await this.removeGatewayOutbound(revision, gatewayNamespace);
-      await this.retireGatewayChannelGrant(revision, gatewayNamespace);
+      await this.retireGatewayChannelGrant(revision, gatewayNamespace, {
+        preserveNewerGateway: true,
+      });
       return;
     }
     this.verifyNamespaceOwnership(
@@ -7148,7 +7154,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
     await this.removeGatewayOutbound(revision, gatewayNamespace);
-    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace, {
+      preserveNewerGateway: true,
+    });
     if (revision.repositoryCredentials !== undefined) {
       await this.waitForRevisionPodsToTerminate(
         revision,
@@ -7566,12 +7574,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
-    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace, {
+      preserveNewerGateway: true,
+    });
     // Keep these lists in step with AGENT_NETWORK_POLICY_NAMES and the channel
     // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
-      "allow-gateway-channels",
       "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
@@ -12773,6 +12782,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private async retireGatewayChannelGrant(
     revision: Readonly<AgentRevision>,
     namespace: KubernetesNamespaceAddress,
+    { preserveNewerGateway = false }: { readonly preserveNewerGateway?: boolean } = {},
   ): Promise<void> {
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const suffix = sha256Hex(revision.agentId, 12);
@@ -12790,6 +12800,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         throw new OwnershipFailure("Refusing an ambiguous retired channel grant Gateway.");
       }
       if (number > revision.revision || (number === revision.revision && id !== revision.id)) {
+        if (preserveNewerGateway) {
+          return;
+        }
         throw new DependencyUnavailableError("A newer Gateway must retire its channel grant.");
       }
       await this.deleteObservedGatewayDeployment(gateway, namespace);

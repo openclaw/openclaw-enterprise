@@ -1632,8 +1632,19 @@ test("retired shared proxy grants remain until their Gateway terminates and cann
   successor.metadata.annotations["openclaw.dev/agent-revision-id"] = "newer-gateway";
   successor.spec.template.metadata.labels["openclaw.dev/revision"] = "newer-gateway";
   f.save(successor);
+  const successorRoute = structuredClone(objects.get(key("HTTPRoute", f.gatewayName)));
+  successorRoute.metadata.annotations["openclaw.dev/agent-revision-id"] = "newer-gateway";
+  f.save(successorRoute);
   f.save(legacy);
   await assert.rejects(driver.withdrawRevisionAccess(revision));
+  assert.deepEqual(objects.get(key("Deployment", f.gatewayName)), successor);
+  assert.ok(objects.has(key("NetworkPolicy", legacyName)));
+  // Historical cleanup must reach the owning revision in the ascending stop sweep.
+  // It preserves the newer Gateway's grant; only that revision can fence its live flows.
+  await driver.stopRevision(revision);
+  assert.deepEqual(objects.get(key("Deployment", f.gatewayName)), successor);
+  assert.ok(objects.has(key("NetworkPolicy", legacyName)));
+  await driver.retireRevision(revision);
   assert.deepEqual(objects.get(key("Deployment", f.gatewayName)), successor);
   assert.ok(objects.has(key("NetworkPolicy", legacyName)));
 });
