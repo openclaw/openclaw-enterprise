@@ -137,6 +137,8 @@ verifies imported image references on every node and fails on import timeout.
 Manifests list test files, selectors, prerequisites, and any expected-case checks.
 [The suite index](../../scripts/ci/test-suites.json) defines lane groups. Workflows
 without test suites build, publish, scan, or dispatch; see the [workflow index](../reference/cheatsheets/github-actions.md).
+Files that share a runner start longest first, by [measured file times](../../scripts/ci/test-suites/file-durations.json).
+A file without a row starts first; refresh rows when a lane's longest files change.
 
 <a id="production-observability-lane"></a>
 
