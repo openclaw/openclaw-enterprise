@@ -1704,33 +1704,28 @@ function createIntegrationSandboxDriverFactory(
       });
     }
 
-    return {
+    // Admission performs no gateway I/O. Preserve the real Driver's HOME and
+    // admission contract while runtime calls resolve each Namespace's endpoint.
+    const admissionDriver = new OpenShellSandboxDriver(selection.configuration, {
       id: selection.id,
-      capability: "sandbox",
-      implementation: selection.implementation,
-      facets: Object.freeze(["networking", "filesystem", "process"]),
-      configureAgent(configuration, harness) {
-        // Configuration admission performs no gateway I/O.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).configureAgent(configuration, harness);
+      implementation: "openshell",
+      backend: backendFor(undefined),
+    });
+    return {
+      id: admissionDriver.id,
+      capability: admissionDriver.capability,
+      implementation: admissionDriver.implementation,
+      facets: admissionDriver.facets,
+      harnessHome: admissionDriver.harnessHome,
+      configureAgent(configuration, harness, credentialSourceLoginMode) {
+        return admissionDriver.configureAgent(configuration, harness, credentialSourceLoginMode);
       },
       validateWorkspaceSetup(harness, configuration) {
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).validateWorkspaceSetup(harness, configuration);
+        return admissionDriver.validateWorkspaceSetup(harness, configuration);
       },
       harnessResource(context) {
         // The bridge provisions through the real Driver, so its Sandbox identity is the same.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).harnessResource(context);
+        return admissionDriver.harnessResource(context);
       },
       async ensureNamespace(context) {
         try {
