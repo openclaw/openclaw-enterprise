@@ -15874,7 +15874,7 @@ test("Kubernetes OAuth handoff re-reads a legacy bootstrap Deployment when its d
   );
 });
 
-test("Kubernetes OAuth handoff retries a consumed seed Secret delete only on transient failures", async (t) => {
+test("Kubernetes OAuth handoff retries a consumed seed Secret delete on timeouts, conflicts, gone, throttling and server errors, never on a refusal", async (t) => {
   // request() makes its deadline right before each call, so the latest one is the delete's.
   let deadline;
   t.mock.method(AbortSignal, "timeout", () => {
@@ -15920,7 +15920,7 @@ test("Kubernetes OAuth handoff retries a consumed seed Secret delete only on tra
     } else {
       // A refusal is not retried; the token bundle stays for a later pass to remove.
       await assert.rejects(pass, /HTTP 403/);
-      assert.equal(attempts, 1);
+      assert.equal(attempts, 1, String(failures));
     }
     assert.equal(
       objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
@@ -15959,7 +15959,8 @@ test("Kubernetes OAuth handoff on an already consumed source still removes the s
   // The next pass finds the source consumed. It removes the seed before the Job, whose
   // delete now fails, and a legacy bootstrap Deployment left by an earlier release.
   transport.core.deleteNamespacedSecret = deleteSecret;
-  objects.set(`Deployment:${namespace}:${job.metadata.name}`, {
+  const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
+  objects.set(deploymentKey, {
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: { ...structuredClone(job.metadata), uid: "legacy-bootstrap-uid" },
@@ -15971,6 +15972,7 @@ test("Kubernetes OAuth handoff on an already consumed source still removes the s
   };
   await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
   assert.equal(objects.has(seedKey), false);
+  assert.equal(objects.has(deploymentKey), false);
   assert.ok(objects.has(jobKey));
 
   transport.batch.deleteNamespacedJob = deleteJob;
@@ -16005,20 +16007,23 @@ test("Kubernetes OAuth handoff reads a bootstrap Job again when it is gone at it
 });
 
 test("Kubernetes OAuth handoff refuses, and keeps, a bootstrap Deployment it does not own", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  stageReadyOAuthSource(objects, revision, context);
+  const { driver, revision, namespace, objects, context } = workspaceSetupFixture(false);
+  const sourceKey = stageReadyOAuthSource(objects, revision, context);
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   const job = [...objects.values()].find(({ kind }) => kind === "Job");
   const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
   const metadata = structuredClone(job.metadata);
   metadata.labels["openclaw.dev/agent"] = "another-agent";
   objects.set(deploymentKey, { apiVersion: "apps/v1", kind: "Deployment", metadata, spec: {} });
-  state.ready = true;
   await assert.rejects(
     driver.prepareRevision(revision, context),
     /Refusing unowned Kubernetes Deployment/,
   );
   assert.ok(objects.has(deploymentKey));
+  assert.notEqual(
+    objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+    "consumed",
+  );
 });
 
 test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Deployment's Pods stop", async (t) => {
@@ -16044,6 +16049,7 @@ test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Depl
       const listPods = transport.core.listNamespacedPod;
       let podRunning = true;
       let deploymentDeleted = false;
+      let reportedAfterDelete = false;
       transport.core.listNamespacedPod = async (request) => {
         const labels = Object.fromEntries(
           request.labelSelector.split(",").map((entry) => entry.split("=")),
@@ -16052,7 +16058,11 @@ test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Depl
           return listPods(request);
         }
         // The Pod reports once more after its Deployment is deleted, then it is gone.
-        podRunning = !deploymentDeleted;
+        if (reportedAfterDelete) {
+          podRunning = false;
+          return listPods(request);
+        }
+        reportedAfterDelete = deploymentDeleted;
         return {
           items: [
             {

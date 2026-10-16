@@ -166,13 +166,20 @@ test("provider projection rejects unexpected node and OAuth home mounts", () => 
     [...mounts, node],
     mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)),
     mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)),
-    mounts.map((mount) => (mount === node ? { ...mount, subPath: `${nodeName}/../x` } : mount)),
     mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)),
     [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
   ]) {
     assert.throws(() => project(bad));
   }
   assert.throws(() => project(mounts, false));
+  // The node subPath names exactly one Agent node directory.
+  assert.throws(
+    () =>
+      project(
+        mounts.map((mount) => (mount === node ? { ...mount, subPath: `${nodeName}/../x` } : mount)),
+      ),
+    /node directory/,
+  );
   // An API-key Harness has no OAuth home on the claim.
   const apiKey = render("api_key", "setup-file", false);
   assert.throws(

@@ -210,6 +210,7 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
     assert.equal(
       firstAgentPriorPatPolicy(values(sandbox), record, "rev_saved", "rev_saved"),
       false,
+      sandbox,
     );
   }
   assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved"), false, "a new deployment");
@@ -222,6 +223,7 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
     assert.equal(
       firstAgentPriorPatPolicy(prior, { ...record, ...other }, "rev_saved", "rev_saved"),
       false,
+      JSON.stringify(other),
     );
   }
   const warning = firstAgentPriorPatPolicyWarning("rev_saved");

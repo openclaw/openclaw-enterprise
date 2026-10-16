@@ -626,9 +626,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     "a refused connection closes when its client does or after one second, and at most eight wait",
     { timeout: 15_000 },
     async (st) => {
-      // Only setTimeout is mocked: the one-second refusal timer fires when this test ticks.
+      // Only setTimeout is mocked: the one-second refusal timer fires only when this test
+      // ticks, so every close before a tick is the client's doing.
       st.mock.timers.enable({ apis: ["setTimeout"] });
-      st.after(() => st.mock.timers.reset());
       const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
       await once(guarded, "listening");
       const clients = [];
@@ -654,9 +654,13 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       const event = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
       const closed = (socket) => socket.closed || event(socket, "close");
       // Everything the client reads until the reader ends or resets the connection.
-      const answer = (client) =>
+      const received = (client) =>
         new Promise((resolve) => {
           let text = "";
+          if (client.closed || client.readableEnded) {
+            resolve(text);
+            return;
+          }
           client.setEncoding("utf8").on("data", (chunk) => (text += chunk));
           client.once("end", () => resolve(text)).once("close", () => resolve(text));
         });
@@ -667,7 +671,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
 
       // A client that reads the answer and closes frees its refused connection at once.
       const reader = await open();
-      assert.match(await answer(reader.client), refusal);
+      assert.match(await received(reader.client), refusal);
       await closed(reader.socket);
 
       // A request still arriving after the answer is drained, not reset: the client reads
@@ -680,42 +684,45 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         closed(slow.socket),
       ]);
       slow.client.write(rest);
-      // Wait, without consuming it for the reader, until the reader received it or reset.
+      // Keep the answer unread until the reader has read the whole request or the
+      // connection is gone.
       while (slow.socket.bytesRead < (start + rest).length && !slow.client.closed) {
         await new Promise(setImmediate);
       }
-      const late = answer(slow.client);
+      const late = received(slow.client);
       slow.client.resume();
       assert.match(await late, refusal);
       await closed(slow.socket);
 
-      // A client that resets its connection does not take the reader down.
+      // A client that resets its connection must not crash the reader with an unhandled
+      // socket error.
       const reset = await open({ allowHalfOpen: true });
-      assert.match(await answer(reset.client), refusal);
+      assert.match(await received(reset.client), refusal);
       reset.client.resetAndDestroy();
       await closed(reset.socket);
 
       // A client that never closes is closed after one second.
       const lingering = await open({ allowHalfOpen: true });
-      assert.match(await answer(lingering.client), refusal);
+      assert.match(await received(lingering.client), refusal);
       st.mock.timers.tick(999);
       assert.equal(lingering.socket.destroyed, false);
       st.mock.timers.tick(1);
       assert.equal(lingering.socket.destroyed, true);
+      await closed(lingering.socket);
 
       // Eight refused connections can wait for their clients; the ninth closes unanswered
       // until one of them closes.
       const waiting = [];
       for (let refused = 0; refused < 8; refused++) {
         const connection = await open({ allowHalfOpen: true });
-        assert.match(await answer(connection.client), refusal);
+        assert.match(await received(connection.client), refusal);
         waiting.push(connection);
       }
       const ninth = await open({ allowHalfOpen: true });
-      assert.equal(await answer(ninth.client), "");
+      assert.equal(await received(ninth.client), "");
       waiting[0].client.end();
       await closed(waiting[0].socket);
-      assert.match(await answer((await open({ allowHalfOpen: true })).client), refusal);
+      assert.match(await received((await open({ allowHalfOpen: true })).client), refusal);
     },
   );
 });
