@@ -75,7 +75,12 @@ export function carryDocument(base, mine, current, path = "") {
     );
   const mineKeys = changedBy(mine, current);
   const theirKeys = changedBy(current, mine);
-  if (path && mineKeys.some((key) => theirKeys.some((other) => other !== key))) {
+  // An object whose changed keys all hold objects only groups them (`channels.slack` and
+  // `channels.discord`); the recursion names any of those that mix.
+  const grouping = [...mineKeys, ...theirKeys].every((key) =>
+    [base, mine, current].every((side) => own(side, key) === undefined || isRecord(own(side, key))),
+  );
+  if (path && !grouping && mineKeys.length && theirKeys.some((key) => !mineKeys.includes(key))) {
     mixed.push(path);
   }
   for (const key of keys) {

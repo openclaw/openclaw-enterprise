@@ -603,7 +603,7 @@ export function createChannelSecretsPanel({
     shown.outcome = state.saveError
       ? error
       : (reloadMessage ?? unknownMessage ?? (shown.status?.textContent ? shown.status : null));
-    if (!slackEnabled(state.values)) {
+    if (!slackEnabled(state.values) && state.carriedNote) {
       // Shown only to say carried Secret choices were not reapplied (finding 1525).
       section.replaceChildren(
         element("h2", {}, "Channel Secrets"),

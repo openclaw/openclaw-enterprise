@@ -41,6 +41,32 @@ test("only the object holding the separate changes is named, not its parents", (
   assert.deepEqual(merged.mixed, ["/a/b"]);
 });
 
+test("an object is not named when every key from the other browser was replaced", () => {
+  const merged = carryDocument({ o: { a: 1, b: 1 } }, { o: { a: 2, b: 2 } }, { o: { a: 3, b: 1 } });
+  assert.deepEqual(merged.value, { o: { a: 2, b: 2 } });
+  assert.deepEqual(merged.conflicts, [{ path: "/o/a", saved: 3 }]);
+  assert.deepEqual(merged.mixed, []);
+});
+
+test("an object that only groups other objects is not named, but a mixed child is", () => {
+  const merged = carryDocument(
+    { channels: { slack: { enabled: true, mode: "socket" } } },
+    { channels: { slack: { enabled: true, mode: "http" } } },
+    { channels: { slack: { enabled: false, mode: "socket" }, discord: { enabled: true } } },
+  );
+  assert.deepEqual(merged.value, {
+    channels: { slack: { enabled: false, mode: "http" }, discord: { enabled: true } },
+  });
+  assert.deepEqual(merged.conflicts, []);
+  assert.deepEqual(merged.mixed, ["/channels/slack"]);
+  const separate = carryDocument(
+    { plugins: { entries: { a: { config: { m: 1 } }, b: { config: { n: 1 } } } } },
+    { plugins: { entries: { a: { config: { m: 2 } }, b: { config: { n: 1 } } } } },
+    { plugins: { entries: { a: { config: { m: 1 } }, b: { config: { n: 2 } } } } },
+  );
+  assert.deepEqual(separate.mixed, []);
+});
+
 test("separate top-level sections merge without a review note", () => {
   const merged = carryDocument(
     { agents: { list: [] }, channels: {} },

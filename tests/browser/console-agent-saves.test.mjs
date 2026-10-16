@@ -1328,6 +1328,7 @@ test("carried channel Secret choices survive the page load after a failed reread
     .getByText("Configuration changed. Reload this draft before saving channel Secrets.")
     .waitFor();
   failAgentRead = true;
+  const requests = apiRequests(page, fixture.origin);
   await page.getByRole("button", { name: "Reload draft" }).click();
   await page
     .getByRole("status")
@@ -1337,6 +1338,8 @@ test("carried channel Secret choices survive the page load after a failed reread
     })
     .waitFor();
   assert.equal(failedReads, 1);
+  // Only the page load reads the session, versions and permissions again.
+  assert.notDeepEqual(pageReloadReads(requests), []);
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
