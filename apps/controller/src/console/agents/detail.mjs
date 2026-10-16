@@ -13,16 +13,20 @@ import { pluginWarningText, renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
+import { carryDocument } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { logTextDenied, renderAgentLogs } from "./logs.mjs";
 import {
   displayDate,
   shortId,
   namespacePath,
+  refusedSave,
+  AGENT_UPDATE_DENIED,
   link,
   message,
   rejectionMessage,
   assertReadableConfiguration,
+  isStaleGeneration,
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
@@ -881,6 +885,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     .finally(() => {
       callerPermissionsSettled = true;
     });
+  // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
+  // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
+  // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
+  let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
+  // Only the latest draft refresh's answer replaces the summary.
+  let permissionsRereads = 0;
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -904,6 +914,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let deployInFlight = false;
   let authenticationSaveState = "idle";
   let activeCredentials = null;
+  // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512). The
+  // draft store keeps them too, for the page a failed reread reloads (finding 1525).
+  let carriedChannelSecrets = null;
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
   const change = (revision, tab) => {
@@ -1026,6 +1039,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     view.replaceChildren(header, deletion);
+    context.revealed?.();
   }
   if (deleting) {
     showDeleting();
@@ -1150,6 +1164,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function revealDetail() {
     clearTimeout(revealTimer);
     view.classList.remove("agent-detail-pending");
+    // An Agent opened from the list shows this page in place of the list only now (finding 1516).
+    context.revealed?.();
     markRevealed();
   }
   revealTimer = setTimeout(revealDetail, FIRST_ACTIVITY_WAIT_MS);
@@ -1960,6 +1976,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       reloadRequired: retainedPlugins?.reloadRequired ?? false,
     };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
+    // The carried choices apply once, to the panel built from the reread.
+    const carriedSecrets = carriedChannelSecrets ?? context.drafts.get("channelSecrets") ?? null;
+    carriedChannelSecrets = null;
+    context.drafts.forget("channelSecrets");
     const credentials =
       draft && !runtimeAuth
         ? createChannelSecretsPanel({
@@ -1969,6 +1989,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             configuration: snapshot,
             values,
             revisionsLoaded: revisionResult.status === "fulfilled",
+            carried: carriedSecrets,
             onChange() {
               updateNavigationControls();
               updateDeployControls();
@@ -1979,13 +2000,25 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               viewedSnapshot = configuration;
               renderDetailHeading();
             },
-            onReload: () =>
-              reloadDraftInPlace(context, {
+            onReload: (carried = null) => {
+              carriedChannelSecrets = carried;
+              if (carried) {
+                context.drafts.track("channelSecrets", () => carried);
+              } else {
+                context.drafts.forget("channelSecrets");
+              }
+              return reloadDraftInPlace(context, {
                 saved: "Draft reloaded.",
                 focus: "Save channel Secrets",
-              }),
+              });
+            },
           })
         : null;
+    // Operator-managed credentials build no channel Secrets panel to say so (finding 1525).
+    const channelSecretsNote =
+      draft && runtimeAuth && carriedSecrets
+        ? "Your channel Secret choices were not reapplied: this Agent now uses operator-managed credentials."
+        : "";
     activeCredentials = credentials;
     function editedSubject() {
       if (selectedTab === "network") {
@@ -2264,6 +2297,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       draft,
       executionMode,
       credentials,
+      channelSecretsNote,
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -2374,6 +2408,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       agent = freshAgent;
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
+    // The rebuilt editors take the fresh answer; a failed read keeps the last one.
+    const previousUpdateAllowed = agentUpdateAllowed;
+    const reread = ++permissionsRereads;
+    agentUpdateAllowed = request(`${path}/permissions`).then(
+      (permissions) => {
+        if (context.isCurrent() && reread === permissionsRereads) {
+          callerPermissions = permissions;
+        }
+        return permissions?.update;
+      },
+      () => previousUpdateAllowed,
+    );
     const next = loadDetails();
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
@@ -2410,8 +2456,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
+    // `focus` may list fallbacks; the first enabled match in the tab takes focus.
     const named = [...content.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent === focus && !candidate.disabled,
+      (candidate) => [focus].flat().includes(candidate.textContent) && !candidate.disabled,
     );
     const status = saved
       ? [...content.querySelectorAll('[role="status"]')].find((node) => node.textContent === saved)
@@ -2431,7 +2478,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     control.focus();
   }
 
-  async function renderTab() {
+  async function renderTab({ activated = false } = {}) {
     // A Logs view left before it showed no longer holds the cards below it back.
     view.classList.remove("agent-logs-opening");
     const resumeDrafts = context.suspendDrafts();
@@ -2450,8 +2497,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       mountedTab = null;
     }
+    // A tab the reader chose keeps its strip where it was used: the version evidence above it
+    // hides for Workspace and Logs and returns for the others (finding 1518). At the top of the
+    // page the heading stays in view instead.
+    const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
     versionEvidence.hidden = selectedTab === "workspace" || selectedTab === "logs";
+    if (stripTop !== null) {
+      const moved = tabs.getBoundingClientRect().top - stripTop;
+      if (Math.abs(moved) >= 1) {
+        window.scrollBy({ top: moved, left: 0, behavior: "instant" });
+      }
+    }
     const tab = selectedTab;
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
@@ -2511,6 +2568,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const logs = renderAgentLogs(tabContext, {
         agent,
         revisionId: selected,
+        shown: revealed,
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.hidden) {
@@ -2538,7 +2596,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
       if (tabContext.isCurrent() && !deleting) {
         tabControls.get("logs").focus({ preventScroll: true });
-        detailPane.scrollIntoView({ block: "start" });
+        // A strip clicked in view with the output starting on screen stays put (finding 1518).
+        // A link or address that opens Logs scrolls the output into view as before.
+        const stripKept =
+          activated &&
+          tabs.getBoundingClientRect().top >= 0 &&
+          content.getBoundingClientRect().top < innerHeight - Math.min(200, innerHeight / 3);
+        if (!stripKept) {
+          detailPane.scrollIntoView({ block: "start" });
+        }
       }
       return;
     }
@@ -2576,7 +2642,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   function renderConfigurationTab(context, selectedTab, data) {
-    const { snapshot, values, draft, executionMode, credentials } = data;
+    const { snapshot, values, draft, executionMode, credentials, channelSecretsNote } = data;
     content.append(
       element(
         "p",
@@ -2611,6 +2677,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           path,
           onState: data.setPluginEditorState,
           savedNotice,
+          updateAllowed: agentUpdateAllowed,
           // Saves and reloads rebuild the tab in place (finding 1445's rest).
           onSaved: (savedAgent) =>
             refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
@@ -2702,16 +2769,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             if (!context.isCurrent()) {
               throw error;
             }
+            if (!configurationSaved) {
+              refusedSave(error, "configuration", mutationStarted);
+            }
             if (error.status === 401) {
               context.onExpired();
               throw new Error("Your session has expired.");
             }
-            if (
-              error.status === 409 &&
-              error.code === "RESOURCE_CONFLICT" &&
-              mutationStarted &&
-              !configurationSaved
-            ) {
+            if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
               // The PATCH found a newer generation than the reread: the same recovery applies.
               throw Object.assign(new Error(CONFIGURATION_CHANGED), { reloadRequired: true });
             }
@@ -2795,10 +2860,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           await refreshDraftInPlace({ agent: fresh, focus: "Reload authentication source" });
         }
       });
+      const updateNote = element("p", { className: "muted", role: "status", hidden: true });
       const form = element(
         "form",
         { className: "agent-card" },
         auth.section,
+        updateNote,
         save,
         reload,
         feedback,
@@ -2806,6 +2873,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       data.setAuthenticationForm(form);
       let outcomeUnknown = retained?.outcomeUnknown ?? false;
       let pending = false;
+      // Set when the caller's permission answer denies Agent update (finding 1530).
+      let updateDenied = false;
+      void agentUpdateAllowed.then((allowed) => {
+        if (allowed === false && context.isCurrent()) {
+          // Retry credential access only rechecks the Secret grant; it is not an Agent update.
+          if (savedAuthentication) {
+            return;
+          }
+          updateDenied = true;
+          updateNote.textContent = AGENT_UPDATE_DENIED;
+          updateNote.hidden = false;
+          save.disabled = true;
+          // An edit that cannot be saved would only block Deploy (finding 1539).
+          auth.setDisabled(true);
+        }
+      });
       let savedAuthentication = retained?.savedAuthentication ?? null;
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({ method, secretSource, account }) =>
@@ -2924,7 +3007,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
             feedback.textContent = error.outcomeUnknown
               ? error.message
-              : rejectionMessage(error, mutationStarted);
+              : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted);
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
@@ -2935,8 +3018,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               : "Save authentication source";
             pending = false;
             reload.disabled = false;
-            save.disabled = outcomeUnknown;
-            auth.setDisabled(outcomeUnknown || savedAuthentication !== null);
+            save.disabled = outcomeUnknown || updateDenied;
+            auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
             syncUnsavedAuthentication();
           }
         }
@@ -2944,6 +3027,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       content.append(form);
       if (credentials?.section) {
         content.append(credentials.section);
+      } else if (channelSecretsNote) {
+        content.append(
+          element(
+            "section",
+            { className: "agent-card channel-secrets" },
+            element("h2", {}, "Channel Secrets"),
+            element("p", { className: "hint", role: "status" }, channelSecretsNote),
+          ),
+        );
       }
     } else {
       const repositoryBindings = draft
@@ -3002,6 +3094,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderRepositoryEditor(context, data) {
     let fields;
     let saveState = "idle";
+    // Set when the caller's permission answer denies Agent update (finding 1530).
+    let updateDenied = false;
+    const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
     // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
@@ -3041,10 +3136,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled =
+        updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
-      fields?.setDisabled(locked);
+      // An edit that cannot be saved would only block leaving the tab (finding 1539).
+      fields?.setDisabled(locked || updateDenied);
     }
     fields = createRepositoryFields(
       context,
@@ -3068,6 +3165,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       saveState = "saving";
       update();
       let mutationStarted = false;
+      let saved = false;
       try {
         const fresh = await request(path);
         if (!context.isCurrent()) {
@@ -3093,6 +3191,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             repositoryAccess: fields.access(),
           },
         });
+        saved = true;
         fields.recordSuccessfulSave();
         if (context.isCurrent()) {
           data.setDraftEditorState({ dirty: false, saving: false });
@@ -3105,7 +3204,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent = rejectionMessage(error, mutationStarted);
+          feedback.textContent = rejectionMessage(
+            saved ? error : refusedSave(error, "agent", mutationStarted),
+            mutationStarted,
+          );
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
             saveState = "uncertain";
           }
@@ -3120,19 +3222,86 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     update();
+    void agentUpdateAllowed.then((allowed) => {
+      if (allowed === false && context.isCurrent()) {
+        updateDenied = true;
+        updateNote.textContent = AGENT_UPDATE_DENIED;
+        updateNote.hidden = false;
+        update();
+      }
+    });
     return element(
       "section",
       { className: "agent-card" },
       fields.section,
+      updateNote,
       element("div", { className: "form-actions" }, save, cancel, reload),
       feedback,
     );
   }
 
+  // Edits carried through a save conflict, merged over the Configuration Reload draft reread
+  // (finding 1512). Returns the editor draft to open and a note on what was applied.
+  function carriedConfigurationDraft(context, snapshot, values) {
+    const retained = context.drafts.get("configuration");
+    if (!retained?.carried) {
+      return { retained, note: "" };
+    }
+    const initialText = JSON.stringify(values, null, 2);
+    if (retained.baseline?.id !== snapshot.id) {
+      context.drafts.forget("configuration");
+      return {
+        retained: undefined,
+        note: "Your Configuration edits were not reapplied: this Agent now uses another Configuration.",
+      };
+    }
+    const merged = carryDocument(
+      JSON.parse(retained.initialText),
+      JSON.parse(retained.text),
+      values,
+    );
+    const text = JSON.stringify(merged.value, null, 2);
+    if (text === initialText) {
+      // Nothing left to apply: a plain reload of the saved Configuration.
+      context.drafts.forget("configuration");
+      return { retained: undefined, note: "" };
+    }
+    const shown = (value) => {
+      const json = value === undefined ? "removed" : JSON.stringify(value);
+      return json.length > 60 ? `${json.slice(0, 59)}…` : json;
+    };
+    const conflicts = merged.conflicts
+      .slice(0, 5)
+      .map(({ path, saved }) => `${path} (saved: ${shown(saved)})`);
+    const more = merged.conflicts.length > 5 ? ` and ${merged.conflicts.length - 5} more` : "";
+    // Objects where each browser changed other keys are merged, not conflicts, but their keys
+    // may belong together, so the note names them (finding 1524).
+    const mixed = merged.mixed.slice(0, 5).join(", ");
+    const moreMixed = merged.mixed.length > 5 ? ` and ${merged.mixed.length - 5} more` : "";
+    return {
+      retained: {
+        text,
+        initialText,
+        baseline: { id: snapshot.id, generation: snapshot.generation },
+        outcomeUnknown: false,
+        reloadRequired: false,
+      },
+      note: `Your edits are applied over the reloaded Configuration.${
+        conflicts.length
+          ? ` Another browser also changed ${conflicts.join(", ")}${more}; yours are shown.`
+          : ""
+      }${
+        mixed
+          ? ` Both browsers changed different keys in ${mixed}${moreMixed}; check they still fit together.`
+          : ""
+      } Review them, then save.`,
+    };
+  }
+
   function renderDraftConfigurationEditor(context, data) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
-    const retained = context.drafts.get("configuration");
+    const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
     let pending = false;
@@ -3160,8 +3329,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         : undefined,
     );
-    const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
-    let feedbackLocked = false;
+    const feedback = element(
+      "p",
+      { className: "hint", role: "status", id: "configuration-editor-feedback" },
+      [savedNotice, carriedNote].filter(Boolean).join(" "),
+    );
+    // The carried-edits note stays until the reader edits again.
+    let feedbackLocked = Boolean(carriedNote);
     const edit = button("Edit Configuration", () => {
       editing = true;
       render();
@@ -3199,6 +3373,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       className: "primary",
+      // Reload draft focuses Save after carrying edits; the note says what was applied.
+      ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
     const cancel = button("Cancel", () => {
       baseline = { id: snapshot.id, generation: snapshot.generation };
@@ -3219,9 +3395,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       edit.focus();
     });
     const reload = button("Reload draft", () => {
-      context.drafts.forget("configuration");
+      // After a save conflict the edits are merged over the reread Configuration instead of
+      // dropped (finding 1512); an unknown outcome starts from the saved state.
+      const carry =
+        reloadRequired && !outcomeUnknown && currentDirty() && parseEditor() !== undefined;
+      if (carry) {
+        const carried = { carried: true, text: editor.value, initialText, baseline };
+        context.drafts.track("configuration", () => carried);
+      } else {
+        context.drafts.forget("configuration");
+      }
       reload.disabled = true;
-      void reloadDraftInPlace(context, { saved: "Draft reloaded.", focus: "Edit Configuration" });
+      void reloadDraftInPlace(context, {
+        saved: "Draft reloaded.",
+        focus: carry ? ["Save Configuration", "Edit Configuration"] : "Edit Configuration",
+      });
     });
 
     function currentDirty() {
@@ -3357,12 +3545,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
           return;
         }
-        if (
-          error.status === 409 &&
-          error.code === "RESOURCE_CONFLICT" &&
-          mutationStarted &&
-          !configurationSaved
-        ) {
+        if (!configurationSaved) {
+          refusedSave(error, "configuration", mutationStarted);
+        }
+        if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
           reloadRequired = true;
@@ -3468,7 +3654,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!recovery.hidden) {
       renderLatestDeployment();
     }
-    void renderTab();
+    void renderTab({ activated: true });
     return true;
   });
   if (selectedTab === "workspace") {

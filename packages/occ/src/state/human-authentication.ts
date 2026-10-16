@@ -248,10 +248,14 @@ export class PostgresHumanAuthentication {
     return (await this.state.queryInTransaction(unit, sql, parameters)).rows as Row[];
   }
 
-  private async lockUser(unit: PlatformUnitOfWork, userId: string): Promise<Row> {
+  private async lockUser(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    mode: "update" | "share" = "update",
+  ): Promise<Row> {
     const [user] = await this.query(
       unit,
-      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR UPDATE`,
+      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR ${mode === "share" ? "SHARE" : "UPDATE"}`,
       [userId],
     );
     if (user === undefined) {
@@ -878,11 +882,16 @@ export class PostgresHumanAuthentication {
     unit: PlatformUnitOfWork,
     actor: HumanAuthenticationActor,
     userIds: readonly string[],
+    intent: "account-operation" | "session-hold" = "account-operation",
   ): Promise<void> {
-    await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
-    await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    // Account operations own bounded acquisition. A session hold borrows the
+    // caller's transaction limits and shares the user against revocation.
+    if (intent === "account-operation") {
+      await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
+      await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    }
     for (const id of [...new Set([...userIds, actor.userId])].sort()) {
-      await this.lockUser(unit, id);
+      await this.lockUser(unit, id, intent === "session-hold" ? "share" : "update");
     }
     const [current] = await this.query(
       unit,
@@ -907,6 +916,20 @@ export class PostgresHumanAuthentication {
     if (current === undefined) {
       throw new AuthorizationDeniedError("The human administrator session is no longer current.");
     }
+  }
+
+  /** Retains the guarded actor on the caller's original State transaction. */
+  async holdSession(unit: PlatformUnitOfWork, userId: string, sessionId: string): Promise<void> {
+    await this.guardActor(
+      unit,
+      {
+        userId,
+        sessionId,
+        principalId: await this.principal(unit, userId),
+      },
+      [],
+      "session-hold",
+    );
   }
 
   /** Present state under the same guards; this is not an operation-result receipt. */

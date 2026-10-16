@@ -8,7 +8,7 @@ rfc: ../rfcs/0021-gateway-outbound.md
 - **Delivery status:** In progress
 - **Authority:** [RFC-0021](../rfcs/0021-gateway-outbound.md)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
-- **Refresh target:** upstream `main` at `50c25fc54de13e288de40c15fa0307f4652c3cf6`
+- **Refresh target:** upstream `main` at `26d3bcc89e313a7041c6def5b973dfc54ea0e2f4`
 
 ## Outcome and scope
 

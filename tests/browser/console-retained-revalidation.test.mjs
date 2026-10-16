@@ -64,6 +64,50 @@ function recordShownPages() {
   });
 }
 
+// Names, after every DOM change, the navigation's current page, the heading, whether the header
+// has a Namespace selector, and the content shown (findings 1515, 1516). A page held under
+// another page's navigation or header, or an Agent heading over an empty page, shows up here.
+function recordShownFrames() {
+  const seen = [];
+  globalThis.__shownFrames = seen;
+  const record = () => {
+    const document = globalThis.document;
+    const nav = document.querySelector('.nav [aria-current="page"]')?.dataset.nav ?? "none";
+    const heading = document.querySelector(".content h1")?.textContent ?? "none";
+    const selector = document.querySelector(".page-header #namespace-selector")
+      ? "selector"
+      : "no selector";
+    const view = document.querySelector('.content [aria-live="polite"]:not([hidden])');
+    const status = view?.querySelector('[role="status"]')?.textContent;
+    const body = !view
+      ? "none"
+      : view.classList.contains("agent-detail-pending")
+        ? "Agent toolbar only"
+        : view.querySelector(".agent-current-summary")
+          ? "Agent"
+          : view.querySelector(".agent-table")
+            ? "Agents"
+            : view.querySelector('ul.collection[aria-label="Namespaces"]')
+              ? "Namespaces"
+              : view.querySelector("dl.settings")
+                ? "Settings"
+                : (status ?? "other");
+    const state = `${nav} | ${heading} | ${selector} | ${body}${view?.inert ? " (held)" : ""}`;
+    if (seen.at(-1) !== state) {
+      seen.push(state);
+    }
+  };
+  record();
+  new globalThis.MutationObserver(record).observe(globalThis.document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+}
+
+const shownFrames = (page) => page.evaluate(() => globalThis.__shownFrames.splice(0));
+
 // Stops page timers, so the loading delay passes only when a test runs the clock.
 async function pauseClock(page) {
   const now = await page.evaluate(() => Date.now());
@@ -322,6 +366,385 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
     "Agent (held)",
     "Namespaces",
   ]);
+});
+
+// Moving into Agents held the previous page under the Agents navigation and header: Agents
+// highlighted, with a disabled Namespace selector in the Namespaces header (finding 1515).
+test("A page held for Agents keeps its own navigation and header until Agents replaces it", async (t) => {
+  const { namespace, page } = await openList(t, "Own shell", ["Shell Agent"]);
+  const list = `**/namespaces/${namespace.id}/agents`;
+  const settled = (name) => page.locator(settledView).getByRole(name[0], name[1]).waitFor();
+  const agentsShown = "agents | Agents | selector | Agents";
+
+  // From Namespaces: the list read is held.
+  await page.getByRole("link", NAMESPACES).click();
+  await settled(["list", NAMESPACES]);
+  await page.evaluate(recordShownFrames);
+  const firstRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await firstRead.requested;
+  firstRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  assert.deepEqual(await shownFrames(page), [
+    "namespaces | Namespaces | no selector | Namespaces",
+    "namespaces | Namespaces | no selector | Namespaces (held)",
+    agentsShown,
+  ]);
+
+  // A return from Settings: the retained list revalidates while Settings is held.
+  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.locator(settledView).locator("dl.settings").waitFor();
+  await shownFrames(page);
+  const returnRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await returnRead.requested;
+  returnRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  // The first entry is the state the recorder re-reads after the previous splice.
+  assert.deepEqual(await shownFrames(page), [
+    "none | Settings | selector | Settings",
+    "none | Settings | selector | Settings (held)",
+    agentsShown,
+  ]);
+});
+
+// Opens a console URL in this tab, as a link outside the console's navigation would.
+function goTo(page, url) {
+  return page.evaluate((value) => {
+    globalThis.history.pushState(null, "", value);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, url);
+}
+
+// A held page's shell was built from the next page's state: its Namespace selector became
+// usable on the way to another page, and a held Namespaces page showed Namespace recovery for
+// the next page's Namespace before its access check (finding 1527).
+test("A page held for another page keeps its Namespace selector disabled", async (t) => {
+  const { namespace, page } = await openList(t, "Held selector", ["Selector Agent"]);
+  const selector = page.locator("#namespace-selector");
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const backends = await holdRequests(t, page, "**/backends", { once: true });
+  await goTo(page, `/console/backends?namespace=${namespace.id}`);
+  // Admission is done once the Backends read starts.
+  await backends.requested;
+  await page.locator(heldView).getByRole("link", { name: "Selector Agent" }).waitFor();
+  assert.equal(await page.locator(".content h1").textContent(), "Agents");
+  assert.equal(await selector.isDisabled(), true);
+  backends.release();
+  await page.locator(settledView).waitFor();
+  assert.equal(await page.locator(".content h1").textContent(), "Backends");
+  assert.equal(await selector.isDisabled(), false);
+});
+
+test("A held Namespaces page shows no recovery for the next page's Namespace", async (t) => {
+  const { page } = await openList(t, "Held recovery", ["Recovery Agent"]);
+  await showNamespaces(page);
+  const session = await holdRequests(t, page, SESSION, { once: true });
+  await goTo(page, "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000099");
+  await session.requested;
+  await page.locator(heldView).getByRole("list", NAMESPACES).waitFor();
+  assert.equal(await page.locator(".namespace-recovery").count(), 0);
+  assert.equal(await page.getByText("Namespace unavailable").count(), 0);
+  session.release();
+  await page
+    .locator(settledView)
+    .getByRole("heading", { name: "Namespace unavailable", exact: true })
+    .waitFor();
+});
+
+// A click opens the destination immediately; the next visible state is the usable overview,
+// not its heading and toolbar alone (finding 1516).
+test("Opening an Agent shows the destination at once and reveals the heading with the overview", async (t) => {
+  const { namespace, agents, page } = await openList(
+    t,
+    "Opening frames",
+    ["Fast Agent", "Slow Agent"],
+    {
+      deploy: true,
+    },
+  );
+  await page.evaluate(recordShownFrames);
+
+  // Time stays paused: neither the acknowledgment nor a fast result waits for a timer.
+  await page.getByRole("link", { name: "Fast Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Fast Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Fast Agent" })), true);
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Slow Agent" }).waitFor();
+  await shownFrames(page);
+
+  // Hold the overview read. The destination must stay usable, including Back to Agents,
+  // for the whole wait; the half-rendered overview must never become visible.
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agents[1].id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Slow Agent" }).click();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  const main = page.getByRole("main");
+  await main.getByText("Loading agent details…", { exact: true }).waitFor();
+  assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Slow Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Slow Agent" })), true);
+});
+
+// A retained Agent can change between visits. Rebuild it behind the same opening panel.
+test("Reopening a changed Agent acknowledges the click before showing the new overview", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Reopen frames", ["Reopened Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Reopened Agent" }).waitFor();
+  await page.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), description: "changed" } });
+  });
+  await page.evaluate(recordShownFrames);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  await page.getByRole("main").getByText("Loading agent details…", { exact: true }).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Reopened Agent | selector | Agent",
+  ]);
+});
+
+// Entering an Agent other than from the list showed its heading and toolbar over an empty
+// overview for up to 2 s (finding 1526). The page on screen now stays until the overview reveals.
+test("Back to a changed Agent keeps the held page until the overview reveals", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Back reveal", ["Back Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Back Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await showNamespaces(page);
+  await page.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), description: "changed" } });
+  });
+  await page.evaluate(recordShownFrames);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.goBack();
+  await record.requested;
+  // The Agent page has rendered, waiting for its overview.
+  await page.locator(".content .agent-detail-pending").waitFor({ state: "attached" });
+  // The held return still says it is checking (finding 1442).
+  await page.clock.runFor(1000);
+  await page.getByRole("status").filter({ hasText: "Still checking…" }).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "namespaces | Namespaces | no selector | Namespaces",
+    "namespaces | Namespaces | no selector | Namespaces (held)",
+    "agents | Back Agent | selector | Agent",
+  ]);
+  assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+});
+
+test("Create new version keeps the Agent page until the draft's overview reveals", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Draft reveal", ["Draft Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Draft Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.evaluate(recordShownFrames);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page
+    .locator(".agent-overview-toolbar")
+    .getByRole("button", { name: "Create new version" })
+    .click();
+  await record.requested;
+  // The Agent page has rendered, waiting for its overview.
+  await page.locator(".content .agent-detail-pending").waitFor({ state: "attached" });
+  record.release();
+  await page.waitForURL(/revision=draft/);
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Draft Agent | selector | Agent",
+    "agents | Draft Agent | selector | Agent (held)",
+    "agents | Draft Agent | selector | Agent",
+  ]);
+  assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+});
+
+// A fresh load of an Agent URL (reload, new tab, shared link, sign-in landing) whose reads beat
+// the loading delay had no page to hold, so the Agent's heading and toolbar painted over an
+// empty overview for up to 2 s (finding 1537). The startup status now stands in until the
+// overview reveals, and gives way to loading if the delay passes first.
+for (const pastDelay of [false, true]) {
+  test(`A fresh load of an Agent page keeps a stand-in until the overview reveals${pastDelay ? " past the loading delay" : ""}`, async (t) => {
+    const { fixture, namespace, agent, page } = await openList(
+      t,
+      pastDelay ? "Fresh slow reveal" : "Fresh reveal",
+      ["Fresh Agent"],
+      { deploy: true },
+    );
+    // Record from before the console's module runs, which takes over the startup status.
+    await page.addInitScript(
+      `document.addEventListener("readystatechange", () => {
+        if (document.readyState === "interactive") (${recordShownFrames})();
+      });`,
+    );
+    const record = await holdRequests(
+      t,
+      page,
+      `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+    );
+    await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+    await record.requested;
+    // The Agent page has rendered, waiting for its overview.
+    await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
+    if (pastDelay) {
+      await page.clock.runFor(250);
+      await page.locator(activeView).getByText("Reading this Agent.").waitFor();
+    }
+    record.release();
+    await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+    assert.deepEqual(await shownFrames(page), [
+      "none | none | no selector | none",
+      ...(pastDelay ? ["agents | Agents | selector | Loading…Reading this Agent."] : []),
+      "agents | Fresh Agent | selector | Agent",
+    ]);
+    assert.equal(await page.locator('[aria-live="polite"][hidden]').count(), 0);
+    assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+  });
+}
+
+// While an Agent page rendered hidden behind a held page, its tab handler took Back between two
+// tabs of the same version in place: it marked the Agent's route mounted with another page on
+// screen, so one more navigation could retain that page under the Agent's URL (finding 1542).
+// The move now starts a full load, which keeps the held page until the overview reveals.
+test("Back between an Agent's tabs before its overview reveals loads the tab in full", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Hidden tabs", ["Tab Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Tab Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.waitForURL(/tab=plugins/);
+  await showNamespaces(page);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.goBack();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  await page.locator(heldView).getByRole("list", NAMESPACES).waitFor();
+  const session = await holdRequests(t, page, SESSION, { once: true });
+  await page.goBack();
+  await page.waitForURL((url) => !url.searchParams.has("tab"));
+  // A full load checks the session again; the hidden page did not take the move.
+  await session.requested;
+  session.release();
+  await page.locator(heldView).getByRole("list", NAMESPACES).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.equal(
+    await page.locator('.content [aria-current="page"]', { hasText: "Configuration" }).count(),
+    1,
+  );
+  assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+});
+
+// Records each focus move as `<tag>#<element number> <text>`, numbering elements in the order
+// they first take focus, so the same name focused on two elements, or twice, shows up.
+function recordFocus() {
+  const seen = [];
+  const ids = new WeakMap();
+  let count = 0;
+  globalThis.__focusLog = seen;
+  globalThis.document.addEventListener("focusin", (event) => {
+    if (!ids.has(event.target)) {
+      count += 1;
+      ids.set(event.target, count);
+    }
+    seen.push(`${event.target.tagName}#${ids.get(event.target)} ${event.target.textContent}`);
+  });
+}
+
+// Opening an Agent focused the opening heading, then a second "Agent details" heading in the
+// Agent's shell, so screen readers announced it twice; a focused Back to Agents was focused
+// again the same way (finding 1528). Each heading is now focused once.
+test("Opening an Agent focuses each heading once", async (t) => {
+  const { namespace, agents, page } = await openList(
+    t,
+    "Focus once",
+    ["Heading Agent", "Back Agent"],
+    {
+      deploy: true,
+    },
+  );
+  await page.evaluate(recordFocus);
+  // Focus moves to headings and buttons since the last call (the clicked link's is left out),
+  // checked to land on a new element each time.
+  const focusLog = async () => {
+    const log = (await page.evaluate(() => globalThis.__focusLog.splice(0))).filter((entry) =>
+      /^(H1|BUTTON)#/.test(entry),
+    );
+    assert.equal(new Set(log.map((entry) => entry.split(" ")[0])).size, log.length, log.join());
+    return log.map((entry) => entry.replace(/#\d+/, ""));
+  };
+  // Holds the Agent's read until `beforeRead` runs, then its overview's first read.
+  const opening = async (agent, beforeRead = async () => {}) => {
+    const path = `**/namespaces/${namespace.id}/agents/${agent.id}`;
+    const read = await holdRequests(t, page, path, { once: true });
+    const overview = await holdRequests(t, page, `${path}/deployments/*`);
+    await page.getByRole("link", { name: agent.name }).click();
+    await read.requested;
+    await beforeRead();
+    read.release();
+    await overview.requested;
+    await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+    overview.release();
+    await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+    return focusLog();
+  };
+
+  assert.deepEqual(await opening(agents[0]), ["H1 Agent details", "H1 Heading Agent"]);
+
+  // Back to Agents, focused while the Agent is read, keeps focus until the overview reveals.
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Back Agent" }).waitFor();
+  await focusLog();
+  const log = await opening(agents[1], () =>
+    page.getByRole("button", { name: "Back to Agents" }).focus(),
+  );
+  assert.deepEqual(log, ["H1 Agent details", "BUTTON Back to Agents", "H1 Back Agent"]);
 });
 
 // On a slow link the opening panel's heading had focus, the Agent page rendered with focus on
@@ -1163,6 +1586,44 @@ test("the console shell paints a neutral status before any script runs and keeps
     await page.getByLabel("Username").waitFor();
     await page.unrouteAll({ behavior: "ignoreErrors" });
   }
+});
+
+// Full loads replaced the boot status after 50-274 ms, so the slower ones painted it for a frame
+// past the 250 ms delay (finding 1519). With classic scrollbars, a short page and a long one put
+// the header 15 px apart (finding 1520).
+test("the boot status stays hidden through a fast load and the scrollbar keeps its space", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const script = await holdRequests(t, page, "**/console/console.mjs");
+  await page.goto(`${fixture.origin}/console/agents`, { waitUntil: "commit" });
+  await script.requested;
+  const status = page.locator("#app > p.startup[role='status']");
+  await status.waitFor({ state: "attached" });
+  // Read the status's look at fixed times into its animation, independent of host load. A fresh
+  // copy starts its own animation, which a loaded host may already have finished on the original.
+  const shown = await status.evaluate((node) => {
+    const copy = node.cloneNode(true);
+    node.after(copy);
+    const [animation] = copy.getAnimations();
+    animation.pause();
+    const looks = [0, 300, 399, 600].map((time) => {
+      animation.currentTime = time;
+      const style = globalThis.getComputedStyle(copy);
+      return style.visibility === "hidden" || Number(style.opacity) === 0 ? "hidden" : "shown";
+    });
+    copy.remove();
+    return looks;
+  });
+  assert.deepEqual(shown, ["hidden", "hidden", "hidden", "shown"]);
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.getComputedStyle(globalThis.document.documentElement).scrollbarGutter,
+    ),
+    "stable",
+  );
+  script.release();
+  await page.getByLabel("Username").waitFor();
 });
 
 // The web font is fetched alongside the stylesheet, so it is ready before the console's first

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
 updated: 2026-10-16
-last_updated_session: authoring-run/fea49e8b-1a66-42da-af1c-9a184f0f09a7
+last_updated_session: authoring-run/b0880b90-1d57-45a0-971b-fc6755eab657
 ---
 
 # Gateway Outbound Flow
@@ -68,7 +68,7 @@ Ordinary updates retain saved authority even after an Installation tightening;
 deployment rechecks it. State persists the selection beside other Agent settings.
 
 `packages/occ/src/state/postgres-state.ts:updateConfiguration` writes
-`gateway_outbound`; `migrations/0056_gateway_outbound.sql` constrains its shape,
+`gateway_outbound`; `migrations/0057_gateway_outbound.sql` constrains its shape,
 DNS names, and dedicated-only extra authority. The memory adapter mirrors those
 invariants. The normal mutation audit names the actor and exact Agent.
 
@@ -204,6 +204,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 17:53: Update the migration source link after refreshing upstream main. (authoring-run/b0880b90-1d57-45a0-971b-fc6755eab657 - 7e3a2a21a3a0e0d4c8c8308c8c8dafd14b841fd0)
 
 - 2026-10-16 17:45: Leave historical channel-grant cleanup to the newer Gateway owner. (authoring-run/fea49e8b-1a66-42da-af1c-9a184f0f09a7 - 8f34dbb61e953bd6882f450b1c3b0b1ac995cdbc)
 

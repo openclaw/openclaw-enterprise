@@ -453,6 +453,8 @@ export const slack = {
   setup: "Provide SLACK_APP_TOKEN and SLACK_BOT_TOKEN through Secret bindings before deployment.",
   plugin: "slack",
   secretBindings: SLACK_SECRET_BINDINGS,
+  // Comma lists: a save conflict carries the entries the reader added and removed.
+  listFields: ["slack-channel-ids", "slack-allowed-user-ids", "slack-dm-user-ids"],
   support: supportSlack,
   validate(body) {
     const existing = originalTargets.get(body);

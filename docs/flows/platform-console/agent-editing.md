@@ -92,19 +92,19 @@ Its bodyless POST requires Agent `read`/`operate` and exact AgentRevision `read`
 Configuration and Agent plugin selections. **Edit current Configuration** does
 not copy historical values. Stop and deletion target the Agent.
 
-In the draft, **Edit Configuration** PATCHes only `{ values, expectedGeneration }`
-from a JSON object to the exact Namespace Configuration, preserving `secretBindings`.
-It rereads Agent and Configuration, rejecting changed ID or generation.
-A write racing these reads gets `409` and also requires Reload draft.
+**Edit Configuration** rereads the Agent and Configuration, then PATCHes only
+`{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
+generation (including a `409` from a racing save) requires **Reload draft**.
 
-**Enable gateway password access** stages `gateway.auth.password` referencing
-`OPENCLAW_GATEWAY_PASSWORD` through this editor. Other settings, Secret bindings, and
-admitted versions remain unchanged; Cancel discards the edit. On deployment, Kubernetes `gatewayConfiguration` detects the reference;
-`deployment` delivers the generated password environment variable.
+**Enable gateway password access** sets `gateway.auth.password` to reference
+`OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
+`gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
-Saving refreshes the draft in place, keeping scroll and focus; admitted snapshots stay. Invalid input,
-denial, and stale drafts retain editor text. Uncertain saves require readback.
-Unsaved edits block deployment; pending saves block tab and version changes.
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
+an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
+A refused write lists required grants without guessing which; a refused preflight read names read
+access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
+and authentication editors; Configuration saves get no such hint.
 
 `agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
 **Save plugin selections** PATCHes the Agent map, preserving Configuration and
@@ -112,8 +112,8 @@ admitted revisions. Driver validation precedes deployment's immutable snapshot. 
 [plugin deployment flow](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
-PATCHes `repositoryAccess`. Dirty, pending, or uncertain saves block tabs and
-deployment; failed discovery leaves access unverified.
+PATCHes `repositoryAccess`. Unsaved edits also block tabs; failed discovery leaves
+access unverified.
 
 Deployment rereads Agent and Configuration, requires authentication and
 Slack bindings, and blocks Teams. Changed association, generation, authentication,
@@ -127,7 +127,8 @@ history readback before retry; browser reads are not atomic with admission.
 excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage
 or URLs. Configuration, authentication, and channel baselines prevent stale saves;
-channel snapshots include controls and staged Secret metadata. Save and Cancel
+channel snapshots include controls and staged Secret metadata. Reload draft reapplies
+only the reader's edits, naming overlaps and skipped choices. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
 `dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
@@ -181,15 +182,15 @@ recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
 Saving channels rereads Agent and Configuration; a changed association or
-generation offers Reload draft, which reapplies the editor's changes over the
-reread settings. The PATCH sends `{ values, expectedGeneration }`, adding
+generation, or a racing `409`, offers Reload draft. The PATCH sends
+`{ values, expectedGeneration }`, adding
 `secretBindings` only for changed selections. A rejected PATCH writes no Secret grant.
 
 After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
 and asks a Namespace administrator to grant access without repeating the
-channel save. A later race gets `409` and Reload draft. An uncertain PATCH blocks another
+channel save. An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)

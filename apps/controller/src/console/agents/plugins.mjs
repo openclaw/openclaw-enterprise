@@ -1,7 +1,13 @@
 import { button, element } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
-import { assertReadableConfiguration, message, rejectionMessage } from "./list.mjs";
+import {
+  AGENT_UPDATE_DENIED,
+  SAVE_REFUSALS,
+  assertReadableConfiguration,
+  message,
+  rejectionMessage,
+} from "./list.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
 import { configuredHarnessId } from "./harness-auth.mjs";
 
@@ -25,7 +31,17 @@ export function pluginWarningText(warning) {
 
 export function renderAgentPlugins(
   context,
-  { agent, snapshot, draft, path, onState, onSaved, onReload, savedNotice = "" },
+  {
+    agent,
+    snapshot,
+    draft,
+    path,
+    onState,
+    onSaved,
+    onReload,
+    savedNotice = "",
+    updateAllowed = null,
+  },
 ) {
   if (!draft) {
     return element(
@@ -78,6 +94,8 @@ export function renderAgentPlugins(
   let pending = false;
   let outcomeUnknown = retained?.outcomeUnknown ?? false;
   let reloadRequired = retained?.reloadRequired ?? false;
+  // Set when the caller's permission answer denies Agent update (finding 1530).
+  let updateDenied = false;
   const input = element("textarea", {
     id: "agent-plugins",
     rows: "4",
@@ -173,6 +191,7 @@ export function renderAgentPlugins(
   );
   const feedback = element("p", { className: "hint", role: "status" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
+  const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
     className: "primary",
   });
@@ -199,6 +218,7 @@ export function renderAgentPlugins(
     ...(apiKeyAuth ? [element("p", { className: "notice" }, API_KEY_PLUGIN_MESSAGE)] : []),
     discovery.fields.section,
     capabilitiesStatus,
+    updateNote,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
   );
@@ -227,10 +247,11 @@ export function renderAgentPlugins(
       input.value !== initialText ||
       JSON.stringify(pluginApprovers) !== JSON.stringify(initialApprovers);
     onState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-    save.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
+    save.disabled = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
     discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
-    discovery.fields.setDisabled(pending || outcomeUnknown || reloadRequired);
+    // Edits that cannot be saved would only block leaving the tab (finding 1539).
+    discovery.fields.setDisabled(updateDenied || pending || outcomeUnknown || reloadRequired);
     oauthLogin.setDisabled(pending || outcomeUnknown || reloadRequired);
     if (outcomeUnknown) {
       feedback.textContent =
@@ -250,6 +271,7 @@ export function renderAgentPlugins(
 
   async function savePlugins() {
     if (
+      updateDenied ||
       pending ||
       outcomeUnknown ||
       reloadRequired ||
@@ -324,7 +346,9 @@ export function renderAgentPlugins(
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429, 501].includes(error.status);
       feedback.textContent =
         error.status === 403
-          ? "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account."
+          ? mutationStarted
+            ? SAVE_REFUSALS.agent
+            : SAVE_REFUSALS.read
           : error.status === 400 && !saved && error.serverMessage !== undefined
             ? rejectionMessage(error, mutationStarted)
             : error.status === 400
@@ -346,6 +370,17 @@ export function renderAgentPlugins(
   if (savedNotice) {
     feedback.textContent = savedNotice;
   }
+  // An answer already settled applies before this section is first painted.
+  void updateAllowed?.then((allowed) => {
+    if (allowed === false && context.isCurrent()) {
+      updateDenied = true;
+      updateNote.textContent = AGENT_UPDATE_DENIED;
+      updateNote.hidden = false;
+      // The selections stay in view while their fields are disabled.
+      input.closest("details").open = true;
+      updateState();
+    }
+  });
   void context.request(`${path}/plugins/capabilities`).then(
     (capabilities) => {
       if (context.isCurrent()) {

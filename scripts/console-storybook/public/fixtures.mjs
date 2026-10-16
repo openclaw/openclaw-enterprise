@@ -18,6 +18,25 @@ function initialDeploymentProgress(status) {
   return { lastAttempt: null, nextAttemptAt: status === "queued" ? createdAt : null };
 }
 
+// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
+function mergeElsewhere(target, changes) {
+  for (const [key, value] of Object.entries(changes)) {
+    const current = target[key];
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      current !== null &&
+      typeof current === "object" &&
+      !Array.isArray(current)
+    ) {
+      mergeElsewhere(current, value);
+    } else {
+      target[key] = structuredClone(value);
+    }
+  }
+}
+
 function slackChannels(scenario) {
   if (scenario.slackChannels !== undefined) {
     return structuredClone(scenario.slackChannels);
@@ -591,7 +610,7 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage) =>
+  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -599,6 +618,7 @@ export function installFixture(scenario, evidence) {
               error: {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
+                ...(details ? { details } : {}),
               },
             }
           : { data }),
@@ -672,7 +692,7 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (rule.status) {
-        return error(rule.status, rule.code, rule.message);
+        return response(null, rule.status, rule.code, {}, rule.message, rule.details);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {
@@ -942,6 +962,7 @@ export function installFixture(scenario, evidence) {
             if (configurationReads.has(saved.id)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
+              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
             configurationReads.add(saved.id);
           }

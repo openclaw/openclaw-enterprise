@@ -84,6 +84,7 @@
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-carry.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
@@ -109,6 +110,9 @@
     },
     {
       "path": "tests/conformance/console-api-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-carry.test.mjs"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"

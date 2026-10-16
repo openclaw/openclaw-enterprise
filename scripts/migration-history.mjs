@@ -185,6 +185,9 @@ function classifyReceipts(receipts, manifest) {
         return "preComputeRevisionAdmission";
       }
       if (receipts.length === 55) {
+        return "preHeldAuthenticationSession";
+      }
+      if (receipts.length === 56) {
         return "preGatewayOutbound";
       }
       return "providerCompleted";
@@ -292,6 +295,9 @@ function classifyReceipts(receipts, manifest) {
     return "preComputeRevisionAdmission";
   }
   if (receipts.length === 55) {
+    return "preHeldAuthenticationSession";
+  }
+  if (receipts.length === 56) {
     return "preGatewayOutbound";
   }
   refuse("an incomplete or unsupported development history is installed");

@@ -527,8 +527,11 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         effect: "deny",
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
+      // A refused Agent save names the grants it needs (finding 1530).
       await page
-        .getByText("Access denied. You do not have permission for this operation.")
+        .getByText(
+          "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+        )
         .waitFor();
       assert.equal(await deploy.isEnabled(), true);
       fixture.policy.restrictions.pop();
@@ -785,7 +788,11 @@ for (const changed of ["generation", "identity"]) {
       (await fixture.request("GET", configurationPath)).data.values,
       changed === "generation" ? newerValues : values,
     );
-    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
+    // The chosen Secret stays shown, unsaved, for Reload draft to carry (finding 1512).
+    await waitForInputValue(
+      page.getByLabel("Slack app token"),
+      secretOptionLabel(replacementSecret),
+    );
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
     assert.equal(await deploy.isDisabled(), true);
     assert.equal(

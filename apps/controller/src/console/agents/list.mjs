@@ -86,7 +86,7 @@ export function message(error, mutation = false) {
     return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an administrator to repair the saved configuration, then refresh this page.`;
   }
   if (error.status === 403) {
-    return "Access denied. You do not have permission for this operation.";
+    return error.refusal ?? "Access denied. You do not have permission for this operation.";
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
@@ -108,6 +108,44 @@ export function message(error, mutation = false) {
     : error.name === "TypeError" || error.name === "TimeoutError"
       ? "Request interrupted. Retry to check current access and saved state."
       : "Service unavailable. The read could not be completed. Try again.";
+}
+
+// A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
+// shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
+// about whether a resource exists.
+export const SAVE_REFUSALS = Object.freeze({
+  configuration:
+    "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.",
+  agent:
+    "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+  // A save first rereads the Agent and its Configuration; a refused read is not a refused
+  // update (finding 1540).
+  read: "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.",
+});
+
+// Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
+// Gating only: an unknown answer keeps the controls, and the API still decides.
+export const AGENT_UPDATE_DENIED =
+  "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+
+// Marks a 403 from a save so message() names the grants it needs: the save's own when the
+// write itself was refused (`written`), read access when a read before it was (finding 1540).
+export function refusedSave(error, save, written) {
+  if (error?.status === 403) {
+    error.refusal = SAVE_REFUSALS[written ? save : "read"];
+  }
+  return error;
+}
+
+// The API refused a Configuration update because another save moved its generation, which a
+// reread recovers from. Other Configuration conflicts, such as a provisioning reservation, carry
+// no such detail and a reread meets them again (finding 1511).
+export function isStaleGeneration(error) {
+  return (
+    error?.status === 409 &&
+    error.code === "RESOURCE_CONFLICT" &&
+    (error.detailPaths ?? []).includes("/expectedGeneration")
+  );
 }
 
 // A rejected write shows the API's own sentence, which names the field to fix (for example
@@ -138,28 +176,26 @@ export function renderAgentList(context) {
   context.drafts.track("agent-search", () => search.value || undefined);
   const rows = element("div");
   const deployments = new Map();
+  // The page renders with the caller's permission answer, so Create Agent is never painted
+  // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
+  // only: the API still authorizes creation, so an unknown answer keeps the control.
+  const createDenied = context.permissions?.agents?.create === false;
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  const createNote = element(
-    "p",
-    { className: "muted", role: "status", hidden: true },
-    "Your access does not include creating Agents in this Namespace.",
-  );
+  create.disabled = createDenied;
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
-    createNote,
+    ...(createDenied
+      ? [
+          element(
+            "p",
+            { className: "muted", role: "status" },
+            "Your access does not include creating Agents in this Namespace.",
+          ),
+        ]
+      : []),
     rows,
-  );
-  // Gating only: the API still authorizes creation, so an unknown answer keeps the control.
-  void context.request(`${namespacePath(context.namespaceId)}/permissions`).then(
-    (permissions) => {
-      if (context.isCurrent() && permissions?.agents?.create === false) {
-        create.disabled = true;
-        createNote.hidden = false;
-      }
-    },
-    () => {},
   );
   function render() {
     const query = search.value.trim().toLowerCase();
@@ -177,7 +213,11 @@ export function renderAgentList(context) {
             {},
             query
               ? "Try another name or ID."
-              : "Create an Agent in this Namespace using an editable Configuration template.",
+              : createDenied
+                ? // Under the note above: say what the reader can expect, not invite creating
+                  // (finding 1521).
+                  "Agents in this Namespace that are shared with you appear here."
+                : "Create an Agent in this Namespace using an editable Configuration template.",
           ),
         ),
       );
