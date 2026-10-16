@@ -1717,6 +1717,13 @@ function createIntegrationSandboxDriverFactory(
           backend: backendFor(undefined),
         }).configureAgent(configuration, harness);
       },
+      validateWorkspaceSetup(harness, configuration) {
+        return new OpenShellSandboxDriver(selection.configuration, {
+          id: selection.id,
+          implementation: "openshell",
+          backend: backendFor(undefined),
+        }).validateWorkspaceSetup(harness, configuration);
+      },
       harnessResource(context) {
         // The bridge provisions through the real Driver, so its Sandbox identity is the same.
         return new OpenShellSandboxDriver(selection.configuration, {
