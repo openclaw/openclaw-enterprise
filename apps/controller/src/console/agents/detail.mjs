@@ -3585,7 +3585,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             usesGeneratedGatewayPassword ? null : enableGatewayPassword,
           ),
           nativeDocument(values, "View native Configuration"),
-          feedback.textContent ? feedback : null,
+          ...(feedback.textContent ? [feedback] : []),
         );
         return;
       }
