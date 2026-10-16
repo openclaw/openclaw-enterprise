@@ -539,8 +539,10 @@ function clearPasswordInputs() {
 
 function retainMountedView(returnLink) {
   const owner = sessionOwnerKey(session);
-  const view = app.querySelector('.content [aria-live="polite"]');
-  if (!owner || mountedRouteKey === null || !view) {
+  // The mounted view's own node, never another page shown in its place: an Agent page renders
+  // hidden behind the page that stands in for it (finding 1542).
+  const view = mountedViewState?.view ?? null;
+  if (!owner || mountedRouteKey === null || !view?.isConnected || view.hidden) {
     return;
   }
   retainedViews.set(mountedRouteKey, {
@@ -1108,6 +1110,9 @@ async function loadPage({
               shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
               return;
             }
+            // An Agent page rendering hidden behind the startup status keeps rendering behind
+            // the loading page that now stands in for it (finding 1537).
+            const behind = shownStandIn ? shell.view : null;
             shell = renderShell(current.feature, false);
             panel(
               shell.view,
@@ -1116,6 +1121,11 @@ async function loadPage({
                 ? "Reading this Agent."
                 : `Reading ${pages[current.feature].toLowerCase()}.`,
             );
+            if (behind) {
+              shownStandIn = shell;
+              shell.view.after(behind);
+              shell = { ...shell, view: behind, diagnostics: null };
+            }
           }, loadingDelayMs);
   const stopLoadingTimer = () => {
     clearTimeout(loadingTimer);
@@ -1424,14 +1434,24 @@ async function loadPage({
     // a loading status), whose shell stays until the overview reveals. The Agent's shell,
     // heading, toolbar and overview then replace it in one frame, however the Agent was
     // entered (findings 1516, 1526). The stand-in's heading and controls keep focus meanwhile,
-    // so nothing is focused twice (finding 1528).
-    const standIn =
-      current.agentId && !current.creating && !agentsNamespaceUnavailable && shell?.view.isConnected
-        ? shell
+    // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
+    // delay has no shell yet: its startup status stands in, until the overview reveals or the
+    // delay passes and the loading page takes its place (finding 1537).
+    const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
+    const startupStandIn =
+      agentEntry && !shell && loadingTimer !== null
+        ? app.querySelector(":scope > .startup")
         : null;
-    // A held return keeps saying it is still checking while the Agent renders (finding 1442).
-    // Other timers would replace the stand-in's shell, so they stop here.
-    if (!standIn || !recheck) {
+    const standIn =
+      agentEntry && shell?.view.isConnected
+        ? shell
+        : startupStandIn
+          ? { view: startupStandIn, diagnostics: null }
+          : null;
+    // A held return keeps saying it is still checking while the Agent renders (finding 1442), and
+    // a startup status gives way to loading at the delay. Other timers would replace the
+    // stand-in's shell, so they stop here.
+    if (!standIn || !(recheck || startupStandIn)) {
       stopLoadingTimer();
     }
     if (standIn && standIn === pendingNamespaceShell) {
@@ -1455,6 +1475,8 @@ async function loadPage({
       metaReads: new Set(),
       resumeHandlers: new Set(),
       user: session.user,
+      // The view this load renders, retained by its own node (finding 1542).
+      view: shell.view,
     };
     mountedViewState = viewState;
     const viewRequest = async (path, options = {}) => {
@@ -1568,8 +1590,12 @@ async function loadPage({
       url: current.url,
       setTabNavigation(handler) {
         if (lifetime.isCurrent(viewState.active)) {
-          viewState.tabNavigation = handler;
-          navigateAgentTab = handler;
+          // An Agent page still hidden behind a stand-in leaves tab navigation to a full load: it
+          // must not switch tabs, or mark its route mounted, while another page is on screen
+          // (finding 1542).
+          const navigateTab = (next) => shownStandIn === null && handler(next);
+          viewState.tabNavigation = navigateTab;
+          navigateAgentTab = navigateTab;
         }
       },
     };
@@ -1611,7 +1637,9 @@ async function loadPage({
         // The overview's first reads settled, or its bounded wait ran out: replace the stand-in
         // with the Agent's shell, heading, toolbar and overview in one frame.
         agentContext.revealed = () => {
-          if (shownStandIn !== standIn || !lifetime.isCurrent(active)) {
+          // The stand-in may have given way to the loading page since (finding 1537).
+          const shownNow = shownStandIn;
+          if (shownNow === null || !lifetime.isCurrent(active)) {
             return;
           }
           shownStandIn = null;
@@ -1624,7 +1652,7 @@ async function loadPage({
           // the Agent's heading, focused once under its name.
           const focusHeading =
             document.activeElement === pendingAgentHeading ||
-            standIn.view.contains(document.activeElement);
+            shownNow.view.contains(document.activeElement);
           shell = renderShell(current.feature, false);
           shell.view.replaceWith(detailView);
           shell.view = detailView;
