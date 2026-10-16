@@ -69,31 +69,46 @@ Agent that fails a check still reads; its next update must fix the pair.
   text around the variable (`Authorization{{ vars.suffix }}` is refused) and
   checked again once filled.
   A `models` that is not a list is refused too: it would hide its rows.
+- once the Configuration's model policy selects a Harness and its primary
+  model a supported provider: a model selection (including a `models` key or
+  `modelPolicy.allow` entry) or `models.providers.<name>.apiKey` off that
+  provider, and an `apiKey` that Harness refuses. OpenClaw's `openrouter:auto`
+  and `openrouter:free` name the `openrouter` provider. Dedicated Codex also
+  refuses a policy entry without a provider, `mediaModels.*` and `voiceModel`:
+  OpenClaw calls media and voice models directly, and Codex serves only chat
+  models.
+  Dedicated Codex takes no `apiKey`; OpenClaw takes `${NAME}` or an
+  env SecretRef to the binding's variable, through an env provider that
+  allows it or OpenClaw's default env alias. An inline key is left to the
+  Configuration Driver. A Preset save runs this rule too, except on a reference
+  or provider key whose provider waits on a variable, or an `apiKey` whose
+  value or `secrets` source does: the launch checks them once filled. A draft
+  whose model policy selects no Harness is left to deployment.
 
 These close the credential slots in a provider's `headers` and `request`.
-The provider `apiKey` stays, checked against the Harness binding on selected
-providers only. The Configuration Driver accepts the `apiKey`, the credential
-headers, `request.auth.token` and `.value` and the TLS client keys only as
-references, and refuses a `request.proxy.url` or model `baseUrl` with a user
-name or password.
+The provider `apiKey` stays, checked against the Harness binding. The
+Configuration Driver accepts the `apiKey`, the credential headers,
+`request.auth.token` and `.value` and the TLS client keys only as references,
+and refuses a `request.proxy.url` or model `baseUrl` with a user name or
+password.
 On Kubernetes a reference does not admit a credential header or a non-default
 `request.auth`: model credentials come only from the Agent's Harness
-authentication binding. Deployment runs `validateConfiguration` on the stored
-values before the Configuration Driver validates them, so a stored
-Configuration that predates a rule gets its save message.
+authentication binding. Deployment runs OCC's model provider settings rules
+(`baseUrl`, `api`, the `models` list, header names), then `validateConfiguration`,
+on the stored values before the Configuration Driver validates them, so a stored Configuration that predates a
+rule gets its save message.
 A credential under a header name the rule does not match, in
 `localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.
 
-`validateHarnessAuth` applies these first, then names the Agent's
-`harnessAuth.method` when its topology cannot use it (embedded OpenClaw takes
-`api_key`, dedicated OpenClaw also `credential_source`, and dedicated Codex
-also `codex_pat` and `oauth`), a provider `apiKey` other than the Harness
-authentication reference, a channel credential reference without a
-Configuration Secret binding, and the dedicated OpenClaw model catalog
-settings. Whether the Installation supplies what a method needs (OAuth needs
-no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
-`409`.
+`validateHarnessAuth` applies the other rules above first, then names the
+Agent's `harnessAuth.method` when its topology cannot use it (embedded OpenClaw
+takes `api_key`, dedicated OpenClaw also `credential_source`, and dedicated
+Codex also `codex_pat` and `oauth`), then the model provider rule above, a
+channel credential reference without a Configuration Secret binding, and the
+dedicated OpenClaw model catalog settings. Whether the Installation supplies
+what a method needs (OAuth needs no Sandbox Driver; a credential source needs
+its paired Sandbox) stays a fixed `409`.
 The channel runtime rule stays at deployment: it depends on the execution mode
 and the Installation's `runtime.channels`.
 

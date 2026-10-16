@@ -45,6 +45,13 @@ import {
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
+// The Preset list returns summaries; the template comes from the exact Preset (finding 1323).
+async function presetTemplate(fixture, namespaceId, presetId) {
+  const preset = await fixture.request("GET", `/namespaces/${namespaceId}/presets/${presetId}`);
+  assert.equal(preset.status, 200);
+  return structuredClone(preset.data.template);
+}
+
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
@@ -2462,7 +2469,7 @@ test("a restored default starter chooser still discards its applied form on exit
   const namespace = await fixture.createNamespace("Customized starter", { ready: true });
   const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
   const starter = presets.data.find((preset) => preset.name === "default-codex");
-  const template = structuredClone(starter.template);
+  const template = await presetTemplate(fixture, namespace.id, starter.id);
   template.variables = { name: { type: "string" } };
   template.agent.name = "{{ vars.name }}";
   const updated = await fixture.request(
@@ -2544,7 +2551,7 @@ test("invalid Preset application retains chooser edits and preserves the selecte
   const namespace = await fixture.createNamespace("Invalid starter", { ready: true });
   const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
   const starter = presets.data.find((preset) => preset.name === "default-codex");
-  const template = structuredClone(starter.template);
+  const template = await presetTemplate(fixture, namespace.id, starter.id);
   template.variables = { mode: { type: "string" } };
   template.agent.name = "Preset draft";
   template.agent.executionMode = "{{ vars.mode }}";
@@ -2605,7 +2612,7 @@ test("failed Preset form construction retains chooser edits for both origins", a
     const namespace = await fixture.createNamespace(`Invalid model ${origin}`, { ready: true });
     const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
     const starter = presets.data.find((preset) => preset.name === "default-codex");
-    const validTemplate = structuredClone(starter.template);
+    const validTemplate = await presetTemplate(fixture, namespace.id, starter.id);
     const fallback = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
       body: { name: "Usable fallback", template: validTemplate },
     });
@@ -2798,7 +2805,10 @@ test("a delayed restored Preset list cannot read a selection after starting with
   // A real catalog change makes the admitted return construct a fresh chooser
   // with the retained selection. Do not hold its outer access revalidation.
   const added = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: { name: "Another Preset", template: starter.template },
+    body: {
+      name: "Another Preset",
+      template: await presetTemplate(fixture, namespace.id, starter.id),
+    },
   });
   assert.equal(added.status, 201, JSON.stringify(added.body));
 

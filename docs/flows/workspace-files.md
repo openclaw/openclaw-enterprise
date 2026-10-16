@@ -18,7 +18,7 @@ Compute-resolved private endpoint through Envoy Gateway.
 Dedicated execution initializes the Harness workspace for Codex and native
 OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 
-See [two-cluster transport](../testing/two-cluster-local.md) for CP/DP routing.
+See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
 ## Entry Points
 

@@ -30,7 +30,7 @@ Workstation `docker login` does not authenticate cluster nodes.
 
 ## Build and publish production images
 
-Use the separately approved [publication workflow](../../../.github/containers.md)
+Use the separately approved [publication workflow](../../release/containers.md)
 or build these images for your registry:
 
 | Image      | Source                                                                                                         | Used by                                     |
@@ -83,7 +83,7 @@ else
 fi
 ```
 
-Before installation, [check each digest](../../testing/images.md#check-published-images)
+Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
 them.
 
@@ -178,7 +178,7 @@ the startup Secret alone grants none.
 
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
-[Verify installation image selections](../../testing/images.md#verify-installation-image-selections).
+[Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
 ### Shared bootstrap PVC and configuration checks
 
@@ -411,7 +411,7 @@ helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --wait --timeout 5m
 ```
 
-For an explicitly [published chart release](../../../.github/chart-publication.md#pull-and-install)
+For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
 verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
 with `--version "$OCE_VERSION"`.

@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
@@ -6,10 +6,20 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The longest the Logs view keeps its strip and output back for their first reads.
+const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this page session instead of re-asking every poll
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();
 const deniedStatusViews = new Set();
+// Denials are per signed-in operator: another user signing in on this tab asks again.
+const logViewKey = (context, agentId) =>
+  JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
+
+/** Whether this page session already saw the Agent's log text read denied. */
+export function logTextDenied(context, agentId) {
+  return deniedLogViews.has(logViewKey(context, agentId));
+}
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
 function runtimeErrorText(error, tier, source) {
@@ -72,28 +82,65 @@ function unobservedDescription() {
   };
 }
 
-function downloadFileName(agentId, revisionId, source, pod) {
-  return `${[agentId, revisionId, source, pod].join("-").replace(/[^A-Za-z0-9_.-]/g, "_")}.log`;
+function downloadFileName(agentId, revisionId, source, pod, previous) {
+  const name = [agentId, revisionId, source, pod].join("-");
+  const suffix = source !== "sandbox" && previous ? "-previous" : "";
+  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}${suffix}.log`;
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
-export function renderAgentLogs(context, { agent, revisionId }) {
+export function renderAgentLogs(
+  context,
+  { agent, revisionId, shown = Promise.resolve(), onLogsDenied = () => {} },
+) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
-  // Denials are per signed-in operator: another user signing in on this tab asks again.
-  const deniedKey = JSON.stringify([context.operatorId ?? null, context.namespaceId, agent.id]);
+  const deniedKey = logViewKey(context, agent.id);
   const statusKey = JSON.stringify([
     context.operatorId ?? null,
     context.namespaceId,
     agent.id,
     revisionId,
   ]);
-  const section = element("section", { className: "agent-logs" });
+  // The status strip fills from the first status read and can be taller than a phone screen.
+  // Until that read and the first log page settle (at most FIRST_VIEW_WAIT_MS), the strip and
+  // log viewer stay back, so the view appears in one step instead of the strip pushing the
+  // output down after the page scrolled to it (finding 1413).
+  const section = element("section", { className: "agent-logs agent-logs-pending" });
+  let firstLogRead = null;
+  let markFirstView;
+  const firstView = new Promise((resolve) => {
+    markFirstView = resolve;
+  });
+  function showFirstView() {
+    clearTimeout(firstViewTimer);
+    if (section.classList.contains("agent-logs-pending")) {
+      section.classList.remove("agent-logs-pending");
+      // A hidden pane cannot scroll; open at the newest output as a shown one would. The page
+      // holding the view can still be hidden (an Agent page waits for its overview), so scroll
+      // once it shows. Scrolled to the top, the pane would read as scrolled up and Follow would
+      // stay paused (finding 1536).
+      void shown.then(() => {
+        if (current()) {
+          pane.scrollTop = pane.scrollHeight;
+        }
+      });
+    }
+    markFirstView();
+  }
+  const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
-  const stripStatus = element(
-    "p",
-    { className: "muted", role: "status" },
-    "Loading runtime status…",
-  );
+  // One line: a status region for loading and errors, and the observed time beside it. The
+  // time changes on every 10 s poll, so it sits outside the status region, and aria-live=off
+  // keeps the page view's live region from announcing it; only loading and errors are
+  // announced (finding 1425). The status region stays in the tree, empty when there is
+  // nothing to say, so a later error is announced.
+  const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
+  const stripObserved = element("span", { "aria-live": "off" });
+  const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  function showStripStatus(text) {
+    setText(stripObserved, "");
+    stripStatus.textContent = text;
+  }
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
   const podSelect = element("select", { id: "runtime-log-pod", hidden: true });
   const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod / container");
@@ -192,7 +239,16 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   const current = () => context.isCurrent();
   // Runtime reads are live and audited: a view restored by Back resumes them instead of
   // having the console replay every one of them to revalidate the cached view.
-  const read = (path, options = {}) => context.request(path, { ...options, revalidate: false });
+  // Answers Back's check already read, taken once by the resumed view's first reads.
+  const checked = new Map();
+  const read = (path, options = {}) => {
+    if (checked.has(path)) {
+      const answer = checked.get(path);
+      checked.delete(path);
+      return Promise.resolve(answer);
+    }
+    return context.request(path, { ...options, revalidate: false });
+  };
 
   function selectedSource() {
     return description?.sources.find(({ id }) => id === sourceSelect.value);
@@ -237,9 +293,12 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!description) {
       return;
     }
-    stripStatus.textContent = `Observed ${displayDate(description.observedAt)}`;
-    strip.replaceChildren(
-      ...(description.pods.length
+    setText(stripStatus, "");
+    setText(stripObserved, `Observed ${displayDate(description.observedAt)}`);
+    // The strip is a live region and status polls every 10 s, so rebuild it only on a change.
+    replaceChildrenIfChanged(
+      strip,
+      description.pods.length
         ? description.pods.map(podCard)
         : [
             element(
@@ -247,14 +306,16 @@ export function renderAgentLogs(context, { agent, revisionId }) {
               { className: "muted" },
               "This version has no running Pod. See Deployment activity.",
             ),
-          ]),
+          ],
     );
   }
 
   function renderPickers() {
     const chosen = sourceSelect.value;
-    sourceSelect.replaceChildren(
-      ...description.sources.map((source) =>
+    // Rebuilding identical options would reset an open picker and re-announce it.
+    replaceChildrenIfChanged(
+      sourceSelect,
+      description.sources.map((source) =>
         element(
           "option",
           { value: source.id, disabled: !source.available },
@@ -268,8 +329,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       : (available?.id ?? description.sources[0]?.id ?? "");
     const source = selectedSource();
     const chosenPod = podSelect.value;
-    podSelect.replaceChildren(
-      ...(source?.pods ?? []).map((pod) =>
+    replaceChildrenIfChanged(
+      podSelect,
+      (source?.pods ?? []).map((pod) =>
         element(
           "option",
           { value: JSON.stringify([pod.name, pod.container]) },
@@ -285,7 +347,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     ) {
       podSelect.value = chosenPod;
     }
-    retention.textContent = source?.retention ?? "";
+    setText(retention, source?.retention ?? "");
     // A dedicated Gateway logs connection errors to a Harness that never came up; its
     // own source holds the cause (for example a failed model probe).
     // Only a revision with a dedicated Harness lists an "agent" source; the hint fires
@@ -299,11 +361,14 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       description.sources.some(({ id }) => id === "agent") &&
       !harnessPods.some(({ ready }) => ready);
     sourceHint.hidden = !harnessDown;
-    sourceHint.textContent = !harnessDown
-      ? ""
-      : harnessPods.length === 0
-        ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
-        : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.";
+    setText(
+      sourceHint,
+      !harnessDown
+        ? ""
+        : harnessPods.length === 0
+          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
+    );
     const pod = selectedPod();
     const restarts = pod
       ? pod.restartCount
@@ -331,7 +396,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     description = unobservedDescription();
     renderPickers();
     if (!logsDenied) {
-      void readLogs({ restart: true });
+      firstLogRead = readLogs({ restart: true });
     }
   }
 
@@ -341,7 +406,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       return;
     }
     if (deniedStatusViews.has(statusKey)) {
-      stripStatus.textContent = runtimeErrorText({ status: 403 }, "status");
+      showStripStatus(runtimeErrorText({ status: 403 }, "status"));
       offerLogsWithoutStatus();
       return;
     }
@@ -355,7 +420,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
-          void readLogs({ restart: true });
+          firstLogRead = readLogs({ restart: true });
         }
       } catch (error) {
         if (!current()) {
@@ -365,7 +430,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
           context.onExpired();
           return;
         }
-        stripStatus.textContent = withRequestId(runtimeErrorText(error, "status"), error);
+        showStripStatus(withRequestId(runtimeErrorText(error, "status"), error));
         if (error.status === 403) {
           offerLogsWithoutStatus();
         }
@@ -478,6 +543,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
           revisionId,
           source.id,
           downloadPodName(text, source, pod),
+          query.get("previous") === "true",
         ),
         hidden: true,
       });
@@ -602,6 +668,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         // Never re-poll after a denial; the view needs new grants.
         logsDenied = true;
         deniedLogViews.add(deniedKey);
+        onLogsDenied();
         setFollow(false);
         renderPickers();
       } else if (error.status === 501) {
@@ -643,7 +710,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   section.append(
     element("h3", {}, "Runtime"),
-    stripStatus,
+    stripLine,
     strip,
     element(
       "div",
@@ -707,17 +774,66 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));
   }
+  // Back reuses this view only while what it shows is still readable: the check reads on from
+  // where the view stopped, as its polls would, and a refusal rebuilds the page instead
+  // (finding 1553). The resumed view takes those answers rather than asking again.
+  const logsPath = `${base}/logs?`;
+  const forgetCheck = context.onRevalidate?.(async () => {
+    checked.clear();
+    // A Logs view left for another tab is no longer part of the page.
+    if (!context.view?.contains(section)) {
+      forgetCheck?.();
+      return;
+    }
+    const reads = [];
+    if (description !== null && !statusDenied) {
+      reads.push(base);
+    }
+    if (cursor && !logsDenied && readableSelection()) {
+      const query = logQuery(selectedSource(), selectedPod());
+      query.set("cursor", cursor);
+      reads.push(`${logsPath}${query}`);
+    }
+    // Output that cannot be read on from (no cursor, no readable source, or denied since it
+    // showed) is not shown again from the cache.
+    if (rows > 0 && !reads.some((path) => path.startsWith(logsPath))) {
+      throw new Error("The shown output cannot be checked.");
+    }
+    const answers = await Promise.all(
+      reads.map((path) =>
+        context.request(path, { revalidate: false }).catch((error) => {
+          // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
+          if (error.status === 403) {
+            if (path === base) {
+              deniedStatusViews.add(statusKey);
+            } else {
+              deniedLogViews.add(deniedKey);
+            }
+          }
+          throw error;
+        }),
+      ),
+    );
+    reads.forEach((path, index) => checked.set(path, answers[index]));
+  });
   // Timers that fired while Back's cache held this view stopped; pick both polls up again.
   context.onResume?.(() => {
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
-      if (following) {
+      if (following && [...checked.keys()].some((path) => path.startsWith(logsPath))) {
+        void readLogs({ restart: false });
+      } else if (following) {
         scheduleFollow(0);
       }
     }
+    // An unfollowed view drops the page Back read; its cursor still starts there.
+    checked.clear();
   });
   applyFilters();
-  void loadStatus();
-  return section;
+  void loadStatus()
+    .then(() => firstLogRead)
+    .catch(() => {})
+    .finally(showFirstView);
+  return { section, firstView };
 }

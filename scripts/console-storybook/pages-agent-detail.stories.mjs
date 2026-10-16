@@ -6,6 +6,7 @@ export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const NewVersion = story("newVersion");
+export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");
@@ -13,6 +14,7 @@ export const GatewayPasswordEnabled = story("gatewayPasswordEnabled");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const PluginsDraft = story("pluginsDraft");
+export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");
@@ -24,6 +26,7 @@ export const InvalidConfiguration = {
   ...story("invalidConfiguration"),
   name: "Invalid Configuration JSON",
 };
+export const ConfigurationChangedElsewhereMerged = story("configurationChangedElsewhereMerged");
 export const Admitted = story("admitted");
 export const RepositoryDraft = {
   ...story("repositoryDraft"),
@@ -37,17 +40,23 @@ export const DeploymentPending = story("deploymentPending");
 export const DeploymentDeferred = story("deploymentDeferred");
 export const DeploymentRetrying = story("deploymentRetrying");
 export const DeploymentRunning = story("deploymentRunning");
+export const DeploymentActivityLoading = story("deploymentActivityLoading");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
+export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
+export const DeploymentStopped = story("deploymentStopped");
+export const DeploymentSuperseded = story("deploymentSuperseded");
 export const DeploymentSucceeded = story("deploymentSucceeded");
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
 export const DiagnosticsUnavailable = story("diagnosticsUnavailable");
 export const RuntimeLogs = story("runtimeLogs");
+export const RuntimeLogsSlowFirstStatus = story("runtimeLogsSlowFirstStatus");
+export const RuntimeLogsSlowTabClick = story("runtimeLogsSlowTabClick");
 export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
@@ -73,6 +82,7 @@ export const DeployAgentPrincipalDenied = {
 };
 
 export const RepositoryEditor = story("repositoryEditor");
+export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const ConfigurationNavigation = story("configurationNavigation");
 
 export const RevisionDeployDenied = {

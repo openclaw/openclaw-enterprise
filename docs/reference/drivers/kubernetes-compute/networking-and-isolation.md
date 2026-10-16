@@ -117,7 +117,9 @@ sets stock Codex `allow_local_binding = true` and `mode = "full"`. An explicit
 deny matching the broker hostname fails closed. The repository-bound filesystem
 profile additionally grants read-only access to the repository client at
 `/opt/oce/repository-credentials` and admitted session material at
-`/run/oce/repository-credentials`. Unbound Agents keep their existing policy.
+`/run/oce/repository-credentials`. Dedicated Codex with an enabled proxy also
+reads `/home/node/.codex/skills/.system`, even without a binding. Embedded
+Codex uses another home; a disabled proxy stays disabled.
 
 These settings apply to the Agent's whole tool proxy: local binding is allowed,
 Codex's additional private-address guard is disabled, and every HTTP method is

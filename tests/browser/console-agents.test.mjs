@@ -436,6 +436,11 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     effect: "deny",
   });
   requests.length = 0;
+  // With the permission answer the start page refuses at once (finding 1521). Without one the
+  // form opens, and the API still refuses the creation itself.
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+  );
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();
@@ -656,6 +661,11 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   });
   const { page: deniedPage } = await newPage(t, deniedFixture);
   const deniedRequests = apiRequests(deniedPage, deniedFixture.origin);
+  // Without a permission answer the form opens (with one it refuses at once, finding 1521), so
+  // the repository and creation reads show their own denials.
+  await deniedPage.route(`**/namespaces/${deniedNamespace.id}/permissions`, (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+  );
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
@@ -860,13 +870,14 @@ test("Agent repository selection enforces the 16-item limit without narrow viewp
   assert.equal(await selected.isChecked(), false);
   await page.getByLabel("Find a repository").fill("example/repository-17");
   await repositoryCheckbox(page, "example/repository-17").check();
-  assert.deepEqual(
-    await page.locator("html").evaluate((node) => ({
-      clientWidth: node.clientWidth,
-      scrollWidth: node.scrollWidth,
-    })),
-    { clientWidth: 360, scrollWidth: 360 },
-  );
+  // The page keeps a stable scrollbar gutter, so its content may be narrower than the viewport;
+  // it must not overflow it.
+  const width = await page.locator("html").evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+  }));
+  assert.equal(width.clientWidth, 360);
+  assert.ok(width.scrollWidth <= width.clientWidth, JSON.stringify(width));
 });
 
 test("Agent creation recovers from stale authoritative admission without replacing its Configuration", async (t) => {

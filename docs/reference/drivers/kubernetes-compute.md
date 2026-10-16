@@ -6,7 +6,7 @@ gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
 Pods, identities and volumes within that namespace; embedded OpenClaw combines
 them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
-API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/two-cluster-local.md)
+API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
 
 New managed tenant namespaces are named `oce-` plus the first 15 hexadecimal
@@ -189,6 +189,7 @@ workers, so size the limit against the Agent workload's CPU and memory limits.
 For dedicated Codex `api_key` authentication, `runtime.codexModelBaseUrl` selects
 an HTTPS OpenAI-compatible streaming Responses endpoint ending in `/v1`.
 Rejects wildcards, port `0`, `@` or credentials, spaces, controls, missing `//`, queries, and fragments.
+Shorthand IPv4 is refused.
 Omission retains OpenAI's default; OpenShell sources select their own endpoint.
 OAuth, account logins, and OpenClaw ignore this option. Only the Harness receives
 the key. Private Gateway configuration qualifies parent and subagent selections

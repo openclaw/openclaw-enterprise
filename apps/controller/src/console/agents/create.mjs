@@ -1,5 +1,5 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { element, button } from "../dom.mjs";
+import { button, element, setText } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -151,11 +151,33 @@ function canRetryFailedProvisioning(job) {
   );
 }
 
-async function waitForProvisioning({ request, status, first }) {
+// Stop and Delete are the only operations that cancel provisioning, and a Stop keeps the Agent
+// and its name. So a cancelled job whose Agent is still there, and not being deleted, was
+// stopped (finding 1376): "kept". A deleted Agent is "gone". When the Agent cannot be read, the
+// console cannot tell which, so it claims neither: "unknown".
+async function cancelledAgentState(request, namespaceId, agentId) {
+  if (typeof agentId !== "string" || !agentId) {
+    return "gone";
+  }
+  try {
+    const agent = await request(
+      `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agentId)}`,
+    );
+    return agent?.status === "deleting" ? "gone" : "kept";
+  } catch (error) {
+    return error.status === 404 ? "gone" : "unknown";
+  }
+}
+
+async function waitForProvisioning({ request, status, first, namespaceId }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
+  // A started job goes back to queued between retries. Keep one label once it has started,
+  // and write it only when it changes, since this rereads every second (finding 1424).
+  let started = false;
   while (current?.status === "queued" || current?.status === "running") {
-    status.textContent = provisioningStatusText(current.status);
+    started ||= current.status === "running";
+    setText(status, provisioningStatusText(started ? "running" : current.status));
     if (typeof current.url !== "string" || !current.url) {
       throw new Error("Provisioning status URL is unavailable.");
     }
@@ -163,11 +185,22 @@ async function waitForProvisioning({ request, status, first }) {
     const next = await request(current.url);
     current = next.provisioning ?? next;
   }
-  status.textContent = provisioningStatusText(current?.status);
+  // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
+  // is the owner's choice, not a failure to repair.
+  const cancelledAgent =
+    current?.status === "failed" && current.error?.code === "PROVISIONING_CANCELLED"
+      ? await cancelledAgentState(request, namespaceId, current.agentId)
+      : null;
+  const stopped =
+    current?.status === "failed" &&
+    (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
+  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
     error.provisioningAgentId = current?.agentId;
     error.provisioningRevisionId = current?.revisionId;
+    error.provisioningStopped = stopped;
+    error.provisioningAgentUnknown = cancelledAgent === "unknown";
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
     error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
@@ -204,6 +237,7 @@ async function finishProvisioningAttempt({ request, status, namespaceId, attempt
     request,
     status,
     first: provisioned,
+    namespaceId,
   });
 }
 
@@ -215,9 +249,37 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
-  const presets = createPresetFields(context, (rendered, options, draft) =>
-    renderAgentForm(context, rendered, options, draft),
-  );
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
+  // Gating only: an unknown answer keeps the start page, and the API still decides.
+  if (context.permissions?.agents?.create === false) {
+    context.view.replaceChildren(
+      link("← Agents", "agents", context),
+      element(
+        "section",
+        { className: "state-panel" },
+        element("h2", {}, "Creating Agents is not available"),
+        element(
+          "p",
+          { role: "status" },
+          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
+        ),
+      ),
+    );
+    // Start over re-enters here from the form; keep focus on the page, not the document.
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  // Starting the form replaces the launch view, and with it the control that started it. Give
+  // focus to the page heading instead of dropping it to the document (finding 1446).
+  const startForm = (rendered, options, draft) => {
+    renderAgentForm(context, rendered, options, draft);
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
+  };
+  const presets = createPresetFields(context, startForm);
   context.view.replaceChildren(
     link("← Agents", "agents", context),
     element(
@@ -233,9 +295,7 @@ export function renderCreateAgent(context, draft) {
         "div",
         { className: "launch-actions" },
         presets.startDefault,
-        button("Start without Preset", () =>
-          renderAgentForm(context, {}, {}, { discardOnExit: true }),
-        ),
+        button("Start without Preset", () => startForm({}, {}, { discardOnExit: true })),
       ),
     ),
     element(
@@ -887,8 +947,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let configurationSecretBindings = structuredClone(
     draft.configurationSecretBindings ?? rendered.configuration?.secretBindings ?? {},
   );
+  let directorySecretSource = null;
+  const getDirectorySecretSource = () =>
+    directorySecretSource ?? configurationSecretBindings.SLACK_BOT_TOKEN?.source;
   const getSlackBotSecretId = () => {
     const source = configurationSecretBindings.SLACK_BOT_TOKEN?.source;
+    return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
+  };
+  const getDirectorySecretId = () => {
+    const source = getDirectorySecretSource();
     return source?.kind === "secret" && source.namespaceId === namespaceId ? source.id : null;
   };
   const pluginDiscovery = createPluginDiscovery({
@@ -928,10 +995,30 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let pluginApprovers = structuredClone(
     Object.hasOwn(draft, "pluginApprovers") ? draft.pluginApprovers : agent.pluginApprovers,
   );
+  const directorySecret = createSecretReferenceField({
+    context,
+    id: "approver-directory-secret",
+    label: "Slack bot token Secret for people search",
+    getCurrentSource: getDirectorySecretSource,
+    onSecretSelected: async (secret) => {
+      directorySecretSource = secret.ref;
+      defaultApprovers.refreshDirectory();
+    },
+    createSecretName: () => `${name.value.trim() || "Agent"} Slack bot token`,
+    metadataLabel: "View Slack bot Secret metadata",
+    stagedHint: "Ready to search.",
+  });
+  directorySecret.field.append(
+    element(
+      "p",
+      { className: "hint" },
+      "Choose a Slack bot token to search by name. This choice is only for search and does not configure the Agent's Slack channel.",
+    ),
+  );
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
-    getSecretId: getSlackBotSecretId,
+    getSecretId: getDirectorySecretId,
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
@@ -939,6 +1026,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
     lazyNames: true,
+    directorySetup: directorySecret.field,
   });
   defaultApprovers.hidden = true;
   pluginFields.section.insertBefore(
@@ -1374,6 +1462,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       drawerContext: {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
+        operatorId: context.operatorId,
         namespaceId,
         request,
         agentName: () => name.value,
@@ -1404,7 +1493,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (options.secretBindings !== undefined) {
           configurationSecretBindings = structuredClone(options.secretBindings);
           stagedChannelSecrets = [...stagedChannelSecrets, ...(options.changedSecrets ?? [])];
-          defaultApprovers.refreshValue();
+          directorySecret.refresh();
+          defaultApprovers.refreshDirectory();
           pluginDiscovery.update();
         }
         configuration.setCustomValidity("");
@@ -1528,9 +1618,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     nativeProvider.disabled ||=
       Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
       hasBoundModelCredential;
-    authMethod.disabled ||=
-      Boolean(savedSecret || savedCredentialSource || credentialRegistration) ||
-      nativeProvider.value === "anthropic";
+    authMethod.disabled ||= Boolean(savedSecret || savedCredentialSource || credentialRegistration);
     authMethod.querySelector('[value="api_key"]').textContent =
       nativeProvider.value === "anthropic" ? "Anthropic API key" : "OpenAI API key";
     const patOption = authMethod.querySelector('[value="codex_pat"]');
@@ -1648,6 +1736,23 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
+  // The pressed control disables while its request runs. Keep focus on the line that reports
+  // progress, then on the outcome, rather than drop it to the page (finding 1490). Focus the
+  // reader moved elsewhere stays there.
+  function focusFeedbackLine(line) {
+    const active = document.activeElement;
+    if (
+      line.textContent &&
+      (!active ||
+        active === document.body ||
+        active.disabled ||
+        active === savedStatus ||
+        active === feedback)
+    ) {
+      line.tabIndex = -1;
+      line.focus({ preventScroll: true });
+    }
+  }
   function showSavedStatus() {
     savedStatus.replaceChildren(
       ...[
@@ -1729,12 +1834,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     let mutationStarted = false;
     try {
       mutationStarted = true;
-      const { agentId, revisionId } = await finishProvisioningAttempt({
+      const finishing = finishProvisioningAttempt({
         request,
         status: savedStatus,
         namespaceId,
         attempt,
       });
+      focusFeedbackLine(savedStatus);
+      const { agentId, revisionId } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
@@ -1770,6 +1877,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = "Outcome unknown. Retry resubmits the same request ID and saved references.";
       } else if (error.provisioningTerminal && error.canRetryProvisioning) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
+      } else if (error.provisioningStopped) {
+        // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
+        detail = `${error.message} Open this Agent and deploy ${error.provisioningRevisionId ? "a new version" : "a version"} when you want it running.`;
+      } else if (error.provisioningAgentUnknown) {
+        // A Stop keeps the name, so do not only point at a new Agent.
+        detail = `${error.message} If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.`;
       } else if (error.provisioningRevisionId) {
         detail = `${error.message} Open this Agent, correct the cause and deploy a new version.`;
       } else if (error.provisioningFailed) {
@@ -1784,7 +1897,24 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       } else {
         detail = rejectionMessage(error, mutationStarted);
       }
-      feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      // A job that ended keeps its final status; any other progress line spoke for the request
+      // that just ended (finding 1490).
+      if (!error.provisioningTerminal) {
+        if (savedSecret || savedConfiguration || savedAgent) {
+          showSavedStatus();
+        } else {
+          savedStatus.textContent = "";
+        }
+      }
+      if (error.provisioningStopped) {
+        // Not an error: keep the guidance out of the error colour. Later messages replace the span.
+        feedback.replaceChildren(
+          element("span", { className: "provisioning-stopped" }, feedbackText),
+        );
+      } else {
+        feedback.textContent = feedbackText;
+      }
       if (error.provisioningRevisionId && error.provisioningAgentId) {
         feedback.append(
           link(
@@ -1793,7 +1923,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             context,
           ),
         );
+      } else if (
+        (error.provisioningStopped || error.provisioningAgentUnknown) &&
+        error.provisioningAgentId
+      ) {
+        feedback.append(link(" Open Agent", `agents/${error.provisioningAgentId}`, context));
       }
+      focusFeedbackLine(feedback);
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.
       requestAdmitted =
@@ -2061,6 +2197,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         recovery.hidden = true;
       }
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      focusFeedbackLine(feedback);
     } finally {
       if (context.isCurrent()) {
         pending = false;

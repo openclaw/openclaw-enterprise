@@ -70,7 +70,16 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
       gatewayOrigin,
       gitOrigin,
       apiOrigin,
-      limits: options.limits,
+      limits:
+        config.kind === "github-token"
+          ? {
+              ...options.limits,
+              gitFetchExchangeMs: Math.min(
+                options.limits.gitFetchExchangeMs,
+                config.leaseSeconds * 1000 - 2 * options.limits.credentialMarginMs,
+              ),
+            }
+          : options.limits,
       graphql: source.graphql(profile),
       ...(source.pushRefAllowlist === undefined
         ? {}

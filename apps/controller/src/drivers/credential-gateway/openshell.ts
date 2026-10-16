@@ -16,7 +16,12 @@ import {
   CredentialSourceRevisionError,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  isNonEmptyString,
+  numericLastLabel,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 
 import { normalizeOpenAiBaseUrl, openAiBaseUrlSpellingMessage } from "../openai-endpoint.ts";
@@ -25,6 +30,7 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
+  type OpenShellGatewayPlacement,
 } from "../../backends/openshell.ts";
 import {
   OpenShellProviderAlreadyExistsError,
@@ -77,8 +83,12 @@ interface OpenShellSourceType {
   /**
    * Rejects invalid non-secret configuration before any gateway effect. Returns the
    * configuration to store when it differs from the written one, such as a normalized URL.
+   * `gateway` is where the gateway runs, when the Backend configuration names it.
    */
-  validate(config: Readonly<Record<string, string>>): Readonly<Record<string, string>> | void;
+  validate(
+    config: Readonly<Record<string, string>>,
+    gateway?: OpenShellGatewayPlacement,
+  ): Readonly<Record<string, string>> | void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
   credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
   /** The source's own profile, named like its provider and removed with it. */
@@ -86,6 +96,7 @@ interface OpenShellSourceType {
     sourceId: string,
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
+    gateway?: OpenShellGatewayPlacement,
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
 
@@ -136,9 +147,101 @@ const OAUTH2_CONFIG = Object.freeze([
   }),
 ]);
 
-/** A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. */
+/**
+ * A lowercase DNS name: no IP address, wildcard, `_`, or label edge `-`. A host whose last label
+ * is a decimal or `0x` number (`10.0.0.5`, `0xa000005`, `0x7f.0x1`, `example.123`) is an IPv4
+ * address to the URL parser and to `inet_aton`-style resolvers, so it is refused (finding 1360).
+ */
 function exactDnsName(host: string): boolean {
-  return HOST.test(host) && !/^[0-9.]+$/.test(host);
+  return HOST.test(host) && !numericLastLabel(host);
+}
+
+/**
+ * Last labels that hosts files map to loopback: `localhost` (RFC 6761) and the
+ * `localhost.localdomain`, `localhost4.localdomain4` and `localhost6.localdomain6` aliases.
+ */
+const LOOPBACK_LAST_LABELS = new Set(["localhost", "localdomain", "localdomain4", "localdomain6"]);
+
+/**
+ * The OAuth2 token endpoint host. The OpenShell gateway, not the Sandbox, posts the source's
+ * client secret and refresh token there from its own network position, so the parsed hostname
+ * follows the protected host's DNS-name rule (no IP address in any spelling the URL parser
+ * accepts) and is not a `localhost` name (finding 1348). The gateway resolves it through its
+ * Pod's `/etc/hosts` first, whose loopback, link-local and own-hostname aliases are single-label
+ * names (`ip6-localhost`, `ip6-allnodes`, the Pod's hostname) or end in `localdomain`, so those
+ * shapes are refused too; in-cluster issuers keep their Service names
+ * (`keycloak.idp.svc.cluster.local`) (finding 1354).
+ */
+function tokenUrlHostAllowed(tokenUrl: string): boolean {
+  if (!URL.canParse(tokenUrl)) {
+    return false;
+  }
+  const host = new URL(tokenUrl).hostname;
+  const labels = host.split(".");
+  return exactDnsName(host) && labels.length > 1 && !LOOPBACK_LAST_LABELS.has(labels.at(-1) ?? "");
+}
+
+function tokenUrlHostMessage(type: string): string {
+  return `The ${type} token_url host must be a DNS name with at least two labels, not an IP address or a localhost or localdomain name.`;
+}
+
+/**
+ * Whether the token endpoint host stays out of the gateway's own Kubernetes names (finding 1356).
+ * A StatefulSet Pod's `/etc/hosts` maps its full name (`<pod>.<service>-peer.<namespace>.svc.<cluster
+ * domain>`) to the Pod itself, and cluster DNS answers the gateway's Service and Pod names, so the
+ * gateway would connect to its own Pod, which no egress NetworkPolicy polices. Refused, when the
+ * Backend configuration names the gateway's namespace:
+ * - any name in that namespace's `svc` or `pod` zone, whatever the cluster domain;
+ * - the names the Pod's DNS search list completes into it: `<x>.<namespace>`,
+ *   `<x>.<y>.<namespace>`, and any name of up to three labels ending in the gateway Service or
+ *   `<gateway Service>-*` (its peer Service). CoreDNS reads one leading label as an endpoint and
+ *   two as a port and protocol (`grpc.tcp.<service>`, matched case-insensitively). The label
+ *   count decides, not the port name, so any port the gateway's Services name is covered
+ *   (finding 1366).
+ * Always refused: a `pod` zone name (`<a-b-c-d>.<namespace>.pod...`), which CoreDNS's default
+ * `pods insecure` answers with the written address in any namespace, the Pod's own included.
+ * CoreDNS also answers it behind one or two leading labels (an endpoint, or a port and protocol)
+ * and ignores them, so any `pod` label after the second is refused, whatever precedes it and
+ * whatever cluster domain follows (finding 1359). In-cluster issuers in other namespaces keep
+ * their Service names.
+ */
+function tokenUrlHostOutsideGateway(
+  tokenUrl: string,
+  gateway: OpenShellGatewayPlacement | undefined,
+): boolean {
+  if (!URL.canParse(tokenUrl)) {
+    return false;
+  }
+  const labels = new URL(tokenUrl).hostname.split(".");
+  if (labels.slice(2).includes("pod")) {
+    return false;
+  }
+  if (gateway === undefined) {
+    return true;
+  }
+  const { namespace, service } = gateway;
+  const last = labels.at(-1) ?? "";
+  const zone = labels.some(
+    (label, index) =>
+      label === namespace && (labels[index + 1] === "svc" || labels[index + 1] === "pod"),
+  );
+  const searched =
+    last === namespace ||
+    (labels.length <= 3 && (last === service || last.startsWith(`${service}-`)));
+  return !zone && !searched;
+}
+
+function tokenUrlGatewayMessage(type: string): string {
+  return `The ${type} token_url host must not be a Kubernetes Pod name or a name in the OpenShell gateway's namespace.`;
+}
+
+/** Like the protected endpoint's port: 0 names no endpoint. */
+function tokenUrlPortAllowed(tokenUrl: string): boolean {
+  return URL.canParse(tokenUrl) && new URL(tokenUrl).port !== "0";
+}
+
+function tokenUrlPortMessage(type: string): string {
+  return `The ${type} token_url port must be 1 to 65535.`;
 }
 
 /** Checks the protected endpoint and placeholder variable shared by every non-model type. */
@@ -169,13 +272,26 @@ function validateEndpointConfig(type: string, config: Readonly<Record<string, st
   }
 }
 
-function validateOAuth2Config(type: string, config: Readonly<Record<string, string>>): void {
+function validateOAuth2Config(
+  type: string,
+  config: Readonly<Record<string, string>>,
+  gateway: OpenShellGatewayPlacement | undefined,
+): Readonly<Record<string, string>> | void {
   validateEndpointConfig(type, config);
   if (!TOKEN_URL.test(config.token_url ?? "") || !URL.canParse(config.token_url ?? "")) {
     throw new CredentialSourceConfigError(
       "token_url",
       `The ${type} token_url must be an HTTPS URL without credentials, query, or fragment.`,
     );
+  }
+  if (!tokenUrlHostAllowed(config.token_url ?? "")) {
+    throw new CredentialSourceConfigError("token_url", tokenUrlHostMessage(type));
+  }
+  if (!tokenUrlHostOutsideGateway(config.token_url ?? "", gateway)) {
+    throw new CredentialSourceConfigError("token_url", tokenUrlGatewayMessage(type));
+  }
+  if (!tokenUrlPortAllowed(config.token_url ?? "")) {
+    throw new CredentialSourceConfigError("token_url", tokenUrlPortMessage(type));
   }
   if (!CLIENT_ID.test(config.client_id ?? "")) {
     throw new CredentialSourceConfigError(
@@ -188,6 +304,22 @@ function validateOAuth2Config(type: string, config: Readonly<Record<string, stri
       "scope",
       `The ${type} scope must be space-separated OAuth2 scopes.`,
     );
+  }
+  // Store the URL as parsed here, so the gateway's parser reads the checked spelling.
+  const tokenUrl = new URL(config.token_url ?? "").href;
+  return tokenUrl === config.token_url
+    ? undefined
+    : Object.freeze({ ...config, token_url: tokenUrl });
+}
+
+/**
+ * Re-checks a stored source's protected `host` before its profile is written, first as at save.
+ * A source stored before the host rules (finding 1360) fails here until it is replaced
+ * (finding 1363).
+ */
+function checkStoredHost(type: string, config: Readonly<Record<string, string>>): void {
+  if (!exactDnsName(config.host ?? "")) {
+    throw new ScopeViolationError(`The ${type} host must be an exact DNS name.`);
   }
 }
 
@@ -236,11 +368,22 @@ function oauth2SourceType(
       rotation: "refresh",
     }),
     refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
-    validate: (config) => validateOAuth2Config(type, config),
+    validate: (config, gateway) => validateOAuth2Config(type, config, gateway),
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
-    profile: (sourceId, config, options) =>
-      bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
+    profile: (sourceId, config, options, gateway) => {
+      checkStoredHost(type, config);
+      // A source stored before the token_url host rules fails here until it is replaced.
+      if (!tokenUrlHostAllowed(config.token_url ?? "")) {
+        throw new ScopeViolationError(tokenUrlHostMessage(type));
+      }
+      if (!tokenUrlHostOutsideGateway(config.token_url ?? "", gateway)) {
+        throw new ScopeViolationError(tokenUrlGatewayMessage(type));
+      }
+      if (!tokenUrlPortAllowed(config.token_url ?? "")) {
+        throw new ScopeViolationError(tokenUrlPortMessage(type));
+      }
+      return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
         refresh: {
           strategy,
@@ -252,7 +395,8 @@ function oauth2SourceType(
             ...material,
           ],
         },
-      }),
+      });
+    },
   };
 }
 
@@ -345,6 +489,57 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   },
   {
     catalog: Object.freeze({
+      type: "codex-pat",
+      config: Object.freeze([]),
+      secrets: Object.freeze([
+        Object.freeze({
+          name: "access_token",
+          required: true,
+          description: "Codex personal access token.",
+        }),
+      ]),
+      rotation: "none",
+      harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "codex_pat" }),
+    }),
+    validate: () => {},
+    credentials: () => Object.freeze({ access_token: "CODEX_ACCESS_TOKEN" }),
+    profile: (sourceId, _config, options) => ({
+      id: openShellProviderName(sourceId),
+      displayName: "Codex personal access token (OpenClaw Enterprise)",
+      category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
+      credentials: [
+        {
+          name: "access_token",
+          envVars: ["CODEX_ACCESS_TOKEN"],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+        },
+      ],
+      endpoints: [
+        {
+          host: "auth.openai.com",
+          port: 443,
+          protocol: "rest",
+          path: "/api/accounts/v1/user-auth-credential/whoami",
+        },
+        ...[
+          "/backend-api/codex/**",
+          // Native PAT startup loads managed configuration before any model turn.
+          "/backend-api/wham/config/bundle",
+          // Workspace discovery gates native inference; attribution is loaded per turn.
+          "/backend-api/wham/accounts/check",
+          "/backend-api/wham/settings/user",
+          // The Gateway reads native rate limits when recovering a usage-limit error.
+          "/backend-api/wham/usage",
+        ].map((path) => ({ host: "chatgpt.com", port: 443, protocol: "rest", path })),
+      ],
+      binaries: options.binaries,
+      inferenceCapable: true,
+    }),
+  },
+  {
+    catalog: Object.freeze({
       type: "bearer-token",
       config: ENDPOINT_CONFIG,
       secrets: Object.freeze([
@@ -354,10 +549,12 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate: (config) => validateEndpointConfig("bearer-token", config),
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
-    profile: (sourceId, config, options) =>
-      bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
+    profile: (sourceId, config, options) => {
+      checkStoredHost("bearer-token", config);
+      return bearerProfile(sourceId, config, options, "Bearer token (OpenClaw Enterprise)", {
         name: "token",
-      }),
+      });
+    },
   },
   oauth2SourceType(
     "oauth2-client-credentials",
@@ -606,7 +803,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   validateSourceConfig(
     input: Pick<CredentialSourceInput, "type" | "config">,
   ): Readonly<Record<string, string>> | void {
-    return sourceType(input.type, this.options, this.refresh).validate(input.config);
+    // A gateway in each tenant namespace is known only with the tenant's Kubernetes namespace:
+    // registration's profile check refuses those names before any gateway write.
+    return sourceType(input.type, this.options, this.refresh).validate(
+      input.config,
+      this.backend.client.placement(),
+    );
   }
 
   async registerSource(
@@ -614,6 +816,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
+    // Without the gateway placement: ensureProfile below checks it and throws ScopeViolationError,
+    // which OCC passes through; a CredentialSourceConfigError here would surface as a 503.
     type.validate(input.config);
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
@@ -633,6 +837,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       input.config,
+      this.placement(context),
       context.signal,
     );
     try {
@@ -700,6 +905,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       context.source.config,
+      this.placement(context),
       context.signal,
     );
     await client.updateProviderCredentials(
@@ -798,7 +1004,15 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      await this.ensureProfile(client, workspace, type, source.id, source.config, context.signal);
+      await this.ensureProfile(
+        client,
+        workspace,
+        type,
+        source.id,
+        source.config,
+        this.placement(context),
+        context.signal,
+      );
       attachments.push(Object.freeze({ sourceId: source.id, ref: name }));
     }
     return Object.freeze(attachments);
@@ -884,15 +1098,22 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return this.backend.client.clientForNamespace(context.namespace.name);
   }
 
+  private placement(
+    context: CredentialGatewayContext & { readonly namespace: { name: string } },
+  ): OpenShellGatewayPlacement | undefined {
+    return this.backend.client.placement(context.namespace.name);
+  }
+
   private async ensureProfile(
     client: OpenShellGatewayClient,
     workspace: string,
     type: OpenShellSourceType,
     sourceId: string,
     config: Readonly<Record<string, string>>,
+    gateway: OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
   ): Promise<void> {
-    const base = type.profile(sourceId, config, this.options);
+    const base = type.profile(sourceId, config, this.options, gateway);
     const digest = sha256Hex(JSON.stringify(base));
     const profile: OpenShellProviderProfile = {
       ...base,

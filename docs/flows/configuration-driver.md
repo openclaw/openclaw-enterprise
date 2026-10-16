@@ -132,9 +132,10 @@ detail, before parsing, schema validation, the NUL/surrogate check or
 Every JSON route shares this parser and limit. Creation requires `kind: "agent"` and a native
 root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
-document and accept optional `secretBindings`; `kind`,
-`generation`, and ownership are server-owned and cannot be supplied or changed.
-OCC preserves nested values and SecretRefs unchanged. Malformed,
+document and accept optional `secretBindings` and `expectedGeneration`, refusing
+a stale one under the row lock with an `/expectedGeneration` `409` detail.
+`kind`, `generation`, and ownership are server-owned. OCC preserves nested values
+and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
 `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
@@ -213,6 +214,11 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-14 10:30: Writes refuse literals in the other slots OpenClaw marks sensitive ([rules](configuration-driver/persistence-and-revisions.md)). (fix-1309, finding 1309)
+- 2026-10-14 09:30: Writes and deployment require references in the other key and header slots the Gateway sends ([list](../reference/configuration/secrets.md#secret-boundaries)); those header slots and MCP headers refuse invalid header names. Stored documents still read. (fix-1307, finding 1307)
+- 2026-10-14 09:00: The Kubernetes model provider rule also checks `agents.*.modelPolicy.allow` entries, which the Dedicated Codex projection qualifies like `models` keys; Dedicated Codex refuses `mediaModels.*` and `voiceModel`. Preset saves run the `agents` shape and roster rules Configuration save runs, checking a templated Agent ID or ownership as far as its written text goes. (fix-1306-1308, findings 1306, 1308)
+- 2026-10-14 07:00: Preset saves run the model fallback, model selection and provider `apiKey` rules Configuration save runs, except where the provider waits on a variable, which the launch checks once filled. (fix-1305, finding 1305)
+- 2026-10-14 06:00: Configuration and Agent saves on every Compute refuse a model fallback on another provider than its primary's, naming the setting, as deployment now does; Kubernetes Configuration save also runs the model provider and `apiKey` rules deployment applies, and accepts OpenClaw's built-in `default` env provider in an `apiKey` reference. (fix-1298-1299, findings 1298-1299)
 - 2026-10-13 23:00: Configuration and Preset saves require references in MCP server credential headers, and read a `GIT_CONFIG_VALUE_<n>` or `GIT_CONFIG_PARAMETERS` value whose key names a git proxy as a proxy URL. (findings 1276, 1278)
 - 2026-10-13 18:00: Kubernetes credential header refusals quote the header name, not a word list; a Preset header name waiting on a variable saves on Kubernetes too. (findings 1207-1208)
 - 2026-10-13 16:00: The credential header rule also matches authentication, assertion, HMAC, JWT, license, OTP, pass, PIN and pwd words, `-v2` suffixes and `.` separators, and exempts partition, shard, sort and dedup keys; Configuration and Preset saves on every Compute refuse a header name that is not an HTTP field name, and Preset saves run the model provider settings check. (findings 1189-1191)

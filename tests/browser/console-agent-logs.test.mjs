@@ -9,6 +9,7 @@ import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -36,6 +37,36 @@ async function logsFixture(t) {
 function line(second, raw) {
   return { time: `2026-09-30T12:00:${String(second).padStart(2, "0")}.000000001Z`, raw };
 }
+
+// Enough earlier output that the pane scrolls.
+function earlierOutput(count) {
+  return Array.from({ length: count }, (_, index) => ({
+    time: `2026-09-30T11:59:00.${String(index + 1).padStart(9, "0")}Z`,
+    raw: `earlier output ${index + 1}`,
+  }));
+}
+
+// A recorded deployment result, which keeps the Agent view cacheable for Back.
+function succeededDeployment(namespace, agent, revisionId) {
+  return {
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        deploymentId: revisionId,
+        namespaceId: namespace.id,
+        agentId: agent.id,
+        status: "succeeded",
+        error: null,
+        warnings: [],
+        progress: null,
+      },
+      meta: { requestId: "req_logs_deployment" },
+    }),
+  };
+}
+
+const atBottom = (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 24;
 
 function logRequests(requests, revisionId) {
   return requests.filter(({ path }) => path.includes(`/deployments/${revisionId}/runtime/logs`));
@@ -79,7 +110,7 @@ test("a failed deployment's Logs link opens its version in view without reloadin
     } else {
       await page.goto(url.href);
     }
-    const link = page.locator(".deployment-status").getByRole("link", { name: "Open v2 Logs" });
+    const link = page.getByRole("link", { name: "Open v2 Logs" });
     await link.waitFor();
     await page.evaluate(() => {
       globalThis.document.logsNavigationMarker = true;
@@ -113,6 +144,56 @@ test("a failed deployment's Logs link opens its version in view without reloadin
     );
   }
 });
+
+// Clicking the Logs tab scrolled the page 357 px (307 px at 390x844) up to a second later,
+// moving the strip the reader had just used (finding 1518).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`the Logs tab opens under the strip it was clicked in at ${viewport.width}x${viewport.height}`, async (t) => {
+    const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+    computeDriver.state.lines = [line(1, "tab click output")];
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    // The strip sits in the middle of the viewport, as after reading the overview.
+    await page.evaluate(() => {
+      const strip = globalThis.document.querySelector(".agent-tabs").getBoundingClientRect();
+      globalThis.scrollBy(0, strip.top - globalThis.innerHeight / 2);
+    });
+    const before = await page.evaluate(() => ({
+      scrollY: globalThis.scrollY,
+      strip: globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top,
+    }));
+    assert.ok(before.scrollY > 0, "the page scrolled to put the strip mid-viewport");
+    await logsTab.click();
+    await page
+      .getByRole("log", { name: "Runtime log output" })
+      .getByText("tab click output")
+      .waitFor();
+    // The scroll came after the Logs view's first reads and two more frames; wait past them.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+    const after = await page.evaluate(() => ({
+      scrollY: globalThis.scrollY,
+      strip: globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top,
+    }));
+    assert.ok(
+      Math.abs(after.strip - before.strip) <= 1,
+      `the tab strip moved from ${before.strip} to ${after.strip} (scroll ${before.scrollY} -> ${after.scrollY})`,
+    );
+    assert.equal(
+      await logsTab.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
+  });
+}
 
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
@@ -390,6 +471,68 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
   assert.notEqual(colors.list, colors.warning);
 });
 
+// Runtime status is reread every 10 s and usually comes back unchanged. Rebuilding the
+// aria-live status strip, the Source and Pod pickers and the retention text with the same
+// content made screen readers announce them again on every poll (finding 1420), and the
+// "Observed <time>" status line changed on every poll (finding 1425).
+test("an unchanged runtime status poll leaves the status strip and pickers untouched", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "steady output")];
+  // A second Pod shows the Pod picker as well.
+  computeDriver.state.extraPods = [
+    { name: "gateway-second", uid: "5c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f" },
+  ];
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page.getByRole("log", { name: "Runtime log output" }).getByText("steady output").waitFor();
+  const strip = page.locator(".runtime-strip");
+  await strip.locator(".runtime-pod").nth(1).waitFor();
+  await page.locator("#runtime-log-pod:not([hidden])").waitFor();
+  const observed = ["#runtime-log-source", "#runtime-log-pod", ".runtime-strip", ".log-retention"];
+  await page.evaluate((selectors) => {
+    globalThis.statusRewrites = [];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const node = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        globalThis.statusRewrites.push(`${record.type} ${node.id || node.className}`);
+      }
+    });
+    const announcing = [...globalThis.document.querySelectorAll(".agent-logs [role='status']")];
+    for (const node of [
+      ...selectors.map((selector) => globalThis.document.querySelector(selector)),
+      ...announcing,
+    ]) {
+      observer.observe(node, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    }
+  }, observed);
+  // The observation time sits outside every status region, with aria-live=off, because it
+  // changes on every poll and a status region would announce each one (finding 1425).
+  const observedLine = page.locator(".agent-logs [aria-live='off']");
+  assert.match(await observedLine.textContent(), /^Observed /);
+
+  // Only the observation time changes; it shows outside the observed regions.
+  computeDriver.state.observedAt = "2026-09-30T12:00:10.000Z";
+  const before = await observedLine.textContent();
+  await page.clock.runFor(10_000);
+  await page.waitForFunction(
+    (text) =>
+      globalThis.document.querySelector(".agent-logs [aria-live='off']").textContent !== text,
+    before,
+  );
+  assert.deepEqual(await page.evaluate(() => globalThis.statusRewrites), []);
+
+  // A real change still updates the strip.
+  computeDriver.state.restartCount = 4;
+  await page.clock.runFor(10_000);
+  await strip.getByText("4", { exact: true }).first().waitFor();
+  assert.ok((await page.evaluate(() => globalThis.statusRewrites.length)) > 0);
+});
+
 test("a rejected cursor starts one new view and later restarts wait for it", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "first view line")];
@@ -625,10 +768,24 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const [first] = logRequests(requests, revisionId);
   assert.equal(new URL(first.path, fixture.origin).searchParams.has("pod"), false);
   // The download is named after the Pod the page read, as with a Pod picker.
+  const downloadResponse = page.waitForResponse((response) =>
+    response.url().includes("download=true"),
+  );
   const downloadEvent = page.waitForEvent("download");
   await page.getByRole("button", { name: "Download" }).click();
   const saved = await downloadEvent;
   assert.equal(saved.suggestedFilename(), `${agent.id}-${revisionId}-gateway-${pod}.log`);
+  const currentResponse = await downloadResponse;
+  assert.equal(currentResponse.status(), 200);
+  assert.equal(
+    currentResponse.headers()["content-disposition"],
+    `attachment; filename="${agent.id}-${revisionId}-gateway-${pod}.log"`,
+  );
+  const currentBody = await readFile(await saved.path(), "utf8");
+  assert.equal(currentBody, await currentResponse.text());
+  assert.match(currentBody.split("\n")[0], / instance=current /);
+  assert.match(currentBody, /log reader can see this/);
+  assert.equal(currentBody.includes("output before the restart"), false);
 
   // A Pod can disappear after the page read but before this separate audited read.
   // The real Compute fixture reports no current Harness Pod; OCC emits stream:null.
@@ -652,6 +809,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const header = emptyBytes.toString("utf8").split("\n")[0];
   assert.ok(header.startsWith(`# agent=${agent.id} revision=${revisionId} source=agent `));
   assert.equal(header.includes(" pod="), false);
+  assert.match(header, / instance=current /);
   assert.equal(emptyBytes.includes("last Harness Pod output"), false);
   assert.equal(emptyDownload.suggestedFilename(), `${agent.id}-${revisionId}-agent-no-pod.log`);
   assert.deepEqual(await readFile(await emptyDownload.path()), emptyBytes);
@@ -662,6 +820,29 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   // The page's stream reports the restart, so the previous instance is readable.
   await page.getByLabel("Previous instance").check();
   await pane.getByText("output before the restart").waitFor();
+  // Both the API attachment and the Console save identify this separate instance.
+  const previousResponse = page.waitForResponse((response) =>
+    response.url().includes("download=true"),
+  );
+  const previousDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download" }).click();
+  const priorResponse = await previousResponse;
+  const priorDownload = await previousDownload;
+  assert.equal(priorResponse.status(), 200);
+  assert.equal(new URL(priorResponse.url()).searchParams.get("previous"), "true");
+  assert.equal(
+    priorResponse.headers()["content-disposition"],
+    `attachment; filename="${agent.id}-${revisionId}-gateway-${pod}-previous.log"`,
+  );
+  assert.equal(
+    priorDownload.suggestedFilename(),
+    `${agent.id}-${revisionId}-gateway-${pod}-previous.log`,
+  );
+  const priorBody = await readFile(await priorDownload.path(), "utf8");
+  assert.equal(priorBody, await priorResponse.text());
+  assert.match(priorBody.split("\n")[0], / instance=previous /);
+  assert.match(priorBody, /output before the restart/);
+  assert.equal(priorBody.includes("log reader can see this"), false);
   await page.getByLabel("Previous instance").uncheck();
   await pane.getByText("log reader can see this").waitFor();
 
@@ -992,36 +1173,15 @@ test("a status denial for one operator does not carry over to the next sign-in o
 
 test("Back restores a followed Logs view without replaying its reads and keeps polling", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  // Enough earlier output that the pane scrolls: detaching it for Back's cache resets its
-  // offset, which must not leave follow paused as though the reader had scrolled up.
-  const earlier = Array.from({ length: 120 }, (_, index) => ({
-    time: `2026-09-30T11:59:00.${String(index + 1).padStart(9, "0")}Z`,
-    raw: `earlier output ${index + 1}`,
-  }));
-  computeDriver.state.lines = [...earlier, line(1, "before leaving")];
+  // Detaching the scrolling pane for Back's cache resets its offset, which must not leave
+  // follow paused as though the reader had scrolled up.
+  computeDriver.state.lines = [...earlierOutput(120), line(1, "before leaving")];
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  // A recorded deployment result keeps the Agent view cacheable for Back.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: revisionId,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: "succeeded",
-            error: null,
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_logs_back" },
-        }),
-      }),
+    (route) => route.fulfill(succeededDeployment(namespace, agent, revisionId)),
   );
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
@@ -1038,8 +1198,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
     await pane.getByText(tick).waitFor();
   }
   const panel = await pane.elementHandle();
-  const overflowing = (node) => node.scrollHeight > node.clientHeight;
-  assert.equal(await panel.evaluate(overflowing), true);
+  assert.equal(await panel.evaluate((node) => node.scrollHeight > node.clientHeight), true);
   const logPaths = () =>
     requests.filter(({ path }) => path.includes("/runtime/logs")).map(({ path }) => path);
   const statusReads = () => requests.filter(({ path }) => path.endsWith("/runtime")).length;
@@ -1069,10 +1228,7 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
   await page.clock.runFor(2_000);
   await pane.getByText("after back").waitFor();
   // The reader was at the bottom when leaving and stays there as new lines arrive.
-  assert.equal(
-    await panel.evaluate((node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 24),
-    true,
-  );
+  assert.equal(await panel.evaluate(atBottom), true);
   assert.ok(statusReads() > statusBeforeBack);
   const readAfterBack = logPaths().slice(logReadsBeforeLeaving);
   assert.ok(readAfterBack.length > 0);
@@ -1080,4 +1236,313 @@ test("Back restores a followed Logs view without replaying its reads and keeps p
     readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
     [],
   );
+});
+
+// An Agent page stays hidden behind the page it replaces until its overview's first reads
+// settle (#2597). A Logs view whose first reads settled before that scrolled a pane with no
+// layout, so it opened at its oldest line and Follow never read again: the pane looked scrolled
+// up (finding 1536).
+test("a Logs view that loads before its Agent page reveals opens at the newest output and follows", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [...earlierOutput(120), line(1, "newest before reveal")];
+  const { page } = await newPage(t, fixture);
+  // The overview reveals once its deployment read settles: hold that read.
+  const deployment = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    { fulfill: succeededDeployment(namespace, agent, revisionId) },
+  );
+  // A paused clock keeps the overview's bounded wait from revealing the page instead.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await deployment.requested;
+  // The Logs view's first reads settle while the Agent page is still hidden.
+  await page.locator(".agent-logs:not(.agent-logs-pending)").waitFor({ state: "attached" });
+  assert.equal(await page.locator(".agent-detail-pending").count(), 1);
+  deployment.release();
+
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("newest before reveal").waitFor();
+  assert.equal(await pane.evaluate((node) => node.scrollHeight > node.clientHeight), true);
+  assert.equal(await pane.evaluate(atBottom), true);
+  await page.getByRole("button", { name: "Follow" }).click();
+  computeDriver.state.lines = [...computeDriver.state.lines, line(2, "followed output")];
+  await page.clock.runFor(2_000);
+  await pane.getByText("followed output").waitFor();
+  assert.equal(await pane.evaluate(atBottom), true);
+});
+
+// Records the window's scroll offset whenever the Agent page is shown, from before the console's
+// module runs: a page shown at the top and then scrolled to its output is a jump.
+function recordShownScroll() {
+  const seen = [];
+  globalThis.__shownScroll = seen;
+  const record = () => {
+    const view = globalThis.document.querySelector('.content [aria-live="polite"]:not([hidden])');
+    if (
+      view?.querySelector(".agent-current-summary") &&
+      !view.classList.contains("agent-detail-pending")
+    ) {
+      const offset = Math.round(globalThis.scrollY);
+      if (seen.at(-1) !== offset) {
+        seen.push(offset);
+      }
+    }
+  };
+  new globalThis.MutationObserver(record).observe(globalThis.document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+  globalThis.addEventListener("scroll", record, { passive: true });
+}
+
+// A fresh load, reload or sign-in landing on an Agent's Logs URL showed the page at the top, then
+// jumped 441-2448 px down to the output when the first log read landed (finding 1552). The page
+// now waits for that output too, within the overview's bound, and shows already scrolled to it.
+test("a Logs URL entry shows the page at its output, never at the top first", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [...earlierOutput(120), line(1, "newest on entry")];
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.addInitScript(
+    `document.addEventListener("readystatechange", () => {
+      if (document.readyState === "interactive") (${recordShownScroll})();
+    });`,
+  );
+  // A paused clock keeps the bounded waits from revealing the page instead.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  for (const entry of ["sign-in landing", "reload"]) {
+    // The first log read lands after every other read of the page has settled.
+    const logRead = await holdRequests(t, page, `**/deployments/${revisionId}/runtime/logs?*`, {
+      once: true,
+    });
+    if (entry === "reload") {
+      await page.reload();
+    } else {
+      await login(page, fixture, url.href);
+    }
+    await logRead.requested;
+    await page.waitForFunction(() => globalThis.inFlightFetchCount() === 1);
+    assert.equal(await page.locator(".agent-detail-pending").count(), 1, entry);
+    logRead.release();
+
+    await pane.getByText("newest on entry").waitFor();
+    await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
+    // Let any later scroll (a frame after the output settles) run.
+    await page.clock.runFor(100);
+    const shown = await page.evaluate(() => globalThis.__shownScroll);
+    assert.equal(shown.length, 1, `${entry}: the page moved after it showed (${shown})`);
+    assert.ok(shown[0] > 0, `${entry}: the output is below the fold, so the page scrolls to it`);
+    // The version's detail, where the output starts, is at the top of the window.
+    const detail = await page.locator(".agent-version-detail").boundingBox();
+    assert.ok(Math.abs(detail.y) <= 1, `${entry}: detail at ${detail.y}`);
+    assert.equal(await pane.evaluate(atBottom), true, entry);
+  }
+});
+
+// A member's Agent page always has reads it is refused (native administration, runtime status).
+// Any failed read made the view non-reusable, so Back rebuilt it: Follow switched off and every
+// read, a fresh 200-line tail included, replayed (finding 1553). A refusal the view shows is now a
+// settled answer. Back still checks what the view shows, and output whose access was revoked since
+// is never painted from the cached view.
+test("a member's Back reuses a followed Logs view, and not once log access is revoked", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [...earlierOutput(120), line(1, "member before leaving")];
+  let memberRole;
+  const member = await fixture.createAccountWithPolicy("runtime-member", (principal) => {
+    ({ role: memberRole } = grantRole(fixture.policy, principal.id, {
+      id: "role-console-runtime-member",
+      bindingId: "binding-console-runtime-member",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "read_logs"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
+    }));
+  });
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) => route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  // A paused clock keeps a follow read from being in flight when the member leaves.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    member.credentials,
+  );
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("member before leaving").waitFor();
+  // The member is refused runtime status and native administration, and the view says so.
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByRole("button", { name: "Follow" }).click();
+  computeDriver.state.lines = [...computeDriver.state.lines, line(2, "member first poll")];
+  await page.clock.runFor(2_000);
+  await pane.getByText("member first poll").waitFor();
+  await waitForIdleFetches(page);
+  const panel = await pane.elementHandle();
+  const nativeAdminReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/agents/${agent.id}/native-admin`)).length;
+  assert.equal(nativeAdminReads(), 1);
+  const logPaths = () =>
+    requests.filter(({ path }) => path.includes("/runtime/logs")).map(({ path }) => path);
+
+  const leave = async () => {
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+  };
+  await leave();
+  const readBeforeLeaving = new Set(logPaths());
+  const logReadsBeforeLeaving = logPaths().length;
+  computeDriver.state.lines = [...computeDriver.state.lines, line(3, "member after back")];
+  await page.goBack();
+  // The cached view comes back with Follow still on, and resumes from its cursor.
+  await page
+    .locator(".agent-logs button[aria-pressed='true']:enabled", { hasText: "Following" })
+    .waitFor();
+  assert.equal(await panel.evaluate((node) => node.isConnected), true);
+  await pane.getByText("member after back").waitFor();
+  await waitForIdleFetches(page);
+  const readAfterBack = logPaths().slice(logReadsBeforeLeaving);
+  assert.deepEqual(
+    readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
+    [],
+  );
+  // The remembered refusal is not asked again (each one is an audited denial).
+  assert.equal(nativeAdminReads(), 1);
+
+  // Log access is revoked while the member is away: Back must not paint the cached output.
+  await leave();
+  memberRole.permissions = memberRole.permissions.filter(
+    ({ action, resourceKind }) => !(resourceKind === "agent" && action === "read_logs"),
+  );
+  await page.evaluate(() => {
+    const seen = [];
+    globalThis.__cachedLogsSeen = seen;
+    const check = () => {
+      if (globalThis.document.body.textContent.includes("member before leaving")) {
+        seen.push("painted");
+      }
+    };
+    new globalThis.MutationObserver(check).observe(globalThis.document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  await page.goBack();
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  assert.deepEqual(await page.evaluate(() => globalThis.__cachedLogsSeen), []);
+  assert.equal(await panel.evaluate((node) => node.isConnected), false);
+  assert.equal(await pane.getByText("member before leaving").count(), 0);
+});
+
+// Marks the Agent view node, so a test can tell a remounted retained view from a rebuilt one.
+const tagView = (page) =>
+  page.evaluate(() => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.navTag = "kept";
+  });
+const viewKept = (page) =>
+  page.evaluate(
+    () =>
+      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.navTag === "kept",
+  );
+
+// Back's check covers runtime status and the version's saved snapshot as well: once either is
+// refused, the cached view is not mounted again (finding 1553).
+test("Back rebuilds an Agent view whose runtime status or version read was refused since", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "operator output")];
+  let operatorRole;
+  const operator = await fixture.createAccountWithPolicy("runtime-operator", (principal) => {
+    ({ role: operatorRole } = grantRole(fixture.policy, principal.id, {
+      id: "role-console-runtime-operator",
+      bindingId: "binding-console-runtime-operator",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "operate", "read_logs"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
+    }));
+  });
+  const revoke = (kind, revoked) => {
+    operatorRole.permissions = operatorRole.permissions.filter(
+      ({ action, resourceKind }) => !(resourceKind === kind && action === revoked),
+    );
+  };
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) => route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    operator.credentials,
+  );
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("operator output").waitFor();
+  await page.locator(".runtime-pod").first().waitFor();
+  // The Logs tab settles a frame after its output shows; only a settled page is retained.
+  await page.clock.runFor(100);
+  const leave = async () => {
+    await waitForIdleFetches(page);
+    await tagView(page);
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+  };
+
+  // Unchanged access: Back mounts the same view.
+  await leave();
+  await page.goBack();
+  await pane.getByText("operator output").waitFor();
+  assert.equal(await viewKept(page), true);
+
+  // Runtime status refused since (its operate grant also changes the Agent's permission answer):
+  // the cached Pod cards are never mounted again.
+  await leave();
+  revoke("agent", "operate");
+  await page.evaluate(() => {
+    const seen = [];
+    globalThis.__cachedStatusSeen = seen;
+    new globalThis.MutationObserver(() => {
+      if (globalThis.document.querySelector(".runtime-pod")) {
+        seen.push("painted");
+      }
+    }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
+  });
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await pane.getByText("operator output").waitFor();
+  assert.equal(await viewKept(page), false);
+  assert.deepEqual(await page.evaluate(() => globalThis.__cachedStatusSeen), []);
+
+  // The version's saved snapshot refused since: Back rebuilds the page.
+  await leave();
+  revoke("agent_revision", "read");
+  await page.goBack();
+  await page.getByText(/you cannot read this version/).waitFor();
+  assert.equal(await viewKept(page), false);
 });

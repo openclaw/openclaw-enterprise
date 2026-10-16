@@ -5,6 +5,7 @@ import type {
   PluginDesiredState,
   PluginApprovers,
 } from "@openclaw-enterprise/contracts";
+import type { CodexPublicGithubRead } from "../repo/github/public-read/codex.ts";
 
 export type OpenClawRuntimeResolvedArtifacts = {
   readonly kind: "openclaw";
@@ -38,6 +39,14 @@ type PluginRuntimeFailureInput = readonly { readonly pluginId: string }[];
 export interface CodexRepositoryBrokerNetworkPolicy {
   readonly host: string;
   readonly domains: Readonly<Record<string, "allow" | "deny">>;
+}
+
+export interface CodexOpenClawRuntimePolicy {
+  readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+  readonly pluginApprovers?: PluginApprovers;
+  readonly publicGithubRead?: CodexPublicGithubRead;
+  readonly dedicatedCodex?: boolean;
+  readonly baseProxyEnabled?: boolean;
 }
 
 export type CodexPluginCatalogReader = {
@@ -798,7 +807,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     };
   }
 
-  function codexBrokerOpenClawConfiguration(policy: unknown): Record<string, unknown> | undefined {
+  function codexBrokerNetworkProxy(policy: unknown): Record<string, unknown> | undefined {
     if (!isRecord(policy)) {
       return undefined;
     }
@@ -810,51 +819,56 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       }
     }
     return {
-      appServer: {
-        networkProxy: {
-          enabled: true,
-          mode: "full",
-          allowLocalBinding: true,
-          readOnlyPaths: CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS,
-          domains: { ...domains, [host]: "allow" },
-        },
-      },
+      enabled: true,
+      mode: "full",
+      allowLocalBinding: true,
+      domains: { ...domains, [host]: "allow" },
     };
   }
 
   function codexOpenClawConfiguration(
     selections: unknown,
     failures: unknown = [],
-    repositoryBrokerNetworkPolicy: unknown = undefined,
-    defaultApprovers?: unknown,
+    {
+      repositoryBrokerNetworkPolicy,
+      pluginApprovers,
+      publicGithubRead,
+      dedicatedCodex = false,
+      baseProxyEnabled = false,
+    }: CodexOpenClawRuntimePolicy = {},
   ): Record<string, unknown> | undefined {
-    validatePolicies("codex", selections, defaultApprovers);
+    validatePolicies("codex", selections, pluginApprovers);
     const selected = selectionEntries(selections);
-    const brokerConfiguration = codexBrokerOpenClawConfiguration(repositoryBrokerNetworkPolicy);
+    const broker = codexBrokerNetworkProxy(repositoryBrokerNetworkPolicy);
     const failedPluginIds = failedPluginIdSet(failures);
-    const pluginFilesystemConfiguration =
-      brokerConfiguration !== undefined
-        ? {}
-        : {
-            appServer: {
-              networkProxy: {
-                // The native sandbox helper is packaged here even without selected plugins.
-                readOnlyPaths:
-                  selected.length === 0
-                    ? CODEX_RUNTIME_READ_ONLY_PATHS
-                    : CODEX_PLUGIN_READ_ONLY_PATHS,
-              },
-            },
-          };
+    // The native sandbox helper is packaged here even without selected plugins.
+    const runtimePaths =
+      selected.length === 0 ? CODEX_RUNTIME_READ_ONLY_PATHS : CODEX_PLUGIN_READ_ONLY_PATHS;
+    const runtimeReadOnlyPaths =
+      broker === undefined ? runtimePaths : CODEX_REPOSITORY_BROKER_READ_ONLY_PATHS;
+    const readOnlyPaths = [
+      ...runtimeReadOnlyPaths,
+      ...(dedicatedCodex && (broker !== undefined || baseProxyEnabled)
+        ? ["/home/node/.codex/skills/.system"]
+        : []),
+    ];
+    // Preserve the authored public-reader IP allow. Codex needs neither
+    // broader local binding nor a mode change to permit that literal IP.
+    const networkProxy = {
+      ...broker,
+      readOnlyPaths:
+        publicGithubRead === undefined
+          ? readOnlyPaths
+          : [...readOnlyPaths, publicGithubRead.skillPath],
+    };
     return {
-      ...pluginApprovalOverlay("codex", selections, defaultApprovers),
+      ...pluginApprovalOverlay("codex", selections, pluginApprovers),
       plugins: {
         entries: {
           codex: {
             enabled: true,
             config: {
-              ...brokerConfiguration,
-              ...pluginFilesystemConfiguration,
+              appServer: { networkProxy },
               ...(selected.length === 0
                 ? {}
                 : {
@@ -1082,15 +1096,10 @@ export function codexRuntimeArtifact(
 export function codexOpenClawConfiguration(
   selections: PluginDesiredState,
   failures: PluginRuntimeFailureInput = [],
-  repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
-  defaultApprovers?: PluginApprovers,
+  policy?: CodexOpenClawRuntimePolicy,
 ): OpenClawConfigurationDocument | undefined {
-  return pluginRuntimeTranslator.codexOpenClawConfiguration(
-    selections,
-    failures,
-    repositoryBrokerNetworkPolicy,
-    defaultApprovers,
-  ) as OpenClawConfigurationDocument | undefined;
+  return pluginRuntimeTranslator.codexOpenClawConfiguration(selections, failures, policy) as
+    OpenClawConfigurationDocument | undefined;
 }
 
 export function openClawRuntimeArtifact(

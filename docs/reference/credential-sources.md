@@ -9,7 +9,12 @@ Harness never receives the real credential. An Agent uses a model source through
 
 Credential sources require a selected Credential Gateway. The only
 implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
-Its `openai` type authenticates dedicated Codex and native OpenClaw models; `bearer-token` carries a static token to one API endpoint. With a [Credential Refresh Driver](drivers/credential-refresh.md), `oauth2-client-credentials` and `oauth2-refresh-token` carry access tokens the gateway mints and refreshes. OpenShell is not a supported
+Its `openai` API-key type authenticates dedicated Codex and native OpenClaw models;
+`codex-pat` personal or service-account tokens authenticate dedicated Codex only.
+Its `bearer-token` type carries a static token to one API endpoint. With a
+[Credential Refresh Driver](drivers/credential-refresh.md),
+`oauth2-client-credentials` and `oauth2-refresh-token` carry access tokens the
+gateway mints and refreshes. OpenShell is not a supported
 production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 

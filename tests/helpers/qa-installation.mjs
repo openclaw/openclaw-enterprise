@@ -660,7 +660,11 @@ export async function prepareQaPreset(f, presetName) {
 
 export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "") {
   assert.ok(!f.retained, "unresolved repository cleanup prevents new Agent work");
-  const preset = f.presets.find((value) => value.name === `Standard ${presetName}`);
+  // The Preset list returns summaries; the exact Preset carries the template.
+  const selected = f.presets.find((value) => value.name === `Standard ${presetName}`);
+  assert.ok(selected, `Standard ${presetName} Preset must be available`);
+  assert.equal(selected.namespaceId, f.namespace.id, "Preset must belong to the QA Namespace");
+  const preset = await f.api("GET", `/namespaces/${selected.namespaceId}/presets/${selected.id}`);
   const codex = presetName === "Codex";
   const credential = await protectedText(
     process.env[codex ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE"],
@@ -745,6 +749,13 @@ export async function createQaAgent(f, presetName, browserOrigin, nameSuffix = "
     execCodex: (a, args) => f.execRole(a, "agent", args),
     waitFor,
     proofMode: codex ? "codex" : "openclaw",
+    readRuntimeLogs: ({ namespaceId, agentId, revisionId, source }) =>
+      f.api(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}/runtime/logs?source=${source}&tailLines=100`,
+      ),
+    recordRuntimeLogs: (record) =>
+      f.record(`${record.agentId}-${record.revisionId}-turn-failure-logs-${randomUUID()}`, record),
   });
   return agent;
 }

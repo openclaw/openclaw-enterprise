@@ -102,11 +102,19 @@ RUN --mount=type=secret,id=build-ca,required=false \
 COPY deploy/runtime/openclaw-codex-read-only-paths.patch /tmp/openclaw-codex-read-only-paths.patch
 RUN echo '1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca  /tmp/openclaw-codex-read-only-paths.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-read-only-paths.patch
+# TODO: Remove when OpenClaw preserves on-request for plugins that use MCP elicitation.
+COPY deploy/runtime/openclaw-codex-preserve-on-request.patch /tmp/openclaw-codex-preserve-on-request.patch
+RUN echo 'ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b  /tmp/openclaw-codex-preserve-on-request.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-preserve-on-request.patch
 # TODO: Remove this bridge patch when OpenClaw `connect --ephemeral` accepts an expired
 # replayed setup code for a node whose saved device token can reconnect.
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
 RUN echo '906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
+COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
+RUN echo 'bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-full-access-profile.patch
 # TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
 COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
 RUN echo '7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \

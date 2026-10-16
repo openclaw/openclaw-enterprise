@@ -631,6 +631,57 @@ export const AgentRuntimeImagesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// Caller-permission summaries let clients gate controls; the API still authorizes every
+// request. Each flag reports only the primary IAM action of the named operation.
+export const AgentCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        update: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        deploy: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        operate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const NamespaceCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        agents: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentProvisioningStatusSchema = Type.Object(
   {
     workId: Type.String({ minLength: 1, maxLength: 200 }),
@@ -1100,10 +1151,44 @@ export const AgentRevisionReadResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// A list item names a revision without its saved settings, so a page stays a few hundred bytes
+// per item whatever the admitted snapshots weigh (finding 1323). The fields beyond metadata are
+// the ones clients use to tell revisions apart; the database checks their shape on insert.
+export const AgentRevisionSummarySchema = Type.Pick(
+  AgentRevisionSchema,
+  [
+    "id",
+    "namespaceId",
+    "agentId",
+    "revision",
+    "backendId",
+    "configurationId",
+    "configurationGeneration",
+    "harness",
+    "createdAt",
+  ],
+  {
+    description:
+      "Revision summary without saved settings. Read the exact revision for its configuration, or for configurationReadError when the saved settings are unreadable.",
+  },
+);
+
 export const AgentRevisionListResponse = Type.Object(
   {
-    data: Type.Array(AgentRevisionReadSchema, { description: agentRevisionReadDescription }),
-    meta: Meta,
+    data: Type.Array(AgentRevisionSummarySchema, {
+      maxItems: 100,
+      description: "Readable revisions, newest first.",
+    }),
+    meta: Type.Object(
+      {
+        ...Meta.properties,
+        nextCursor: Type.Union([Type.String({ maxLength: 32 }), Type.Null()], {
+          description:
+            "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -1594,6 +1679,7 @@ export type ServiceAccountWire = Type.Static<typeof ServiceAccountSchema>;
 export type BackendSummaryWire = Type.Static<typeof BackendSummarySchema>;
 export type AgentReadWire = Type.Static<typeof AgentReadSchema>;
 export type AgentRevisionReadWire = Type.Static<typeof AgentRevisionReadSchema>;
+export type AgentRevisionSummaryWire = Type.Static<typeof AgentRevisionSummarySchema>;
 export type AgentReadResponse = Type.Static<typeof AgentReadResponse>;
 export type AgentRevisionReadResponse = Type.Static<typeof AgentRevisionReadResponse>;
 export type AgentWire = Type.Static<typeof AgentSchema>;
@@ -1666,10 +1752,17 @@ export const PresetResponse = Type.Object(
   { data: PresetSchema, meta: Meta },
   { additionalProperties: false },
 );
+// A list item names a Preset without its template (up to 1 MiB); read the exact Preset for it.
+export const PresetSummarySchema = Type.Pick(
+  PresetSchema,
+  ["id", "namespaceId", "name", "createdAt"],
+  { description: "Preset summary without its template. Read the exact Preset for the template." },
+);
 export const PresetListResponse = Type.Object(
-  { data: Type.Array(PresetSchema), meta: Meta },
+  { data: Type.Array(PresetSummarySchema), meta: Meta },
   { additionalProperties: false },
 );
 export type PresetWire = Type.Static<typeof PresetSchema>;
+export type PresetSummaryWire = Type.Static<typeof PresetSummarySchema>;
 export type PresetResponse = Type.Static<typeof PresetResponse>;
 export type PresetListResponse = Type.Static<typeof PresetListResponse>;

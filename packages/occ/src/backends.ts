@@ -12,12 +12,13 @@ import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from
 
 const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_CHATGPT_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60;
-const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
 
 /**
  * Both gateway clients parse a bare `host:port` as `http://<value>` and an origin
  * with `new URL`. Shorthand, a single integer, hex, and leading zeros then dial a
- * different IPv4 address (`192.168.1` becomes `192.168.0.1`).
+ * different IPv4 address (`192.168.1` becomes `192.168.0.1`). `isIP` accepts only four
+ * decimal octets from 0 to 255 with no leading zeros, so comparing the written host with
+ * the parsed one is enough.
  */
 export function gatewayEndpointRewritesIpv4(raw: string): boolean {
   let parsed: URL;
@@ -32,7 +33,7 @@ export function gatewayEndpointRewritesIpv4(raw: string): boolean {
   const written = raw.includes("://")
     ? /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(raw)?.[1]
     : raw.slice(0, raw.lastIndexOf(":"));
-  return written !== parsed.hostname || !strictDecimalIpv4.test(parsed.hostname);
+  return written !== parsed.hostname;
 }
 
 type BackendMap = ReadonlyMap<string, BackendDefinition>;

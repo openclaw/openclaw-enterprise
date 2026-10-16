@@ -128,7 +128,7 @@ async function nativeWorkerProof({
         : []),
       `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
       'hostname:require("node:os").hostname(),',
-      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY"),',
+      'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY")||Object.hasOwn(process.env,"CODEX_ACCESS_TOKEN"),',
       `sessionFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex"),`,
       ...(workspaceFile === undefined
         ? []
@@ -259,6 +259,8 @@ export async function assertNativeWorkerProofInController(
   };
   delete safeEnvironment.OPENAI_API_KEY;
   delete safeEnvironment.OPENAI_API_KEY_FILE;
+  delete safeEnvironment.CODEX_ACCESS_TOKEN;
+  delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
   const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =

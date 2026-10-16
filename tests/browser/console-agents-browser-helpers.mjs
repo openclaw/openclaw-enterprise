@@ -8,6 +8,18 @@ import { chromium } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
+
+// The in-memory fixture has no worker records. A test that supplies a failed deployment
+// record builds its error with the API's own code, so the console shows the exact code,
+// message and data that the API and occ return for that failure.
+export function persistedDeploymentError(code, data) {
+  return deploymentErrorForWork({
+    state: "failed_permanent",
+    reasonCode: code,
+    ...(data === undefined ? {} : { resultData: data }),
+  });
+}
 
 export function apiRequests(page, origin) {
   const requests = [];
@@ -135,8 +147,12 @@ export async function revealNativeConfiguration(page, label) {
 export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   const url = new URL(`/console/agents/${agentId}`, fixture.origin);
   url.searchParams.set("namespace", namespaceId);
-  url.searchParams.set("revision", revision);
-  url.searchParams.set("tab", tab);
+  if (revision !== undefined) {
+    url.searchParams.set("revision", revision);
+  }
+  if (tab !== undefined) {
+    url.searchParams.set("tab", tab);
+  }
   return url;
 }
 
@@ -320,4 +336,106 @@ export function repositoryCheckbox(page, name) {
     .locator("#repository-results .repository-result-row")
     .filter({ has: page.getByText(name, { exact: true }) })
     .getByRole("checkbox");
+}
+
+// Holds requests matching `url` until release(). `requested` resolves when the first one is
+// held. Once a test awaits it, it rejects if none is held within 10 s, so a test fails instead
+// of hanging. With `once`, only the first match is held; with `method`, only matches with that
+// method. Requests not held fall through to earlier routes. `once` is a hand-written flag, not
+// Playwright's { times: 1 }: that
+// turns interception off once no routes remain, which silently releases other held requests.
+// With `afterServer`, the server answers first and the page gets that answer on release (a
+// write that landed while the page waits); if that answer is lost, the page's request fails
+// rather than being sent again. With `fulfill`, the held request gets that response.
+export async function holdRequests(
+  t,
+  page,
+  url,
+  { once = false, method, afterServer = false, fulfill = null } = {},
+) {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let markRequested;
+  let failRequested;
+  let timer;
+  const requested = new Promise((resolve, reject) => {
+    markRequested = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    failRequested = (error = new Error(`No ${url} request was held`)) => {
+      clearTimeout(timer);
+      reject(error);
+    };
+  });
+  requested.catch(() => {});
+  let taken = false;
+  await page.route(url, async (route) => {
+    if ((once && taken) || (method !== undefined && route.request().method() !== method)) {
+      await route.fallback();
+      return;
+    }
+    taken = true;
+    let response = null;
+    if (afterServer) {
+      try {
+        response = await route.fetch();
+      } catch (error) {
+        // The server may have applied a write before its answer was lost. Never send it again:
+        // `requested` rejects with the failure and the page's request fails.
+        failRequested(error);
+        await route.abort("failed").catch(() => {});
+        return;
+      }
+    }
+    markRequested();
+    await held;
+    await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
+      () => {},
+    );
+  });
+  t.after(() => {
+    clearTimeout(timer);
+    release();
+  });
+  return {
+    // The deadline starts at the first await, not at registration (a hold set before sign-in).
+    get requested() {
+      if (!taken && timer === undefined) {
+        timer = setTimeout(failRequested, 10_000);
+      }
+      return requested;
+    },
+    release,
+    wasRequested: () => taken,
+  };
+}
+
+// Records layout shifts from the first paint, naming the elements that moved. Install it with
+// page.addInitScript() before a full load, so no recent input excuses a shift.
+export function recordLayoutShifts() {
+  globalThis.__layoutShifts = [];
+  new globalThis.PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      if (!entry.hadRecentInput) {
+        globalThis.__layoutShifts.push({
+          value: entry.value,
+          sources: entry.sources.map((source) => ({
+            node: `${source.node?.nodeName}.${source.node?.className}`,
+            text: source.node?.textContent?.slice(0, 40),
+            from: [source.previousRect.y, source.previousRect.height],
+            to: [source.currentRect.y, source.currentRect.height],
+          })),
+        });
+      }
+    }
+  }).observe({ type: "layout-shift", buffered: true });
+}
+
+// Returns the layout shifts recorded since the last call, and their total.
+export async function takeLayoutShifts(page) {
+  const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }

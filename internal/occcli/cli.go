@@ -123,6 +123,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 			child.Run, child.RunE = nil, helpTopic
 		}
 	}
+	app.addRefusalHints(command)
 	return command
 }
 
@@ -791,31 +792,48 @@ func (app *application) agentCommand() *cobra.Command {
 			})
 		},
 	}
+	var revisionLimit int
+	var revisionCursor string
 	revisions := &cobra.Command{
 		Use:   "revisions AGENT_ID",
-		Short: "List an Agent's immutable revisions (deployment IDs)",
+		Short: "List an Agent's immutable revisions (deployment IDs), newest first, one page at a time",
 		Args:  idArgs(agentIDArg),
 		RunE: func(command *cobra.Command, args []string) error {
+			if command.Flags().Changed("limit") && (revisionLimit < 1 || revisionLimit > 100) {
+				return fmt.Errorf("--limit must be between 1 and 100")
+			}
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
 			}
-			result, err := client.ListAgentRevisions(namespace, args[0])
+			page, err := client.ListAgentRevisions(namespace, args[0], revisionLimit, revisionCursor)
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], result)
+			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], page.Revisions)
 			if err != nil {
 				return err
 			}
-			return app.printAgentRevisionList(rows)
+			if err := app.printAgentRevisionList(rows); err != nil {
+				return err
+			}
+			if page.NextCursor != "" {
+				limit := ""
+				if command.Flags().Changed("limit") {
+					limit = fmt.Sprintf(" --limit %d", revisionLimit)
+				}
+				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ agent revisions %s%s --cursor %s\"", args[0], limit, page.NextCursor)
+			}
+			return nil
 		},
 	}
+	revisions.Flags().IntVar(&revisionLimit, "limit", 0, "revisions per page, 1 to 100 (default 50)")
+	revisions.Flags().StringVar(&revisionCursor, "cursor", "", "continue from the cursor a previous page printed")
 	deploymentStatus := &cobra.Command{
 		Use:   "deployment-status AGENT_ID [DEPLOYMENT_ID]",
-		Short: "Show durable status for one Agent deployment, by default the latest revision",
+		Short: "Show durable status for one Agent deployment, by default the latest revision you can read",
 		Args:  idArgs(agentIDArg, optionalID(revisionIDArg)),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -824,13 +842,11 @@ func (app *application) agentCommand() *cobra.Command {
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				result, err := client.ListAgentRevisions(namespace, args[0])
-				if err != nil {
+				var number float64
+				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
 					return err
 				}
-				if deploymentID, err = latestRevisionID(args[0], result); err != nil {
-					return err
-				}
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
@@ -897,15 +913,41 @@ func (app *application) agentCommand() *cobra.Command {
 	return command
 }
 
+// defaultDeploymentNotice says which revision deployment-status chose without
+// an ID. Revision lists are permission-filtered, so the latest revision the
+// caller can read may be an old failed one while the active revision is hidden.
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
+	agent, err := client.GetAgent(namespace, agentID)
+	resource, _ := agent.(map[string]any)
+	active, _ := resource["activeRevisionId"].(string)
+	switch {
+	case err != nil:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
+		return
+	case active == "":
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; agent %s has no active revision", latest, agentID)
+		return
+	case active == latest:
+		noticef(notices, "notice: showing the active revision %s", latest)
+		return
+	}
+	order, err := revisionOrder(client, namespace, agentID, active, number)
+	var apiErr *occclient.APIError
+	switch {
+	case order != "":
+		noticef(notices, "notice: showing revision %s, %s than the active revision %s; run \"occ --namespace %s agent deployment-status %s %s\" for the active revision", latest, order, active, namespace, agentID, active)
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision %s is not readable with your permissions", latest, active)
+	default:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision is %s", latest, active)
+	}
+}
+
 // describeAgentRevisions adds what tells revisions apart to each listed
 // revision: whether it is the Agent's active revision and the status of the
 // deployment that created it. A revision whose deployment status the caller may
 // not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, value any) ([]any, error) {
-	revisions, ok := value.([]any)
-	if !ok {
-		return nil, fmt.Errorf("OCC returned an invalid resource collection")
-	}
+func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, revisions []any) ([]any, error) {
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
 		return nil, err
@@ -926,7 +968,7 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
 		row["deploymentStatus"] = nil
-		if id != "" && !agentUnreadable && row["configurationReadError"] == nil {
+		if id != "" && !agentUnreadable {
 			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
 			var apiErr *occclient.APIError
 			switch {
@@ -935,6 +977,10 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 					row["deploymentStatus"] = status["status"]
 				}
 			case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden):
+			case errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable:
+				// List items are summaries, so a revision whose saved settings are unreadable
+				// shows up only here; its status read fails while the others still work.
+				noticef(notices, "notice: deployment status of revision %s is unavailable: %v", id, err)
 			default:
 				return nil, err
 			}

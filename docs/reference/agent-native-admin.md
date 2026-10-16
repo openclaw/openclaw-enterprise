@@ -22,6 +22,13 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - The Agent must be running with an active revision owned by the selected Compute Driver: both Driver ID and implementation must match the revision. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
 - The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
+The local Compose-control-plane profile enables this capability only when both
+Kubernetes Compute and OpenShell are selected. Its development proxy terminates
+HTTPS on host loopback for the installation's console and wildcard Agent hosts;
+the private Envoy route in k3d still carries OCC-to-gateway traffic. The
+first-Agent helper's `--control-ui` option supplies the exact per-Agent native
+configuration. Other Compose profiles do not expose this browser endpoint.
+
 ## Authorization and availability
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It is a protected OCC API route with a human session, exact Agent `administer` authorization, and exact Agent existence. OCC verifies that authorization boundary before returning any feature status, including `disabled`; Agent `read`, Agent `operate`, native device credentials, native tokens, service keys for unrelated principals, and possession of a derived Agent host do not grant this API route.
@@ -53,6 +60,10 @@ The mismatch is not transient, so refreshing does not clear it. Each API process
 logs one `native_admin.compute_owner_mismatch` warning per revision and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 revision's Compute Driver again, with the same ID and implementation.
+
+When someone opens a copied `/chat/main` Agent link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+
+The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
 
 ## Agent host identity
 
@@ -136,6 +147,9 @@ device state, plugins, or other persistent gateway data.
 - 2026-10-13 23:57: Documented native-admin refusal when selected Compute ownership differs from the active revision. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)
 
 - 2026-10-10 09:20: Documented that native listener edits are not re-checked and how to recover. (docs-1014)
+
+- 2026-10-06 12:00: Documented the Compose/OpenShell development endpoint and first-Agent Control UI option.
+
 - 2026-09-21 21:20: Documented status-only stopped results before deployment and after stop reconciliation. (01a0c750-0c10-7492-97eb-f4124cded820 - 156dd67b7bd280a380d96b5c34a64e402fe3b96b)
 - 2026-09-20 08:21: Linked Kubernetes configuration-copy details to the implementation reference after the Driver documentation refactor. (01a0b7fd-13fa-7dc2-8653-5c5814b59305 - f4e22e48)
 - 2026-09-20 08:53: Replaced the temporary exchange launch description with the shared OCE session cookie model, cookie-domain trust boundary, host-to-Agent admission, and current-revision reconnect behavior. (cody/01a0b7fd-13fa-7dc2-8653-5c5814b59305 - 5e5f12f37842ae7239d73432e00609547627ded8)

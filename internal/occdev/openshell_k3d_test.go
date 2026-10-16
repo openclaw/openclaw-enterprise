@@ -112,7 +112,7 @@ func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell preparation"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -196,7 +196,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 ` + probe + ` ;;`,
 			})
 			driver := "none"
-			if scenario == "OpenShell preparation" {
+			if scenario == "OpenShell routing" {
 				driver = "openshell"
 				t.Setenv("OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", root)
 				t.Setenv("OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", root)
@@ -231,8 +231,8 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				wantError = "invalid dedicated Codex sandbox preparation result"
 			case "API failure":
 				wantError = "exit status 44"
-			case "OpenShell preparation":
-				wantError = "exit status 45"
+			case "OpenShell routing":
+				wantError = "fixture routing download refused"
 			}
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
@@ -266,9 +266,6 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				if index("k3d image import ") >= 0 || index("node ") >= 0 {
 					t.Fatal("runtime work preceded its prerequisite")
 				}
-				if driver == "openshell" {
-					stages = append(stages, "helm show chart ")
-				}
 			}
 			stages = append(stages, "k3d cluster delete occ-dev-order")
 			for _, stage := range stages {
@@ -279,7 +276,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				previous = i
 			}
 			wantRequests := 0
-			if scenario == "accepted" {
+			if scenario == "accepted" || scenario == "OpenShell routing" {
 				wantRequests = 1
 			}
 			if transport.requests != wantRequests {

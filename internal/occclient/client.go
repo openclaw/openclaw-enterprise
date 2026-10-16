@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
@@ -360,9 +361,75 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 	)
 }
 
-// ListAgentRevisions lists the readable immutable revisions of an Agent.
-func (client *Client) ListAgentRevisions(namespaceID, agentID string) (any, error) {
-	return client.get("namespaces", namespaceID, "agents", agentID, "revisions")
+// AgentRevisionPage is one page of readable revision summaries, newest first.
+// NextCursor is empty on the last page.
+type AgentRevisionPage struct {
+	Revisions  []any
+	NextCursor string
+}
+
+// ListAgentRevisions reads one page of an Agent's readable revision summaries,
+// newest first. A zero limit uses OCC's default; an empty cursor starts at the
+// newest revision. Read an exact revision for its saved settings.
+func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int, cursor string) (*AgentRevisionPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodGet,
+		[]string{"namespaces", namespaceID, "agents", agentID, "revisions"},
+		query,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, header, responseBody)
+	}
+	var envelope struct {
+		Data []any `json:"data"`
+		Meta struct {
+			NextCursor *string `json:"nextCursor"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Data == nil {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	page := &AgentRevisionPage{Revisions: envelope.Data}
+	if envelope.Meta.NextCursor != nil {
+		page.NextCursor = *envelope.Meta.NextCursor
+	}
+	return page, nil
+}
+
+// LatestAgentRevision returns the newest revision summary the caller can read,
+// or nil when there is none. A cursor reflects a read check in its issuing request;
+// a later page may be empty if access changes. The loop also supports older servers.
+func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(page.Revisions) > 0 {
+			return page.Revisions[0], nil
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
 }
 
 // GetAgentDeployment fetches durable deployment status for one Agent revision.

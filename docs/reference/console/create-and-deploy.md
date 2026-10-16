@@ -14,15 +14,15 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open native admin UI** requires [native admin setup](../../guides/deploy/native-admin.md):
+**Open admin console** requires [native admin setup](../../guides/deploy/native-admin.md):
 trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
 are insufficient. Presets and edited Configuration JSON retain their settings.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
-and full-facet Sandbox provisioning. The pinned runtime enables the Console choice
-without a custom-image declaration. Compute initializes private workspace files
-before Sandbox handoff; the Harness verifies their completion marker. [Sandbox delivery limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-still block direct Secret-backed model and environment projection.
+and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
+initializes private workspace files before Sandbox handoff; the Harness verifies
+their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
+block direct Secret-backed model and environment projection.
 
 1. Sign in, select the intended Namespace, open **Agents**, and select
    **Create Agent**.
@@ -71,9 +71,10 @@ still block direct Secret-backed model and environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning stays pending until deployment activates or fails.
+   Provisioning waits for deployment activation or failure.
    Success opens Agent details. Failure links to the same Agent and revision;
-   correct the cause and redeploy through **Deployment activity**.
+   correct its cause and deploy again through **Deployment activity**. If the
+   first deployment was stopped, no repair is needed before deploying again.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -102,11 +103,10 @@ or outbound access on failure, then retry. Editing follows installation capabili
 and the [policy contract](../agent-plugins.md); browsing proves no runtime permission.
 
 Credentials are masked Namespace Secrets, excluded from Configuration JSON, Agent
-responses, and browser storage. With a selected Credential Gateway, supported Dedicated
-API-key creation registers the selected Secret as a model
+responses, and browser storage. With a selected Credential Gateway, supported
+Dedicated creation registers the selected Secret as a model
 [Credential Source](../credential-sources.md), then provisions with that source.
-Both Harnesses keep the same provider and Secret controls; the Harness receives
-only a placeholder. The caller also needs source `create`, `read`, and `operate`.
+The Harness receives only a placeholder. The caller also needs source `create`, `read`, and `operate`.
 Authentication methods outside the selected gateway catalog remain unavailable.
 
 Presets preselect their authentication method or retain saved bindings.
@@ -161,16 +161,14 @@ the same request. A refused retry of a failed job shows the API's reason when it
 one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
-After uncertain registration, **Check credential registration** recovers the exact
-ready source. If absent, **Create Agent** retries the same name and references;
-uniqueness fences a late commit. A source left `registering` or `deleting` offers **Remove failed
-credential registration**, which requires source `delete`; removal can need a
-retry after the gateway's registration safety window. The model Secret remains
-saved. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
+**Check credential registration** recovers an uncertain source. If absent,
+**Create Agent** retries its name/references; uniqueness fences late commits. **Remove failed credential registration** deletes a source left
+`registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
+registration safety window if needed. The model Secret stays saved. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-After the first revision is admitted, a deployment failure cannot retry
-provisioning or create another Agent. Open the retained Agent, correct its
-settings or credential source, and submit a new deployment.
+A failed or stopped first deployment, or a Stop before it
+(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
+retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.

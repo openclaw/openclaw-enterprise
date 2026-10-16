@@ -65,8 +65,22 @@ const iamOf = (fixture) => fixture.controller.selectDriver("iam", "console-nativ
 const collection = (namespaceId) => `/namespaces/${namespaceId}/presets`;
 const presetPath = (namespaceId, presetId) => `${collection(namespaceId)}/${presetId}`;
 const agentsPath = (namespaceId) => `/namespaces/${namespaceId}/agents`;
+// The list route returns summaries without templates (finding 1323).
 const listPresets = async (fixture, namespaceId) =>
   (await fixture.request("GET", collection(namespaceId))).data;
+const presetSummary = ({ id, namespaceId, name, createdAt }) => ({
+  id,
+  namespaceId,
+  name,
+  createdAt,
+});
+// Each listed Preset with its template, read one by one as clients do.
+const listPresetDocuments = async (fixture, namespaceId) =>
+  Promise.all(
+    (await listPresets(fixture, namespaceId)).map(
+      async ({ id }) => (await fixture.request("GET", presetPath(namespaceId, id))).data,
+    ),
+  );
 const presetNames = async (fixture, namespaceId) =>
   (await listPresets(fixture, namespaceId)).map((preset) => preset.name).sort();
 const readPreset = (fixture, namespaceId, presetId) =>
@@ -261,7 +275,11 @@ async function installFromCatalog(fixture, namespaceId, file) {
   const { artifact, installed } = await installShipped(fixture, namespaceId, file);
   const catalog = await fixture.request("GET", collection(namespaceId));
   assert.equal(catalog.status, 200);
-  return { artifact, installed, preset: catalog.data.find(({ id }) => id === installed.data.id) };
+  const listed = catalog.data.find(({ id }) => id === installed.data.id);
+  // The catalog lists a summary; the template comes from the exact Preset.
+  assert.deepEqual(listed, presetSummary(installed.data));
+  const preset = (await fixture.request("GET", presetPath(namespaceId, listed.id))).data;
+  return { artifact, installed, preset };
 }
 
 // Creates a rendered standard Preset's Configuration and Agent with a same-Namespace model key,
@@ -588,7 +606,7 @@ describe("Presets", { concurrency: 2 }, () => {
       assert.equal(fixture.policy.bindings.includes(writer), false, method);
       fixture.policy.bindings.push(writer);
     }
-    assert.deepEqual(await listPresets(fixture, namespace.id), [existing]);
+    assert.deepEqual(await listPresets(fixture, namespace.id), [presetSummary(existing)]);
   });
 
   test("Preset variables create independent ordinary Agent drafts that survive template replacement and deletion", async (t) => {
@@ -1316,7 +1334,8 @@ describe("Presets", { concurrency: 2 }, () => {
       "Standard OpenClaw",
     ].sort();
     assert.deepEqual(list.data.map((preset) => preset.name).sort(), defaultNames);
-    const named = (name) => list.data.find((preset) => preset.name === name);
+    const documents = await listPresetDocuments(fixture, namespace.id);
+    const named = (name) => documents.find((preset) => preset.name === name);
     assert.equal(named("Standard Codex").template.variables.modelSecret.type, "password");
     const customDefault = named(customPreset.name);
     assert.ok(customDefault, `missing ${customPreset.name}`);
@@ -1549,7 +1568,7 @@ describe("Presets", { concurrency: 2 }, () => {
     const principal = fixture.admin;
     const byName = async (namespaceId) =>
       Object.fromEntries(
-        (await listPresets(fixture, namespaceId)).map((preset) => [preset.name, preset]),
+        (await listPresetDocuments(fixture, namespaceId)).map((preset) => [preset.name, preset]),
       );
     // What the running release seeds into a new Namespace is the refresh target.
     const fresh = await fixture.createNamespace("Seeded by this release", { ready: true });

@@ -40,8 +40,10 @@ export function codexGatewayModelConfiguration(
   };
   // Every setting the Harness model rule checks (requireSelectedModelProvider): the primary,
   // subagent, image, PDF, heartbeat, compaction and other model selections, hook and channel
-  // models, and policy keys. Rewriting all of them before the source provider block is dropped
-  // leaves no selection on it.
+  // models, and policy selectors (`models` keys and `modelPolicy.allow` entries). Rewriting all
+  // of them before the source provider block is dropped leaves no selection on it. Media and
+  // voice models are not chat models: admission refuses them on Dedicated Codex, and the
+  // projection leaves them as written, never adding them to the chat catalog.
   rewriteModelSelections(document, (reference, policy) => {
     if (policy) {
       return qualify(reference);

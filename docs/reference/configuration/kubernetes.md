@@ -26,8 +26,9 @@ extra data entries, excessive size, or incorrect ownership fail closed. It
 cannot select another tenant namespace, share tenant objects,
 read Kubernetes Secrets, create Pods, or store Installation settings. ConfigMap
 updates are not watched or automatically reloaded into admitted AgentRevisions.
-The serialized values must be smaller than 1 MiB; Kubernetes may also reject an
-object that exceeds its total object limit. Reads reject invalid kind or
+The serialized values must be smaller than 1 MiB, or a write is refused with
+`400 INVALID_REQUEST` naming the limit; Kubernetes may also reject an object
+that exceeds its total object limit. Reads reject invalid kind or
 generation and binary ConfigMap data. Updates require a resource version and a
 generation difference of exactly one; the reverse direction is reserved for OCC
 rollback. Deletion checks ownership and uses the observed UID as a precondition

@@ -15,10 +15,17 @@
   "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-public-github-read.test.mjs",
     "tests/integration/runtime-image-managed-files.test.mjs",
     "tests/integration/workspace-files-native.test.mjs"
   ],
   "files": [
+    {
+      "path": "tests/integration/runtime-image-public-github-read.test.mjs",
+      "expectedTests": [
+        "stock Codex reads the projected public GitHub skill and returns a provider-only pull title"
+      ]
+    },
     {
       "path": "tests/integration/runtime-image-startup.test.mjs",
       "expectedTests": [

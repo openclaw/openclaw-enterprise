@@ -13,6 +13,7 @@ import {
 
 import {
   normalizeOpenAiBaseUrl,
+  openAiBaseUrlRewritesIpv4,
   openAiBaseUrlSpellingMessage,
 } from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
@@ -305,6 +306,14 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
 function codexModelBaseUrl(runtime, diagnostics) {
   const field = "runtime.codexModelBaseUrl";
   const value = asString(runtime, field.split("."), diagnostics);
+  // Normalize only after the raw spelling is accepted. `https://192.168.1/v1` would otherwise
+  // become `https://192.168.0.1/v1` and pass Compute.
+  if (typeof value === "string" && value !== "" && openAiBaseUrlRewritesIpv4(value)) {
+    diagnostics.errors.push(
+      `${field} IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`,
+    );
+    return value;
+  }
   const url = normalizeOpenAiBaseUrl(value);
   if (url === undefined && value !== "") {
     diagnostics.errors.push(
@@ -412,17 +421,17 @@ function httpOrigin(value) {
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
-// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
-// user info first (writtenUserinfo), so the host follows scheme:// directly.
+// hex, shorthand, a single integer or a trailing dot publish a different host. isIP accepts
+// only four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every
+// IPv4 host that way, so the written host must equal the parsed one. Callers refuse user info
+// first (writtenUserinfo), so the host follows scheme:// directly.
 function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
-  return (
-    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
-  );
+  return written === url.hostname;
 }
 
 // KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
@@ -1095,7 +1104,7 @@ function buildInput(rawInput, diagnostics) {
   closed(
     input,
     "input",
-    ["controlPlane", "runtime", "channels", "codex", "repository", "presets"],
+    ["controlPlane", "runtime", "channels", "codex", "repository", "publicGithubRead", "presets"],
     diagnostics,
   );
   const controlPlane = section(input, "controlPlane", diagnostics);
@@ -1103,6 +1112,13 @@ function buildInput(rawInput, diagnostics) {
   const channels = section(input, "channels", diagnostics, false);
   const codex = section(input, "codex", diagnostics, false);
   const repository = section(input, "repository", diagnostics, false);
+  const publicGithubRead = section(input, "publicGithubRead", diagnostics, false);
+  closed(
+    publicGithubRead,
+    "publicGithubRead",
+    ["enabled", "clusterIP", "upstreamCidrs"],
+    diagnostics,
+  );
   const presets = section(input, "presets", diagnostics, false);
   closed(presets, "presets", ["files"], diagnostics);
   closed(
@@ -1246,6 +1262,7 @@ function buildInput(rawInput, diagnostics) {
     channels,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -1408,6 +1425,7 @@ function buildRendered(profile, parsed, diagnostics) {
     channels,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -1559,15 +1577,35 @@ function buildRendered(profile, parsed, diagnostics) {
       : undefined;
   const rewrittenObservabilityIpv4 =
     parsedObservability !== undefined && !ipv4HostKept(rawObservabilityUrl, parsedObservability);
-  const observabilityUrl = rewrittenObservabilityIpv4
-    ? undefined
-    : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
-        validate: observabilityDestination,
-        description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
-      });
+  // A tab or newline is deleted. A backslash before the query becomes a slash. A backslash
+  // in the query does not change the host. Userinfo already has its own message, including
+  // when a tab sits in `http:\t//@host`.
+  const observabilityQueryAt =
+    typeof rawObservabilityUrl === "string" ? rawObservabilityUrl.search(/[?#]/) : -1;
+  const observabilityBeforeQuery =
+    typeof rawObservabilityUrl === "string" && observabilityQueryAt !== -1
+      ? rawObservabilityUrl.slice(0, observabilityQueryAt)
+      : rawObservabilityUrl;
+  const observabilityHostChars =
+    typeof rawObservabilityUrl === "string" &&
+    (/[\t\n\r]/.test(rawObservabilityUrl) || observabilityBeforeQuery.includes("\\")) &&
+    !writtenUserinfo(rawObservabilityUrl) &&
+    !rewrittenObservabilityIpv4;
+  const observabilityUrl =
+    rewrittenObservabilityIpv4 || observabilityHostChars
+      ? undefined
+      : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
+          validate: observabilityDestination,
+          description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
+        });
   if (rewrittenObservabilityIpv4) {
     diagnostics.errors.push(
       "controlPlane.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
+  if (observabilityHostChars) {
+    diagnostics.errors.push(
+      "controlPlane.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
     );
   }
 
@@ -2053,6 +2091,44 @@ function buildRendered(profile, parsed, diagnostics) {
       },
       port: 8443,
     };
+  }
+
+  if (asBoolean(publicGithubRead, ["publicGithubRead", "enabled"], diagnostics)) {
+    if (profile.name !== "codex") {
+      diagnostics.errors.push("publicGithubRead requires the codex profile.");
+    }
+    const clusterIP = asString(publicGithubRead, ["publicGithubRead", "clusterIP"], diagnostics, {
+      validate: (value) => isIP(value) === 4,
+      description: "the reserved IPv4 Service ClusterIP",
+    });
+    const upstreamCidrs = stringArray(
+      publicGithubRead,
+      ["publicGithubRead", "upstreamCidrs"],
+      diagnostics,
+      { validate: isIpv4Cidr, description: "an approved IPv4 CIDR for api.github.com" },
+    );
+    values.publicGithubRead = { enabled: true, clusterIP, upstreamCidrs };
+    installation.drivers.compute.configuration.network.publicGithubRead = {
+      namespace,
+      address: clusterIP,
+      podLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": releaseName,
+        "app.kubernetes.io/component": "public-github-read",
+      },
+    };
+    diagnostics.prerequisites.push(
+      "Reserve the public GitHub reader ClusterIP until every AgentRevision that allows it has retired; enforce both NetworkPolicies.",
+    );
+    diagnostics.nextSteps.push(
+      "Select public reads in a dedicated Codex Agent Configuration or Preset: enable plugins.entries.codex.config.appServer.networkProxy and allow its exact Service IP " +
+        clusterIP +
+        " in domains, then deploy the Agent.",
+    );
+  } else if (Object.keys(publicGithubRead).some((key) => key !== "enabled")) {
+    diagnostics.errors.push(
+      "publicGithubRead fields are only consumed when publicGithubRead.enabled is true.",
+    );
   }
 
   dedicatedSecrets(values, releaseName, namespace, diagnostics);

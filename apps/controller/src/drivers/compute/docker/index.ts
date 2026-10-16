@@ -135,6 +135,7 @@ const HARNESS_VERSION_LABEL = "org.openclaw.enterprise.harness-version";
 const VERSION_LABEL = "org.openclaw.enterprise.version";
 const SOCKET_PATH = "/var/run/docker.sock";
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_DOCKER_API_RESPONSE_BYTES = 4 * 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 120_000;
 const GATEWAY_PORT = 8080;
 const AGENT_TRANSPORT_PORT = 18_790;
@@ -1449,10 +1450,25 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             },
             (response) => {
               const chunks: Buffer[] = [];
+              let responseBytes = 0;
               response.once("error", reject);
-              response.on("data", (chunk: Buffer | string) =>
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-              );
+              const contentLength = response.headers["content-length"];
+              if (
+                typeof contentLength === "string" &&
+                Number(contentLength) > MAX_DOCKER_API_RESPONSE_BYTES
+              ) {
+                response.destroy(new Error("Docker API response is too large."));
+                return;
+              }
+              response.on("data", (chunk: Buffer | string) => {
+                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                responseBytes += buffer.length;
+                if (responseBytes > MAX_DOCKER_API_RESPONSE_BYTES) {
+                  response.destroy(new Error("Docker API response is too large."));
+                  return;
+                }
+                chunks.push(buffer);
+              });
               response.on("end", () => {
                 const status = response.statusCode ?? 0;
                 const text = Buffer.concat(chunks).toString("utf8");

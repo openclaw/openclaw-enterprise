@@ -2,8 +2,8 @@ import net from "node:net";
 import { once } from "node:events";
 import pg from "pg";
 
-// A protocol transport fault, not a pg.Client monkeypatch. The server's real
-// COMMIT completion is consumed here and never delivered to the application.
+// Real PostgreSQL transport faults: drop the server's COMMIT completion, or
+// pause the client's COMMIT request before forwarding it to the server.
 export async function commitAckProxy(databaseUrl) {
   const target = new URL(databaseUrl);
   // Resolve query-string and environment precedence with the same installed
@@ -22,6 +22,8 @@ export async function commitAckProxy(databaseUrl) {
   let armed = false;
   let skipCommits = 0;
   let observed = false;
+  let pauseCommit = false;
+  let heldCommit;
   const sockets = new Set();
   const server = net.createServer((client) => {
     client.setNoDelay(true);
@@ -37,6 +39,9 @@ export async function commitAckProxy(databaseUrl) {
     let startup = true;
     let dropping = false;
     const close = () => {
+      if (heldCommit?.upstream === upstream) {
+        heldCommit = undefined;
+      }
       client.destroy();
       upstream.destroy();
       sockets.delete(client);
@@ -67,8 +72,15 @@ export async function commitAckProxy(databaseUrl) {
           if (skipCommits > 0) {
             skipCommits -= 1;
           } else {
-            dropping = true;
             armed = false;
+            if (pauseCommit) {
+              // Delay the real request before PostgreSQL receives COMMIT; its
+              // deferred constraints must decide whether the transaction can commit.
+              observed = true;
+              heldCommit = { upstream, frame };
+              continue;
+            }
+            dropping = true;
           }
         }
         startup = false;
@@ -115,10 +127,22 @@ export async function commitAckProxy(databaseUrl) {
         throw new Error("The single-use fault is already armed or consumed.");
       }
       skipCommits = skip;
+      pauseCommit = options.pauseCommit === true;
       armed = true;
     },
     get observedCommit() {
       return observed;
+    },
+    get commitPaused() {
+      return heldCommit !== undefined;
+    },
+    resumeCommit() {
+      if (heldCommit === undefined) {
+        throw new Error("No COMMIT request is paused.");
+      }
+      const held = heldCommit;
+      heldCommit = undefined;
+      held.upstream.write(held.frame);
     },
     async close() {
       for (const socket of sockets) {

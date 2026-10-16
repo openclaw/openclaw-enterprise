@@ -1,15 +1,15 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-13
-last_updated_session: authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2
+updated: 2026-10-14
+last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-An authorized caller registers a Namespace Secret with the Credential Gateway,
-binds it to an Agent, deploys, updates or withdraws it, and deletes the source.
+Authorized callers register, bind, deploy, update, withdraw and delete Namespace
+credential sources.
 The gateway holds Secret values; OCC stores metadata and references. Admission
 freezes identity in the AgentRevision; the worker passes the live record to Compute.
 [OpenShell Sandbox provisioning](openshell-sandbox-provisioning.md) covers attachment and readiness.
@@ -22,9 +22,8 @@ freezes identity in the AgentRevision; the worker passes the live record to Comp
 - Source: `apps/controller/src/http/credential-sources.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:deleteCredentialSource`
-- Assumptions: the Installation selected a Credential Gateway that belongs to an
-  `openshell` Backend, a Sandbox, and bundled Kubernetes Compute; the Namespace
-  is `ready`; the caller holds the grants named in each phase.
+- Assumptions: a `ready` Namespace; an Installation selecting a Credential Gateway in an
+  `openshell` Backend, a Sandbox and bundled Kubernetes Compute; and per-phase caller grants.
 
 ## Flow
 
@@ -150,7 +149,7 @@ declare `harnessAuth`. The frozen snapshot is `{ method, sourceId,
 credentialGatewayId, sourceType, loginMode }`. `admittedCredentialSourceType`
 requires a selected Sandbox, and Compute `validateHarnessAuth` requires
 a dedicated Codex or native OpenClaw Harness, the paired Sandbox and gateway,
-and an `openai`/`api_key` type. Compute renders no model Secret for either
+and an `openai`/`api_key` type, or `codex-pat`/`codex_pat` for dedicated Codex. Compute renders no model Secret for either
 Harness and passes the resolved source to Sandbox provisioning.
 `admitCredentialSources` refuses a list without a selected Sandbox Driver
 (`409` with its message), rechecks the caller's binding grants, then authorizes
@@ -286,8 +285,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   source (its placeholder stops reaching an echo service), then the model
   source (the next model turn fails).
 - `OCC_TEST_OPENSHELL_K3D_REAL=1 node --env-file="$TEST_ENV_FILE" --test tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`
-  registers an `openai` source through the production API against a real
-  gateway and reads its live `ready` status. See [OpenShell tests](../testing/openshell.md).
+  registers the selected source through the production API and reads live gateway status;
+  [OpenShell tests](../testing/openshell.md) specifies PAT and API-key selection.
 - A source stuck in `deleting` returns `503` on delete until the gateway is
   reachable; `GET` shows its live `status`.
 - Worker reason codes `CREDENTIAL_GATEWAY_MISMATCH` and
@@ -312,6 +311,9 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
+
+- 2026-10-13 20:30: Document provider-managed Codex PAT authentication. (01a136ee-8824-7043-b9e2-49eccacac3bd - ed9018c09)
 - 2026-10-13 20:07: Check provider ownership before profile updates. (authoring-run/01a136d4-3550-7042-834c-cf11f51f41f2 - 146c80ef66b5860cb9bea296d2574156468a103c)
 
 - 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)

@@ -31,6 +31,7 @@ import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -897,12 +898,13 @@ function imageCache(role) {
 }
 
 // Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change, in order and never cancelled, so the newest commit's export
-// lands last. CI lanes only restore: a lane export on main could land after a
-// newer commit's warm export and replace it, and on a pull request it cost about
-// 40 s and filled only the merge ref's scope. The warm job exports in a second
-// build after the image is built and loaded: the same arguments without --load or
-// the tag, so BuildKit reuses the steps it just ran and only uploads the cache.
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
 function imageCacheExportArgs(role, buildArgs) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
@@ -3011,6 +3013,30 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     }
+    case "qa-matrix":
+      // On a hosted runner, record the starting images so cleanup can return the
+      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // launcher tags are the developer's own and stay as the run leaves them. A
+      // failed inventory only skips that: the QA run itself does not need it.
+      if (process.env.GITHUB_ACTIONS === "true") {
+        let images;
+        try {
+          images = await imageInventory({
+            execFile: (command, args) =>
+              execFile(command, args, { timeoutMs: imageCommandTimeoutMs }),
+            docker: process.env.OCC_DOCKER_BIN ?? "docker",
+          });
+        } catch (error) {
+          console.log(
+            `::warning::QA image baseline skipped: ${String(error.message).split("\n")[0]}`,
+          );
+        }
+        if (images) {
+          addResource(state, laneImagesResourceKind, { name, images, status: "ready" });
+          await writeState(resolvedStatePath, state);
+        }
+      }
+      break;
     case "helper-timeout":
       break;
   }
@@ -3222,9 +3248,9 @@ const warmRuntimeImageRepository = "localhost/openclaw-ci-main/runtime";
 async function warmImageCache({ statePath }) {
   if (
     process.env.GITHUB_REF !== "refs/heads/main" ||
-    !["push", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
+    !["push", "schedule", "workflow_dispatch"].includes(process.env.GITHUB_EVENT_NAME)
   ) {
-    throw new Error("Only a push or dispatch on main may warm the image cache.");
+    throw new Error("Only a push, schedule or dispatch on main may warm the image cache.");
   }
   const lane = "images-packaging";
   await validateLaneInputsBeforeSideEffects(lane);

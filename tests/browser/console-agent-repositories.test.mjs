@@ -563,7 +563,10 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   });
   await save.click();
   await page
-    .getByText("Access denied. You do not have permission for this operation.", { exact: true })
+    .getByText(
+      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+      { exact: true },
+    )
     .waitFor();
   assert.equal(await save.isEnabled(), true);
   assert.equal(await cancel.isEnabled(), true);

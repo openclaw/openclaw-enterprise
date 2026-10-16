@@ -2095,6 +2095,7 @@ test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or 
   const permissiveDriver = {
     id: "iam-permissive-role-sink",
     capability: "iam",
+    namespacePolicyTransaction: "platform-unit-of-work",
     implementation: "occ-permission-isolation-test",
     async lookupIdentity(input) {
       return input.issuer === fixture.principal.issuer &&
@@ -2378,7 +2379,7 @@ test("Namespace IAM read routes serialize broad native policy without widening m
   assert.equal(broadBindingCreate.body.error.code, "INVALID_REQUEST");
 });
 
-test("Namespace IAM routes fail closed without policy management and roll back audit failures", async () => {
+test("Namespace IAM routes fail closed without policy management and roll back audit failures", async (t) => {
   const unsupportedFixture = await createInjectedFixture();
   const unsupported = {
     request: (method, path, options) =>
@@ -2433,6 +2434,80 @@ test("Namespace IAM routes fail closed without policy management and roll back a
       unit.iamPolicy.listRoles(unsupportedNamespace.id),
     ),
     [],
+  );
+
+  // A Driver must declare transaction participation before any policy write.
+  // Keep the real native implementation; omit only its optional capability declaration.
+  const transactionFixture = await createInjectedFixture();
+  const transactional = {
+    request: (method, path, options) =>
+      injectedRequest(transactionFixture.app, method, path, options),
+  };
+  await bootstrap(transactional);
+  const transactionNamespace = await createNamespace(transactional, "undeclared-iam-transaction");
+  const policyPath = `/namespaces/${transactionNamespace.id}/iam`;
+  const namespaceRole = await transactional.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
+  });
+  assert.equal(namespaceRole.status, 201);
+  const unusedRole = await transactional.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "read", resourceKind: "agent" }] },
+  });
+  assert.equal(unusedRole.status, 201);
+  const binding = {
+    subjectKind: "identity",
+    subjectId: transactionFixture.principal.id,
+    roleId: namespaceRole.data.id,
+    resourceKind: "namespace",
+    resourceId: transactionNamespace.id,
+  };
+  const existingBinding = await transactional.request("POST", `${policyPath}/access-bindings`, {
+    body: binding,
+  });
+  assert.equal(existingBinding.status, 201);
+  const policy = () =>
+    transactionFixture.platformState.read(async (unit) => ({
+      roles: await unit.iamPolicy.listRoles(transactionNamespace.id),
+      bindings: await unit.iamPolicy.listAccessBindings(transactionNamespace.id),
+      principals: await unit.iamPolicy.listServicePrincipals(transactionNamespace.id),
+    }));
+  const before = await policy();
+  const undeclared = new NativeIAMDriver(
+    { loadNativeIAMState: async () => transactionFixture.state },
+    { id: "iam-without-declared-transaction" },
+  );
+  delete undeclared.namespacePolicyTransaction;
+  transactionFixture.controller.registerDriver(undeclared);
+  transactionFixture.controller.selectDriver("iam", undeclared.id);
+  assert.equal((await transactional.request("GET", `${policyPath}/roles`)).status, 200);
+  const refusedStatuses = [];
+  for (const [method, path, body] of [
+    ["POST", `${policyPath}/roles`, { permissions: [{ action: "read", resourceKind: "agent" }] }],
+    ["DELETE", `${policyPath}/roles/${unusedRole.data.id}`],
+    ["POST", `${policyPath}/access-bindings`, binding],
+    ["DELETE", `${policyPath}/access-bindings/${existingBinding.data.id}`],
+    ["POST", `${policyPath}/service-principals`, {}],
+  ]) {
+    const refused = await transactional.request(method, path, body === undefined ? {} : { body });
+    assert.equal(refused.status, 503, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    refusedStatuses.push(refused.status);
+    assert.deepEqual(await policy(), before);
+    const events = transactionFixture.auditSink.events;
+    assert.equal(
+      events.some(
+        (event) => event.requestId === refused.body.meta.requestId && event.kind === "mutation",
+      ),
+      false,
+    );
+  }
+  t.diagnostic(
+    JSON.stringify({
+      scenario: "transaction-capability-refusal",
+      statuses: refusedStatuses,
+      policyPreserved: true,
+      successAudit: 0,
+    }),
   );
 
   const rollbackFixture = await createInjectedFixture();
@@ -2829,7 +2904,9 @@ test("Agent deployment status polls the admitted revision work with exact read a
     cleanup: null,
     error: {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
-      message: "Deployment convergence deadline exceeded.",
+      // occ and HTTP clients print this message as is, so it names the next step (finding 1393).
+      message:
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 900_000, runtimeFailure },
     },
     warnings: [],
@@ -2934,6 +3011,18 @@ test("a refused deployment's status names its cause and remedy without naming pr
       "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
     LEASE_EXPIRED:
       "The controller worker stopped or lost its claim during this deployment's last attempt. Deploy again.",
+    // Finding 1393: held runtime failures name the next step too, so occ and HTTP clients get
+    // the guidance the console used to add on its own.
+    RUNTIME_AUTHENTICATION_FAILED:
+      "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    RUNTIME_CPU_STARVED:
+      "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+    RUNTIME_MODEL_PROBE_TIMEOUT:
+      "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
+    RUNTIME_LOGIN_FAILED:
+      "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
+    RUNTIME_STARTUP_FAILED:
+      "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
     // Internal inconsistencies keep the generic text.
     INVALID_REVISION_OWNER: "Deployment reconciliation failed.",
   };
@@ -5828,6 +5917,16 @@ test("Agent provisioning API validates inline configuration with existing Secret
       },
       'Configuration setting models.providers.openai.request.headers must not set the credential header "Authorization" (its name marks a credential): model credentials come from the Agent\'s Harness authentication binding.',
     ],
+    // Finding 1311: provisioning runs the agents roster rules Configuration save runs, with the
+    // same text, so a roster every deployment refuses is refused before anything is stored.
+    [
+      { agents: { ...model.agents, entries: { "main!": {} } } },
+      'The OpenClaw Gateway rejects the Agent ID in agents.entries["main!"]: use up to 64 letters, digits, _ or -, not starting with -.',
+    ],
+    [
+      { agents: { ...model.agents, entries: { main: {}, helper: {} } } },
+      'The OpenClaw Gateway needs agents.ownership "explicit" for more than one agents.entries entry: set it, or keep one entry.',
+    ],
   ]) {
     const refused = await injectedRequest(
       fixture.app,
@@ -6664,7 +6763,23 @@ test("two Namespaces become independently ready and deletion tombstones only its
     "GET",
     `/namespaces/${namespaceA.data.id}/agents/${agentA.data.id}/revisions`,
   );
-  assert.deepEqual(admittedRevisions.data, [readyDeployment.data, nextDeployment.data]);
+  // The list returns summaries, newest first, on one page.
+  const summary = (revision) => ({
+    id: revision.id,
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    revision: revision.revision,
+    backendId: revision.backendId,
+    configurationId: revision.configurationId,
+    configurationGeneration: revision.configurationGeneration,
+    harness: revision.harness,
+    createdAt: revision.createdAt,
+  });
+  assert.deepEqual(admittedRevisions.data, [
+    summary(nextDeployment.data),
+    summary(readyDeployment.data),
+  ]);
+  assert.equal(admittedRevisions.body.meta.nextCursor, null);
   assert.deepEqual(fixture.computeCalls.ensureNamespace, [namespaceA.data.id, namespaceB.data.id]);
 
   const deleting = await injectedRequest(

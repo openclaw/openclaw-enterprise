@@ -334,7 +334,7 @@ export interface CredentialSourceReference extends ResourceRef {
 }
 
 /** Login modes a Harness can use when its model credential arrives from a source. */
-export type CredentialSourceLoginMode = "api_key";
+export type CredentialSourceLoginMode = "api_key" | "codex_pat";
 
 export interface CredentialSourceFieldSpec {
   readonly name: string;
@@ -797,6 +797,8 @@ export interface AgentRevision extends Scope {
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
+    /** Private, immutable admission state owned by the selected Compute Driver. */
+    readonly admission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly secretDriverId?: string;
@@ -814,6 +816,20 @@ export type AgentRevisionMetadata = Pick<
   AgentRevision,
   "id" | "namespaceId" | "agentId" | "revision" | "backendId" | "createdAt"
 >;
+
+/**
+ * A revision without its saved settings: metadata plus the database-checked fields that tell
+ * revisions apart. List routes return it; reading it never decodes the admitted snapshot.
+ */
+export type AgentRevisionSummary = AgentRevisionMetadata &
+  Pick<AgentRevision, "configurationId" | "configurationGeneration" | "harness">;
+
+/** One page of revision summaries, newest first, and the revision number the next page starts below. */
+export interface AgentRevisionSummaryPage {
+  readonly revisions: readonly Readonly<AgentRevisionSummary>[];
+  /** Revisions numbered below this one remain; undefined on the last page. */
+  readonly nextBefore?: number;
+}
 
 export type AgentRevisionRead =
   | AgentRevision
@@ -1098,6 +1114,8 @@ export interface SandboxHarnessEndpoint {
   readonly url: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /** Request this native Codex profile when the provider supplies the sandbox boundary. */
+  readonly codexPermissionProfile?: ":danger-full-access";
 }
 
 export interface SandboxNamespaceContext {
@@ -1168,6 +1186,7 @@ export interface DriverImplementation {
 
 export interface IAMDriver extends Driver {
   readonly capability: "iam";
+  /** Namespace writes require participation in the caller's policy-and-audit transaction. */
   readonly namespacePolicyTransaction?: "platform-unit-of-work";
   lookupIdentity(input: IdentityLookup): Promise<Identity | undefined>;
   authorize(request: AuthorizationRequest): Promise<AuthorizationDecision>;
@@ -1784,6 +1803,8 @@ export interface ComputeDriver extends Driver {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
+  admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive
@@ -1941,6 +1962,12 @@ export interface ConfigurationDriver extends Driver {
     values: OpenClawConfigurationDocument,
     options?: ConfigurationValidationOptions,
   ): Promise<void>;
+  /**
+   * Refuses values too large to store, as `validate` would. OCC calls it before its content
+   * rules on Configuration create and update and Agent provisioning, so no rule walks them.
+   * Throw OCC's `ConfigurationSizeError` so the API names the limit to the caller.
+   */
+  validateSize?(values: OpenClawConfigurationDocument): Promise<void>;
   create(configuration: Configuration): Promise<Configuration>;
   createExact?(configuration: Configuration): Promise<Configuration>;
   inspectExact?(configuration: Configuration): Promise<Configuration | undefined>;
@@ -1963,7 +1990,13 @@ export {
   isServiceAccountHarnessAuth,
 } from "./harness-auth.ts";
 
-export type { Preset, PresetTemplate, PresetLaunchSettings, PresetVariable } from "./presets.ts";
+export type {
+  Preset,
+  PresetSummary,
+  PresetTemplate,
+  PresetLaunchSettings,
+  PresetVariable,
+} from "./presets.ts";
 export { normalizePresetTemplate } from "./presets.ts";
 export {
   PRESET_JSON_MAX_BYTES,

@@ -27,6 +27,8 @@ type fakeOCC struct {
 	mu        sync.Mutex
 	responses map[string]string
 	requested []string
+	// refuse, when set, answers every request 403 FORBIDDEN with this message.
+	refuse string
 }
 
 func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -39,10 +41,23 @@ func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	fake.mu.Lock()
 	fake.requested = append(fake.requested, requested)
 	fake.mu.Unlock()
+	if fake.refuse != "" {
+		writer.WriteHeader(http.StatusForbidden)
+		_ = json.MarshalWrite(writer, map[string]any{"error": map[string]string{"code": "FORBIDDEN", "message": fake.refuse}})
+		return
+	}
 	data, ok := fake.responses[key]
 	if !ok {
 		writer.WriteHeader(http.StatusNotFound)
 		_, _ = writer.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"not found"}}`))
+		return
+	}
+	if raw, ok := strings.CutPrefix(data, "raw:"); ok {
+		// "raw:<status> <body>" answers with that status and body, unwrapped.
+		status, _ := strconv.Atoi(raw[:3])
+		writer.Header().Set("content-type", "application/json")
+		writer.WriteHeader(status)
+		_, _ = writer.Write([]byte(raw[4:]))
 		return
 	}
 	if data == "" {
@@ -70,6 +85,25 @@ func runOCC(t *testing.T, responses map[string]string, args ...string) (string, 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	return out.String(), append([]string(nil), fake.requested...), err
+}
+
+// runOCCWithNotices is runOCC that also returns what the command wrote to stderr.
+func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
+	t.Helper()
+	fake := &fakeOCC{responses: responses}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	keyFile := filepath.Join(t.TempDir(), "service-key.json")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	command := New(&out, &errOut)
+	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
+	err := command.Execute()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return out.String(), errOut.String(), append([]string(nil), fake.requested...), err
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -410,6 +444,7 @@ func TestAgentRevisionsToleratesUnreadableDeploymentStatus(t *testing.T) {
 func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	out, requested, err := runOCC(t, map[string]string{
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID +
 			`","namespaceId":"` + testNamespaceID + `","status":"failed","error":{"code":"CONVERGENCE_DEADLINE_EXCEEDED","message":"Deployment did not converge."}}`,
@@ -419,6 +454,72 @@ func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	}
 	if !strings.Contains(out, "failed") || !strings.Contains(out, "CONVERGENCE_DEADLINE_EXCEEDED") {
 		t.Fatalf("expected the latest deployment failure:\n%s", out)
+	}
+}
+
+// Revision lists are permission-filtered: without a DEPLOYMENT_ID the command
+// reads the latest revision the caller can read, which can be an old failed
+// version while the active one is hidden. It must say which one it showed (D608).
+func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	forbidden := `raw:403 {"error":{"code":"FORBIDDEN","message":"The exact platform operation was not authorized."}}`
+	olderOnly := `[{"id":"` + testRevision1ID + `","revision":1}]`
+	for _, test := range []struct {
+		name      string
+		responses map[string]string
+		notice    string
+	}{
+		{"active revision unreadable", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/revisions/" + testRevision2ID:   forbidden,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; the active revision " + testRevision2ID + " is not readable with your permissions\n"},
+		{"newer than the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
+			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
+			"GET " + agentPath + "/revisions/" + testRevision1ID:   `{"id":"` + testRevision1ID + `","revision":1}`,
+			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + `; run "occ --namespace ` + testNamespaceID + ` agent deployment-status ` + testAgentID + " " + testRevision1ID + `" for the active revision` + "\n"},
+		{"older than the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/revisions/" + testRevision2ID:   `{"id":"` + testRevision2ID + `","revision":2}`,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", older than the active revision " + testRevision2ID + `; run "occ --namespace ` + testNamespaceID + ` agent deployment-status ` + testAgentID + " " + testRevision2ID + `" for the active revision` + "\n"},
+		{"active metadata unavailable", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; the active revision is " + testRevision2ID + "\n"},
+		{"Agent unreadable", map[string]string{
+			"GET " + agentPath:                                     forbidden,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read\n"},
+		{"Agent without an active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; agent " + testAgentID + " has no active revision\n"},
+		{"the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
+			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"succeeded"}`,
+		}, "notice: showing the active revision " + testRevision2ID + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, notices, requested, err := runOCCWithNotices(t, test.responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+			if err != nil {
+				t.Fatalf("%v (requests %v)", err, requested)
+			}
+			if notices != test.notice {
+				t.Fatalf("notices = %q, want %q", notices, test.notice)
+			}
+			if strings.Contains(out, "notice:") {
+				t.Fatalf("notice leaked to stdout:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -484,6 +585,80 @@ func TestDeploymentStatusTableShowsStartupWarnings(t *testing.T) {
 	}
 	if !strings.Contains(out, `"pluginId": "linear@openai-curated-remote"`) {
 		t.Fatalf("expected structured warnings unchanged:\n%s", out)
+	}
+}
+
+func TestDeploymentStatusTableShowsErrorAsCodeAndMessage(t *testing.T) {
+	// D608: the ERROR cell read as raw {code,message} JSON, with any diagnostic data inline.
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	route := "GET " + agentPath + "/deployments/" + testRevision2ID
+	deployment := func(deploymentError string) string {
+		return `{"deploymentId":"` + testRevision2ID + `","agentId":"` + testAgentID + `","namespaceId":"` +
+			testNamespaceID + `","status":"failed","error":` + deploymentError + `}`
+	}
+	preparation := `{"code":"DEPLOYMENT_PREPARATION_FAILED","message":"Deployment preparation failed.\n\tCheck its Pods.",` +
+		`"data":{"preparation":{"reason":"retry_limit","observedAt":"2026-10-16T08:00:00.000Z","startedAt":null,` +
+		`"finishedAt":null,"workload":{"kind":"Job","name":"prep","namespace":"ns","uid":"u1"},"pods":[]}}}`
+	for _, test := range []struct {
+		name, error, want string
+	}{
+		{
+			name:  "code and message",
+			error: `{"code":"RUNTIME_AUTHENTICATION_FAILED","message":"The model provider rejected this version's credential. Update the credential, then deploy a new version."}`,
+			want:  "RUNTIME_AUTHENTICATION_FAILED: The model provider rejected this version's credential. Update the credential, then deploy a new version.",
+		},
+		{
+			name:  "diagnostic data is replaced by a pointer",
+			error: preparation,
+			want:  "DEPLOYMENT_PREPARATION_FAILED: Deployment preparation failed. Check its Pods. (details: -o json)",
+		},
+		{
+			name: "model check cause",
+			error: `{"code":"RUNTIME_MODEL_PROBE_FAILED","message":"Deployment runtime startup model check failed.","data":{"runtimeFailure":` +
+				`{"component":"gateway","check":"model-probe","checkedAt":"2026-10-03T08:00:00.000Z","code":"MODEL_PROBE_FAILED",` +
+				`"cause":{"kind":"PROBE_STATUS","detail":"rate_limit"}}}}`,
+			want: "RUNTIME_MODEL_PROBE_FAILED: Deployment runtime startup model check failed. (cause: PROBE_STATUS rate_limit)",
+		},
+		{
+			// The cause's detail token is optional; its kind alone is still the cause.
+			name: "model check cause without detail",
+			error: `{"code":"RUNTIME_MODEL_PROBE_FAILED","message":"Deployment runtime startup model check failed.","data":{"runtimeFailure":` +
+				`{"component":"gateway","check":"model-probe","checkedAt":"2026-10-03T08:00:00.000Z","code":"MODEL_PROBE_FAILED",` +
+				`"cause":{"kind":"PROCESS_EXIT"}}}}`,
+			want: "RUNTIME_MODEL_PROBE_FAILED: Deployment runtime startup model check failed. (cause: PROCESS_EXIT)",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, _, err := runOCC(t, map[string]string{route: deployment(test.error)}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, testRevision2ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			if len(lines) != 2 || !strings.HasSuffix(lines[1], "  "+test.want+"  -") {
+				t.Fatalf("expected ERROR cell %q:\n%s", test.want, out)
+			}
+		})
+	}
+
+	// Structured output keeps the whole error, the message's line break included.
+	for _, output := range []string{"json", "yaml"} {
+		out, _, err := runOCC(t, map[string]string{route: deployment(preparation)}, "--namespace", testNamespaceID, "--output", output, "agent", "deployment-status", testAgentID, testRevision2ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded struct {
+			Error struct {
+				Message string         `yaml:"message"`
+				Data    map[string]any `yaml:"data"`
+			} `yaml:"error"`
+		}
+		if err := yaml.Unmarshal([]byte(out), &decoded); err != nil {
+			t.Fatalf("%s output: %v\n%s", output, err, out)
+		}
+		prepared, _ := decoded.Error.Data["preparation"].(map[string]any)
+		if decoded.Error.Message != "Deployment preparation failed.\n\tCheck its Pods." || prepared["reason"] != "retry_limit" {
+			t.Fatalf("%s output must keep the whole error:\n%s", output, out)
+		}
 	}
 }
 
@@ -762,23 +937,49 @@ func TestAgentBrowsingShowsUnreadableSavedSettings(t *testing.T) {
 	}
 }
 
+// List items are summaries, so a revision whose saved settings are unreadable is
+// found only when its deployment status read fails (503). The listing keeps the
+// other revisions' status and names the unreadable one instead of failing.
 func TestAgentRevisionBrowsingKeepsHealthyStatusBesideUnreadableSnapshot(t *testing.T) {
 	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/revisions"] = `[{"id":"` + testRevision2ID + `","revision":2,"configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}},{"id":"` + testRevision1ID + `","revision":1}]`
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
 	for _, format := range []string{"table", "json", "yaml"} {
-		out, requested, err := runOCC(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
+		out, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "SAVED_CONFIGURATION_UNREADABLE") || !strings.Contains(out, "succeeded") {
-			t.Fatalf("%s must preserve error and healthy status: %s", format, out)
+		if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
+			t.Fatalf("%s must list both revisions and the healthy status: %s", format, out)
 		}
-		if slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision2ID) {
-			t.Fatal("error variant must not undergo strict deployment enrichment")
+		if !strings.Contains(notices, "deployment status of revision "+testRevision2ID+" is unavailable") {
+			t.Fatalf("%s must name the revision whose status is unavailable: %q", format, notices)
 		}
-		if !slices.Contains(requested, "GET "+agentPath+"/deployments/"+testRevision1ID) {
-			t.Fatal("healthy revision must retain enrichment")
+	}
+}
+
+// The revisions command shows one page; it passes --limit and --cursor through
+// and prints how to read the next page.
+func TestAgentRevisionsPagesWithCursor(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	out, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", "1", "--cursor", "v1.3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(requested, "GET "+agentPath+"/revisions?cursor=v1.3&limit=1") {
+		t.Fatalf("limit and cursor must reach OCC: %v", requested)
+	}
+	if !strings.Contains(out, testRevision2ID) || strings.Contains(out, testRevision1ID) {
+		t.Fatalf("expected only the page's revision:\n%s", out)
+	}
+	if !strings.Contains(notices, "occ agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
+		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
+	}
+	for _, limit := range []string{"0", "101"} {
+		if _, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID, "--limit", limit); err == nil {
+			t.Fatalf("--limit %s must be refused locally", limit)
 		}
 	}
 }

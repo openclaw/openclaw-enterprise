@@ -239,7 +239,7 @@ export async function serviceWebSocketHandshake(
         resolve(response.statusCode === 101 && response.headers["sec-websocket-accept"] === accept);
       });
       request.on("response", (response: IncomingMessage) => {
-        response.resume();
+        response.destroy();
         resolve(false);
       });
     },

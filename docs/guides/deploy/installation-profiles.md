@@ -192,7 +192,7 @@ optional `port` (default 443).
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
-and rejects URLs the controller would reject at startup, including any `@` before the host.
+and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
 ### Hosted discovery egress
 

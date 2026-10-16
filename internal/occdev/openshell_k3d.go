@@ -259,14 +259,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		}
 	}
 
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
-	}
 	// Dedicated Harnesses, including OpenShell-owned Codex, require private
 	// Agent Gateway routing for workspace-node enrollment.
 	fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
@@ -298,6 +290,16 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if routingPodCIDR != "" {
 		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
 		if err := r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout); err != nil {
+			return err
+		}
+	}
+	var assets *openShellDevelopmentAssets
+	if sandboxDriver == "openshell" {
+		// Import the larger platform images first so image garbage collection cannot
+		// evict idle OpenShell images before their workloads are installed.
+		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+		assets, err = r.prepareOpenShell(ctx, state, timeout)
+		if err != nil {
 			return err
 		}
 	}
