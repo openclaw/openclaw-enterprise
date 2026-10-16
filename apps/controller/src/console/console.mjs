@@ -63,7 +63,8 @@ function readSignature(result, includeMeta = false) {
 // that read's settled answer. A return compares it like data, so a view a member can read only in
 // part is still reused, and a read refused since replaces its section (finding 1553).
 function refusedRead(status) {
-  return JSON.stringify({ refused: status });
+  // Never a JSON body's signature.
+  return `\u0000refused ${status}`;
 }
 
 const settledRefusal = (error) => error.status === 403 || error.status === 404;
@@ -950,7 +951,7 @@ function showLogin(message = "", destination = null) {
     });
 }
 
-function showCheckingSession() {
+function showCheckingSession(checking = () => true) {
   const shown = app.firstElementChild?.classList.contains("startup") ? app.firstElementChild : null;
   // Destination recovery can continue in another loadPage without restarting this status.
   if (shown?.dataset.session !== undefined) {
@@ -966,7 +967,7 @@ function showCheckingSession() {
   // Delay the announcement, never the session check or the view that replaces it. It waits
   // until the status is visible, so screen readers announce the change.
   setTimeout(() => {
-    if (status.isConnected) {
+    if (status.isConnected && checking()) {
       status.textContent = "Checking session…";
     }
   }, startupStatusDelayMs);
@@ -1093,7 +1094,9 @@ async function loadPage({
       for (const stale of app.querySelectorAll(":scope > .startup ~ *")) {
         stale.remove();
       }
-      showCheckingSession();
+      // Its text names the session check only while that check runs: a resolved load switches
+      // to loading at the same delay instead (finding 1554).
+      showCheckingSession(() => !sessionResolved);
     } else {
       shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
     }
@@ -1537,6 +1540,11 @@ async function loadPage({
         // A refused or missing read the view shows as its answer keeps the view reusable; live
         // reads leave theirs to their section's own return check (finding 1553).
         if ((options.method ?? "GET") === "GET" && settledRefusal(error)) {
+          // Content a later poll was refused may still be on screen: a return rebuilds it.
+          const prior = viewState.reads.get(path);
+          if (prior !== undefined && prior !== refusedRead(error.status)) {
+            viewState.reusable = false;
+          }
           if (options.revalidate !== false) {
             viewState.reads.set(path, refusedRead(error.status));
           }
@@ -1607,7 +1615,10 @@ async function loadPage({
       pageUrl,
       isCurrent: () => lifetime.isCurrent(viewState.active),
       onResume: (handler) => viewState.resumeHandlers.add(handler),
-      onRevalidate: (check) => viewState.revalidators.add(check),
+      onRevalidate: (check) => {
+        viewState.revalidators.add(check);
+        return () => viewState.revalidators.delete(check);
+      },
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.");

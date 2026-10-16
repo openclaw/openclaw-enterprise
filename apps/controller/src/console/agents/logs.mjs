@@ -777,24 +777,42 @@ export function renderAgentLogs(
   // Back reuses this view only while what it shows is still readable: the check reads on from
   // where the view stopped, as its polls would, and a refusal rebuilds the page instead
   // (finding 1553). The resumed view takes those answers rather than asking again.
-  context.onRevalidate?.(async () => {
+  const logsPath = `${base}/logs?`;
+  const forgetCheck = context.onRevalidate?.(async () => {
     checked.clear();
     // A Logs view left for another tab is no longer part of the page.
     if (!context.view?.contains(section)) {
+      forgetCheck?.();
       return;
     }
-    const source = selectedSource();
     const reads = [];
     if (description !== null && !statusDenied) {
       reads.push(base);
     }
     if (cursor && !logsDenied && readableSelection()) {
-      const query = logQuery(source, selectedPod());
+      const query = logQuery(selectedSource(), selectedPod());
       query.set("cursor", cursor);
-      reads.push(`${base}/logs?${query}`);
+      reads.push(`${logsPath}${query}`);
+    }
+    // Output that cannot be read on from (no cursor, no readable source, or denied since it
+    // showed) is not shown again from the cache.
+    if (rows > 0 && !reads.some((path) => path.startsWith(logsPath))) {
+      throw new Error("The shown output cannot be checked.");
     }
     const answers = await Promise.all(
-      reads.map((path) => context.request(path, { revalidate: false })),
+      reads.map((path) =>
+        context.request(path, { revalidate: false }).catch((error) => {
+          // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
+          if (error.status === 403) {
+            if (path === base) {
+              deniedStatusViews.add(statusKey);
+            } else {
+              deniedLogViews.add(deniedKey);
+            }
+          }
+          throw error;
+        }),
+      ),
     );
     reads.forEach((path, index) => checked.set(path, answers[index]));
   });
@@ -803,12 +821,13 @@ export function renderAgentLogs(
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
-      if ([...checked.keys()].some((path) => path.startsWith(`${base}/logs?`))) {
+      if (following && [...checked.keys()].some((path) => path.startsWith(logsPath))) {
         void readLogs({ restart: false });
       } else if (following) {
         scheduleFollow(0);
       }
     }
+    // An unfollowed view drops the page Back read; its cursor still starts there.
     checked.clear();
   });
   applyFilters();

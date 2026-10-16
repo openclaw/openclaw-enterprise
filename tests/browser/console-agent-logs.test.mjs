@@ -1376,7 +1376,9 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
     (route) => route.fulfill(succeededDeployment(namespace, agent, revisionId)),
   );
+  // A paused clock keeps a follow read from being in flight when the member leaves.
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
   await login(
     page,
     fixture,
@@ -1391,6 +1393,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   computeDriver.state.lines = [...computeDriver.state.lines, line(2, "member first poll")];
   await page.clock.runFor(2_000);
   await pane.getByText("member first poll").waitFor();
+  await waitForIdleFetches(page);
   const panel = await pane.elementHandle();
   const nativeAdminReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${agent.id}/native-admin`)).length;
@@ -1414,6 +1417,7 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
     .waitFor();
   assert.equal(await panel.evaluate((node) => node.isConnected), true);
   await pane.getByText("member after back").waitFor();
+  await waitForIdleFetches(page);
   const readAfterBack = logPaths().slice(logReadsBeforeLeaving);
   assert.deepEqual(
     readAfterBack.filter((path) => readBeforeLeaving.has(path) || path.includes("tailLines")),
@@ -1446,4 +1450,99 @@ test("a member's Back reuses a followed Logs view, and not once log access is re
   assert.deepEqual(await page.evaluate(() => globalThis.__cachedLogsSeen), []);
   assert.equal(await panel.evaluate((node) => node.isConnected), false);
   assert.equal(await pane.getByText("member before leaving").count(), 0);
+});
+
+// Marks the Agent view node, so a test can tell a remounted retained view from a rebuilt one.
+const tagView = (page) =>
+  page.evaluate(() => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.navTag = "kept";
+  });
+const viewKept = (page) =>
+  page.evaluate(
+    () =>
+      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.navTag === "kept",
+  );
+
+// Back's check covers runtime status and the version's saved snapshot as well: once either is
+// refused, the cached view is not mounted again (finding 1553).
+test("Back rebuilds an Agent view whose runtime status or version read was refused since", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "operator output")];
+  let operatorRole;
+  const operator = await fixture.createAccountWithPolicy("runtime-operator", (principal) => {
+    ({ role: operatorRole } = grantRole(fixture.policy, principal.id, {
+      id: "role-console-runtime-operator",
+      bindingId: "binding-console-runtime-operator",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "operate", "read_logs"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
+    }));
+  });
+  const revoke = (kind, revoked) => {
+    operatorRole.permissions = operatorRole.permissions.filter(
+      ({ action, resourceKind }) => !(resourceKind === kind && action === revoked),
+    );
+  };
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) => route.fulfill(succeededDeployment(namespace, agent, revisionId)),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"),
+    operator.credentials,
+  );
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("operator output").waitFor();
+  await page.locator(".runtime-pod").first().waitFor();
+  // The Logs tab settles a frame after its output shows; only a settled page is retained.
+  await page.clock.runFor(100);
+  const leave = async () => {
+    await waitForIdleFetches(page);
+    await tagView(page);
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+  };
+
+  // Unchanged access: Back mounts the same view.
+  await leave();
+  await page.goBack();
+  await pane.getByText("operator output").waitFor();
+  assert.equal(await viewKept(page), true);
+
+  // Runtime status refused since (its operate grant also changes the Agent's permission answer):
+  // the cached Pod cards are never mounted again.
+  await leave();
+  revoke("agent", "operate");
+  await page.evaluate(() => {
+    const seen = [];
+    globalThis.__cachedStatusSeen = seen;
+    new globalThis.MutationObserver(() => {
+      if (globalThis.document.querySelector(".runtime-pod")) {
+        seen.push("painted");
+      }
+    }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
+  });
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await pane.getByText("operator output").waitFor();
+  assert.equal(await viewKept(page), false);
+  assert.deepEqual(await page.evaluate(() => globalThis.__cachedStatusSeen), []);
+
+  // The version's saved snapshot refused since: Back rebuilds the page.
+  await leave();
+  revoke("agent_revision", "read");
+  await page.goBack();
+  await page.getByText(/you cannot read this version/).waitFor();
+  assert.equal(await viewKept(page), false);
 });
