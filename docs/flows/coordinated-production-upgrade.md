@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-10"
-last_updated_session: "authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff"
+updated: "2026-10-16"
+last_updated_session: "authoring-run/87760e44-3e59-404d-9a1f-7507abe11351"
 ---
 
 # Production image upgrade flow
@@ -70,6 +70,15 @@ Image flags select images after this comparison.
 A runtime release also reads complete authorized inventory and records every running Agent's baseline
 revision. Nonterminal deployment work, a missing active revision, or an unready
 Namespace stops preparation. Stopped and deleting Agents are excluded.
+
+`packages/occ/src/state/postgres-state.ts:operations.list` uses the queue's exact
+`isRepositoryCleanupWork` classifier before projecting resource operations.
+Successfully completed cleanup stays in PostgreSQL but is omitted from this
+projection, including history detached by `occ.finalize_agent_deletion`.
+Unsettled or permanently failed cleanup raises `DependencyUnavailableError`;
+unknown targets still follow existing validation. Inventory checks actual revision
+reconciliation work for queued or claimed deployments. Completed cleanup cannot
+clear that guard. See the [inventory limits](../reference/cli.md#resource-commands).
 
 For repository-enabled releases, the helper requires explicit immutable
 controller and broker images. It inventories every node matching the control
@@ -248,6 +257,13 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Debugging and Verification
 
+- `tests/integration/postgres-worker-agent-revision-teardown.test.mjs` exercises
+  deployment inventory through PostgreSQL State and the real worker: completed
+  cleanup with live and deleted owners, retained queued or claimed cleanup,
+  unknown session outcomes, injected terminal cleanup failure, and a surviving
+  Agent's queued and claimed replacement. Repository and Compute boundary
+  Drivers provide observations; this does not verify a deployed upgrade or live
+  credential service. Follow [PostgreSQL setup](../testing/postgresql.md).
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
   and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
 - For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
@@ -279,6 +295,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 08:42: Keep completed repository cleanup history out of resource operations while refusing unresolved cleanup during inventory reads. (authoring-run/87760e44-3e59-404d-9a1f-7507abe11351 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
 

@@ -119,6 +119,7 @@ import {
   asWork,
   WorkClaimLostError,
   PostgresWorkQueue,
+  isRepositoryCleanupWork,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
@@ -4615,7 +4616,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           const found = rows(
             (
               await client.query(
-                `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id,
+                `SELECT idempotency_key, namespace_id, agent_id, revision_id, actor_id, state,
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
@@ -4623,8 +4624,34 @@ export class PostgresPlatformState implements PlatformStateStore {
               )
             ).rows,
           );
+          const resourceWork = found.filter((row) => {
+            if (
+              optionalText(row, "namespace_target") !== undefined ||
+              optionalText(row, "agent_target") !== undefined
+            ) {
+              return true;
+            }
+            const agentId = optionalText(row, "agent_id");
+            const revisionId = optionalText(row, "revision_id");
+            if (
+              !isRepositoryCleanupWork({
+                idempotencyKey: text(row, "idempotency_key"),
+                ...(agentId === undefined ? {} : { agentId }),
+                ...(revisionId === undefined ? {} : { revisionId }),
+              })
+            ) {
+              return true;
+            }
+            // Cleanup is internal work, not a resource reconciliation. Agent
+            // deletion retains it after detaching both live owners. Only a
+            // successful completion can be omitted from this projection.
+            if (text(row, "state") !== "succeeded") {
+              throw new DependencyUnavailableError("Persisted repository cleanup is incomplete.");
+            }
+            return false;
+          });
           return Object.freeze(
-            found.map((row): Readonly<PlatformOperation> => {
+            resourceWork.map((row): Readonly<PlatformOperation> => {
               const namespaceId = text(row, "namespace_id");
               const revisionId = optionalText(row, "revision_id");
               const agentId = optionalText(row, "agent_id");

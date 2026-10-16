@@ -126,6 +126,11 @@ unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, active revision, and whether deployment work is queued or
 claimed.
 
+Completed repository cleanup remains stored as history, including after its
+Agent and revision are deleted, and does not prevent inventory reads. Queued,
+claimed, or permanently failed cleanup makes inventory unavailable; resolve
+the cleanup obligation before using inventory for a coordinated deployment.
+
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the
