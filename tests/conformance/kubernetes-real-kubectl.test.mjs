@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
   assertProbeDenied,
@@ -230,8 +231,19 @@ test(
       .split("\n")
       .filter(Boolean);
     assert.ok(pids.length <= 1, `kubectl ran ${pids.length} times`);
-    for (const pid of pids) {
-      assert.throws(() => process.kill(Number(pid), 0), { code: "ESRCH" });
+    // The read rejects once the kill is sent; the process is gone soon after, not in 30 s.
+    const running = (pid) => {
+      try {
+        process.kill(Number(pid), 0);
+        return true;
+      } catch (error) {
+        assert.equal(error.code, "ESRCH");
+        return false;
+      }
+    };
+    while (pids.some(running)) {
+      assert.ok(Date.now() - begun < 10_000, "the stalled kubectl outlived its deadline");
+      await delay(20);
     }
     // Outside a diagnostic nothing has passed a deadline.
     assert.equal(diagnosticDeadlinePassed(), false);
