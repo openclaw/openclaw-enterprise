@@ -68,7 +68,12 @@ return `404`; roster and avatar responses use `no-store`.
 `apps/controller/src/console/agents/detail.mjs:updateCurrentAgent`
 
 The card renders names as text, native role labels, and local authenticated
-avatar URLs with initials as fallback. A failed read clears stale entries and
+avatar URLs with initials as fallback. The overview previews six profiles sorted
+by display name. Larger rosters offer a modal side panel with the full sorted
+list and case-insensitive name search. Its list scrolls independently; Close,
+Escape or the backdrop dismisses it and restores focus to the launch button.
+Navigation closes open dialogs. Refresh updates an open panel; a failed or
+unconfigured read clears both lists and closes the panel. A failed read clears stale entries and
 leaves an explicit retry. An empty roster explains that profiles appear after
 connection. Denied reads hide the card and are remembered for that view to avoid
 repeated audited denials. A serving-version change refreshes the roster.
@@ -84,7 +89,8 @@ without turning normal unavailability into a failed Console read.
 - `tests/integration/native-admin-access.test.mjs` isolates HTTP authorization
   and serialization; it does not establish native profile semantics.
 - `tests/browser/console-agent-detail-2.test.mjs` exercises the production card's
-  role labels and error/empty recovery through the HTTP app.
+  role labels, error/empty recovery, and 50-person preview/search/dismissal through
+  the HTTP app.
 - `tests/integration/native-admin-k3d-real.test.mjs` reads the roster through the
   installed OCC route and native Gateway RPC.
 
@@ -99,5 +105,7 @@ without turning normal unavailability into a failed Console read.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 10:27: Added the compact preview and searchable full roster panel. (authoring-run/roster-2596 - 1e905edea40d2624dfdb456f311d8e7c475a67fb)
 
 - 2026-10-16 13:02: Added the read-only Gateway people and avatar path. (authoring-run/roster-2596 - d80d214dba75aa446bc8391f19329cb37daa2801)

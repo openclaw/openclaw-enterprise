@@ -3511,3 +3511,69 @@ test("Gateway people show native roles and recover from a failed refresh", async
     .getByText("No people yet. Profiles appear after someone connects to the Gateway.")
     .waitFor();
 });
+
+test("Gateway people preview opens a searchable, alphabetized full roster", async (t) => {
+  let fail = false;
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        if (fail) {
+          throw new Error("Gateway unavailable");
+        }
+        // Reverse the response order so the UI must sort the full roster before previewing it.
+        return Array.from({ length: 50 }, (_, index) => ({
+          id: `profile-${index}`,
+          displayName: `Teammate ${String(50 - index).padStart(2, "0")}`,
+          role: index === 0 ? "maintainer" : "member",
+          hasAvatar: false,
+        }));
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Large team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const card = page.getByRole("region", { name: "People" });
+  const preview = card.getByRole("list", { name: "Gateway people", exact: true });
+  const viewAll = card.getByRole("button", { name: "View all 50 people", exact: true });
+  await viewAll.waitFor();
+  assert.deepEqual(
+    await preview.locator(".gateway-person-name").allTextContents(),
+    Array.from({ length: 6 }, (_, index) => `Teammate 0${index + 1}`),
+  );
+  await viewAll.click();
+  const panel = page.getByRole("dialog", { name: "People", exact: true });
+  const search = panel.getByRole("searchbox", { name: "Search people" });
+  assert.equal(await search.evaluate((node) => node === globalThis.document.activeElement), true);
+  const fullList = panel.getByRole("list", { name: "All Gateway people", exact: true });
+  assert.equal(await fullList.getByRole("listitem").count(), 50);
+  assert.equal(await fullList.locator(".gateway-person-name").last().textContent(), "Teammate 50");
+  await search.fill("TEAMMATE 50");
+  await panel.getByRole("status").getByText("1 of 50 people", { exact: true }).waitFor();
+  assert.equal(await fullList.getByRole("listitem").count(), 1);
+  await fullList.getByText("maintainer", { exact: true }).waitFor();
+  await search.fill("no such person");
+  await panel.getByText("No people match your search.", { exact: true }).waitFor();
+  assert.equal(await fullList.getByRole("listitem").count(), 0);
+  await search.press("Escape");
+  // Search inputs can consume Escape to clear text; the dialog must still be dismissible.
+  if (await panel.isVisible()) {
+    await search.press("Escape");
+  }
+  await panel.waitFor({ state: "hidden" });
+  assert.equal(await viewAll.evaluate((node) => node === globalThis.document.activeElement), true);
+  await viewAll.click();
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await fullList.getByRole("listitem").count(), 50);
+  await panel.getByRole("button", { name: "Close people" }).click();
+  assert.equal(await viewAll.evaluate((node) => node === globalThis.document.activeElement), true);
+  // A failed refresh clears the overview and makes previously loaded profiles inaccessible.
+  fail = true;
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card.getByRole("alert").waitFor();
+  assert.equal(await preview.getByRole("listitem").count(), 0);
+  assert.equal(await viewAll.isVisible(), false);
+});

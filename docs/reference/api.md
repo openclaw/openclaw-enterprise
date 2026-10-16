@@ -3211,6 +3211,7 @@ List human profiles known to one active Agent Gateway
 | `401` | Unauthorized |
 | `403` | Forbidden |
 | `404` | Not Found |
+| `409` | Conflict |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
 
@@ -3254,6 +3255,7 @@ Read a profile avatar from one active Agent Gateway
 | `401` | Unauthorized |
 | `403` | Forbidden |
 | `404` | Not Found |
+| `409` | Conflict |
 | `500` | Internal Server Error |
 | `501` | Not Implemented |
 | `503` | Service Unavailable |

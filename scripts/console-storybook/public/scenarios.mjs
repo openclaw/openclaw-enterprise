@@ -7,6 +7,12 @@ const currentVersion =
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
+const largeGatewayTeam = Array.from({ length: 50 }, (_, index) => ({
+  id: `profile-${index}`,
+  displayName: `${["Alex", "Casey", "Jordan", "Morgan", "Riley"][index % 5]} ${String(50 - index).padStart(2, "0")}`,
+  role: index % 13 === 0 ? "maintainer" : "member",
+  hasAvatar: false,
+}));
 const click = (text) => ({ click: text });
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
@@ -5043,6 +5049,41 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof; installed Gateway profile reads are verified separately.",
   },
+  gatewayPeopleLarge: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "50 people",
+    gatewayPeople: largeGatewayTeam,
+    description:
+      "Six profiles keep the overview compact; the full roster opens in a searchable panel.",
+    steps: [
+      "Open View all 50 people. Search for Riley and then a name that is absent.",
+      "Clear the search, scroll the full list, and close with Escape or Close. Focus returns to View all people.",
+      "Repeat at 390px; the panel fits the screen and its list scrolls.",
+    ],
+  },
+  gatewayPeopleSearch: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Search people",
+    gatewayPeople: largeGatewayTeam,
+    actions: [click("View all 50 people"), { selector: "#gateway-people-search", value: "Riley" }],
+    description: "Search the full roster by display name, regardless of case.",
+  },
+  gatewayPeopleNoMatches: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "No matching people",
+    gatewayPeople: largeGatewayTeam,
+    actions: [
+      click("View all 50 people"),
+      { selector: "#gateway-people-search", value: "no such person" },
+    ],
+    description: "An empty search result leaves the search and close controls available.",
+  },
   gatewayPeopleEmpty: {
     group: "Components/Gateway people",
     path: revision,
@@ -5122,8 +5163,7 @@ export const scenarios = {
       { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: true },
       { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: true },
     ],
-    rules: [{ method: "GET", suffix: "/profile-bob/avatar", status: 404 }],
-    description: "Review the Gateway people avatar fallback state.",
+    description: "Alice loads a synthetic image; Bob’s missing image falls back to initials.",
     steps: ["Inspect the people card and its refresh control."],
   },
   nativeAdmin: {
