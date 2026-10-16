@@ -337,8 +337,10 @@ function deploymentProgress(record) {
 }
 
 export const DEPLOYMENT_POLL_MS = 5000;
-// Longest wait for Deployment activity's first read before the sections below it show.
-export const FIRST_ACTIVITY_WAIT_MS = 1000;
+// Longest wait for Deployment activity's first read before the sections below it show. On a
+// slow link that read lands over a second after the page, and a failed version's banner then
+// pushed the shown overview down (finding 1489).
+export const FIRST_ACTIVITY_WAIT_MS = 2000;
 const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 
 function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
@@ -1745,7 +1747,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void nativeAdmin.ready.then(revealDetail);
+        // A failed version's banner also waits for the caller's permission answer (finding
+        // 1478), so the overview waits for it too rather than move when the banner lands.
+        void nativeAdmin.ready
+          .then(() => (latestDeploymentStatus === "failed" ? callerPermissionsRead : null))
+          .then(revealDetail);
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
@@ -2361,6 +2367,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       mountedTab.reusable = false;
     }
     savedNotice = saved;
+    // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
+    // it replaces. When the cards below the tab are in view, scroll by the difference, so they
+    // keep their place and the summary takes the editor's (finding 1482).
+    const bottomBefore = content.getBoundingClientRect().bottom;
+    const anchorBelow = bottomBefore < globalThis.innerHeight;
     try {
       await renderTab();
     } finally {
@@ -2368,6 +2379,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     if (!context.isCurrent()) {
       return;
+    }
+    const shrunk = content.getBoundingClientRect().bottom - bottomBefore;
+    if (anchorBelow && shrunk < 0) {
+      globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
     const named = [...content.querySelectorAll("button")].find(
       (candidate) => candidate.textContent === focus && !candidate.disabled,

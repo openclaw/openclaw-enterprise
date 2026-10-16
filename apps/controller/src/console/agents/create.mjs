@@ -1579,6 +1579,23 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
   };
+  // The pressed control disables while its request runs. Keep focus on the line that reports
+  // progress, then on the outcome, rather than drop it to the page (finding 1490). Focus the
+  // reader moved elsewhere stays there.
+  function focusFeedbackLine(line) {
+    const active = document.activeElement;
+    if (
+      line.textContent &&
+      (!active ||
+        active === document.body ||
+        active.disabled ||
+        active === savedStatus ||
+        active === feedback)
+    ) {
+      line.tabIndex = -1;
+      line.focus({ preventScroll: true });
+    }
+  }
   function showSavedStatus() {
     savedStatus.replaceChildren(
       ...[
@@ -1658,12 +1675,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     let mutationStarted = false;
     try {
       mutationStarted = true;
-      const { agentId, revisionId } = await finishProvisioningAttempt({
+      const finishing = finishProvisioningAttempt({
         request,
         status: savedStatus,
         namespaceId,
         attempt,
       });
+      focusFeedbackLine(savedStatus);
+      const { agentId, revisionId } = await finishing;
       if (!context.isCurrent()) {
         return;
       }
@@ -1720,6 +1739,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = rejectionMessage(error, mutationStarted);
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      // The progress line spoke for the request that just ended (finding 1490).
+      if (savedSecret || savedConfiguration || savedAgent) {
+        showSavedStatus();
+      } else {
+        savedStatus.textContent = "";
+      }
       if (error.provisioningStopped) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
@@ -1742,6 +1767,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ) {
         feedback.append(link(" Open Agent", `agents/${error.provisioningAgentId}`, context));
       }
+      focusFeedbackLine(feedback);
       // A 400 to an unacknowledged request means the API never admitted it: a resend of
       // an admitted request returns that job before validation.
       requestAdmitted =
@@ -1980,6 +2006,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         recovery.hidden = true;
       }
       feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      focusFeedbackLine(feedback);
     } finally {
       if (context.isCurrent()) {
         pending = false;

@@ -17,9 +17,12 @@ import {
   newPage,
   nonAuthWriteRequests,
   pathRequests,
+  persistedDeploymentError,
+  recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  takeLayoutShifts,
 } from "./console-agents-browser-helpers.mjs";
 import {
   openCreateSecretDialog,
@@ -1693,3 +1696,90 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     }
   });
 }
+
+// The Agents list painted "Reading deployment…" in each row, then each failed row's 5-7 line
+// error landed: the row grew from 93 to 208 px and the table re-flowed its columns, CLS
+// 0.040-0.074 on every load (finding 1488). A settled cell keeps the placeholder's two lines,
+// with the error on one line (its full text in the title and on the Agent page), and the
+// columns keep their widths.
+test("the Agents list does not move when failed deployments land", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Steady Agents list", { ready: true });
+  const agents = [
+    ["Alpha failed", "RUNTIME_MODEL_PROBE_FAILED", 500],
+    ["Beta completed", null, 650],
+    ["Gamma failed", "RUNTIME_AUTHENTICATION_FAILED", 800],
+    ["Delta completed", null, 950],
+    ["Epsilon failed", "CONVERGENCE_DEADLINE_EXCEEDED", 1100],
+    ["Zeta completed", null, 1250],
+  ];
+  const records = [];
+  for (const [name, code, delay] of agents) {
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const error = code ? persistedDeploymentError(code) : null;
+    records.push({
+      name,
+      error,
+      delay,
+      agentId: agent.id,
+      revisionId: revision.id,
+      url: `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    });
+  }
+  for (const viewport of [
+    { width: 1280, height: 800 },
+    { width: 390, height: 844 },
+  ]) {
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    // Each record settles on its own, as on a live cluster.
+    for (const record of records) {
+      await page.route(record.url, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, record.delay));
+        await route
+          .fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              data: {
+                deploymentId: record.revisionId,
+                namespaceId: namespace.id,
+                agentId: record.agentId,
+                status: record.error ? "failed" : "succeeded",
+                error: record.error,
+                warnings: [],
+                progress: null,
+              },
+              meta: { requestId: "req_test_steady_agents_list" },
+            }),
+          })
+          .catch(() => {});
+      });
+    }
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Zeta completed" }).waitFor();
+    await page.addInitScript(recordLayoutShifts);
+    // A full load, so no recent input excuses a shift.
+    await page.reload();
+    for (const { name, error } of records) {
+      const row = page.getByRole("row").filter({ hasText: name });
+      await row
+        .getByRole("link", { name: error ? "v1 · failed" : "v1 · succeeded", exact: true })
+        .waitFor();
+    }
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    // The whole error stays readable in the row.
+    for (const { name, error } of records.filter((record) => record.error)) {
+      const note = page
+        .getByRole("row")
+        .filter({ hasText: name })
+        .getByText(error.message, { exact: true });
+      assert.equal(await note.getAttribute("title"), error.message);
+    }
+  }
+});

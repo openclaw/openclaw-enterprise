@@ -381,6 +381,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
+    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
     const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
     refresh.disabled = true;
     const header = element(
@@ -395,7 +396,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         { className: "page-actions" },
-        feature === "namespaces" ? null : namespaceSelector(),
+        scopeSelector,
         feature === "settings" ? null : refresh,
       ),
     );
@@ -476,7 +477,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuControls?.close();
       }
     }
-    return { view, refresh, diagnostics };
+    return { view, refresh, diagnostics, scopeSelector };
   }
 
   function sameControl(node, root) {

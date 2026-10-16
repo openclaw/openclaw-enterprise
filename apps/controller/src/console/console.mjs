@@ -1654,14 +1654,21 @@ async function loadPage({
       return;
     }
     const agentDenied = current.agentId && error.status === 403;
+    // Backends are Installation-wide: another Namespace cannot change a denial (finding 1491).
+    const installationDenied = current.feature === "backends" && error.status === 403;
+    if (installationDenied && shell.scopeSelector) {
+      shell.scopeSelector.hidden = true;
+    }
     panel(
       shell.view,
       title,
       agentDenied
         ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
-        : error.status === 403
-          ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
-          : "The read could not be completed. Retry to check current access and saved state.",
+        : installationDenied
+          ? "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access."
+          : error.status === 403
+            ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+            : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),
       error.requestId,

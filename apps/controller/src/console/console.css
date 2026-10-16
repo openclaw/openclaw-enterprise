@@ -1203,6 +1203,19 @@ select:not([multiple])[size="1"] {
   font-weight: 550;
   text-decoration: none;
 }
+/* A set width and a one-line note, so a landing deployment read neither grows its row nor
+   re-flows the columns (finding 1488). The note adds nothing to the column's width. */
+.agent-table .agent-deployment::before {
+  content: "";
+  display: block;
+  width: 14rem;
+}
+.agent-table .agent-deployment-note {
+  contain: inline-size;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .agent-tabs {
   display: flex;
   overflow-x: auto;

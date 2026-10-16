@@ -5,7 +5,13 @@ import test from "node:test";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { apiRequests, login, newPage, pathRequests } from "./console-agents-browser-helpers.mjs";
+import {
+  apiRequests,
+  holdRequests,
+  login,
+  newPage,
+  pathRequests,
+} from "./console-agents-browser-helpers.mjs";
 import {
   agentProvisionPostRequests,
   createModelCredentialSecret,
@@ -79,6 +85,74 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
     0,
   );
   // A 400 means the request was never admitted, so the form unlocks for a fix.
+  assert.equal(await configuration.isDisabled(), false);
+});
+
+// A refused submit kept "Submitting provisioning request…" beside the API's refusal, and focus
+// dropped to the page when Create Agent disabled, for the refusal and for the whole provisioning
+// wait (finding 1490). Focus now follows the progress line, then the refusal, which replaces it.
+test("A refused Create Agent submit clears its progress and focuses the refusal", async (t) => {
+  const fixture = await createConsoleAppFixture(t, provisioningDrivers());
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision refusal focus", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Provisioned refusal focus");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await openAdvancedSettings(page);
+  const configuration = page.getByLabel("Configuration JSON");
+  const edited = JSON.parse(await configuration.inputValue());
+  edited.models = {
+    ...edited.models,
+    providers: {
+      ...edited.models?.providers,
+      openai: { apiKey: `synthetic-inline-key-${randomUUID()}` },
+    },
+  };
+  await configuration.fill(JSON.stringify(edited, null, 2));
+  const provision = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/provision`,
+    { method: "POST" },
+  );
+  const focused = () =>
+    page.evaluate(() => {
+      const active = globalThis.document.activeElement;
+      return {
+        tag: active?.tagName,
+        role: active?.getAttribute("role"),
+        text: active?.textContent,
+      };
+    });
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await provision.requested;
+  const progress = page.getByRole("status").filter({ hasText: "Submitting provisioning request…" });
+  await progress.waitFor();
+  await page
+    .waitForFunction(
+      () => globalThis.document.activeElement?.getAttribute("role") === "status",
+      null,
+      { timeout: 2_000 },
+    )
+    .catch(() => {});
+  assert.deepEqual(await focused(), {
+    tag: "P",
+    role: "status",
+    text: "Submitting provisioning request…",
+  });
+
+  provision.release();
+  const refusal = page.getByRole("alert").filter({ hasText: /apiKey/ });
+  await refusal.waitFor();
+  assert.equal(await progress.count(), 0);
+  const active = await focused();
+  assert.equal(active.role, "alert");
+  assert.equal(active.text, await refusal.textContent());
+  // The form unlocks for a fix, and the refusal keeps focus.
   assert.equal(await configuration.isDisabled(), false);
 });
 

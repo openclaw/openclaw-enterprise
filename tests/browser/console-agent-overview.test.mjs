@@ -679,3 +679,45 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     assert.equal(await page.locator(".agent-logs-opening").count(), 0);
   }
 });
+
+// On a slow link the overview showed once its bounded wait ran out, and the failed version's
+// banner landed above it about a second later, pushing Selected version and Share Agent down:
+// CLS 0.149 at 400 ms per request (finding 1489). The overview now waits for the latest
+// deployment's outcome, and for a failure the caller's permission answer, within a longer bound.
+test("a failed version's banner does not move the overview on a slow link", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slow banner", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Slow Banner", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  // Every Namespace read takes 600 ms, so the latest deployment's outcome lands about 1.2 s
+  // after the page renders, as on the live slow link where the shift was measured. The second
+  // pass also answers the caller's permission read after that outcome.
+  for (const permissionsDelay of [600, 1800]) {
+    const { page } = await newPage(t, fixture);
+    await routeFailedRecord(page, fixture, namespace, agent, revision);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Slow Banner" }).waitFor();
+    await page.route(`${fixture.origin}/namespaces/**`, async (route) => {
+      const delay = route.request().url().endsWith("/permissions") ? permissionsDelay : 600;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      await route.fallback().catch(() => {});
+    });
+    await page.addInitScript(recordLayoutShifts);
+    // A full load, so no recent input excuses a shift.
+    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    await page
+      .locator(".agent-current-summary")
+      .getByText("v2 · Failed", { exact: true })
+      .waitFor();
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`permissions ${permissionsDelay} ms: shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `permissions ${permissionsDelay} ms: shift ${shift}`);
+  }
+});

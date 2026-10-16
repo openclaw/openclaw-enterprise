@@ -199,7 +199,9 @@ export function renderAgentList(context) {
     );
     const body = element("tbody");
     for (const item of matches) {
-      const deployment = element("td", {}, "Reading deployment…");
+      // The cell keeps its column's width and the placeholder's two lines once its read lands:
+      // the outcome link and one note line (finding 1488).
+      const deployment = element("td", { className: "agent-deployment" }, "Reading deployment…");
       if (!deployments.has(item.id)) {
         deployments.set(
           item.id,
@@ -235,25 +237,14 @@ export function renderAgentList(context) {
             ),
           );
           const neutral = neutralDeploymentOutcome(result.status);
-          if (neutral) {
-            deployment.append(
-              element(
-                "span",
-                { className: "resource-id" },
-                `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.`,
-              ),
-            );
-          } else if (result.status.status === "failed") {
-            deployment.append(
-              element(
-                "span",
-                { className: "resource-id" },
-                result.status.error?.message ?? "Deployment failed.",
-              ),
-            );
-          }
+          const note = neutral
+            ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.`
+            : result.status.status === "failed"
+              ? (result.status.error?.message ?? "Deployment failed.")
+              : "Serving health unverified";
+          // A long failure fits one line; the title and the Agent page give the whole text.
           deployment.append(
-            element("span", { className: "resource-id" }, "Serving health unverified"),
+            element("span", { className: "resource-id agent-deployment-note", title: note }, note),
           );
         })
         .catch((error) => {

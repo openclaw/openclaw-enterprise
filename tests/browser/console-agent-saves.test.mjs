@@ -12,7 +12,9 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  recordLayoutShifts,
   selectSecret,
+  takeLayoutShifts,
   waitForInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
@@ -781,4 +783,53 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   release();
   await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
   assert.equal(await plugins.isEnabled(), true);
+});
+
+// Save Configuration collapses the ~400 px editor to its summary when the save lands, about
+// 0.7 s after the click on a live cluster, past the input's 500 ms grace. Stop Agent then
+// moved up into view: CLS 0.074 (finding 1482).
+test("a Configuration save that lands late does not move the cards below the editor", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Late save", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Late Save", nativeValues("before"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const page = await openTab(t, fixture, namespace, agent, "configuration", {
+    viewport: { width: 1280, height: 800 },
+    // The save lands 900 ms after the click.
+    beforeLogin: (routed) =>
+      routed.route(`**/namespaces/${namespace.id}/configurations/*`, async (route) => {
+        if (route.request().method() === "PATCH") {
+          await new Promise((resolve) => setTimeout(resolve, 900));
+        }
+        await route.fallback().catch(() => {});
+      }),
+  });
+  await page.getByRole("heading", { name: "Late Save" }).waitFor();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  // A reader scrolls the editor's actions into view, then saves once the page is still.
+  await save.evaluate((control) => control.scrollIntoView({ block: "center" }));
+  await page.evaluate(() => globalThis.document.fonts.ready);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await page.evaluate(recordLayoutShifts);
+  await save.click();
+  await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  // The tab and the cards below it. Headless Chromium also reports the body itself when the
+  // page gets shorter, on main as well, which a reader does not see.
+  const { shifts } = await takeLayoutShifts(page);
+  const shift = shifts
+    .filter((entry) => entry.sources.some((source) => !source.node.startsWith("BODY.")))
+    .reduce((sum, entry) => sum + entry.value, 0);
+  t.diagnostic(`shift ${shift}: ${JSON.stringify(shifts)}`);
+  assert.ok(shift < 0.01, `shift ${shift}`);
+  // The saved summary's next step is in view, where Save Configuration was.
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Edit Configuration",
+  );
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
