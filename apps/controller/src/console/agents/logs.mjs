@@ -8,10 +8,12 @@ const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
-// A 403 is audited; remember it for this page session instead of re-asking every poll
-// or every time the Logs tab reopens.
+// A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
+// time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
+// allowed operate when it was last shown: once a later answer allows it again, the view asks
+// once more. The answer has no read_logs bit, so a log text denial lasts until sign-out.
 const deniedLogViews = new Set();
-const deniedStatusViews = new Set();
+const deniedStatusViews = new Map();
 // Denials are per signed-in operator: another user signing in on this tab asks again.
 const logViewKey = (context, agentId) =>
   JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
@@ -19,6 +21,12 @@ const logViewKey = (context, agentId) =>
 /** Whether this page session already saw the Agent's log text read denied. */
 export function logTextDenied(context, agentId) {
   return deniedLogViews.has(logViewKey(context, agentId));
+}
+
+/** Forgets every remembered runtime denial: sign-out calls this, so a new sign-in asks again. */
+export function clearRuntimeDenials() {
+  deniedLogViews.clear();
+  deniedStatusViews.clear();
 }
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
@@ -91,7 +99,13 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
 export function renderAgentLogs(
   context,
-  { agent, revisionId, shown = Promise.resolve(), onLogsDenied = () => {} },
+  {
+    agent,
+    revisionId,
+    shown = Promise.resolve(),
+    permissions = Promise.resolve(null),
+    onLogsDenied = () => {},
+  },
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
   const deniedKey = logViewKey(context, agent.id);
@@ -231,6 +245,8 @@ export function renderAgentLogs(
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
+  // Set when a read is refused after this view showed output; Back rebuilds such a view.
+  let outputRefused = false;
   let logsDenied = deniedLogViews.has(deniedKey);
   // Set when runtime status is denied; the last page's stream stands in for the Pod list.
   let statusDenied = false;
@@ -406,9 +422,19 @@ export function renderAgentLogs(
       return;
     }
     if (deniedStatusViews.has(statusKey)) {
-      showStripStatus(runtimeErrorText({ status: 403 }, "status"));
-      offerLogsWithoutStatus();
-      return;
+      const operate = (await permissions)?.operate === true;
+      if (!current()) {
+        return;
+      }
+      if (operate && !deniedStatusViews.get(statusKey)) {
+        // Operate is granted again since the denial: ask once more, never on a timer.
+        deniedStatusViews.delete(statusKey);
+      } else {
+        deniedStatusViews.set(statusKey, operate);
+        showStripStatus(runtimeErrorText({ status: 403 }, "status"));
+        offerLogsWithoutStatus();
+        return;
+      }
     }
     if (!document.hidden) {
       try {
@@ -437,7 +463,7 @@ export function renderAgentLogs(
         // Authorization and support failures do not change on their own.
         if ([403, 404, 501].includes(error.status)) {
           if (error.status === 403) {
-            deniedStatusViews.add(statusKey);
+            deniedStatusViews.set(statusKey, (await permissions)?.operate === true);
           }
           return;
         }
@@ -665,7 +691,14 @@ export function renderAgentLogs(
       }
       showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
       if (error.status === 403) {
-        // Never re-poll after a denial; the view needs new grants.
+        // Never re-poll after a denial; the view needs new grants. Output read before it
+        // goes too, with its cursor (finding 1565).
+        outputRefused ||= rows > 0;
+        cursor = null;
+        pane.replaceChildren();
+        rows = 0;
+        logStatus.textContent = "";
+        applyFilters();
         logsDenied = true;
         deniedLogViews.add(deniedKey);
         onLogsDenied();
@@ -796,7 +829,7 @@ export function renderAgentLogs(
     }
     // Output that cannot be read on from (no cursor, no readable source, or denied since it
     // showed) is not shown again from the cache.
-    if (rows > 0 && !reads.some((path) => path.startsWith(logsPath))) {
+    if ((rows > 0 || outputRefused) && !reads.some((path) => path.startsWith(logsPath))) {
       throw new Error("The shown output cannot be checked.");
     }
     const answers = await Promise.all(
@@ -805,7 +838,8 @@ export function renderAgentLogs(
           // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
           if (error.status === 403) {
             if (path === base) {
-              deniedStatusViews.add(statusKey);
+              // Not yet compared with a permission answer: the rebuilt view does that.
+              deniedStatusViews.set(statusKey, false);
             } else {
               deniedLogViews.add(deniedKey);
             }
@@ -817,17 +851,17 @@ export function renderAgentLogs(
     reads.forEach((path, index) => checked.set(path, answers[index]));
   });
   // Timers that fired while Back's cache held this view stopped; pick both polls up again.
+  // The page Back's check read is shown, followed or not: it is an audited view (finding 1564).
   context.onResume?.(() => {
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
-      if (following && [...checked.keys()].some((path) => path.startsWith(logsPath))) {
+      if ([...checked.keys()].some((path) => path.startsWith(logsPath))) {
         void readLogs({ restart: false });
       } else if (following) {
         scheduleFollow(0);
       }
     }
-    // An unfollowed view drops the page Back read; its cursor still starts there.
     checked.clear();
   });
   applyFilters();
