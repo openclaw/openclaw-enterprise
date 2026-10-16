@@ -81,8 +81,8 @@ details without activating it. **Deployment activity** shows the newest readable
 version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
 health. Routine completion folds; pending work, read errors, warnings, and cleanup
 stay visible. A failed deployment links its Logs, unless this tab saw them denied,
-and draft settings when `update` is allowed. A hidden current version suppresses
-this recovery. Viewed versions show their own results. Pending activity is reread every
+and draft settings once `update` is confirmed. A hidden or unlisted current version
+suppresses this recovery. Viewed versions show their own results. Pending activity is reread every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection. **Current observations** requests timestamped

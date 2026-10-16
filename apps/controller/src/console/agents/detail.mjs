@@ -864,10 +864,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   context.setTitle(agent.name);
   // A missing summary leaves each control on its usual path. The API authorizes the actual request.
   let callerPermissions = null;
-  const callerPermissionsRead = request(`${path}/permissions`).then(
-    (permissions) => (callerPermissions = permissions),
-    () => null,
-  );
+  let callerPermissionsSettled = false;
+  const callerPermissionsRead = request(`${path}/permissions`)
+    .then(
+      (permissions) => (callerPermissions = permissions),
+      () => null,
+    )
+    .finally(() => {
+      callerPermissionsSettled = true;
+    });
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -1481,11 +1486,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
     // The caller cannot read the current version, so it may be newer than every version shown.
     const currentHidden = currentRevisionId !== latest.id && revisionHidden(currentRevisionId);
+    // The current version is not on the pages loaded so far, yet not known to be hidden either:
+    // it may be on an older page or one the caller cannot read (finding 1477).
+    const currentUnknown = Boolean(currentRevisionId) && !current && !currentHidden;
     // A succeeded deployment becomes current, so a different current version is newer.
     const newerHidden = latestDeploymentStatus === "succeeded" && currentHidden;
     // A failed deployment never becomes current, so a hidden current version may be newer or
     // older: the page cannot say whether that failure still matters (finding 1458).
     const failureBehindHidden = latestDeploymentStatus === "failed" && currentHidden;
+    const failureBehindUnknown = latestDeploymentStatus === "failed" && currentUnknown;
     const requestedHidden = selected !== currentRevisionId && revisionHidden(selected);
     // Deploying a dedicated Agent stops the previous version's workload before the new
     // one starts, so a failed newer deployment usually leaves nothing serving.
@@ -1538,7 +1547,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (latestDeploymentValue.dataset.outcome !== outcome) {
       latestDeploymentValue.dataset.outcome = outcome;
     }
-    statusLine.hidden = !requestedHidden && !newerHidden && !failureBehindHidden;
+    const hiddenNotice = requestedHidden || newerHidden || failureBehindHidden;
+    statusLine.hidden = !hiddenNotice && !failureBehindUnknown;
     if (!statusLine.hidden) {
       setText(
         statusLine,
@@ -1552,15 +1562,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           failureBehindHidden
             ? `The current version, ${shortId(currentRevisionId)}, is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
             : null,
-          readAccessHint,
+          failureBehindUnknown
+            ? `The current version, ${shortId(currentRevisionId)}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
+            : null,
+          hiddenNotice ? readAccessHint : null,
         ]
           .filter(Boolean)
           .join(" "),
       );
     }
 
-    // Recovery speaks for the current version, so it needs that version to be readable.
-    recovery.hidden = latestDeploymentStatus !== "failed" || currentHidden;
+    // Recovery speaks for the current version, so it needs that version to be readable. It
+    // waits for the caller's permission answer, which decides its draft link, so it appears
+    // once with its final links instead of gaining one later (finding 1478).
+    recovery.hidden =
+      latestDeploymentStatus !== "failed" ||
+      currentHidden ||
+      currentUnknown ||
+      !callerPermissionsSettled;
     if (!recovery.hidden) {
       const version = `v${latest.revision}`;
       const code = latestDeploymentErrorCode;
@@ -1579,7 +1598,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const logsAllowed =
         !logTextDenied(context, agentId) &&
         !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
-      const draftAllowed = callerPermissions?.update !== false;
+      // Only an answer that allows update offers the draft; a failed answer offers none.
+      const draftAllowed = callerPermissions?.update === true;
       let impact = logsAllowed
         ? "Check the failed version’s logs before deploying a new version."
         : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
@@ -1787,7 +1807,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   let refreshDeployControls = () => {};
   void callerPermissionsRead.then((permissions) => {
-    if (!context.isCurrent() || !permissions) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    // A failed-version recovery held for this answer can now show, with or without its draft link.
+    if (latestDeploymentStatus === "failed" && !deleting) {
+      renderLatestDeployment();
+    }
+    if (!permissions) {
       return;
     }
     if (permissions.update === false) {
@@ -1797,10 +1824,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       for (const control of selector.querySelectorAll(".revision-create")) {
         control.textContent = "Open version draft";
-      }
-      // The failed-version recovery offers draft links only to callers who may update.
-      if (!recovery.hidden) {
-        renderLatestDeployment();
       }
     }
     refreshDeployControls();

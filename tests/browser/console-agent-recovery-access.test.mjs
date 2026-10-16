@@ -86,6 +86,72 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await summary.getByText("May be offline").count(), 0);
 });
 
+test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Paged history", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Paged history", nativeValues("v1"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  // v3 is current and serving, but this reader cannot read it; v2, the newest it can read,
+  // failed earlier, and v1 is on the next history page (finding 1477).
+  const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
+  denyRevisionRead(fixture, namespace, third.revision);
+  const { page } = await newPage(t, fixture);
+  await routeDeploymentStatus(
+    page,
+    fixture,
+    namespace,
+    agent,
+    second.revision,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+  );
+  // One readable version per history page.
+  const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
+  await page.route(
+    (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
+    async (route) => {
+      const cursor = new URL(route.request().url()).searchParams.get("cursor");
+      const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
+      const body = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...body,
+          data: cursor === "older-page" ? body.data.slice(1) : body.data.slice(0, 1),
+          meta: { ...body.meta, nextCursor: cursor === "older-page" ? null : "older-page" },
+        },
+      });
+    },
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Paged history" }).waitFor();
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v2 · Failed", { exact: true }).waitFor();
+  const statusLine = page.locator(".agent-status-line");
+  await statusLine
+    .getByText(
+      /^The current version, rev_.*, is not among the versions listed, so this page cannot tell whether the failed v2 deployment affects it\.$/,
+    )
+    .waitFor();
+  assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
+  assert.equal(await page.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
+
+  // With every page loaded, the current version is known to be hidden.
+  await page.getByRole("button", { name: "Show older versions" }).click();
+  await page.getByRole("button", { name: /^View version v1/ }).waitFor();
+  await statusLine
+    .getByText(
+      /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it\. Ask an Agent administrator for read access/,
+    )
+    .waitFor();
+  assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
+  assert.equal(await page.getByText("v2 deployment failed").count(), 0);
+});
+
 test("Recovery offers the draft link only to callers who may update the Agent", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -200,4 +266,94 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+});
+
+test("Recovery waits for the caller's permission answer before offering the draft link", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pending permissions", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Pending permissions", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await routeDeploymentStatus(
+    page,
+    fixture,
+    namespace,
+    agent,
+    revision,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+  );
+  const answer = Promise.withResolvers();
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    async (route) => route.fulfill(await answer.promise),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v2 · Failed", { exact: true }).waitFor();
+  // While the answer is pending, the recovery is held rather than offering a draft link
+  // the caller may not be allowed to use (finding 1478).
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
+  assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
+
+  answer.resolve({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: { update: true, deploy: true, operate: true, delete: true },
+      meta: { requestId: "req_test_recovery_pending" },
+    }),
+  });
+  await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+  assert.equal(
+    await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
+    "overview-primary",
+  );
+  await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+});
+
+test("Recovery offers no draft link when the caller's permission answer fails", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Failed permissions", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Failed permissions", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await routeDeploymentStatus(
+    page,
+    fixture,
+    namespace,
+    agent,
+    revision,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again later." },
+          meta: { requestId: "req_test_recovery_permissions_failed" },
+        }),
+      }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText("v2 deployment failed").waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await recovery.getByRole("link", { name: "Open Configuration" }).count(), 0);
+  assert.equal(await recovery.getByRole("link").count(), 1);
 });
