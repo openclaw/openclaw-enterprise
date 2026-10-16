@@ -14,7 +14,8 @@
     "tests/browser/console-runtime-credentials.test.mjs",
     "tests/browser/console-codex-oauth.test.mjs",
     "tests/browser/console-repository-dedicated.test.mjs",
-    "tests/browser/console-create-agent-provisioning-400.test.mjs"
+    "tests/browser/console-create-agent-provisioning-400.test.mjs",
+    "tests/browser/console-agent-saves.test.mjs"
   ],
   "files": [
     {
@@ -49,6 +50,9 @@
     },
     {
       "path": "tests/integration/ci-impact.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-saves.test.mjs"
     }
   ]
 }

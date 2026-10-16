@@ -688,6 +688,18 @@ export const scenarios = {
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
     ],
   },
+  navigationSlowRecheck: {
+    group: "Pages/Navigation",
+    name: "Slow rechecks",
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 2500 }],
+    description:
+      "Every session check after the first load takes 2.5 s. Returns and refocus keep the shown page and say Still checking after 1 s; Refresh shows loading after 250 ms. Simulated API; no backend proof.",
+    steps: [
+      "Wait for Agents, then select Refresh. The list stays shown, inactive, for 250 ms, then Loading replaces it. When the list returns, focus is on Refresh.",
+      "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 1 s, Still checking… appears beside Refresh until the unchanged Agents list returns.",
+      "Switch to another window and back: the list stays shown and says Still checking… after 1 s.",
+    ],
+  },
   navigationAgentReturn: {
     group: "Pages/Navigation",
     name: "Return to Agent panels",

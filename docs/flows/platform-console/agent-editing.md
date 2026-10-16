@@ -101,7 +101,7 @@ Writes can race after these reads; the API owns authorization and generation.
 admitted versions remain unchanged; Cancel discards the edit. On deployment, Kubernetes `gatewayConfiguration` detects the reference;
 `deployment` delivers the generated password environment variable.
 
-Saving reloads the draft without changing admitted snapshots. Invalid input,
+Saving refreshes the draft in place, keeping scroll and focus; admitted snapshots stay. Invalid input,
 denial, and stale drafts retain editor text. Uncertain saves require readback.
 Unsaved edits block deployment; pending saves block tab and version changes.
 

@@ -6,6 +6,8 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The longest the Logs view keeps its strip and output back for their first reads.
+const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this page session instead of re-asking every poll
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();
@@ -89,7 +91,26 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     agent.id,
     revisionId,
   ]);
-  const section = element("section", { className: "agent-logs" });
+  // The status strip fills from the first status read and can be taller than a phone screen.
+  // Until that read and the first log page settle (at most FIRST_VIEW_WAIT_MS), the strip and
+  // log viewer stay back, so the view appears in one step instead of the strip pushing the
+  // output down after the page scrolled to it (finding 1413).
+  const section = element("section", { className: "agent-logs agent-logs-pending" });
+  let firstLogRead = null;
+  let markFirstView;
+  const firstView = new Promise((resolve) => {
+    markFirstView = resolve;
+  });
+  function showFirstView() {
+    clearTimeout(firstViewTimer);
+    if (section.classList.contains("agent-logs-pending")) {
+      section.classList.remove("agent-logs-pending");
+      // A hidden pane cannot scroll; open at the newest output as a shown one would.
+      pane.scrollTop = pane.scrollHeight;
+    }
+    markFirstView();
+  }
+  const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
   const stripStatus = element(
     "p",
@@ -341,7 +362,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     description = unobservedDescription();
     renderPickers();
     if (!logsDenied) {
-      void readLogs({ restart: true });
+      firstLogRead = readLogs({ restart: true });
     }
   }
 
@@ -365,7 +386,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
-          void readLogs({ restart: true });
+          firstLogRead = readLogs({ restart: true });
         }
       } catch (error) {
         if (!current()) {
@@ -729,6 +750,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
   });
   applyFilters();
-  void loadStatus();
-  return section;
+  void loadStatus()
+    .then(() => firstLogRead)
+    .catch(() => {})
+    .finally(showFirstView);
+  return { section, firstView };
 }

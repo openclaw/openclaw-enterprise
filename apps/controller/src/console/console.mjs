@@ -441,6 +441,8 @@ const request = createApiClient({
 const retainedViews = new Map();
 // A load that settles sooner swaps pages without showing loading (finding 1407).
 const loadingDelayMs = 250;
+// A return or refocus keeps its page until the recheck settles; past this delay it says so.
+const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
 let mountedAgent = null;
 let mountedViewState = null;
@@ -543,15 +545,36 @@ function retainMountedView() {
   mountedRouteKey = null;
 }
 
-function takeRetainedView(current) {
+// Finds the destination's retained view without removing it. The load forgets it only once it
+// mounts or replaces the view; a load abandoned before then (Forward during a return's
+// recheck, say) leaves it for the next return (finding 1441).
+function peekRetainedView(current) {
   const owner = sessionOwnerKey(session);
   const key = routeKey(current);
   const retained = key && retainedViews.get(key);
   if (!owner || !retained || retained.owner !== owner) {
     return null;
   }
-  retainedViews.delete(key);
-  return retained;
+  return { key, retained };
+}
+
+function forgetRetainedView(taken) {
+  if (taken && retainedViews.get(taken.key) === taken.retained) {
+    retainedViews.delete(taken.key);
+  }
+}
+
+// Names a recheck that outlasts stillCheckingDelayMs beside the page's actions, so a held page
+// is not mistaken for a stuck one (finding 1442). Returns a function that removes the note.
+function showStillChecking() {
+  const actions = app.querySelector(".content .page-actions");
+  if (!actions) {
+    return () => {};
+  }
+  const note = element("p", { className: "checking-status", role: "status" });
+  actions.prepend(note);
+  note.textContent = "Still checking…";
+  return () => note.remove();
 }
 
 // On a return, keeps the page already on screen, inert, in a fresh pending shell while the
@@ -885,12 +908,18 @@ function showLogin(message = "", destination = null) {
 }
 
 function showCheckingSession() {
+  const shown = app.firstElementChild?.classList.contains("startup") ? app.firstElementChild : null;
   // Destination recovery can continue in another loadPage without restarting this status.
-  if (app.firstElementChild?.classList.contains("startup")) {
+  if (shown?.dataset.session !== undefined) {
     return;
   }
-  const status = element("p", { className: "startup", role: "status" });
-  app.replaceChildren(status);
+  // The shell's static status (index.html) paints before any script, so a slow link never
+  // shows a blank page. Take it over in place: the status never blanks or moves (finding 1444).
+  const status = shown ?? element("p", { className: "startup", role: "status" });
+  status.dataset.session = "";
+  if (!shown) {
+    app.replaceChildren(status);
+  }
   // Delay the announcement, never the session check or the view that replaces it.
   setTimeout(() => {
     if (status.isConnected) {
@@ -899,7 +928,11 @@ function showCheckingSession() {
   }, 300);
 }
 
-async function loadPage({ fromNavigation = false, reuseView = fromNavigation } = {}) {
+async function loadPage({
+  fromNavigation = false,
+  reuseView = fromNavigation,
+  fromRefresh = false,
+} = {}) {
   if (loggingOut) {
     return;
   }
@@ -935,7 +968,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     retainedViews.delete(previousMountedRouteKey);
     discardCreationOnExit = null;
   }
-  const retainedView = knownPrivateState ? takeRetainedView(current) : null;
+  const taken = knownPrivateState ? peekRetainedView(current) : null;
+  if (!reuseView) {
+    // Refresh and save/reload discard the shown view even if the load is abandoned.
+    forgetRetainedView(taken);
+  }
+  const retainedView = taken?.retained ?? null;
   let retained = retainedView !== null;
   // Every load keeps the shown page, inert, and swaps once: a return when its retained view
   // revalidates, any other load when admission and the destination's first read settle.
@@ -964,32 +1002,43 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       shell = renderPendingNamespaceShell(current.feature);
     }
   }
+  // A return or refocus that can reuse its retained view keeps the shown page and, past
+  // stillCheckingDelayMs, says it is still checking. Other loads, Refresh included, show
+  // loading after loadingDelayMs (finding 1442).
+  const recheck = held && retained && reuseView;
   let loadingTimer =
-    (held && retained) || (!held && !startup)
+    !held && !startup
       ? null
-      : setTimeout(() => {
-          loadingTimer = null;
-          if (!lifetime.isCurrent(active)) {
-            return;
-          }
-          if (startup && !sessionResolved) {
-            // The startup status announces the session check itself.
-            return;
-          }
-          held = false;
-          if (!accessResolved) {
-            shell = renderPendingNamespaceShell(current.feature);
-            return;
-          }
-          shell = renderShell(current.feature, false);
-          panel(
-            shell.view,
-            "Loading…",
-            current.agentId
-              ? "Reading this Agent."
-              : `Reading ${pages[current.feature].toLowerCase()}.`,
-          );
-        }, loadingDelayMs);
+      : recheck
+        ? setTimeout(() => {
+            loadingTimer = null;
+            if (lifetime.isCurrent(active) && held) {
+              showStillChecking();
+            }
+          }, stillCheckingDelayMs)
+        : setTimeout(() => {
+            loadingTimer = null;
+            if (!lifetime.isCurrent(active)) {
+              return;
+            }
+            if (startup && !sessionResolved) {
+              // The startup status announces the session check itself.
+              return;
+            }
+            held = false;
+            if (!accessResolved) {
+              shell = renderPendingNamespaceShell(current.feature);
+              return;
+            }
+            shell = renderShell(current.feature, false);
+            panel(
+              shell.view,
+              "Loading…",
+              current.agentId
+                ? "Reading this Agent."
+                : `Reading ${pages[current.feature].toLowerCase()}.`,
+            );
+          }, loadingDelayMs);
   const stopLoadingTimer = () => {
     clearTimeout(loadingTimer);
     loadingTimer = null;
@@ -1233,6 +1282,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         );
       if (unchanged) {
         stopLoadingTimer();
+        forgetRetainedView(taken);
         shell = mountRetainedView(current, retainedView);
         mountedViewState = retainedState;
         retainedState.active = active;
@@ -1248,6 +1298,8 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
     }
     stopLoadingTimer();
+    // The destination rebuilds: a retained view that did not match is stale from here on.
+    forgetRetainedView(taken);
     shell = renderShell(current.feature, false);
     const viewState = {
       active,
@@ -1419,6 +1471,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       return;
     }
     stopLoadingTimer();
+    forgetRetainedView(taken);
     if (error.status === 401) {
       showLogin("Your session has expired.");
       return;
@@ -1523,6 +1576,12 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       ) {
         app.querySelector(".content h1")?.focus({ preventScroll: true });
       }
+      if (fromRefresh && document.activeElement === document.body) {
+        // The held page's shell, and the Refresh button pressed in it, were replaced.
+        (shell.refresh.isConnected ? shell.refresh : app.querySelector(".content h1"))?.focus({
+          preventScroll: true,
+        });
+      }
     }
   }
 }
@@ -1580,6 +1639,12 @@ async function revalidateMountedAgent(current) {
   let checking = "session";
   // Block stale controls during admission without losing an editor's caret on return.
   view.inert = true;
+  let clearStillChecking = null;
+  const stillChecking = setTimeout(() => {
+    if (isCurrent()) {
+      clearStillChecking = showStillChecking();
+    }
+  }, stillCheckingDelayMs);
   try {
     const resolvedSession = await request("/api/auth/session");
     if (!isCurrent()) {
@@ -1680,6 +1745,8 @@ async function revalidateMountedAgent(current) {
       error.requestId,
     );
   } finally {
+    clearTimeout(stillChecking);
+    clearStillChecking?.();
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
