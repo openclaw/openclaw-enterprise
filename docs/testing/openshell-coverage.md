@@ -68,11 +68,11 @@ asserting:
   redeploy fails at least one attempt and stays queued. Once the gateway is
   back, the redeploy activates and serves a turn without operator action.
 
-After the restart, an OAuth2 source whose refresh was due fails with
-`refresh_configuration_invalid` and is retried only an hour later
-([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526)).
-The test accepts that state and requires a forced rotation to restore the
-token.
+After the restart, each OAuth2 source must return to a `ready` refresh state
+without a forced rotation. A `refresh_configuration_invalid` failure means the
+gateway checked the Workspace before loading its namespace allowlist
+([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526),
+fixed in v0.1.5-pre.1).
 
 ## Absence checks and a second Agent
 
