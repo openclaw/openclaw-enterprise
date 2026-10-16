@@ -4267,7 +4267,7 @@ async function gatewayTurnFailureDiagnostic(
       // destination with its reason, such as a stale policy generation (finding 1496). Allowed
       // OCSF lines also carry `[policy:...]`, so the bare word would only add noise.
       pattern:
-        /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire|\bCONFIG:|\bDENIED\b|generation|session/iu,
+        /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire|\bCONFIG:|\bDENIED\b|generation/iu,
     });
   } catch (error) {
     sources.push({ label: "OpenShell supervisor", lookupError: error });
@@ -5160,22 +5160,28 @@ async function untrustedUpstreamFailureDetail(
 // Finding 1532: the replacement never became active and the worker diagnostic alone could not
 // say why. The message carries the persisted revision and queue state with the collapsed
 // worker events, which Harness and Gateway Pods the replacement has, and the turn diagnostic's
-// Gateway, Harness and supervisor sections for them. Budgets keep it under 16 KiB.
-const replacementWorkerChars = 2_000;
+// Gateway, Harness and supervisor sections for them. Budgets keep it under 16 KiB. The clip
+// keeps the start, so the events there run newest first.
+const replacementWorkerChars = 2_500;
 const replacementPodsChars = 600;
 
 async function replacementActivationDiagnostic(topology, revision, worker) {
   const gatewayPassword = await diagnosticGatewayPassword(topology);
   const secrets = turnFailureSecrets(topology, gatewayPassword);
   const sections = [
-    `Worker: ${redactLogLine(JSON.stringify(worker), secrets, replacementWorkerChars)}`,
+    `Worker: ${redactLogLine(
+      JSON.stringify({ ...worker, events: [...(worker?.events ?? [])].reverse() }),
+      secrets,
+      replacementWorkerChars,
+    )}`,
   ];
-  const newest = (pods) =>
-    pods
-      .filter(({ metadata }) => metadata.deletionTimestamp === undefined)
-      .sort((a, b) =>
-        String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
-      )[0];
+  // Prefer the newest Pod that is not terminating; a rolling Gateway may have only that one.
+  const newest = (pods) => {
+    const byAge = [...pods].sort((a, b) =>
+      String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
+    );
+    return byAge.find(({ metadata }) => metadata.deletionTimestamp === undefined) ?? byAge[0];
+  };
   const describe = (pod) => ({
     name: pod.metadata.name,
     phase: pod.status?.phase,
@@ -5224,7 +5230,7 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
   const diagnostic = await gatewayTurnFailureDiagnostic(
     { ...topology, harnessPod, gatewayPod },
     gatewayPassword,
-    { gateway: 4_000, harness: 3_500, supervisor: 4_000 },
+    { gateway: 4_000, harness: 3_000, supervisor: 4_000 },
   );
   return `\n${sections.join("\n")}${diagnostic}`;
 }
@@ -5282,7 +5288,12 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
       (diagnosticError) =>
         `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
     );
-    assert.fail(`${error?.message ?? String(error)}${detail}`);
+    // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
+    if (error instanceof Error) {
+      error.message = `${error.message}${detail}`;
+      throw error;
+    }
+    assert.fail(`${String(error)}${detail}`);
   }
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
