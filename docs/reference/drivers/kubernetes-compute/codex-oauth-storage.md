@@ -59,9 +59,9 @@ and releases the lock on process exit. A successful Job means the writer verifie
 both files; it does not prove provider authentication or a model turn.
 
 After `Complete`, Compute consumes the source and removes the seed Secret first,
-so a later Job or Pod cleanup failure cannot leave the token bundle behind. It
-then deletes the Job with foreground propagation and waits for its exact Pods to
-disappear.
+retrying transient errors, so a later Job or Pod cleanup failure cannot leave the
+token bundle behind. It then deletes the Job with foreground propagation and
+waits for its exact Pods to disappear.
 Only then does it start Codex. Cleanup interrupted after consumption resumes
 from the consumed marker without copying the original tokens again.
 

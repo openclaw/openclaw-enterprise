@@ -36,7 +36,7 @@ graph TD
   OA --> OC{"<b>Job condition</b>"}
   OC -->|pending| OP["<b>Observe existing Job</b>"]
   OP --> OC
-  OC -->|Complete| OB["<b>Consume source</b><br/>Erase Job, Pods, seed"]
+  OC -->|Complete| OB["<b>Consume source</b><br/>Erase seed, Job, Pods"]
   OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist evidence and cleanup"]
   OP -->|deadline| OF
   OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]

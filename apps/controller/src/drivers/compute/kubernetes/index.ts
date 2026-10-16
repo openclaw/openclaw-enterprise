@@ -1144,8 +1144,8 @@ const REQUEST_RETRY_BASE_DELAY_MS = 50;
 const REQUEST_RETRY_MAX_DELAY_MS = 2_000;
 const REQUEST_RETRY_BUDGET_MS = 2_000;
 /**
- * Read-and-delete attempts for the OAuth bootstrap Job or legacy Deployment; the last
- * 409 or 404 fails the pass.
+ * Read-and-delete attempts for the OAuth bootstrap Job or legacy Deployment (the last
+ * 409 or 404 fails the pass) and for a consumed seed Secret (also on transient errors).
  */
 const OAUTH_BOOTSTRAP_DELETE_ATTEMPTS = 3;
 /** Each Kubernetes call on the runtime log path; the service bounds the whole request. */
@@ -13933,13 +13933,40 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (consumed) {
       // The source is consumed, so the seed's token bundle has no remaining use. End its
       // custody first: a later Deployment, Job or Pod cleanup failure can then fail the
-      // pass, even its last attempt, without leaving the bundle behind.
-      await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+      // pass, even its last attempt, without leaving the bundle behind. A transient
+      // failure of this delete is retried; each attempt re-reads the owned Secret, so a
+      // delete that was applied but unconfirmed reads as gone.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+          break;
+        } catch (error) {
+          const status = numericErrorStatus(error);
+          if (
+            !(
+              error instanceof KubernetesRequestTimeout ||
+              status === 404 ||
+              status === 409 ||
+              status === 429 ||
+              (status !== undefined && status >= 500)
+            ) ||
+            attempt >= OAUTH_BOOTSTRAP_DELETE_ATTEMPTS
+          ) {
+            throw error;
+          }
+          await this.waitBeforeRetry(
+            requestRetryDelay(attempt, status, error),
+            currentComputeAbortSignal(),
+          );
+        }
+      }
     }
     await this.retireOAuthBootstrapDeployment(revision, namespace);
     await this.deleteOAuthBootstrapWorkload("Job", revision, namespace);
     await this.waitForRevisionPodsToTerminate(revision, namespace, "agent", name);
-    await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+    if (!consumed) {
+      await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+    }
   }
 
   private async deliverHarnessAuth(

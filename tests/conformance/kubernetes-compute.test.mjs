@@ -15793,15 +15793,25 @@ test("Kubernetes OAuth handoff removes the seed Secret first, so a failed Job de
   // The Job completes and this pass consumes the source, then the API server fails the
   // Job delete with a non-conflict error. If this was the deployment's last attempt (or
   // its convergence deadline passed), no later pass runs, so the seed Secret holding
-  // the token bundle must already be gone.
+  // the token bundle must already be gone. Its own delete is retried after a 503.
   const transport = await driver.apiClients;
   const deleteJob = transport.batch.deleteNamespacedJob;
   transport.batch.deleteNamespacedJob = async () => {
     throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
   };
+  const deleteSecret = transport.core.deleteNamespacedSecret;
+  let secretFailures = 0;
+  transport.core.deleteNamespacedSecret = async (request) => {
+    if (request.name === job.metadata.name && secretFailures === 0) {
+      secretFailures += 1;
+      throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
+    }
+    return deleteSecret(request);
+  };
   state.ready = true;
   await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
   assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+  assert.equal(secretFailures, 1);
   assert.equal(objects.has(seedKey), false);
   assert.ok(objects.has(`Job:${namespace}:${job.metadata.name}`));
 
