@@ -2246,6 +2246,40 @@ test("Codex PAT profiles admit native startup without granting the whole backend
   assert.deepEqual(profile.binaries, ["/usr/local/bin/codex"]);
 });
 
+test("each Codex PAT source gets its own provider profile, stable across replays", async () => {
+  const { context, driver, profileWrites, profiles, providers } = credentialGatewayOverProviders();
+  const register = (id) => {
+    const owner = context(id);
+    return driver.registerSource(
+      { ...owner, source: { ...owner.source, type: "codex-pat" } },
+      { type: "codex-pat", config: {}, secrets: { access_token: `synthetic-pat-${id}` } },
+    );
+  };
+  const sources = [
+    "cs_00000000-0000-4000-8000-0000000000c2",
+    "cs_00000000-0000-4000-8000-0000000000c3",
+  ];
+  for (const id of sources) {
+    await ready(register(id));
+  }
+  // Each provider's type names a profile of its own, so one PAT's routes never bind another's.
+  const profileIds = sources.map((id) => {
+    const provider = [...providers.values()].find(
+      ({ labels }) => labels["openclaw.dev/credential-source-id"] === id,
+    );
+    assert.equal(profiles.get(provider.type)?.id, provider.name, id);
+    return provider.type;
+  });
+  assert.notEqual(profileIds[0], profileIds[1]);
+  assert.deepEqual([...profiles.keys()].sort(), [...profileIds].sort());
+  // Replaying a source's registration reuses its profile instead of minting another.
+  profileWrites.length = 0;
+  await ready(register(sources[0]));
+  assert.equal(providers.size, 2);
+  assert.deepEqual([...profiles.keys()].sort(), [...profileIds].sort());
+  assert.deepEqual(profileWrites, []);
+});
+
 test("the OpenShell Credential Gateway acts only on its own source's provider", async () => {
   const {
     calls,
