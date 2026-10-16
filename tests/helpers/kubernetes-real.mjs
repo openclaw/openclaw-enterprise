@@ -46,6 +46,10 @@ const transientKubectlFailure =
   /^error: EOF$|"https?:\/\/[^"\s]+": EOF$|Unable to connect to the server|error dialing backend|websocket: close|unexpected EOF|connection reset by peer|connection refused|http2: client connection lost|TLS handshake timeout|i\/o timeout|the server is currently unable to handle the request|etcdserver: request timed out/m;
 
 export function isTransientKubectlFailure(error) {
+  // A read a diagnostic deadline stopped is not retried, whatever kubectl wrote first.
+  if (error?.name === "AbortError") {
+    return false;
+  }
   // A spawn failure (ENOENT, EACCES) has empty stderr: kubectl never ran.
   const stderr = String(error?.stderr ?? "");
   return !/command terminated with exit code/.test(stderr) && transientKubectlFailure.test(stderr);

@@ -29,12 +29,18 @@ const publicEnvNames = new Set([
 // PEM keys, and PGP's "PRIVATE KEY BLOCK" armor.
 const privateKeyShape =
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
+// An auth scheme's value stops at a quote, a backslash other than an escaped "/", or a closing
+// bracket, so a quoted header keeps its closing quote (finding 1556). A quote may open the
+// value and is kept. A short value is redacted when it has a digit, so "Bearer token expired"
+// stays readable.
+const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|\\\/)`;
+const authSchemeShape = new RegExp(
+  String.raw`\b(?:[Bb]earer|BEARER|Basic|Token)\s+(["']?)(?:${authSchemeValueChar}{8,}|(?=${authSchemeValueChar}*\d)${authSchemeValueChar}+)`,
+  "gu",
+);
 const secretShapes = [
   privateKeyShape,
-  // The value stops at a quote, backslash or closing bracket, so a quoted header keeps its
-  // closing quote (finding 1556). A short value is redacted when it has a digit, so "Bearer
-  // token expired" stays readable.
-  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+(?:[^\s"'\\)\]}]{8,}|(?=[^\s"'\\)\]}]*\d)[^\s"'\\)\]}]+)/gu,
+  authSchemeShape,
   /\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*)/gu,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/gu,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/gu,
@@ -61,19 +67,36 @@ const assignment = new RegExp(
 );
 
 // The end of a value that opened with "{" or "[" at `start`: its matching close, or the end of
-// the line when it does not close there.
+// the line when it does not close there. Brackets inside strings do not count. The first quote
+// sets the string delimiter and, as for a quoted value, how many backslashes precede an
+// unescaped one when the JSON has itself been serialized.
 function bracketValueEnd(text, start) {
   let depth = 0;
+  let quote;
+  let escapes = 0;
+  let inString = false;
+  let backslashes = 0;
   for (let index = start; index < text.length; index += 1) {
     const char = text[index];
     if (char === "\n") {
       return index;
     }
-    if (char === "{" || char === "[") {
-      depth += 1;
-    } else if ((char === "}" || char === "]") && --depth === 0) {
-      return index + 1;
+    if ((char === '"' || char === "'") && (quote === undefined || char === quote)) {
+      if (quote === undefined) {
+        quote = char;
+        escapes = backslashes;
+      }
+      if (backslashes % (2 * (escapes + 1)) === escapes) {
+        inString = !inString;
+      }
+    } else if (!inString) {
+      if (char === "{" || char === "[") {
+        depth += 1;
+      } else if ((char === "}" || char === "]") && --depth === 0) {
+        return index + 1;
+      }
     }
+    backslashes = char === "\\" ? backslashes + 1 : 0;
   }
   return text.length;
 }
@@ -92,17 +115,27 @@ function redactSecretAssignments(text) {
     end = assignment.lastIndex;
     if (bracket) {
       end = bracketValueEnd(text, match.index + value.length - 1);
+      // Text glued to the close (`[a]b`) is part of the same value.
+      while (end < text.length && !/[\s"',;}\]&]/u.test(text[end])) {
+        end += 1;
+      }
       assignment.lastIndex = end;
       continue;
     }
     if (!quote) {
       if (separator === ":" && multiWordKeywords.test(keyword)) {
         // Take the following words up to the end of the phrase, but not its trailing spaces.
-        for (let index = end; index < text.length && !multiWordEnd.test(text[index]); index += 1) {
+        // The next key starts its own assignment, so its quoted value is found; stopping
+        // there also keeps the scan linear.
+        const next = assignment.exec(text);
+        const limit = next === null ? text.length : next.index;
+        let phraseEnd = end;
+        for (let index = end; index < limit && !multiWordEnd.test(text[index]); index += 1) {
           if (!/\s/u.test(text[index])) {
-            end = index + 1;
+            phraseEnd = index + 1;
           }
         }
+        end = phraseEnd;
         assignment.lastIndex = end;
       }
       continue;
@@ -186,7 +219,10 @@ function redactText(text, limit, secrets, root, cut = text?.length >= failureInp
     result = result.replaceAll(value, `[env:${name}]`);
   }
   for (const shape of secretShapes) {
-    result = result.replace(shape, "[redacted]");
+    result =
+      shape === authSchemeShape
+        ? result.replace(shape, (_, quote) => `${quote}[redacted]`)
+        : result.replace(shape, "[redacted]");
   }
   result = redactSecretAssignments(result)
     .replace(urlCredential, "://[redacted]@")

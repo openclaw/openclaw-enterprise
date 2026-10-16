@@ -113,6 +113,11 @@ test("kubectl results and local failures are not transient", () => {
     // exits 0 and nothing is thrown. A wrapper error without stderr is not kubectl's.
     new Error("error: EOF"),
     Object.assign(new Error("spawn kubectl ENOENT"), { code: "ENOENT", stderr: "" }),
+    // A diagnostic deadline killed the read; what kubectl wrote first does not matter.
+    Object.assign(new Error("The operation was aborted"), {
+      name: "AbortError",
+      stderr: "error: EOF\n",
+    }),
   ]) {
     assert.equal(isTransientKubectlFailure(error), false, error.message);
   }

@@ -2273,6 +2273,10 @@ test("a quoted auth header keeps the failure text after it", async () => {
       String.raw`{\"authorization\":\"[redacted]\"}`,
     ],
     ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
+    // A quote that opens the value is kept with it.
+    [`curl -H "Authorization: Bearer 'synthetic0'"`, `curl -H "Authorization: '[redacted]'"`],
+    ['Authorization: Bearer "synthetic0"', 'Authorization: "[redacted]"'],
+    [String.raw`Basic c3ludGhldGlj\/dmFsdWU=`, "[redacted]"],
   ]) {
     assert.equal(
       redactLogLine(`request ${header}${assertion}`, secrets, 1_000),
@@ -2301,6 +2305,14 @@ test("the redactor removes structured, multi-word and short secret values", asyn
     ],
     ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
     ["token: {unclosed synthetic0\nnext line", "token: [redacted]\nnext line"],
+    // A bracket inside a string does not close the value, in plain or serialized JSON, and
+    // text glued to the close belongs to it.
+    ['{"credentials":{"password":"ab}synthetic0"}}', '{"credentials":[redacted]}'],
+    [
+      String.raw`{\"token\":{\"inner\":\"a]synthetic0\"},\"after\":1}`,
+      String.raw`{\"token\":[redacted],\"after\":1}`,
+    ],
+    ["token: [a]synthetic0 tail", "token: [redacted] tail"],
     // A passphrase in prose or YAML, and an Authorization header, take every word.
     ["password: synthetic words here\nnext line", "password: [redacted]\nnext line"],
     ["passphrase: synthetic words, then more", "passphrase: [redacted], then more"],
@@ -2308,6 +2320,15 @@ test("the redactor removes structured, multi-word and short secret values", asyn
     ["Authorization: Bearer syn", "Authorization: [redacted]"],
     // "=" stays one word, as in logfmt and query strings.
     ["password=synthetic0 next=keep", "password=[redacted] next=keep"],
+    // A key inside the phrase starts its own assignment, so its quoted value is redacted.
+    [
+      'password: synthetic0 token="synthetic1" tail',
+      'password: [redacted] token="[redacted]" tail',
+    ],
+    [
+      "Authorization: Bearer s api_key='synthetic1'",
+      "Authorization: [redacted] api_key='[redacted]'",
+    ],
     // Short scheme values with a digit, and keys the list did not have.
     ["sent Bearer s0 upstream", "sent [redacted] upstream"],
     [
