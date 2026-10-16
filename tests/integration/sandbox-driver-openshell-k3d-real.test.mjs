@@ -5887,7 +5887,13 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
       // good on its first attempt. Stop then: the error names the probe's classified cause, and
       // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
       const deployment = await topology.request("GET", deploymentPath);
-      assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
+      // original activation deadline; only the Agent naming this revision can satisfy the wait.
+      const { status } = deployment;
+      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
+        return undefined;
+      }
+      assert.equal(status, 200, JSON.stringify(deployment.error));
       assert.notEqual(
         deployment.data.status,
         "failed",
