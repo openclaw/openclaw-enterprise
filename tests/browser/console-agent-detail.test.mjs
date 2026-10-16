@@ -834,7 +834,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   const patched = configurationPatchRequests(requests, namespace.id, agent.configurationId);
   assert.deepEqual(
     patched.map((request) => request.body),
-    [{ values: editedValues }],
+    [{ values: editedValues, expectedGeneration: 4 }],
   );
   const currentConfiguration = await fixture.request(
     "GET",
