@@ -18,6 +18,9 @@ let session = null;
 let namespaces = [];
 let namespaceId = null;
 let observabilityUrl = null;
+// Set while the last Backends read was denied, so Retry and Refresh do not show the Namespace
+// selector again before the same answer hides it (finding 1491).
+let backendsDenied = false;
 // Session owner whose Installation-admin observability read has settled.
 let observabilityOwner = null;
 // The Installation-access probe still being answered, for the session owner that sent it.
@@ -670,13 +673,17 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
 }
 
 function renderShell(feature, namespaceAdmissionPending = false) {
-  return shellUI.renderShell(feature, {
+  const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
     namespaceId,
     observabilityUrl,
     namespaceAdmissionPending,
   });
+  if (feature === "backends" && backendsDenied && shell.scopeSelector) {
+    shell.scopeSelector.hidden = true;
+  }
+  return shell;
 }
 
 function renderPendingNamespaceShell(feature) {
@@ -687,6 +694,7 @@ function renderPendingNamespaceShell(feature) {
 
 function clearPrivate() {
   session = null;
+  backendsDenied = false;
   namespaces = [];
   namespaceId = null;
   observabilityUrl = null;
@@ -1549,6 +1557,12 @@ async function loadPage({
       renderAgentList({ ...agentContext, items });
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else {
+      if (current.feature === "backends" && backendsDenied) {
+        backendsDenied = false;
+        if (shell.scopeSelector) {
+          shell.scopeSelector.hidden = false;
+        }
+      }
       renderRows(shell.view, current.feature, items);
     }
     markMountedRoute(current);
@@ -1656,6 +1670,9 @@ async function loadPage({
     const agentDenied = current.agentId && error.status === 403;
     // Backends are Installation-wide: another Namespace cannot change a denial (finding 1491).
     const installationDenied = current.feature === "backends" && error.status === 403;
+    if (current.feature === "backends") {
+      backendsDenied = installationDenied;
+    }
     if (installationDenied && shell.scopeSelector) {
       shell.scopeSelector.hidden = true;
     }

@@ -695,7 +695,7 @@ test("a failed version's banner does not move the overview on a slow link", asyn
   // Every Namespace read takes 600 ms, so the latest deployment's outcome lands about 1.2 s
   // after the page renders, as on the live slow link where the shift was measured. The second
   // pass also answers the caller's permission read after that outcome.
-  for (const permissionsDelay of [600, 1800]) {
+  for (const permissionsDelay of [600, 1400]) {
     const { page } = await newPage(t, fixture);
     await routeFailedRecord(page, fixture, namespace, agent, revision);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);

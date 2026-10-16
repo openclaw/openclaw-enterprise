@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,
@@ -933,24 +934,25 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   const pendingDetail = page.locator(".agent-detail-pending");
   const shownDetail = page.locator(`${activeView}.agent-detail-pending`);
   // Deployment record reads are held (Deployment activity's and the version panel's, in either
-  // order), so the page shows only its toolbar until the 1 s reveal.
+  // order), so the page shows only its toolbar until the bounded reveal.
   const firstRecord = await holdRequests(t, page, record);
   await page.getByRole("link", { name: "Revealed Agent" }).click();
   await shownDetail.waitFor({ state: "attached" });
   await firstRecord.requested;
-  // Leave before the 1 s reveal and let its timer pass while the page is away.
+  // Leave before the reveal and let its timer pass while the page is away.
   await page.clock.runFor(300);
   await page.goBack();
   await page.locator(settledView).getByRole("link", { name: "Revealed Agent" }).waitFor();
-  await page.clock.runFor(800);
+  await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS);
   firstRecord.release();
 
-  // Forward rebuilds the page, held again on its record read; it reveals at 1 s as on a first visit.
+  // Forward rebuilds the page, held again on its record read; it reveals at the bound as on a
+  // first visit.
   const returnRecord = await holdRequests(t, page, record);
   await page.goForward();
   await returnRecord.requested;
   await shownDetail.waitFor({ state: "attached" });
-  await page.clock.runFor(999);
+  await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS - 1);
   assert.equal(await pendingDetail.count(), 1);
   await page.clock.runFor(1);
   assert.equal(await pendingDetail.count(), 0);

@@ -1583,7 +1583,10 @@ test("a Backends denial names the Installation-wide page and hides the Namespace
     )
     .waitFor();
   assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
-  await denial.getByRole("button", { name: "Retry", exact: true }).waitFor();
+  // Retry rebuilds the page with the selector still hidden.
+  await denial.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.locator(".state-panel").getByRole("heading", { name: "Access denied" }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
   // Agents keep the Namespace wording and selector.
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("combobox", { name: "Namespace", exact: true }).waitFor();

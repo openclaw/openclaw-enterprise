@@ -1699,9 +1699,9 @@ for (const collection of ["secrets", "configurations", "agents"]) {
 
 // The Agents list painted "Reading deployment…" in each row, then each failed row's 5-7 line
 // error landed: the row grew from 93 to 208 px and the table re-flowed its columns, CLS
-// 0.040-0.074 on every load (finding 1488). A settled cell keeps the placeholder's two lines,
-// with the error on one line (its full text in the title and on the Agent page), and the
-// columns keep their widths.
+// 0.040-0.074 on every load (finding 1488). A settled cell is the outcome link and one note
+// line, which fit the two lines the Agent cell gives the row: the error is on one line (its full
+// text in the title and on the Agent page), and the columns keep their widths.
 test("the Agents list does not move when failed deployments land", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

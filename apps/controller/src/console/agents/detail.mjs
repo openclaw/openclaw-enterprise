@@ -1742,16 +1742,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       // page below moves once instead of once for an empty panel and again for the status.
       // A newer version found later replaces the shown (older) panel at once.
       const firstLoad = activityPanel === deploymentStatus;
-      const showPanel = (panel) => {
+      // A failed version's banner also waits for the caller's permission answer (finding
+      // 1478), so the overview waits for it too rather than move when the banner lands.
+      const showPanel = (panel, failed = false) => {
         if (activityPanel !== panel) {
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        // A failed version's banner also waits for the caller's permission answer (finding
-        // 1478), so the overview waits for it too rather than move when the banner lands.
-        void nativeAdmin.ready
-          .then(() => (latestDeploymentStatus === "failed" ? callerPermissionsRead : null))
-          .then(revealDetail);
+        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
+          revealDetail,
+        );
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
@@ -1768,7 +1768,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
-              showPanel(nextPanel);
+              showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
@@ -2368,9 +2368,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     savedNotice = saved;
     // A save lands well after its click, and the rebuilt tab is usually shorter than the editor
-    // it replaces. When the cards below the tab are in view, scroll by the difference, so they
-    // keep their place and the summary takes the editor's (finding 1482).
-    const bottomBefore = content.getBoundingClientRect().bottom;
+    // it replaces. When the cards below the version layout are in view, scroll by the layout's
+    // change, so they keep their place and the summary takes the editor's (finding 1482).
+    const bottomBefore = versionLayout.getBoundingClientRect().bottom;
     const anchorBelow = bottomBefore < globalThis.innerHeight;
     try {
       await renderTab();
@@ -2380,7 +2380,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!context.isCurrent()) {
       return;
     }
-    const shrunk = content.getBoundingClientRect().bottom - bottomBefore;
+    const shrunk = versionLayout.getBoundingClientRect().bottom - bottomBefore;
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
