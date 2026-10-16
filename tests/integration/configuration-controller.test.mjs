@@ -838,9 +838,16 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   assert.deepEqual(updated.body.data.values, listed);
 });
 
+const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
+
+// The Gateway roster's text for an Agent ID it rejects.
+const gatewayId = (path) =>
+  `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
+
 // A selected Compute with no Configuration rules is not the same as no Compute selected.
-// The shared model-provider rules must protect Configuration create and update in either case.
-test("Configuration save checks model providers before a Compute Driver is selected", async () => {
+// The shared content rules (model providers, settings, roster) must protect Configuration create
+// and update in either case.
+test("Configuration save checks the shared content rules before a Compute Driver is selected", async () => {
   const context = await fixture();
   const { collection } = context;
   const created = await request(context.app, "POST", collection, {
@@ -849,24 +856,21 @@ test("Configuration save checks model providers before a Compute Driver is selec
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${collection}/${created.body.data.id}`;
   const provider = "/models/providers/gateway";
-  for (const [settings, message] of [
-    [{ baseUrl: "ftp://models.example/v1" }, absoluteUrl(`${provider}/baseUrl`)],
+  for (const [values, message] of [
+    [at(provider, { baseUrl: "ftp://models.example/v1" }), absoluteUrl(`${provider}/baseUrl`)],
     [
-      { models: {} },
+      at(provider, { models: {} }),
       setting("models.providers.gateway.models", "must be an array of model entries"),
     ],
+    [approvalPolicy("untrusted"), policyRetired],
+    [withAgents({ entries: { "main!": {} } }), gatewayId('agents.entries["main!"]')],
   ]) {
-    await refusedOnSave(context, at(provider, settings), message, { item, preset: false });
+    await refusedOnSave(context, values, message, { item, preset: false });
   }
   const unchanged = await request(context.app, "GET", item);
   assert.deepEqual(unchanged.body.data, created.body.data);
 });
 
-const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
-
-// The Gateway roster's text for an Agent ID it rejects.
-const gatewayId = (path) =>
-  `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
 // One shape per rule. Every topology's OpenClaw Gateway rejects each (finding 874).
 const rosterRefusals = [
   [{ agents: "x" }, "Configuration setting agents must be an object."],
@@ -1056,15 +1060,12 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
 test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {
   // Deployment runs the real Kubernetes Compute admission rules. On a dedicated Agent, a refusal
   // in preparation came after the running revision stopped, with no rollback (findings
-  // 1113-1115); admission now names the setting first.
+  // 1113-1115); admission now names the setting first. The Compute's own Configuration rules
+  // run too: they do not replace the shared settings rules on save.
   const configurationDriver = createConfigurationBackend();
   const context = await fixture({
     configurationDriver,
-    computeDriver: kubernetesRules(
-      "compute-settings-integration",
-      "validateHarnessAuth",
-      "validateGatewaySettings",
-    ),
+    computeDriver: kubernetesRules("compute-settings-integration", ...configurationRules),
   });
   const valid = runtimeSelected;
   const agent = await storedRowAgent(context, configurationDriver, valid, {
