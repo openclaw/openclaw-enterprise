@@ -259,18 +259,10 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await summary.getByText("May be offline").count(), 0);
 });
 
-test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
-  const { fixture, namespace, agent, page } = await agentPage(t, "Paged history", "Paged history");
-  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
-  // v3 is current and serving, but this reader cannot read it; v2, the newest it can read,
-  // failed earlier, and v1 is on the next history page (finding 1477).
-  const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
-  denyRevisionRead(fixture, namespace, third.revision);
-  await routeFailedRecord(page, fixture, namespace, agent, second.revision);
-  // One readable version per history page.
+// One readable version per history page: the first page lists the newest readable version.
+function routeOneVersionPerPage(page, fixture, namespace, agent) {
   const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
-  await page.route(
+  return page.route(
     (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
     async (route) => {
       const cursor = new URL(route.request().url()).searchParams.get("cursor");
@@ -286,6 +278,18 @@ test("A failed version raises no recovery while the current version is on no loa
       });
     },
   );
+}
+
+test("A failed version raises no recovery while the current version is on no loaded page", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Paged history", "Paged history");
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  // v3 is current and serving, but this reader cannot read it; v2, the newest it can read,
+  // failed earlier, and v1 is on the next history page (finding 1477).
+  const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
+  denyRevisionRead(fixture, namespace, third.revision);
+  await routeFailedRecord(page, fixture, namespace, agent, second.revision);
+  await routeOneVersionPerPage(page, fixture, namespace, agent);
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("heading", { name: "Paged history" }).waitFor();
@@ -311,6 +315,39 @@ test("A failed version raises no recovery while the current version is on no loa
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
   assert.equal(await page.getByText("v2 deployment failed").count(), 0);
+});
+
+// A succeeded deployment becomes current, so a different current version on no loaded page may
+// be a newer one this reader cannot read; the summary still read "v2 · Completed" with no hint
+// (finding 1485, a sibling of 1477).
+test("A succeeded version says when the current version is on no loaded page", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Paged success", "Paged success");
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  // v3 is current, but this reader cannot read it; v2, the newest it can read, succeeded
+  // earlier, and v1 is on the next history page.
+  const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
+  denyRevisionRead(fixture, namespace, third.revision);
+  await page.route(deploymentUrl(fixture, namespace, agent, second.revision), (route) =>
+    route.fulfill(deploymentRecord(namespace, agent, second.revision, "succeeded")),
+  );
+  await routeOneVersionPerPage(page, fixture, namespace, agent);
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Paged success" }).waitFor();
+  const summary = page.locator(".agent-current-summary");
+  await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+  await page
+    .locator(".agent-status-line")
+    .getByText(
+      /^The current version, rev_.*, is not among the versions listed, so this page cannot tell whether it is newer than v2\. Show older versions to check\.$/,
+    )
+    .waitFor();
+
+  // With every page loaded, the current version is known to be hidden and newer.
+  await page.getByRole("button", { name: "Show older versions" }).click();
+  await page.getByRole("button", { name: /^View version v1/ }).waitFor();
+  await summary.getByText("Newer version hidden", { exact: true }).waitFor();
 });
 
 test("Recovery offers the draft link only to callers who may update the Agent", async (t) => {
@@ -408,6 +445,52 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await recovery.getByText("Ask someone with log access", { exact: false }).waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
+});
+
+// When a failed newer version replaced the running one, the replacement sentence overrode the
+// "ask someone with log access" line, so a reader without log access got no action and no hint
+// (finding 1484).
+test("A replaced current version still says who can check the logs once Logs is denied", async (t) => {
+  const logs = runtimeLogs();
+  const fixture = await createConsoleAppFixture(t, logs);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Replaced denied", { ready: true });
+  const model = await fixture.createSecret(namespace.id, "Replaced model key", "hidden-model");
+  // Dedicated deploys stop the previous version's workload before the new one starts.
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Replaced denied",
+    nativeValues("v1", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: { method: "api_key", source: model.ref } },
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await routeFailedRecord(page, fixture, namespace, agent, revision);
+  await page.route(new RegExp(`/deployments/${revision.id}/runtime/logs(\\?|$)`), (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Access denied." },
+        meta: { requestId: "req_test_recovery_logs" },
+      }),
+    }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByRole("heading", { name: "This Agent may be offline" }).waitFor();
+  await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
+  await page
+    .getByText("Log text requires Agent read_logs (or administer) and read access.")
+    .waitFor();
+  await recovery
+    .getByText(
+      "v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. Ask someone with log access to check the failed version’s logs.",
+    )
+    .waitFor();
+  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
 });
 
 test("Recovery waits for the caller's permission answer before offering the draft link", async (t) => {
@@ -538,5 +621,61 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
         .getByRole("log", { name: "Runtime log output" })
         .evaluate((pane) => pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24),
     );
+  }
+});
+
+// Clicking the Logs tab left an empty Logs area with Stop and Delete right under it, then the
+// strip and output pushed them down 0.6-1.7 s later: CLS up to 0.444 (finding 1479). The tab
+// now keeps its height and hides those cards until the view shows.
+test("opening the Logs tab by click does not move the cards below it", async (t) => {
+  const logs = runtimeLogs();
+  const fixture = await createConsoleAppFixture(t, logs);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Steady logs tab", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Steady Logs Tab", nativeValues("v1"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  logs.computeDriver.state.lines = Array.from({ length: 30 }, (_, index) =>
+    line(index, `startup line ${index}`),
+  );
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 1280, height: 720 },
+  ]) {
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    // The status read settles well after the click's 500 ms input window, as on a live cluster.
+    await page.route(
+      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await route.continue().catch(() => {});
+      },
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    await page.getByRole("button", { name: "Stop Agent" }).waitFor();
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    // A reader scrolls the tabs into view, then selects Logs once the page is still.
+    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    await logsTab.evaluate((tab) => tab.scrollIntoView({ block: "center" }));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await page.evaluate(recordLayoutShifts);
+    await logsTab.click();
+    await page.getByText("startup line 29", { exact: false }).waitFor();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // The Logs view and the cards below it; headless Chromium also reports a body shift at
+    // phone width after any tab click, on main as well, that a reader does not see.
+    const { shifts } = await takeLayoutShifts(page);
+    const shift = shifts
+      .filter((entry) =>
+        entry.sources.some((source) => /stop-note|deletion-note|agent-logs|log-/.test(source.node)),
+      )
+      .reduce((sum, entry) => sum + entry.value, 0);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    assert.equal(await page.locator(".agent-logs-opening").count(), 0);
   }
 });

@@ -323,6 +323,35 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
   ]);
 });
 
+// On a slow link the opening panel's heading had focus, the Agent page rendered with focus on
+// body, and its heading took focus only once the tab's reads settled, 0.5-0.9 s later at 400 ms
+// (finding 1483). It now takes focus as the title renders.
+test("Opening an Agent focuses its heading before the tab's reads settle", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Opening focus", ["Opening Focus"], {
+    running: true,
+  });
+  const link = page.locator(settledView).getByRole("link", { name: "Opening Focus" });
+  // The Configuration tab's read is slow.
+  const configuration = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    { once: true },
+  );
+  await link.focus();
+  await link.press("Enter");
+  await configuration.requested;
+  const heading = page.getByRole("heading", { level: 1, name: "Opening Focus" });
+  await heading.waitFor();
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1", null, {
+    timeout: 1000,
+  });
+  assert.equal(await isFocused(heading), true);
+  configuration.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.equal(await isFocused(heading), true);
+});
+
 for (const back of ["Browser Back", "Back to Agents"]) {
   test(`${back} during a pending Agent visit restores the list and wins over the late read`, async (t) => {
     const { namespace, agent, page, listUrl } = await openList(
