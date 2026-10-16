@@ -80,7 +80,10 @@ The Gateway can reach its exact revision's proxy. Other Agents and its Harness
 receive no grant to that proxy. Each proxy has its own Deployment, Service,
 immutable policy ConfigMap and NetworkPolicies. It receives no provider/model
 Secret, projected Kubernetes API token, shared workspace or persistent state.
-Harness and Sandbox networking retain their existing contracts.
+Harness and Sandbox networking retain their existing contracts. This facility
+provides transport for trusted Gateway integrations. Harness egress and Credential
+Proxy credential mediation remain separate; composition with protected Harness or
+Credential Proxy configurations is unqualified.
 
 CONNECT admits only port 443. The proxy validates the hostname, resolves it once,
 rejects any forbidden DNS answer, and connects to a vetted IPv4 literal. Private,
@@ -108,12 +111,20 @@ requests made before a Gateway exists. Its destinations are not the union of
 Agent permissions. See [Slack setup](../guides/integrations/slack.md) for that
 Driver's management and Gateway consumers.
 
-If terminal active-version maintenance loses deployer or credential authority,
-OCC persists Gateway withdrawal before deleting its exact proxy. Failed cleanup
-stays pending across retries and worker restarts. Restoring permissions does not
-repair that version’s route: restore authority and deploy a new version. Existing
-Harness behavior is unchanged, but channels and Gateway integrations lose their
-external route once withdrawal completes.
+If terminal active-version maintenance loses deployer, credential or backend
+authority, or current configuration refuses admitted access, OCC persists
+revision-access withdrawal before effects. Pure Compute status marks configuration
+refusal as `withdrawn`; restoring it to `current` cannot cancel pending removal.
+Kubernetes
+closes its Gateway proxy and independently removes any admitted public GitHub
+reader policy and terminates that reader's exact Harness. Reader withdrawal applies
+even when the configured peer is unchanged. Both closures must complete before the
+terminal result is recorded; failures stay pending across retries and restarts.
+A refused Installation ceiling uses the same withdrawal path, so an admitted
+reader's Harness can stop even if its reader peer is unchanged.
+Restored authority cannot repair that version's access: deploy a new authorized
+version. An ordinary Harness without admitted reader access retains its existing
+behavior. Channels and Gateway integrations lose their route when the proxy stops.
 
 ## Verification and troubleshooting
 
@@ -129,4 +140,4 @@ an allowed hostname can mean the plugin transport does not honor the proxy.
 
 [Runtime flow](../flows/gateway-outbound.md) explains resource ordering.
 [Testing](../testing/gateway-outbound.md) records selected proof and limits.
-[RFC-0020](../../specs/rfcs/0020-gateway-outbound.md) records the architectural proposal.
+[RFC-0021](../../specs/rfcs/0021-gateway-outbound.md) records the architectural proposal.

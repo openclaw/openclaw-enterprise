@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
-updated: 2026-10-15
-last_updated_session: authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208
+updated: 2026-10-16
+last_updated_session: authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53
 ---
 
 # Gateway Outbound Flow
@@ -48,7 +48,7 @@ graph TD
   K --> S["<b>Stop Agent</b><br/>Drain, then remove proxy"]
   K --> T["<b>Terminal refusal</b><br/>Active maintenance"]
   T --> U["<b>Persist withdrawal</b><br/>Before removal effects"]
-  U --> V["<b>Remove exact proxy</b><br/>Retry, then publish refusal"]
+  U --> V["<b>Close admitted access</b><br/>Proxy and reader Harness"]
   classDef state fill:#e9eff5,stroke:#657a91,color:#24384b,stroke-width:1px;
   classDef operation fill:#e6efed,stroke:#668780,color:#243b37,stroke-width:1px;
   classDef gate fill:#f4eddf,stroke:#a18c62,color:#4e422b,stroke-width:1px;
@@ -68,7 +68,7 @@ Ordinary updates retain saved authority even after an Installation tightening;
 deployment rechecks it. State persists the selection beside other Agent settings.
 
 `packages/occ/src/state/postgres-state.ts:updateConfiguration` writes
-`gateway_outbound`; `migrations/0054_gateway_outbound.sql` constrains its shape,
+`gateway_outbound`; `migrations/0056_gateway_outbound.sql` constrains its shape,
 DNS names, and dedicated-only extra authority. The memory adapter mirrors those
 invariants. The normal mutation audit names the actor and exact Agent.
 
@@ -90,13 +90,18 @@ runs before enqueueing provisioning.
 and produces the snapshot. OCC validates it and `freezeAgentRevision` copies
 selection, requirements and exclusions into the immutable revision. Missing
 support refuses extra authority. A default selection with no channel requirements
-needs no proxy. A snapshot requires Compute’s removal-only
-`withdrawGatewayOutbound` hook. Persisted admission keeps the same snapshot across retries.
+needs no proxy. A snapshot requires Compute's `revisionAccessStatus` and removal-only
+`withdrawRevisionAccess` hooks. OCC freezes the Gateway snapshot before the selected
+Compute's `admitRevision`; its opaque admission facts remain alongside that snapshot.
+Persisted admission keeps both decisions unchanged across retries.
 
 ### 3. Prepare an isolated route before starting the Gateway
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.enforceGatewayOutboundCeiling` withdraws an old route
-when current configuration refuses its admitted authority.
+`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.revisionAccessStatus`
+purely compares admitted access with current Gateway and reader configuration.
+Before normal Compute dispatch, the worker turns `withdrawn` into
+`REVISION_ACCESS_WITHDRAWN` and persists the removal-only phase described below.
+Preparation therefore cannot start withdrawal before that decision is durable.
 `reconcileGatewayOutbound` creates the exact revision's immutable policy ConfigMap,
 ServiceAccount, Deployment, Service, proxy egress policy and Gateway peer policy.
 All resource names and ownership selectors include Agent and revision identity.
@@ -129,24 +134,36 @@ only OCC API clients; Agent selections never broaden it. See the
 
 ### 5. Persist withdrawal before terminal maintenance
 
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` defers a terminal
-active-version result as `GATEWAY_OUTBOUND_WITHDRAWAL_PENDING` before any removal.
-Work-bound audit evidence preserves the refusal, bounded failure details and any
-required runtime retirement. The next pass finishes only
-`KubernetesComputeDriver.withdrawGatewayOutbound`, validating ownership and waiting
-for exact proxy Pods and tunnels to terminate. Restored permissions cannot repair
-the old route during this wait; a new authorized revision restores service.
-Retries carry one typed pending withdrawal, keeping its refusal and cleanup
-obligations together. Stale-lease recovery copies the same evidence fields,
-including nested null values, into the next attempt.
+`apps/controller/src/worker.ts:ControllerWorker.beginRevisionAccessWithdrawal`
+persists a terminal active-version result as `REVISION_ACCESS_WITHDRAWAL_PENDING`
+before removal. Work-bound evidence keeps the refusal, bounded failure details and
+required runtime retirement together. The next pass calls
+`ControllerWorker.finishRevisionAccessWithdrawal` instead of preparing the revision.
+
+`KubernetesComputeDriver.revisionAccessStatus` returns `none` without admitted
+access, `current` when its immutable Gateway/reader admission is still permitted,
+and `withdrawn` when current configuration refuses it. A pending withdrawal remains
+selected for either non-`none` status, so restoring approval cannot cancel it.
+`KubernetesComputeDriver.withdrawRevisionAccess` attempts both selected closures
+independently: remove the exact Gateway proxy, and remove the reader policy plus
+terminate its admitted Compute-owned Harness. A failure or blocked Pod in one
+closure cannot prevent the other from starting. An unchanged reader peer or
+restored authority does not cancel withdrawal. Ordinary Harnesses without reader
+admission retain their existing behavior.
+
+Each retry keeps the persisted removal-only decision. Stale-lease recovery copies
+its fields, preserving nested null values in failure evidence. The worker publishes
+the terminal result and queues any required runtime retirement only after all
+selected proxy/workload closures finish. A new authorized revision restores access.
 
 ### 6. Reconcile tightening and tear down after drain
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.reconcileGatewayOutbound` combines current exclusions
 with admitted exclusions. A changed immutable policy stops old proxy Pods before
-recreation. Disabled outbound or withdrawn public approval removes the route and
-returns a typed refusal. Maintenance scheduling is owned by the existing worker;
-its interval does not bound queue and shutdown time.
+recreation. Disabled outbound or withdrawn public approval follows the persisted
+withdrawal phase above. Maintenance scheduling is owned by the existing worker;
+its 30-second interval also observes reader configuration on the next pass and does
+not bound queue and shutdown time.
 
 `removeGatewayOutbound` deletes only resources matching exact revision ownership
 and waits on Namespace, Agent, revision and workload-role Pod labels. Stop retains the proxy while the Gateway drains;
@@ -173,6 +190,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 13:09: Compose admitted Gateway and reader withdrawal against refreshed upstream. (authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53 - 792afad4f9e8bd4323fc197a102ebde7961484c9)
 
 - 2026-10-15 15:46: Unify channel capability composition and carry withdrawal state through retries. (authoring-run/6de03ad9-293f-4b20-b21c-a5e0a23cb208 - b0c299f7e8a9cdb992500fa39d32dddea9271ed0)
 

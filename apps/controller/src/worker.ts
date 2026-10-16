@@ -159,8 +159,8 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
-const GATEWAY_OUTBOUND_WITHDRAWAL_PENDING = "GATEWAY_OUTBOUND_WITHDRAWAL_PENDING";
-const GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS = 1000;
+const REVISION_ACCESS_WITHDRAWAL_PENDING = "REVISION_ACCESS_WITHDRAWAL_PENDING";
+const REVISION_ACCESS_WITHDRAWAL_RECHECK_MS = 1000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -374,16 +374,16 @@ interface DispatchResult {
   readonly authorization?: AuthorizationRequest;
 }
 
-interface GatewayOutboundWithdrawal {
-  readonly code: typeof GATEWAY_OUTBOUND_WITHDRAWAL_PENDING;
+interface RevisionAccessWithdrawal {
+  readonly code: typeof REVISION_ACCESS_WITHDRAWAL_PENDING;
   readonly refusal: string;
   readonly refusalData?: Readonly<Record<string, unknown>>;
   readonly cleanupFailedPreparation?: true;
 }
 
 interface RevisionDispatchResult extends DispatchResult {
-  /** Removal-only maintenance already confirmed that this revision's outbound route is gone. */
-  readonly gatewayOutboundWithdrawn?: true;
+  /** Removal-only maintenance already confirmed that this revision's admitted revocable access is gone. */
+  readonly revisionAccessWithdrawn?: true;
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
@@ -1981,6 +1981,10 @@ export class ControllerWorker {
       ...(result.outcome !== "succeeded" && result.reason !== undefined
         ? { reason: result.reason }
         : {}),
+      // A refused job's unrecorded Configuration its Driver could not delete (finding 1395).
+      ...(result.outcome !== "succeeded" && result.orphanedConfigurationId !== undefined
+        ? { orphanedConfigurationId: result.orphanedConfigurationId }
+        : {}),
     });
   }
 
@@ -3389,12 +3393,12 @@ export class ControllerWorker {
       // actor authority cannot turn a retry or recovered lease into workload repair.
       const outboundWait = await this.queue.findWorkAttempt(
         claim.idempotencyKey,
-        GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+        REVISION_ACCESS_WITHDRAWAL_PENDING,
       );
       if (outboundWait?.refusal !== undefined) {
-        await this.finishGatewayOutboundWithdrawal(claim, {
+        await this.finishRevisionAccessWithdrawal(claim, {
           ...outboundWait,
-          code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+          code: REVISION_ACCESS_WITHDRAWAL_PENDING,
           refusal: outboundWait.refusal,
         });
         return;
@@ -3492,6 +3496,18 @@ export class ControllerWorker {
       const backend = await this.resolveRevisionBackend(revision);
       if (backend !== undefined) {
         await this.finalizeRevision(claim, backend);
+        return;
+      }
+      // Installation approval is checked before Compute can bind, prepare, activate or delete.
+      // Persist the removal-only decision first, so restart cannot repair a withdrawn revision.
+      if (
+        agent.desiredRuntimeState === "running" &&
+        this.revisionAccessStatus(revision) === "withdrawn"
+      ) {
+        await this.finalizeRevision(claim, {
+          outcome: "permanent",
+          code: "REVISION_ACCESS_WITHDRAWN",
+        });
         return;
       }
       // Authorization and the backend are decided again above on every pass. Once a stored
@@ -4537,10 +4553,10 @@ export class ControllerWorker {
       return;
     }
     if (
-      resolved.gatewayOutboundWithdrawn !== true &&
+      resolved.revisionAccessWithdrawn !== true &&
       (resolved.outcome === "permanent" ||
         (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts)) &&
-      (await this.beginGatewayOutboundWithdrawal(claim, resolved))
+      (await this.beginRevisionAccessWithdrawal(claim, resolved))
     ) {
       return;
     }
@@ -4829,7 +4845,17 @@ export class ControllerWorker {
     }
   }
 
-  private async beginGatewayOutboundWithdrawal(
+  private revisionAccessStatus(
+    revision: Readonly<AgentRevision>,
+  ): "none" | "current" | "withdrawn" {
+    const status = this.compute.revisionAccessStatus?.(revision) ?? "none";
+    if (!["none", "current", "withdrawn"].includes(status)) {
+      throw new ScopeViolationError("The Compute Driver returned invalid revision access status.");
+    }
+    return status;
+  }
+
+  private async beginRevisionAccessWithdrawal(
     claim: ClaimedWork,
     result: RevisionDispatchResult,
   ): Promise<boolean> {
@@ -4845,8 +4871,8 @@ export class ControllerWorker {
     ) {
       return false;
     }
-    const pending: GatewayOutboundWithdrawal = {
-      code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+    const pending: RevisionAccessWithdrawal = {
+      code: REVISION_ACCESS_WITHDRAWAL_PENDING,
       refusal: result.code,
       ...(result.data === undefined ? {} : { refusalData: result.data }),
       ...(result.cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
@@ -4866,7 +4892,7 @@ export class ControllerWorker {
         agent === undefined ||
         agent.activeRevisionId !== revision?.id ||
         revision === undefined ||
-        revision.gatewayOutbound === undefined ||
+        this.revisionAccessStatus(revision) === "none" ||
         revision.namespaceId !== claim.namespaceId ||
         revision.agentId !== agent.id ||
         revision.servicePrincipalId !== agent.servicePrincipalId
@@ -4880,18 +4906,18 @@ export class ControllerWorker {
       // refunds the claim's attempt; withdrawal has neither a deployment deadline nor
       // an attempt limit while its old authority may still be live.
       await queue.defer(claim, pending, {
-        delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS,
+        delayMs: REVISION_ACCESS_WITHDRAWAL_RECHECK_MS,
         repeatEvidence: true,
       });
       recorded = true;
     }, this.queueOptions);
     if (recorded) {
-      this.emitGatewayOutboundWithdrawalWait(claim, result.code);
+      this.emitRevisionAccessWithdrawalWait(claim, result.code);
     }
     return recorded;
   }
 
-  private emitGatewayOutboundWithdrawalWait(
+  private emitRevisionAccessWithdrawalWait(
     claim: ClaimedWork,
     refusal: string,
     failureLogFields?: Readonly<Record<string, string | number>>,
@@ -4902,15 +4928,15 @@ export class ControllerWorker {
       ...workLogFields(claim),
       outcome: "pending",
       result: "pending",
-      code: GATEWAY_OUTBOUND_WITHDRAWAL_PENDING,
+      code: REVISION_ACCESS_WITHDRAWAL_PENDING,
       refusal,
       ...failureLogFields,
     });
   }
 
-  private async finishGatewayOutboundWithdrawal(
+  private async finishRevisionAccessWithdrawal(
     claim: ClaimedWork,
-    pending: GatewayOutboundWithdrawal,
+    pending: RevisionAccessWithdrawal,
   ): Promise<void> {
     const { refusal, refusalData, cleanupFailedPreparation } = pending;
     try {
@@ -4932,20 +4958,20 @@ export class ControllerWorker {
         revision.servicePrincipalId !== agent.servicePrincipalId ||
         revision.compute.id !== this.compute.id ||
         revision.compute.implementation !== this.compute.implementation ||
-        revision.gatewayOutbound === undefined ||
-        this.compute.withdrawGatewayOutbound === undefined
+        this.revisionAccessStatus(revision) === "none" ||
+        this.compute.withdrawRevisionAccess === undefined
       ) {
         throw new ScopeViolationError(
-          "The pending Gateway outbound withdrawal owner is unavailable.",
+          "The pending revision access withdrawal owner is unavailable.",
         );
       }
-      await this.withClaimHeartbeat(claim, () => this.compute.withdrawGatewayOutbound!(revision));
+      await this.withClaimHeartbeat(claim, () => this.compute.withdrawRevisionAccess!(revision));
       await this.finalizeRevision(claim, {
         outcome: "permanent",
         code: refusal,
         ...(refusalData === undefined ? {} : { data: refusalData }),
         ...(cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
-        gatewayOutboundWithdrawn: true,
+        revisionAccessWithdrawn: true,
       });
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
@@ -4956,11 +4982,11 @@ export class ControllerWorker {
           throw new WorkClaimLostError();
         }
         await queue.defer(claim, pending, {
-          delayMs: GATEWAY_OUTBOUND_WITHDRAWAL_RECHECK_MS,
+          delayMs: REVISION_ACCESS_WITHDRAWAL_RECHECK_MS,
           repeatEvidence: true,
         });
       }, this.queueOptions);
-      this.emitGatewayOutboundWithdrawalWait(claim, refusal, revisionFailureLogFields(error));
+      this.emitRevisionAccessWithdrawalWait(claim, refusal, revisionFailureLogFields(error));
     }
   }
 

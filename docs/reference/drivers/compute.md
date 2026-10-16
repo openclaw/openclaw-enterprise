@@ -82,11 +82,17 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 
 ### Optional Gateway outbound admission
 
-Optional `gatewayOutboundCapabilities`, `validateGatewayOutbound`, and
-`admitGatewayOutbound` enforce Installation limits and freeze Agent selection,
-trusted Channel requirements, and exclusions. Snapshots require removal-only
-`withdrawGatewayOutbound` lifecycle support.
-See [Gateway outbound](../gateway-outbound.md).
+`gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
+enforce [Gateway limits](../gateway-outbound.md) and snapshot access/exclusions.
+Admitted snapshots require withdrawal support.
+
+### Optional revision access withdrawal
+
+Pure `revisionAccessStatus(revision)` returns `none`, `current` or `withdrawn` from
+immutable admission and current configuration. OCC persists `REVISION_ACCESS_WITHDRAWN`
+before effects. `withdrawRevisionAccess(revision)` closes routes
+and awaits workload/connection termination; restored approval cannot cancel removal.
+Kubernetes terminates the admitted [reader Harness](../public-github-reads.md).
 
 ### Optional startup preflight
 
@@ -285,13 +291,12 @@ cleanup signal. See the [hook execution flow](../../flows/compute-driver-lifecyc
 
 ### Optional active-runtime maintenance
 
-`maintenanceIntervalMs` must be a positive safe integer. After activation or
-maintenance, OCC atomically queues another pass for the same Agent, revision and
-original deployment Principal, which prepares and activates the revision again.
-Failed observations schedule another authorized pass without changing the active
-revision. Maintenance survives worker restarts and ends when a newer revision
-replaces or [supersedes](#production-revision-stages) it. Without an interval,
-lifecycle work responds to events. New deployments have limited retries.
+`maintenanceIntervalMs` is a positive safe integer. OCC atomically queues the same
+Agent, revision and deployer for preparation/activation. Transient failures
+reauthorize and retry without changing the active revision. Maintenance survives
+restart until [superseded](#production-revision-stages). Terminal refusal withdraws
+admitted access first. Without an interval, events trigger lifecycle. Deployment
+retries remain bounded.
 
 ### Plugin startup warnings
 

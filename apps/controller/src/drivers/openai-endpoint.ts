@@ -80,9 +80,12 @@ export function normalizeOpenAiBaseUrl(value: string): string | undefined {
   return endpoint.origin + path;
 }
 
-const strictDecimalIpv4 = /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/;
-
-/** True when Node would store a different IPv4 address than the one written. */
+/**
+ * True when Node would store a different IPv4 address than the one written. `isIP` accepts only
+ * four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every IPv4
+ * host that way, so a written host that differs from the parsed one (leading zeros, octal, hex,
+ * fewer parts, a trailing dot, escapes) is exactly the rewrite.
+ */
 export function openAiBaseUrlRewritesIpv4(value: string): boolean {
   if (openAiBaseUrlSpellingProblem(value) !== undefined) {
     return false;
@@ -98,5 +101,5 @@ export function openAiBaseUrlRewritesIpv4(value: string): boolean {
   }
   // A backslash is a slash to the URL parser, including the two separators after the scheme.
   const written = /^https?:[/\\]{2}([^/?#:\\]+)/i.exec(value)?.[1];
-  return written !== endpoint.hostname || !strictDecimalIpv4.test(endpoint.hostname);
+  return written !== endpoint.hostname;
 }

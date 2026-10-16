@@ -16,7 +16,7 @@ import {
 } from "../../scripts/ci/full-integration-preflight.mjs";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
 
-test("full integration workflow carries QA job outcomes into targeted aggregation only", async (t) => {
+test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const workflow = await readFile(
@@ -25,30 +25,24 @@ test("full integration workflow carries QA job outcomes into targeted aggregatio
   );
   const step = workflow.split("- name: Write selected job state")[1];
   const source = step.match(/node <<'NODE'\n([\s\S]*?)\n\s+NODE/)[1];
-  for (const lane of ["qa-matrix", "dev-up-k3d", "all"]) {
-    // `all` excludes qa-matrix until the integration-qa environment exists, so
-    // a full run must neither require nor record the QA job.
-    const target = lane === "dev-up-k3d" ? lane : "qa-matrix";
-    const expectRecorded = lane !== "all";
-    for (const result of ["success", "failure", "cancelled", "skipped", "missing"]) {
-      const needs = { preflight: { result: "success" } };
-      if (result !== "missing") {
-        needs[target] = { result };
+  for (const target of ["qa-matrix", "dev-up-k3d"]) {
+    for (const lane of [target, "all"]) {
+      for (const result of ["success", "failure", "cancelled", "skipped", "missing"]) {
+        const needs = { preflight: { result: "success" } };
+        if (result !== "missing") {
+          needs[target] = { result };
+        }
+        // Execute the shipped workflow step: every selected lane must reach
+        // aggregate validation, including failures and absent job outcomes.
+        const process = spawnSync(globalThis.process.execPath, ["--input-type=commonjs"], {
+          input: source,
+          encoding: "utf8",
+          env: { RUNNER_TEMP: directory, NEEDS_JSON: JSON.stringify(needs), SELECTED_LANE: lane },
+        });
+        assert.equal(process.status, 0, process.stderr);
+        const recorded = JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
+        assert.deepEqual(recorded[target], { result }, `${lane}: ${target}: ${result}`);
       }
-      // Execute the shipped workflow step: omission here previously made even
-      // a successful QA artifact fail aggregate validation with missing-need.
-      const process = spawnSync(globalThis.process.execPath, ["--input-type=commonjs"], {
-        input: source,
-        encoding: "utf8",
-        env: { RUNNER_TEMP: directory, NEEDS_JSON: JSON.stringify(needs), SELECTED_LANE: lane },
-      });
-      assert.equal(process.status, 0, process.stderr);
-      const recorded = JSON.parse(await readFile(join(directory, "needs.json"), "utf8"));
-      assert.deepEqual(
-        recorded[target],
-        expectRecorded ? { result } : undefined,
-        `${lane}: ${result}`,
-      );
     }
   }
 });
@@ -250,13 +244,7 @@ function providerEnvironment(patch = {}) {
 function protectedEnvironment(patch = {}) {
   return {
     name: "integration-model",
-    protection_rules: [
-      {
-        type: "required_reviewers",
-        prevent_self_review: true,
-        reviewers: [{ type: "User", reviewer: { login: "reviewer" } }],
-      },
-    ],
+    protection_rules: [],
     deployment_branch_policy: {
       custom_branch_policies: false,
       protected_branches: true,
@@ -297,6 +285,7 @@ test("full integration preflight selects only manual workflow lanes", async () =
   ]);
   assert.deepEqual(requiredEnvironmentsForLane("qa-matrix"), ["integration-qa"]);
   assert.deepEqual(requiredEnvironmentsForLane("all"), [
+    "integration-qa",
     "integration-model",
     "integration-otel",
     "integration-routing",
@@ -355,30 +344,34 @@ test("provider-account environment policy is main-only without required reviewer
   }
 });
 
-test("non-provider integration environments still require reviewers", () => {
-  assert.doesNotThrow(() =>
-    validateEnvironmentPolicy("integration-model", protectedEnvironment(), undefined),
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({ protection_rules: [] }),
-        undefined,
-      ),
-    /has no required reviewers/,
-  );
-  assert.throws(
-    () =>
-      validateEnvironmentPolicy(
-        "integration-model",
-        protectedEnvironment({
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
-        }),
-        undefined,
-      ),
-    /does not prevent self-review/,
-  );
+test("credentialed integration environments run without approval and retain branch restrictions", () => {
+  for (const name of requiredEnvironmentsForLane("all")
+    .filter((name) => name !== "integration-provider-account")
+    .concat("integration-qa")) {
+    assert.doesNotThrow(() => validateEnvironmentPolicy(name, protectedEnvironment(), undefined));
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "Team" }] }],
+          }),
+          undefined,
+        ),
+      /must not require reviewers/,
+    );
+    assert.throws(
+      () =>
+        validateEnvironmentPolicy(
+          name,
+          protectedEnvironment({
+            deployment_branch_policy: null,
+          }),
+          undefined,
+        ),
+      /not restricted/,
+    );
+  }
 });
 
 test("preflight fetches only the provider environment for manual provider runs", async () => {
@@ -438,7 +431,7 @@ test("preflight rejects non-main sources before fetching environment metadata", 
   assert.deepEqual(fetched, []);
 });
 
-test("manual protected branch runs require an exact environment grant and independent review", async () => {
+test("manual protected branch runs require an exact environment grant without per-run approval", async () => {
   for (const { lane, environmentName, branch } of [
     {
       lane: "k3d-model",
@@ -499,17 +492,14 @@ test("manual protected branch runs require an exact environment grant and indepe
       );
     }
     await assert.rejects(() => run(env, protectedEnvironment()), /exact branch/);
-    await assert.rejects(
-      () => run(env, { ...environment, protection_rules: [] }),
-      /has no required reviewers/,
-    );
+    // Reintroducing a reviewer gate would prevent a maintainer from starting this run directly.
     await assert.rejects(
       () =>
         run(env, {
           ...environment,
-          protection_rules: [{ type: "required_reviewers", prevent_self_review: false }],
+          protection_rules: [{ type: "required_reviewers", reviewers: [{ type: "User" }] }],
         }),
-      /does not prevent self-review/,
+      /must not require reviewers/,
     );
     assert.deepEqual(await run(), { selectedLane: lane, runAll: false });
   }
@@ -603,7 +593,10 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(job.needs, "preflight");
   assert.equal(job["runs-on"], "ubuntu-22.04");
   for (const lane of ["dev-up-k3d", "all", "k3d-model"]) {
-    assert.equal(runInNewContext(job.if, { inputs: { lane } }), lane === "dev-up-k3d");
+    assert.equal(
+      runInNewContext(job.if, { inputs: { lane } }),
+      lane === "dev-up-k3d" || lane === "all",
+    );
   }
   assert.equal(job.steps[0].with.ref, "${{ github.sha }}");
   assert.equal(job.steps[0].with["persist-credentials"], false);
@@ -613,7 +606,34 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(run.with["artifact-prefix"], "full-results");
   assert.ok(workflow.jobs["full-aggregate"].needs.includes("dev-up-k3d"));
   assert.equal(suites.groups.ci.includes("dev-up-k3d"), false);
-  assert.equal(suites.groups.full.includes("dev-up-k3d"), false);
+  for (const lane of workflow.on.workflow_dispatch.inputs.lane.options) {
+    if (lane !== "all") {
+      assert.ok(suites.groups.full.includes(lane), `all must require ${lane} results`);
+    }
+  }
+  const qa = workflow.jobs["qa-matrix"];
+  assert.ok(qa.needs.includes("slack"), "shared Slack consumers must run sequentially");
+  // A failed focused Slack proof must not suppress the broader QA proof. Only
+  // failed preflight, an unselected lane, or run cancellation should prevent it.
+  for (const lane of ["all", "qa-matrix", "docker-model"]) {
+    for (const preflight of ["success", "failure"]) {
+      for (const slack of ["success", "failure", "skipped"]) {
+        for (const cancelled of [false, true]) {
+          const selected = runInNewContext(qa.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+            inputs: { lane },
+            needs: { preflight: { result: preflight }, slack: { result: slack } },
+            always: () => true,
+            cancelled: () => cancelled,
+          });
+          assert.equal(
+            selected,
+            !cancelled && preflight === "success" && ["all", "qa-matrix"].includes(lane),
+            `${lane}: preflight ${preflight}, slack ${slack}, cancelled ${cancelled}`,
+          );
+        }
+      }
+    }
+  }
   const inputs = { lane: "dev-up-k3d", profile: run.with.profile };
   const evaluate = (expression) =>
     runInNewContext(expression.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {

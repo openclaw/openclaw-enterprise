@@ -110,7 +110,7 @@ function isCredentialReference(value: unknown): boolean {
  * Configuration rules that do not depend on the Agent's topology or the Installation, checked
  * when a Configuration is created, replaced or provisioned, and when a Preset is saved, with
  * `options` locating its unfilled variables. A stored Configuration that predates a rule still
- * reads; Compute admission refuses it at its next deployment.
+ * reads; deployment refuses it.
  * - The Codex session approval policy (codexApprovalPolicy).
  * - A literal gateway.auth.password would be stored in plain text, as a model credential
  *   would; every Compute Driver accepts only an environment reference there.
@@ -129,8 +129,9 @@ export function validateConfigurationSettings(
 }
 
 /**
- * A literal gateway.auth.password. Also checked when a Preset is saved, by the Configuration
- * Driver's credential rules, so it is refused wherever it is written.
+ * A literal gateway.auth.password. The bundled Configuration Drivers' credential rules
+ * (validateModelCredentialReferences) run it again on every write and at deployment, which
+ * refuses a stored document that predates the rule.
  */
 export function refuseLiteralGatewayPassword(values: OpenClawConfigurationDocument): void {
   const password = asRecord(asRecord(values.gateway)?.auth)?.password;

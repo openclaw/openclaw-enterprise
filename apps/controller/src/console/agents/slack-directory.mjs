@@ -151,6 +151,7 @@ export function createSlackNameResolver({
         names,
         workspaceId: page.workspaceId,
         workspaceName: page.workspaceName,
+        requestedIds,
         truncated,
       });
     } catch (error) {
@@ -190,8 +191,11 @@ export function createSlackDirectoryField({
     "aria-expanded": "false",
     "aria-controls": `${control.id}-results`,
     autocomplete: "off",
-    placeholder:
-      kind === "channels" ? "Search channels or paste IDs…" : "Search people or paste IDs…",
+    placeholder: qualifyUsers
+      ? "Search people…"
+      : kind === "channels"
+        ? "Search channels or paste IDs…"
+        : "Search people or paste IDs…",
   });
   const chips = element("div", { className: "slack-directory-chips" });
   const nameStatus = element("p", { className: "hint", role: "status" });
@@ -303,26 +307,43 @@ export function createSlackDirectoryField({
     nameStatus.style.visibility = "visible";
   }
   function renderValues() {
+    let resolvingNames = false;
     chips.replaceChildren(
-      ...values().map((id) => {
+      ...values().map((id, index) => {
         const target = directoryTarget(id, kind);
         const candidate =
           target && (!target.teamId || target.teamId === nameState.workspaceId)
             ? nameState.names.get(target.id)
             : null;
-        const name = candidate
-          ? kind === "channels"
-            ? `#${candidate.name}`
-            : candidate.displayName
-              ? `${candidate.displayName} (@${candidate.name})`
-              : `@${candidate.name}`
-          : id;
+        let name = id;
+        if (candidate) {
+          name =
+            kind === "channels"
+              ? `#${candidate.name}`
+              : candidate.displayName
+                ? `${candidate.displayName} (@${candidate.name})`
+                : `@${candidate.name}`;
+        } else {
+          resolvingNames ||= nameState.loading;
+          if (qualifyUsers) {
+            name = nameState.loading ? "Loading name…" : "Name unavailable";
+          }
+        }
+        const removeLabel = !qualifyUsers
+          ? id
+          : candidate
+            ? name
+            : `selected person ${index + 1} (${name.toLowerCase()})`;
         return element(
           "span",
-          { className: "slack-directory-chip", "data-value": id, title: id },
+          {
+            className: "slack-directory-chip",
+            "data-value": id,
+            ...(qualifyUsers ? {} : { title: id }),
+          },
           element("span", {}, name),
           button("×", () => commit(values().filter((value) => value !== id)), {
-            "aria-label": `Remove ${id}`,
+            "aria-label": `Remove ${removeLabel}`,
             disabled: control.disabled,
           }),
         );
@@ -338,7 +359,7 @@ export function createSlackDirectoryField({
     });
     nameStatus.textContent = nameState.error
       ? `${nameState.error} Saved selections are retained.`
-      : nameState.loading
+      : resolvingNames
         ? "Resolving saved names…"
         : mismatched
           ? "Some saved selections belong to another workspace."
@@ -346,7 +367,7 @@ export function createSlackDirectoryField({
             ? "Select a Slack bot token Secret to search by name. You can still paste exact IDs."
             : "";
     if (nameState.truncated) {
-      nameStatus.textContent += " Names are shown for the first 20 selections.";
+      nameStatus.textContent += " Name lookup includes the first 20 selections.";
     }
   }
   const resolver = createSlackNameResolver({
@@ -356,7 +377,23 @@ export function createSlackDirectoryField({
     agentId,
     configurationId,
     onUpdate: (state) => {
-      nameState = state;
+      // A limited lookup cannot update names it did not request. Never carry names across workspaces.
+      if (
+        qualifyUsers &&
+        state.requestedIds &&
+        state.truncated &&
+        state.workspaceId === nameState.workspaceId
+      ) {
+        for (const [id, candidate] of nameState.names) {
+          if (!state.requestedIds.includes(id)) {
+            state.names.set(id, candidate);
+          }
+        }
+      }
+      nameState =
+        qualifyUsers && (state.loading || state.error)
+          ? { ...state, names: nameState.names, workspaceId: nameState.workspaceId }
+          : state;
       if (state.workspaceId) {
         updateWorkspace(state);
       }
@@ -366,6 +403,7 @@ export function createSlackDirectoryField({
   function refresh() {
     if (boundSecretId !== getSecretId()) {
       boundSecretId = getSecretId();
+      nameState = { names: new Map() };
       workspaceIdentity = null;
       workspace.textContent = "";
       onWorkspace?.(null);
@@ -412,6 +450,18 @@ export function createSlackDirectoryField({
   function selectCandidate(candidate) {
     const id = qualifyUsers ? `team:${candidate.workspaceId}:user:${candidate.id}` : candidate.id;
     const selected = values();
+    if (qualifyUsers) {
+      // The directory result supplies the label now; only the workspace-qualified ID is committed.
+      if (candidate.workspaceId !== workspaceIdentity) {
+        // A concurrent name lookup may have discovered that the bot changed workspaces.
+        void startSearch();
+        return;
+      }
+      if (candidate.workspaceId !== nameState.workspaceId) {
+        nameState = { workspaceId: candidate.workspaceId, names: new Map() };
+      }
+      nameState.names.set(candidate.id, candidate);
+    }
     search.focus();
     commit(
       selected.some((value) => matchesSlackDirectoryCandidate(value, kind, candidate))
@@ -452,6 +502,7 @@ export function createSlackDirectoryField({
       return;
     }
     cancelSearch();
+    const searchWorkspace = workspaceIdentity;
     const exactTarget = searchAsName ? null : searchTarget(query, kind);
     const active = generation;
     activeOption = -1;
@@ -506,6 +557,14 @@ export function createSlackDirectoryField({
         if (!current(active, secretId)) {
           return;
         }
+        if (
+          qualifyUsers &&
+          workspaceIdentity !== searchWorkspace &&
+          workspaceIdentity !== page.workspaceId
+        ) {
+          // A newer name lookup observed a different workspace while this search was pending.
+          return startSearch();
+        }
         if (index > 0 && workspaceIdentity && workspaceIdentity !== page.workspaceId) {
           status.textContent = "The Slack bot workspace changed. Search again.";
           return;
@@ -547,7 +606,7 @@ export function createSlackDirectoryField({
               kind === "users"
                 ? element("span", { className: "hint" }, `@${candidate.name}`)
                 : null,
-              element("code", {}, candidate.id),
+              qualifyUsers ? null : element("code", {}, candidate.id),
               selected ? element("span", {}, "Selected") : null,
             ),
             () => selectCandidate({ ...candidate, workspaceId: page.workspaceId }),

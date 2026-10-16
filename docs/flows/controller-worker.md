@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-14
-last_updated_session: authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3
+updated: 2026-10-16
+last_updated_session: authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53
 ---
 
 # Controller Worker Flow
@@ -343,12 +343,12 @@ public explanations. Memory State has no attempt.
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
 
-Compute maintenance schedules exact-revision observations. Incomplete observations,
-binding failures and exhausted dependency retries schedule another pass while the
-revision stays active and running within its credential deadline. Claims reauthorize
-the actor; successor time buckets increase despite clock skew. Terminal maintenance
-[withdraws managed Gateway access](gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance)
-before ending its chain.
+Incomplete observations, binding failures and exhausted retries continue while
+active, running and within the credential deadline. Successor buckets increase
+despite clock skew. Before effects, `withdrawn` access status or terminal refusal
+persists `REVISION_ACCESS_WITHDRAWAL_PENDING` and
+[withdraws admitted access](gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance)
+before ending maintenance, including an admitted reader's Harness.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
 A Namespace pass that observes the same pending state this worker last audited,
@@ -419,6 +419,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 13:09: Compose Gateway/reader withdrawal. (authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53 - 792afad4f9e8bd4323fc197a102ebde7961484c9)
 
 - 2026-10-14 17:45: Persist removal-only Gateway withdrawal before terminal maintenance (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - 27562ebf56a8315a663583731a303ca362cbfc5d)
 

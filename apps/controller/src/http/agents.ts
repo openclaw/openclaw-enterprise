@@ -93,7 +93,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configuration: revision.configuration,
     gatewayOutbound: revision.gatewayOutbound,
     harness: revision.harness,
-    compute: revision.compute,
+    compute: { id: revision.compute.id, implementation: revision.compute.implementation },
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
     plugins: revision.plugins,

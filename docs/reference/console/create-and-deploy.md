@@ -15,7 +15,7 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open native admin UI** requires [native admin setup](../../guides/deploy/native-admin.md):
+**Open admin console** requires [native admin setup](../../guides/deploy/native-admin.md):
 trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
 are insufficient. Presets and edited Configuration JSON retain their settings.
 
@@ -76,7 +76,8 @@ still block initial workspace files and Secret-backed environment projection.
    repositories, and workspace files for supported Dedicated provisioning.
    Provisioning stays pending until the first deployment activates or fails.
    Success opens Agent details. Failure links to the same Agent and revision;
-   correct its cause and deploy again through **Deployment activity**.
+   correct its cause and deploy again through **Deployment activity**. If the
+   first deployment was stopped, no repair is needed before deploying again.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -162,9 +163,9 @@ Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-After the first revision is admitted, a deployment failure cannot retry
-provisioning or create another Agent. Open the retained Agent, correct its
-settings or credential source, and submit a new deployment.
+A failed or stopped first deployment, or a Stop before it
+(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
+retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
 
 Repository discovery is independent of model authentication. Small catalogs offer
 **Add**; larger ones support search and paging.

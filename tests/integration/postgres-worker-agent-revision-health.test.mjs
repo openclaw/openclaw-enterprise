@@ -33,11 +33,17 @@ const outboundAdmission = {
   requirements: [],
   denyCidrs: ["10.42.0.0/16"],
 };
-const withdrawalPending = "GATEWAY_OUTBOUND_WITHDRAWAL_PENDING";
+const withdrawalPending = "REVISION_ACCESS_WITHDRAWAL_PENDING";
 
-for (const cause of ["authorization", "backend", "deadline"]) {
+for (const [cause, access] of [
+  ["authorization", "Gateway outbound"],
+  ["backend", "Gateway outbound"],
+  ["deadline", "Gateway outbound"],
+  ["authorization", "Compute-admitted"],
+  ["configuration", "Compute-admitted"],
+]) {
   test(
-    `active Gateway outbound withdrawal survives ${cause} refusal, restored authority and worker restart`,
+    `active ${access} withdrawal survives ${cause} refusal, restored authority and worker restart`,
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
       const fixture = await setup(context, { maxAttempts: 1 });
@@ -45,12 +51,19 @@ for (const cause of ["authorization", "backend", "deadline"]) {
         executionMode: "dedicated",
         ...(cause === "backend" ? { backendId } : {}),
       });
-      const candidate = await fixture.revision(owner, 1, {
-        gatewayOutbound: outboundAdmission,
-      });
+      // A Driver-owned admission can require withdrawal without a Gateway snapshot.
+      // The worker must persist and replay that obligation through the same contract.
+      const candidate = await fixture.revision(
+        owner,
+        1,
+        access === "Gateway outbound"
+          ? { gatewayOutbound: outboundAdmission }
+          : { computeAdmission: "revision-access:v1" },
+      );
       let prepared = 0;
       let withdrawn = 0;
       let removalAvailable = false;
+      let accessCurrent = true;
       let activationUnavailable = cause === "deadline";
       const decisionsAtRemoval = [];
       // This boundary Driver fails removal while the real worker, IAM and PostgreSQL
@@ -58,6 +71,12 @@ for (const cause of ["authorization", "backend", "deadline"]) {
       const compute = {
         ...fixture.compute,
         maintenanceIntervalMs: 60_000,
+        revisionAccessStatus: (revision) => {
+          if (revision.gatewayOutbound === undefined && revision.compute.admission === undefined) {
+            return "none";
+          }
+          return accessCurrent ? "current" : "withdrawn";
+        },
         async prepareRevision(revision) {
           prepared += 1;
           return fixture.compute.prepareRevision(revision);
@@ -67,7 +86,7 @@ for (const cause of ["authorization", "backend", "deadline"]) {
             throw new Error("Runtime activation temporarily unavailable");
           }
         },
-        async withdrawGatewayOutbound(revision) {
+        async withdrawRevisionAccess(revision) {
           const evidence = await fixture.observerPool.query(
             `SELECT details->>'refusal' AS refusal FROM occ.audit_events
              WHERE resource_kind = 'agent_revision' AND resource_id = $1
@@ -103,6 +122,7 @@ for (const cause of ["authorization", "backend", "deadline"]) {
         authorization: "AUTHORIZATION_DENIED",
         backend: "BACKEND_UNAVAILABLE",
         deadline: "CONVERGENCE_DEADLINE_EXCEEDED",
+        configuration: "REVISION_ACCESS_WITHDRAWN",
       }[cause];
       const expectedData = cause === "deadline" ? { timeoutMs: 1_000 } : undefined;
       const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
@@ -114,11 +134,22 @@ for (const cause of ["authorization", "backend", "deadline"]) {
           [fixture.actor.id],
         );
       }
+      const preparationsBeforeRefusal = prepared;
+      if (cause === "configuration") {
+        accessCurrent = false;
+      }
       if (cause !== "deadline") {
         await fixture.start(compute, { providers: [], convergenceTimeoutMs: 1_000 });
       }
       await waitFor("failed removal after a committed refusal", async () => {
         const current = await queue.findWork(workId);
+        if (cause === "configuration") {
+          assert.equal(
+            prepared,
+            preparationsBeforeRefusal,
+            "withdrawn access cannot enter preparation",
+          );
+        }
         assert.notEqual(current.state, "failed_permanent", "removal must precede terminal refusal");
         return withdrawn >= 1 ? true : undefined;
       });
@@ -145,6 +176,7 @@ for (const cause of ["authorization", "backend", "deadline"]) {
         );
       }
       activationUnavailable = false;
+      accessCurrent = true;
       const beforeRestart = withdrawn;
       await fixture.start(compute, { providers, convergenceTimeoutMs: 1_000 });
       await waitFor("removal-only retries after restart", async () =>
@@ -215,6 +247,8 @@ test(
     const compute = {
       ...fixture.compute,
       maintenanceIntervalMs: 60_000,
+      revisionAccessStatus: (revision) =>
+        revision.gatewayOutbound === undefined ? "none" : "current",
       async prepareRevision(revision) {
         preparations += 1;
         if (preparationFails) {
@@ -225,7 +259,7 @@ test(
         }
         return fixture.compute.prepareRevision(revision);
       },
-      async withdrawGatewayOutbound() {
+      async withdrawRevisionAccess() {
         withdrawals += 1;
         assert.deepEqual(await retirementRows(), [], "retirement must wait for outbound removal");
         if (!removalAvailable) {
@@ -249,6 +283,9 @@ test(
     await waitFor("terminal preparation's pending outbound removal", async () =>
       withdrawals >= 1 ? true : undefined,
     );
+    // Shutdown may leave an interrupted pass claimed. Finish its deferral before
+    // the next phase deliberately expires a separately acquired claim.
+    await fixture.work({ idempotencyKey: maintenance.idempotency_key }, "queued");
     await fixture.stop();
     const preparationCount = preparations;
     const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
@@ -303,7 +340,9 @@ test(
     await fixture.start({
       ...fixture.compute,
       maintenanceIntervalMs: 60_000,
-      async withdrawGatewayOutbound() {},
+      revisionAccessStatus: (revision) =>
+        revision.gatewayOutbound === undefined ? "none" : "current",
+      async withdrawRevisionAccess() {},
     });
     await fixture.work(candidate, "succeeded");
     await fixture.stop();

@@ -8,6 +8,7 @@ the OpenClaw Control Plane (OCC).
 
 ## Cheat sheets
 
+- [GitHub Actions](cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
 - [API](cheatsheets/api.md): public methods and what they do, by entity.
 - [Permissions](cheatsheets/permissions.md): all IAM actions, resources, and access scopes.
 - [Database entities](cheatsheets/database-entities.md): PostgreSQL tables, their purpose, and their columns.

@@ -430,9 +430,25 @@
       "idx": 53,
       "version": "7",
       "when": 1787000000054,
-      "tag": "0054_gateway_outbound",
+      "tag": "0054_credential_source_pat",
       "breakpoints": true,
-      "sha256": "426da30fa2dc3a010905318b95dc146c4bd7a461b8c48cb9f5dca9d12523ef52"
+      "sha256": "02ef4ffbdd21bb1c5e66c84c1c3dfe04c48f1936e18bab9c2de81c8ffe3c8d9d"
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1787000000055,
+      "tag": "0055_compute_revision_admission",
+      "breakpoints": true,
+      "sha256": "ad091e4c3a9de192f79f9170b009497db0cd5f0f0d287dfbc81a00d5e1fc8ea7"
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1787000000056,
+      "tag": "0056_gateway_outbound",
+      "breakpoints": true,
+      "sha256": "28b20ebb131b08c6385b606654740e4353f79304d559b7145c29b537bc29230e"
     }
   ],
   "initialSchemaStates": {
@@ -446,18 +462,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -470,7 +476,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "2e5c3d39348db769b5d0c57065fd38416f621e0f77eb138588ec3966aabbb6f9",
+    "completed": "5143979adb454748145295b3f4433ba3e59ec48a49ad135aa1903bb7f82d308e",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -496,7 +502,9 @@
     "preCredentialWithdrawalRequester": "50e7e165459306033af8d6aa074ad8d7df4fc2ff4065ef454b2f3f1a12768577",
     "preProvisioningDeploymentOutcome": "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73",
     "preComputePreparationFailureEvidence": "d04407ae6939193a1d9cb99e8fe6bf77d4cd1a2b38ff58650f1c4bd5034b18f9",
-    "preGatewayOutbound": "5aa1681236a41d763405d596daeed3921a2b8932090534f6dacf85c488279f34"
+    "preCredentialSourcePat": "5aa1681236a41d763405d596daeed3921a2b8932090534f6dacf85c488279f34",
+    "preComputeRevisionAdmission": "52b65cf1a9e0539f3c133d9a25f0da0ee8b2ca51f981934bef44e670134d8083",
+    "preGatewayOutbound": "153f6ef879f86781ce3355594b5dca10364fb6d118c079280655242459e041b8"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

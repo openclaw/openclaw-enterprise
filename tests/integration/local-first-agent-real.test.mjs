@@ -17,15 +17,24 @@ const selectedHarness = process.env.OCC_TEST_LOCAL_FIRST_AGENT_HARNESS ?? "openc
 assert.match(selectedHarness, /^(?:openclaw|codex)$/);
 const selectedSandboxDriver = process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER ?? "none";
 assert.match(selectedSandboxDriver, /^(?:none|openshell)$/);
+const selectedControlUi = process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_UI === "1";
 if (selectedSandboxDriver === "openshell") {
   assert.equal(selectedHarness, "codex", "OpenShell first-Agent proof requires dedicated Codex.");
+}
+if (selectedControlUi) {
+  assert.equal(selectedSandboxDriver, "openshell");
+  assert.equal(process.env.OCC_TEST_LOCAL_FIRST_AGENT_CONTROL_PLANE, "compose");
 }
 const execFileAsync = promisify(execFile);
 const maxOutputLength = 32_768;
 const commandTimeout = 30 * 60_000;
 const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
-const sensitiveValues = new Set([process.env.OPENAI_API_KEY].filter(Boolean));
+const credentialVariable =
+  selectedSandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+const sensitiveValues = new Set(
+  [process.env.OPENAI_API_KEY, process.env.CODEX_ACCESS_TOKEN].filter(Boolean),
+);
 
 function redact(output) {
   for (const value of sensitiveValues) {
@@ -44,8 +53,12 @@ function runFirstAgent({
   signal,
   timeout = commandTimeout,
   harness = selectedHarness,
+  controlUi = selectedControlUi,
 }) {
   const args = [firstAgentScript, name, "--harness", harness];
+  if (controlUi) {
+    args.push("--control-ui");
+  }
   if (prompt !== undefined) {
     args.push("--prompt", prompt);
   }
@@ -126,7 +139,7 @@ function runFirstAgent({
   });
 }
 
-function readResult({ stdout, stderr }, expectedReply) {
+function readResult({ stdout, stderr }, expectedReply, { apiOrigin, browserOrigin }) {
   const diagnostic = `First-Agent command output:\n${stdout}\n${stderr}`;
   const agent = /^Agent ID: (agt_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
   const revision = /^Revision: (rev_[A-Za-z0-9_-]+)\r?$/m.exec(stdout);
@@ -134,6 +147,7 @@ function readResult({ stdout, stderr }, expectedReply) {
   const model = /^Model: ((?:openai|codex)\/[A-Za-z0-9._-]+)\r?$/m.exec(stdout);
   const proof = /^Model response verified: (FIRST_AGENT_[A-Fa-f0-9-]+)\r?$/m.exec(stdout);
   const consoleLine = /^Console: ([^\r\n]+)\r?$/m.exec(stdout);
+  const controlUiLine = /^Control UI: ([^\r\n]+)\r?$/m.exec(stdout);
   const replyHeading = /(?:^|\n)Agent response:\r?\n/.exec(stdout);
 
   assert.ok(agent, `Missing Agent ID.\n${diagnostic}`);
@@ -152,14 +166,9 @@ function readResult({ stdout, stderr }, expectedReply) {
   } catch {
     throw new Error("First-Agent command returned an invalid Console URL.");
   }
-  assert.ok(
-    consoleUrl.protocol === "http:" &&
-      ["127.0.0.1", "localhost", "[::1]"].includes(consoleUrl.hostname) &&
-      !consoleUrl.username &&
-      !consoleUrl.password &&
-      !consoleUrl.hash,
-    "The Console URL must be an unauthenticated local HTTP origin",
-  );
+  assert.equal(consoleUrl.origin, browserOrigin ?? apiOrigin);
+  assert.equal(consoleUrl.protocol, browserOrigin === undefined ? "http:" : "https:");
+  assert.ok(!consoleUrl.username && !consoleUrl.password && !consoleUrl.hash);
   assert.ok(
     consoleUrl.pathname === `/console/agents/${agent[1]}`,
     "The Console URL must identify the returned Agent",
@@ -169,11 +178,21 @@ function readResult({ stdout, stderr }, expectedReply) {
     namespaces.length === 1 && /^ns_[A-Za-z0-9_-]+$/.test(namespaces[0]),
     "The Console URL must identify one Namespace",
   );
+  let controlUiOrigin;
+  if (selectedControlUi) {
+    assert.ok(controlUiLine, `Missing Control UI URL.\n${diagnostic}`);
+    controlUiOrigin = new URL(controlUiLine[1]).origin;
+    assert.equal(new URL(controlUiLine[1]).pathname, "/");
+    assert.equal(new URL(controlUiOrigin).protocol, "https:");
+  } else {
+    assert.equal(controlUiLine, null, `Unexpected Control UI URL.\n${diagnostic}`);
+  }
   return {
     identity: { agentId: agent[1], revisionId: revision[1] },
     proofNonce: proof[1],
     model: model[1],
-    origin: consoleUrl.origin,
+    origin: apiOrigin,
+    controlUiOrigin,
     namespaceId: namespaces[0],
   };
 }
@@ -190,6 +209,8 @@ async function readKubernetesJson({ stateDirectory, cluster, env }, args, label)
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   try {
     const { stdout } = await execFileAsync(
       "kubectl",
@@ -214,6 +235,8 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   const environment = { ...env };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_API_KEY_FILE;
+  delete environment.CODEX_ACCESS_TOKEN;
+  delete environment.CODEX_ACCESS_TOKEN_FILE;
   const common = [
     "--kubeconfig",
     join(stateDirectory, "kubeconfig"),
@@ -369,7 +392,10 @@ test(
     timeout: 2 * commandTimeout + refusalTimeout + stackLifecycleTimeout + 60_000,
   },
   async (context) => {
-    assert.ok(process.env.OPENAI_API_KEY, "OPENAI_API_KEY is required for the first invocation");
+    assert.ok(
+      process.env[credentialVariable],
+      `${credentialVariable} is required for the first invocation`,
+    );
     const stack = await localFirstAgentStack(context);
     const stateDirectory = stack.directory;
     assert.ok(
@@ -411,11 +437,21 @@ test(
     const env = { ...stack.environment, OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes" };
     delete env.OPENAI_API_KEY_FILE;
     const promptFor = (reply) => `Reply with exactly ${reply} and no other text.`;
+    const resultOrigins = {
+      apiOrigin: env.OCC_URL,
+      browserOrigin: recorded.browserOrigin,
+    };
 
     // The unique Agent remains until the fixture or the owner destroys the selected disposable stack.
     const first = readResult(
-      await runFirstAgent({ name, prompt: promptFor(firstReply), env, signal: context.signal }),
+      await runFirstAgent({
+        name,
+        prompt: promptFor(firstReply),
+        env,
+        signal: context.signal,
+      }),
       firstReply,
+      resultOrigins,
     );
 
     const expectedModel = env.OPENCLAW_FIRST_AGENT_MODEL || "gpt-6-astra";
@@ -516,6 +552,8 @@ test(
     delete reuseEnv.OPENCLAW_FIRST_AGENT_MODEL;
     delete reuseEnv.OPENAI_API_KEY;
     delete reuseEnv.OPENAI_API_KEY_FILE;
+    delete reuseEnv.CODEX_ACCESS_TOKEN;
+    delete reuseEnv.CODEX_ACCESS_TOKEN_FILE;
     const second = readResult(
       await runFirstAgent({
         name,
@@ -524,6 +562,7 @@ test(
         signal: context.signal,
       }),
       secondReply,
+      resultOrigins,
     );
 
     assert.deepEqual(
@@ -575,11 +614,11 @@ test(
         "GET",
         `${base}/credential-sources/${agent.harnessAuth.sourceId}`,
       );
-      assert.equal(source.type, "openai");
+      assert.equal(source.type, "codex-pat");
       assert.equal(source.state, "ready");
-      assert.equal(source.secrets.api_key?.kind, "secret");
-      assert.equal(source.secrets.api_key?.namespaceId, first.namespaceId);
-      secretId = source.secrets.api_key?.id;
+      assert.equal(source.secrets.access_token?.kind, "secret");
+      assert.equal(source.secrets.access_token?.namespaceId, first.namespaceId);
+      secretId = source.secrets.access_token?.id;
       const bindings = await requestLocalApi(
         first.origin,
         serviceKey,
@@ -636,6 +675,18 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
+    if (selectedControlUi) {
+      assert.equal(original.generation, 2);
+      assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);
+      assert.deepEqual(original.values.gateway.controlUi, {
+        enabled: true,
+        allowedOrigins: [first.controlUiOrigin],
+      });
+      assert.equal(original.values.gateway.auth.mode, "trusted-proxy");
+      assert.deepEqual(original.values.gateway.auth.identityScopes, {
+        "occ-workspace-files": ["operator.admin"],
+      });
+    }
     try {
       const changed = await requestLocalApi(first.origin, serviceKey, "PATCH", configurationPath, {
         ...original.values,
@@ -655,7 +706,7 @@ test(
         replaceKey: true,
         allowFailure: true,
         forbiddenOutput: replacementKey,
-        env: { ...reuseEnv, OPENAI_API_KEY: replacementKey },
+        env: { ...reuseEnv, [credentialVariable]: replacementKey },
         signal: context.signal,
         timeout: refusalTimeout,
       });
@@ -670,9 +721,12 @@ test(
         0,
         "An externally changed Configuration must block key replacement",
       );
+      // Control UI pins generation 2 and refuses drift before the content comparison.
       assert.match(
         `${refused.stdout}\n${refused.stderr}`,
-        /Configuration was changed outside this helper/,
+        selectedControlUi
+          ? /Configuration generation changed outside this helper/
+          : /Configuration was changed outside this helper/,
       );
       assert.equal(
         refused.containedForbiddenOutput,

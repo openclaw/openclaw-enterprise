@@ -23,6 +23,7 @@ const echoPattern =
     ? undefined
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
+const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
 // Codex opens the Responses API over a WebSocket first and falls back to HTTPS.
@@ -115,6 +116,64 @@ function answerEvents(model, text) {
   ];
 }
 
+// The smoke's model stand-in requests a real Codex tool call. The command reads
+// the endpoint from the managed skill; the provider-only title is never supplied
+// to the model or the command before the tool output returns.
+function publicReadEvents(model, request) {
+  if (!publicReadJourney) {
+    return undefined;
+  }
+  let input;
+  try {
+    input = JSON.parse(request).input;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const output = input.find(
+    (item) => item.type === "function_call_output" && item.call_id === "public-read-call",
+  );
+  if (output) {
+    const result = JSON.stringify(output.output);
+    const title = result.match(/public-pull-[0-9a-f-]{36}/u)?.[0];
+    const curlCode = result.match(/curl: \(([0-9]{1,3})\)/u)?.[1];
+    emit({
+      event: "public-read-tool-result",
+      result: title ? "title-returned" : curlCode ? `curl-${curlCode}` : "no-title",
+    });
+    return answerEvents(model, title ?? "PUBLIC_READ_TOOL_FAILED");
+  }
+  if (!request.includes("OCE_PUBLIC_READ_JOURNEY")) {
+    return undefined;
+  }
+  const command = [
+    "set -eu",
+    'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
+    'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
+    'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
+    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+  ].join("\n");
+  const item = {
+    type: "function_call",
+    call_id: "public-read-call",
+    name: "exec_command",
+    arguments: JSON.stringify({ cmd: command }),
+  };
+  const base = {
+    id: "resp_public_read",
+    object: "response",
+    model,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
+  ];
+}
+
 // Answer one model turn after the configured delay, unless the caller left.
 function turn(transport, model, request, respond, closed) {
   emit({ event: "request", transport, turn: true });
@@ -126,7 +185,7 @@ function turn(transport, model, request, respond, closed) {
     if (closed()) {
       return;
     }
-    respond(answerEvents(model, text));
+    respond(publicReadEvents(model, request) ?? answerEvents(model, text));
     emit({
       event: "turn-answered",
       transport,

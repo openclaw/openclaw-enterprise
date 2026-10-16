@@ -38,7 +38,6 @@ type composeDevelopmentRouting struct {
 	podCIDR           string
 	trustedProxyCIDRs []string
 	reference         string
-	apiURL            string
 	postgresCIDR      string
 	nodeCIDR          string
 	nodeContainer     string
@@ -396,12 +395,14 @@ func (r *runner) composeServiceAddress(
 }
 
 func composeDevelopmentRoutingValues(
+	state *developmentState,
 	routing *composeDevelopmentRouting,
 	remoteNodeCIDRs []string,
 ) map[string]any {
+	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 	return map[string]any{
 		"images": map[string]string{"controller": routing.reference},
-		"auth":   map[string]string{"baseUrl": routing.apiURL},
+		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
 		"bootstrap": map[string]any{
 			"adminEmail": "admin@development.openclaw.invalid",
 			"password":   map[string]string{"claimName": "bootstrap-password"},
@@ -410,9 +411,11 @@ func composeDevelopmentRoutingValues(
 			"namespace": developmentEnvoyNamespace,
 			"podLabels": map[string]string{"app.kubernetes.io/name": "envoy"},
 		}}},
-		"database":         map[string]any{"cidrs": []string{routing.postgresCIDR}},
-		"cluster":          map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
-		"agentNativeAdmin": map[string]any{"enabled": false},
+		"database": map[string]any{"cidrs": []string{routing.postgresCIDR}},
+		"cluster":  map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
+		"agentNativeAdmin": map[string]any{
+			"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain,
+		},
 		"gatewayRouting": map[string]any{
 			"enabled":          true,
 			"gatewayClassName": "eg",
@@ -432,7 +435,7 @@ func (r *runner) applyComposeDevelopmentRouting(
 	remoteNodeCIDRs []string,
 	name string,
 ) error {
-	values, err := json.Marshal(composeDevelopmentRoutingValues(routing, remoteNodeCIDRs))
+	values, err := json.Marshal(composeDevelopmentRoutingValues(state, routing, remoteNodeCIDRs))
 	if err != nil {
 		return err
 	}
@@ -523,7 +526,7 @@ func (r *runner) copyComposeGatewayCA(ctx context.Context, state *developmentSta
 func (r *runner) prepareComposeDevelopmentRouting(
 	ctx context.Context,
 	state *developmentState,
-	reference, apiURL string,
+	reference string,
 	timeout time.Duration,
 ) (*composeDevelopmentRouting, error) {
 	podCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
@@ -565,7 +568,6 @@ func (r *runner) prepareComposeDevelopmentRouting(
 		},
 		podCIDR:       podCIDR,
 		reference:     reference,
-		apiURL:        apiURL,
 		postgresCIDR:  postgresAddress + "/32",
 		nodeCIDR:      nodeAddress + "/32",
 		nodeContainer: nodeContainer,

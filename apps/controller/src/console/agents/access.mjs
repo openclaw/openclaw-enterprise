@@ -115,14 +115,22 @@ export function renderAgentAccess(context, agent) {
     acknowledge.disabled = blocked;
     share.disabled = blocked;
     refresh.disabled = state.pending;
-    form.hidden = !state.loaded;
+    // The form shows disabled while the policy loads, instead of popping in above the grants
+    // once it has (finding 1410); it hides only when the policy could not be read.
+    form.hidden = !state.loaded && !state.pending;
+    // The first read holds the line its "Current policy loaded" result takes, so the form
+    // below does not move when it lands.
+    const progress =
+      state.progress.length || state.loaded || !state.pending || state.error
+        ? state.progress
+        : ["Reading the current sharing policy…"];
     feedback.replaceChildren(
-      ...(state.progress.length
+      ...(progress.length
         ? [
             element(
               "ul",
               { className: "agent-access-progress" },
-              ...state.progress.map((text) => element("li", {}, text)),
+              ...progress.map((text) => element("li", {}, text)),
             ),
           ]
         : []),
@@ -231,6 +239,8 @@ export function renderAgentAccess(context, agent) {
     if (state.pending || !context.isCurrent()) {
       return;
     }
+    // Refresh is disabled while it reads, which drops its focus; give it back (finding 1446).
+    const refocus = document.activeElement === refresh;
     state.pending = true;
     state.error = null;
     render();
@@ -255,6 +265,9 @@ export function renderAgentAccess(context, agent) {
       if (context.isCurrent()) {
         state.pending = false;
         render();
+        if (refocus && !section.hidden && document.activeElement === document.body) {
+          refresh.focus({ preventScroll: true });
+        }
       }
     }
   }

@@ -13,6 +13,7 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  persistedDeploymentError,
   repositoryCheckbox,
   secretOptionLabel,
   setSlackSelection,
@@ -1069,6 +1070,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  const failure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
   // The in-memory fixture has no worker records; supply the persisted failure shape.
   await page.route(`${fixture.origin}${path}/deployments/${revision.id}`, async (route) => {
     await route.fulfill({
@@ -1080,10 +1082,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
           namespaceId: namespace.id,
           agentId: agent.id,
           status: "failed",
-          error: {
-            code: "RUNTIME_AUTHENTICATION_FAILED",
-            message: "Deployment runtime credentials were rejected.",
-          },
+          error: failure,
           warnings: [],
           progress: null,
         },
@@ -1095,17 +1094,23 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   await login(page, fixture, url);
 
   const activity = page.locator(".deployment-status");
-  await activity
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
-    .waitFor();
-  await activity.getByText(/The model provider rejected this version's credential/).waitFor();
+  // The API's message carries the next step, so occ and HTTP clients get it too (finding
+  // 1393); the console shows it once and adds only the link to Credentials.
   assert.match(
-    await activity.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
+    failure.message,
+    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
+  );
+  await activity
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
+    .waitFor();
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  assert.match(
+    await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
   );
   // The draft has no Logs tab, so the failure links to the failed version's output.
   assert.match(
-    await activity
+    await recovery
       .getByRole("link", { name: `Open v${revision.revision} Logs` })
       .getAttribute("href"),
     new RegExp(`revision=${revision.id}&tab=logs`),

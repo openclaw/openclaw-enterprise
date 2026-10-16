@@ -784,6 +784,26 @@ test(
       import("../../packages/iam/src/index.ts"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
+    // The database is authoritative for admitted credential-source login modes. PAT
+    // revisions must persist; unknown modes and secret bytes must still fail validation.
+    const sourceSnapshot = {
+      method: "credential_source",
+      sourceId: `cs_${randomUUID()}`,
+      credentialGatewayId: "credential-gateway",
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    for (const [snapshot, expected] of [
+      [sourceSnapshot, true],
+      [{ ...sourceSnapshot, loginMode: "unsupported" }, false],
+      [{ ...sourceSnapshot, accessToken: "synthetic-forbidden-value" }, false],
+    ]) {
+      const result = await pool.query(
+        "SELECT occ.harness_auth_is_valid($1::jsonb, $2, true) AS valid",
+        [JSON.stringify(snapshot), `ns_${randomUUID()}`],
+      );
+      assert.equal(result.rows[0].valid, expected);
+    }
     context.after(() => pool.end());
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
@@ -1333,17 +1353,32 @@ test(
        FROM generate_series(1, 64) AS n`,
       [fixture.namespace.id, large],
     );
-    const fastest = async (read) => {
-      let best = Infinity;
-      let result;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
+    // The bound counts the bytes the database sends for one read, which a slow or busy runner
+    // does not change: a list that reads the full documents receives about 64 x 0.9 MB, a
+    // summary list a few hundred bytes a row. Every pool client this read checks out is counted.
+    const received = async (read) => {
+      const sockets = new Map();
+      const acquired = (client) => {
+        const socket = client.connection.stream;
+        if (!sockets.has(socket)) {
+          sockets.set(socket, socket.bytesRead);
+        }
+      };
+      pool.on("acquire", acquired);
+      try {
         const started = performance.now();
-        result = await state.read(read);
-        best = Math.min(best, performance.now() - started);
+        const result = await state.read(read);
+        const ms = Math.round(performance.now() - started);
+        let bytes = 0;
+        for (const [socket, before] of sockets) {
+          bytes += socket.bytesRead - before;
+        }
+        return { result, bytes, ms };
+      } finally {
+        pool.off("acquire", acquired);
       }
-      return { result, ms: Math.round(best) };
     };
-    const revisionPage = await fastest((view) =>
+    const revisionPage = await received((view) =>
       view.revisions.pageRevisionSummaries(fixture.namespace.id, fixture.agent.id, {
         limit: 100,
       }),
@@ -1355,15 +1390,24 @@ test(
     );
     assert.equal(heavyRevisions.length, 64);
     assert.equal(heavyRevisions[0].harness.mode, fixture.revision.harness.mode);
-    const presetSummaries = await fastest((view) =>
+    const presetSummaries = await received((view) =>
       view.presets.listPresetSummaries(fixture.namespace.id),
     );
     assert.ok(presetSummaries.result.length >= 64);
+    const measured = (read) => `${read.bytes} bytes in ${read.ms} ms`;
     context.diagnostic(
-      `64 x 0.9 MB: revision summary page ${revisionPage.ms} ms, Preset summaries ${presetSummaries.ms} ms`,
+      `64 x 0.9 MB: revision summary page ${measured(revisionPage)}, Preset summaries ${measured(presetSummaries)}`,
     );
-    assert.ok(revisionPage.ms < 1_000, `revision summary page took ${revisionPage.ms} ms`);
-    assert.ok(presetSummaries.ms < 1_000, `Preset summaries took ${presetSummaries.ms} ms`);
+    // Less than one stored document: neither list may carry a single snapshot or template.
+    // PostgreSQL's jsonb text is longer than the compact `large`, so one document exceeds this.
+    assert.ok(
+      revisionPage.bytes > 0 && revisionPage.bytes < large.length,
+      `revision summary page received ${measured(revisionPage)}`,
+    );
+    assert.ok(
+      presetSummaries.bytes > 0 && presetSummaries.bytes < large.length,
+      `Preset summaries received ${measured(presetSummaries)}`,
+    );
     // Later starts in this database seed default Presets, which reads full templates.
     await pool.query(
       "DELETE FROM occ.presets WHERE namespace_id = $1 AND name LIKE 'Heavy preset %'",
@@ -2200,6 +2244,141 @@ test(
       controller.getAdministerableActiveAgentRevision(principalId, namespaceId, agent.id),
       { name: "DependencyUnavailableError" },
     );
+  },
+);
+
+test(
+  "PostgreSQL deployment refuses with 503 and creates nothing when an earlier revision is unreadable",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createTestConfigurationDriver },
+      { createTestSecretDriver },
+      { requestFailure },
+    ] = await Promise.all([
+      import("pg"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/secret-driver.mjs"),
+      import("../../apps/controller/src/http/errors.ts"),
+    ]);
+    const pool = new Pool({ connectionString: databaseUrl });
+    context.after(() => pool.end());
+    await startController(context);
+    const actor = await pool.query(
+      `SELECT identity.id
+       FROM occ.iam_identities AS identity
+       JOIN occ."user" AS auth_user ON auth_user.id = identity.subject
+       WHERE auth_user.email = $1`,
+      [adminEmail],
+    );
+    assert.equal(actor.rowCount, 1);
+    const principalId = actor.rows[0].id;
+    const { controller, resolveHarness } = await createDurableController(pool);
+    for (const driver of [
+      createTestConfigurationDriver({ id: `configuration-unreadable-${randomUUID()}` }),
+      createTestSecretDriver(),
+    ]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+
+    const namespace = await controller.createNamespace(principalId, {
+      name: `unreadable-history-${randomUUID()}`,
+    });
+    await controller.handleNamespaceLifecycle(principalId, namespace.id, "ready");
+    const configuration = await controller.createConfiguration(principalId, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {},
+    });
+    const agent = await controller.createAgent(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-agent-${randomUUID()}`,
+      configurationId: configuration.id,
+    });
+    const harnessSecret = await controller.createSecret(principalId, {
+      namespaceId: namespace.id,
+      name: `unreadable-history-harness-${randomUUID()}`,
+      value: "synthetic-persistence-key",
+    });
+    await controller.updateAgent(principalId, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+      harnessAuth: {
+        method: "api_key",
+        source: { kind: "secret", namespaceId: namespace.id, id: harnessSecret.id },
+      },
+    });
+    const harnessRoleId = `role-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_roles(id, namespace_id, name, permissions) VALUES($1, $2, $3, $4::jsonb)",
+      [
+        harnessRoleId,
+        namespace.id,
+        "Harness Secret consumer",
+        JSON.stringify([{ action: "operate", resourceKind: "secret" }]),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO occ.iam_access_bindings(id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id) VALUES($1, $2, $3, $4, 'secret', $5)",
+      [
+        `binding-${randomUUID()}`,
+        namespace.id,
+        agent.servicePrincipalId,
+        harnessRoleId,
+        harnessSecret.id,
+      ],
+    );
+    const deploy = () =>
+      controller.deployAgent(
+        principalId,
+        { namespaceId: namespace.id, agentId: agent.id },
+        resolveHarness,
+      );
+    const first = await deploy();
+    assert.equal(first.revision, 1);
+
+    // Revisions are immutable to the application role, so seed the unreadable one as a copy
+    // carrying a previously accepted plugin approval enum the current contract no longer decodes.
+    await pool.query(
+      `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, 2, backend_id,
+              jsonb_set(admitted_spec, '{plugins}', $2::jsonb, true), admitted_at
+       FROM occ.agent_revisions WHERE id = $3`,
+      [
+        `rev_${randomUUID()}`,
+        JSON.stringify({
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          plugins: { "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } } },
+        }),
+        first.id,
+      ],
+    );
+    const counts = () =>
+      pool
+        .query(
+          `SELECT (SELECT count(*)::integer FROM occ.agent_revisions WHERE agent_id = $1) AS revisions,
+                  (SELECT count(*)::integer FROM occ.controller_work WHERE agent_id = $1) AS work`,
+          [agent.id],
+        )
+        .then(({ rows }) => rows[0]);
+    const before = await counts();
+    assert.equal(before.revisions, 2);
+    assert.ok(before.work > 0, "the first deployment queued its work");
+
+    // The worker decodes every earlier revision to stop or retire it, so admission must too.
+    const refusal = await deploy().then(
+      () => assert.fail("deployment was admitted"),
+      (error) => error,
+    );
+    assert.equal(refusal.name, "DependencyUnavailableError");
+    assert.equal(refusal.field, "plugins");
+    assert.equal(refusal.message, "Persisted AgentRevision plugin state is invalid.");
+    assert.equal(requestFailure(refusal).status, 503);
+    assert.deepEqual(await counts(), before);
   },
 );
 

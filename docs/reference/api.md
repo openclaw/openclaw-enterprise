@@ -51,7 +51,7 @@ the paths.
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `error` | `object` | Yes | — |
-| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
+| `error.code` | `"INVALID_REQUEST" or "UNAUTHENTICATED" or "FORBIDDEN" or "NOT_FOUND" or "METHOD_NOT_ALLOWED" or "INSTALLATION_EXISTS" or "RESOURCE_CONFLICT" or "AGENT_DELETING" or "NAMESPACE_NOT_READY" or "NAMESPACE_NOT_EMPTY" or "PAYLOAD_TOO_LARGE" or "UNSUPPORTED_MEDIA_TYPE" or "UNKNOWN_OUTCOME" or "NOT_IMPLEMENTED" or "INTERNAL_ERROR" or "DEPENDENCY_UNAVAILABLE" or "CREDENTIAL_GATEWAY_NOT_CONFIGURED" or "CREDENTIAL_WITHDRAWAL_IN_PROGRESS" or "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED" or "REPOSITORY_OPTIONS_UNAVAILABLE" or "MODEL_DISCOVERY_CREDENTIALS_REJECTED" or "MODEL_DISCOVERY_RATE_LIMITED" or "MODEL_DISCOVERY_UNAVAILABLE" or "MODEL_DISCOVERY_INVALID_RESPONSE" or "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED" or "PLUGIN_DISCOVERY_RATE_LIMITED" or "PLUGIN_DISCOVERY_UNAVAILABLE" or "PLUGIN_DISCOVERY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED" or "CHANNEL_DIRECTORY_MISSING_SCOPE" or "CHANNEL_DIRECTORY_RATE_LIMITED" or "CHANNEL_DIRECTORY_INVALID_RESPONSE" or "CHANNEL_DIRECTORY_UNAVAILABLE" or "CHANNEL_CREDENTIAL_ROLE_MISMATCH" or "CHANNEL_CREDENTIAL_CREDENTIALS_REJECTED" or "CHANNEL_CREDENTIAL_UNAVAILABLE" or "CHANNEL_CREDENTIAL_BINDING_REQUIRED" or "RUNTIME_LOGS_CURSOR_INVALID" or "RUNTIME_LOGS_POD_INVALID" or "RUNTIME_LOGS_SOURCE_UNAVAILABLE" or "NATIVE_ADMIN_RETURN_RATE_LIMITED" or "RUNTIME_LOGS_RATE_LIMITED" or "RUNTIME_LOGS_CLUSTER_RBAC" or "RUNTIME_LOGS_SANDBOX_NOT_FOUND" or "RUNTIME_LOGS_UNAVAILABLE" or "RUNTIME_LOGS_AUDIT_UNAVAILABLE" or "RUNTIME_LOGS_TIMEOUT" or "RUNTIME_CREDENTIALS_CLUSTER_RBAC"` | Yes | — |
 | `error.details` | `array<object>` | No | max items: 32 |
 | `error.details[].code` | `"REQUIRED" or "UNKNOWN_FIELD" or "INVALID_TYPE" or "INVALID_FORMAT" or "INVALID_VALUE" or "TOO_LONG" or "TOO_DEEP"` | Yes | — |
 | `error.details[].path` | `string` | Yes | max length: 512; pattern: `^(?:/(?:[^~/]\|~0\|~1)*)*$` |
@@ -66,8 +66,8 @@ the paths.
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 4 operations |
-| [Namespaces](#namespaces) | 4 operations |
-| [Agents](#agents) | 34 operations |
+| [Namespaces](#namespaces) | 5 operations |
+| [Agents](#agents) | 36 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -1492,6 +1492,7 @@ Get the configured external observability destination
 | [`POST /namespaces`](#post-namespaces) | Create an Installation-owned Namespace |
 | [`DELETE /namespaces/{namespaceId}`](#delete-namespacesnamespaceid) | Begin or retry deletion of an empty Installation-owned Namespace |
 | [`GET /namespaces/{namespaceId}`](#get-namespacesnamespaceid) | Get an exact Installation-owned Namespace |
+| [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 
 #### `GET /namespaces`
 
@@ -1677,6 +1678,48 @@ Get an exact Installation-owned Namespace
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+#### `GET /namespaces/{namespaceId}/permissions`
+
+<span id="get-namespacesnamespaceidpermissions"></span>
+
+Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation
+
+**Operation ID:** `getNamespaceCallerPermissions`
+
+**Permissions:** Requires read permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.agents` | `object` | Yes | — |
+| `data.agents.create` | `boolean` | Yes | Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
 <span id="agents"></span>
 
 ### Agents
@@ -1706,6 +1749,7 @@ Get an exact Installation-owned Namespace
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/gateway-outbound/capabilities`](#get-namespacesnamespaceidagentsagentidgatewayoutboundcapabilities) | Read Gateway outbound availability and whether the caller may configure this exact Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
@@ -1717,6 +1761,7 @@ Get an exact Installation-owned Namespace
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#get-namespacesnamespaceidagentsagentidworkspacefilesname) | Read an allowed workspace file from one active Agent |
 | [`PUT /namespaces/{namespaceId}/agents/{agentId}/workspace/files/{name}`](#put-namespacesnamespaceidagentsagentidworkspacefilesname) | Create or replace an allowed workspace file for one active Agent |
 | [`POST /namespaces/{namespaceId}/channel-directory/lookup`](#post-namespacesnamespaceidchanneldirectorylookup) | Search a channel directory using an authorized Namespace Secret |
+| [`GET /native-admin/return/{agentKey}`](#get-nativeadminreturnagentkey) | Resolve an authorized Agent from a copied native chat link |
 
 #### `GET /namespaces/{namespaceId}/agents`
 
@@ -3177,6 +3222,51 @@ Resolve native admin UI launch availability for one Agent
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/permissions`
+
+<span id="get-namespacesnamespaceidagentsagentidpermissions"></span>
+
+Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation
+
+**Operation ID:** `getAgentCallerPermissions`
+
+**Permissions:** Requires read permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.delete` | `boolean` | Yes | Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `data.deploy` | `boolean` | Yes | Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `data.operate` | `boolean` | Yes | Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `data.update` | `boolean` | Yes | Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
 #### `POST /namespaces/{namespaceId}/agents/{agentId}/plugins`
 
 <span id="post-namespacesnamespaceidagentsagentidplugins"></span>
@@ -3827,6 +3917,48 @@ Schema: `object or object or object or object or object or object`.
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
+#### `GET /native-admin/return/{agentKey}`
+
+<span id="get-nativeadminreturnagentkey"></span>
+
+Resolve an authorized Agent from a copied native chat link
+
+**Operation ID:** `resolveAgentNativeAdminReturn`
+
+**Permissions:** Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `agentKey` | path | `string` | Yes | pattern: `^[0-9a-f]{32}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Invalid Agent key |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too many requests; wait for Retry-After |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.agentId` | `string` | Yes | min length: 1; max length: 200 |
+| `data.namespaceId` | `string` | Yes | min length: 1; max length: 200 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
 <span id="agent-deployments"></span>
 
 ### Agent deployments
@@ -4162,7 +4294,7 @@ List authorized immutable revision summaries for one exact Agent, newest first
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].revision` | `integer` | Yes | minimum: 1 |
 | `meta` | `object` | Yes | — |
-| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions; `null` when no older revision is readable. |
+| `meta.nextCursor` | `string or null` | Yes | Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked. |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}`
@@ -4393,6 +4525,7 @@ Replace values and increment an exact Namespace-owned Configuration generation
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `expectedGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991; The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and keeps its content. Omitted, the update replaces whatever generation is current. |
 | `secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 

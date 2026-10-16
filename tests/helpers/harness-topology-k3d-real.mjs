@@ -34,6 +34,7 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -1668,6 +1669,20 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           }),
     },
   );
+  const publicGithubRead =
+    options.publicGithubRead !== true
+      ? undefined
+      : await installPublicGithubReadFixture({
+          namespace: platformNamespace,
+          controllerImage,
+          kubectl,
+          applyManifest,
+          waitFor,
+        });
+  if (publicGithubRead !== undefined) {
+    workerConfiguration.drivers.compute.configuration.network.publicGithubRead =
+      publicGithubRead.peer;
+  }
   const apiConfiguration = structuredClone(workerConfiguration);
   if (workspaceGateway !== undefined) {
     apiConfiguration.drivers.configuration.configuration.authentication = { mode: "inCluster" };
@@ -2103,6 +2118,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
   const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  if (publicGithubRead !== undefined) {
+    launchValues.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      mode: "limited",
+      allowLocalBinding: false,
+      domains: { [publicGithubRead.peer.address]: "allow" },
+    };
+  }
   if (gatewayPassword !== undefined) {
     assert.deepEqual(launchValues.gateway.auth.password, {
       source: "env",
@@ -2493,6 +2516,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     workspaceGateway,
     controllerApiPod,
     workspaceRequest,
+    publicGithubRead,
     approvedClient,
     controllerAccount: controller.account,
     controllerTenantRole: controller.tenantRole,
@@ -2502,9 +2526,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     adminRequest: (...args) => adminRequest(...args),
     request: (...args) => request(...args),
     restartControllerApi,
-    async updateGatewayOutboundInstallation(gatewayOutbound) {
+    async updateRevisionAccessInstallation({ gatewayOutbound, publicGithubRead }) {
       assert.ok(inClusterWorker, "the production outbound proof requires in-cluster controllers");
       apiConfiguration.drivers.compute.configuration.runtime.gatewayOutbound = gatewayOutbound;
+      if (publicGithubRead === undefined) {
+        delete apiConfiguration.drivers.compute.configuration.network.publicGithubRead;
+      } else {
+        apiConfiguration.drivers.compute.configuration.network.publicGithubRead = publicGithubRead;
+      }
       await applyManifest(
         JSON.stringify({
           apiVersion: "v1",
@@ -3160,8 +3189,12 @@ function sharedVolumeClaimName(pod) {
 }
 
 function sharedVolumeSubPaths(pod) {
+  // Node identity shares the Harness claim under its own Agent subpath, outside task files.
   return (pod.spec.containers[0].volumeMounts ?? [])
-    .filter(({ name }) => name === sharedWorkspaceVolumeName)
+    .filter(
+      ({ name, mountPath }) =>
+        name === sharedWorkspaceVolumeName && mountPath !== "/home/node/.openclaw-node",
+    )
     .map(({ subPath }) => subPath)
     .sort();
 }
@@ -3190,10 +3223,7 @@ function assertPrivateStateInitContainer(pod) {
         { name: "runtime-temporary", mountPath: "/runtime-temporary" },
         ...(pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway"
           ? [{ name: "openclaw-gateway-state", mountPath: "/gateway-state" }]
-          : [
-              { name: "openclaw-workspace", mountPath: "/harness-workspace-state" },
-              { name: "openclaw-node-state", mountPath: "/workspace-node-state" },
-            ]),
+          : [{ name: "openclaw-workspace", mountPath: "/harness-workspace-state" }]),
       ],
       [],
       [],
@@ -3468,7 +3498,7 @@ async function holdGatewayOutboundTunnel(context, topology, proxyHost) {
       if (done) return; done = true; clearTimeout(deadline); clearInterval(refresh);
       report({ event: "closed", reason }); connection?.destroy(); socket.destroy();
     };
-    const deadline = setTimeout(() => finish("deadline"), 180000);
+    const deadline = setTimeout(() => finish("deadline"), 360000);
     socket.on("error", () => finish(established ? "socket-closed" : "connection-error"));
     socket.on("connect", () => socket.write("CONNECT example.com:443 HTTP/1.1\\r\\nHost: example.com:443\\r\\n\\r\\n"));
     let headers = "";
@@ -3559,23 +3589,19 @@ async function holdGatewayOutboundTunnel(context, topology, proxyHost) {
   };
 }
 
-async function assertGatewayOutboundActorWithdrawal(context, topology) {
-  const namespacePath = `/namespaces/${topology.agent.namespaceId}`;
-  const roles = await topology.adminRequest("GET", `${namespacePath}/iam/roles`);
-  assert.equal(roles.status, 200, JSON.stringify(roles.error));
-  const role = roles.data.find(({ name }) => name === "Namespace Secret assignment caller");
-  assert.ok(role, "the original deployer must have its scoped fixture Role");
-  const bindings = await topology.adminRequest("GET", `${namespacePath}/iam/access-bindings`);
-  assert.equal(bindings.status, 200, JSON.stringify(bindings.error));
-  const binding = bindings.data.find(
-    (candidate) =>
-      candidate.subjectKind === "identity" &&
-      candidate.subjectId === topology.secretApi.assignmentPrincipalId &&
-      candidate.roleId === role.id &&
-      candidate.resourceKind === undefined &&
-      candidate.resourceId === undefined,
+async function assertRevisionAccessConfigurationWithdrawal(context, topology) {
+  assert.match(topology.revision.compute.admission, /^public-github-read:v1:/);
+  assert.ok(topology.revision.gatewayOutbound, "the revision must admit both network capabilities");
+  assert.equal(topology.placement, topology.gatewayPlacement);
+  const harnessName = `agent-${hash(topology.agent.id)}-rev-${hash(topology.revision.id)}`;
+  const readerPolicyName = `allow-public-github-read-${hash(topology.agent.id)}-rev-${hash(topology.revision.id)}`;
+  await resource("networkpolicy", readerPolicyName, topology.placement);
+  await assertActualPublicGithubRead(topology);
+  const modelSource = await storedSecret(
+    topology.observerPool,
+    topology.agent.namespaceId,
+    topology.secretApi.model.id,
   );
-  assert.ok(binding, "the original deployer's Namespace-wide binding must exist");
   const proxyName = `gateway-outbound-${hash(topology.agent.id)}-${hash(topology.revision.id)}`;
   const proxy = await gatewayOutboundProxy(topology);
   const tunnel = await holdGatewayOutboundTunnel(
@@ -3605,6 +3631,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
         resources: ["deployments"],
         verbs: rule.verbs.filter((verb) => verb !== "delete"),
       },
+      { ...rule, resources: ["deployments"], verbs: ["delete"], resourceNames: [harnessName] },
     ];
   });
   assert.equal(changedRule, true, "the scoped controller must initially have Deployment delete");
@@ -3679,39 +3706,6 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     );
     finalizerHeld = held;
   };
-  let restoredRole;
-  const restoredTargets = new Set();
-  const restoreBinding = async () => {
-    if (restoredRole === undefined) {
-      // Namespace-wide bootstrap Roles contain create grants; this API restores only exact resource authority.
-      const created = await topology.adminRequest("POST", `${namespacePath}/iam/roles`, {
-        name: `Restored outbound deployer ${randomUUID()}`,
-        permissions: [
-          { action: "deploy", resourceKind: "agent" },
-          { action: "read", resourceKind: "configuration" },
-        ],
-      });
-      assert.equal(created.status, 201, JSON.stringify(created.error));
-      restoredRole = created.data;
-    }
-    for (const [resourceKind, resourceId] of [
-      ["agent", topology.agent.id],
-      ["configuration", topology.revision.configurationId],
-    ]) {
-      if (restoredTargets.has(resourceId)) {
-        continue;
-      }
-      const restored = await topology.adminRequest("POST", `${namespacePath}/iam/access-bindings`, {
-        subjectKind: binding.subjectKind,
-        subjectId: binding.subjectId,
-        roleId: restoredRole.id,
-        resourceKind,
-        resourceId,
-      });
-      assert.equal(restored.status, 201, JSON.stringify(restored.error));
-      restoredTargets.add(resourceId);
-    }
-  };
   const pendingEvidence = async () => {
     const { rows } = await topology.observerPool.query(
       `SELECT audit.id, audit.occurred_at, audit.details->>'workId' AS work_id
@@ -3721,8 +3715,8 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
           AND audit.namespace_id = $2 AND audit.actor_id = $3
           AND work.revision_id = $1 AND work.namespace_id = $2 AND work.agent_id = $4
           AND audit.kind = 'mutation' AND audit.action = 'reconcile'
-          AND audit.details->>'reasonCode' = 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
-          AND audit.details->>'refusal' = 'AUTHORIZATION_DENIED'
+          AND audit.details->>'reasonCode' = 'REVISION_ACCESS_WITHDRAWAL_PENDING'
+          AND audit.details->>'refusal' = 'REVISION_ACCESS_WITHDRAWN'
         ORDER BY audit.occurred_at DESC, audit.id DESC LIMIT 100`,
       [
         topology.revision.id,
@@ -3733,20 +3727,27 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     );
     return rows;
   };
-  let bindingRemoved = false;
-  let bindingRestored = false;
   let roleRestored = false;
+  let profileRestored = true;
   let serviceWatch;
+  let harnessWatch;
+  const restoreProfile = async () => {
+    await topology.updateRevisionAccessInstallation({
+      gatewayOutbound: topology.gatewayOutboundInstallation,
+      publicGithubRead: topology.publicGithubRead.peer,
+    });
+    profileRestored = true;
+  };
   const failures = [];
   try {
-    // Deny only the fixture worker's actual Deployment delete. No network or credential fence changes.
+    // Permit the exact reader Harness delete while denying proxy deletion. Both independent removals must run.
     await setRules(blockedRules);
     await waitFor("actual controller Deployment delete denial", async () => {
       const permission = await kubectl(
         "auth",
         "can-i",
         "delete",
-        "deployments",
+        `deployments/${proxyName}`,
         "--namespace",
         topology.gatewayPlacement,
         `--as=system:serviceaccount:${topology.platformNamespace}:${topology.controllerAccount}`,
@@ -3759,16 +3760,34 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
       );
       return permission === "no";
     });
-    const revoked = await topology.adminRequest(
-      "DELETE",
-      `${namespacePath}/iam/access-bindings/${binding.id}`,
-    );
-    assert.equal(revoked.status, 204, JSON.stringify(revoked.error));
-    bindingRemoved = true;
+    // Withdraw both current settings before any removal marker exists; actor authority stays intact.
+    profileRestored = false;
+    await topology.updateRevisionAccessInstallation({
+      gatewayOutbound: { ...topology.gatewayOutboundInstallation, enabled: false },
+      publicGithubRead: undefined,
+    });
     const marker = await waitFor(
-      "durable Gateway outbound withdrawal marker",
+      "durable revision access withdrawal marker",
       async () => (await pendingEvidence())[0],
     );
+
+    await waitFor("reader admission to close despite denied proxy deletion", async () => {
+      const [deployments, policies, pods] = await Promise.all([
+        resources("deployments", topology.placement),
+        resources("networkpolicies", topology.placement),
+        resources("pods", topology.placement),
+      ]);
+      return (
+        !deployments.some(({ metadata }) => metadata.name === harnessName) &&
+        !policies.some(({ metadata }) => metadata.name === readerPolicyName) &&
+        !pods.some(
+          ({ metadata }) =>
+            metadata.labels?.["openclaw.dev/revision"] === topology.revision.id &&
+            metadata.labels?.["openclaw.dev/workload-role"] === "agent",
+        )
+      );
+    });
+    tunnel.assertOpen();
 
     // Actual partial cleanup removes the Service before Deployment delete fails. Ordinary preparation would repair it.
     await waitFor(
@@ -3778,13 +3797,33 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
           ({ metadata }) => metadata.name === proxyName,
         ),
     );
-    serviceWatch = await watchGatewayOutboundServiceRepairs(topology, proxyName);
-    await restoreBinding();
-    bindingRestored = true;
+    serviceWatch = await watchRevisionAccessRepairs({
+      kind: "services",
+      apiPath: "/api/v1",
+      namespace: topology.gatewayPlacement,
+      name: proxyName,
+      barrierName: topology.gatewayServiceName,
+    });
+    harnessWatch = await watchRevisionAccessRepairs({
+      kind: "deployments",
+      apiPath: "/apis/apps/v1",
+      namespace: topology.placement,
+      name: harnessName,
+      barrierName: topology.gatewayServiceName,
+    });
+    const absentProfileEvidence = new Set((await pendingEvidence()).map(({ id }) => id));
+    await waitFor(
+      "withdrawal retries with both current networking profiles absent",
+      async () =>
+        (await pendingEvidence()).filter(
+          ({ id, work_id }) => work_id === marker.work_id && !absentProfileEvidence.has(id),
+        ).length >= 2,
+    );
+    await restoreProfile();
     await topology.restartControllerWorker();
     const previousEvidence = new Set((await pendingEvidence()).map(({ id }) => id));
     await waitFor(
-      "withdrawal-only retries after actor restore and worker restart",
+      "withdrawal-only retries after profile restoration and worker restart",
       async () =>
         (await pendingEvidence()).filter(
           ({ id, work_id }) => work_id === marker.work_id && !previousEvidence.has(id),
@@ -3795,7 +3834,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
         ({ metadata }) => metadata.name === proxyName,
       ),
       false,
-      "restored IAM authority must not repair the refused revision's missing proxy Service",
+      "restored Installation approval must not repair the refused revision's missing proxy Service",
     );
     assert.equal(
       (await resource("pod", proxy.metadata.name, topology.gatewayPlacement)).metadata.uid,
@@ -3806,7 +3845,7 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     const unfinished = await topology.observerPool.query(
       `SELECT state FROM occ.controller_work
         WHERE revision_id = $1 AND state = 'failed_permanent'
-          AND reason_code = 'AUTHORIZATION_DENIED'`,
+          AND reason_code = 'REVISION_ACCESS_WITHDRAWN'`,
       [topology.revision.id],
     );
     assert.equal(unfinished.rows.length, 0, "failed withdrawal must not finalize the refusal");
@@ -3852,38 +3891,39 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
         `SELECT state, reason_code, completed_at
          FROM occ.controller_work
         WHERE revision_id = $1 AND state = 'failed_permanent'
-          AND reason_code = 'AUTHORIZATION_DENIED'
+          AND reason_code = 'REVISION_ACCESS_WITHDRAWN'
         ORDER BY completed_at DESC LIMIT 1`,
         [topology.revision.id],
       );
       return rows[0];
     });
     await assertProxyResourcesAbsent(topology, topology.revision.id);
-    for (const [namespace, pod] of [
-      [topology.gatewayPlacement, topology.gatewayPod],
-      [topology.placement, topology.harnessPod],
-    ]) {
-      assert.equal(
-        (await resource("pod", pod.metadata.name, namespace)).metadata.uid,
-        pod.metadata.uid,
-        "actor revocation must withdraw outbound authority without replacing runtime Pods",
-      );
-    }
-    const modelStorage = await storedSecret(
-      topology.observerPool,
-      topology.agent.namespaceId,
-      topology.secretApi.model.id,
+    assert.equal(
+      (await resource("pod", topology.gatewayPod.metadata.name, topology.gatewayPlacement)).metadata
+        .uid,
+      topology.gatewayPod.metadata.uid,
+      "access withdrawal must retain the Gateway while terminating the admitted reader Harness",
     );
-    await assertModelRuntimeProjection(topology.harnessPod, modelStorage);
+    assert.deepEqual(
+      await storedSecret(
+        topology.observerPool,
+        topology.agent.namespaceId,
+        topology.secretApi.model.id,
+      ),
+      modelSource,
+      "withdrawing runtime access must preserve the canonical model credential source",
+    );
     await serviceWatch.assertNoRepair();
+    await harnessWatch.assertNoRepair();
   } catch (error) {
     failures.push(error);
   } finally {
     for (const operation of [
       () => serviceWatch?.close(),
+      () => harnessWatch?.close(),
       () => (roleRestored ? undefined : setRules(controllerRole.rules)),
       () => (finalizerHeld ? setProxyFinalizer(false) : undefined),
-      () => (bindingRemoved && !bindingRestored ? restoreBinding() : undefined),
+      () => (profileRestored ? undefined : restoreProfile()),
     ]) {
       try {
         await operation();
@@ -3899,31 +3939,25 @@ async function assertGatewayOutboundActorWithdrawal(context, topology) {
     throw new AggregateError(failures, "Gateway withdrawal scenario and owned cleanup failed.");
   }
   context.diagnostic(
-    "Native Gateway outbound: durable actor withdrawal survived real RBAC denial, missing Service, restored actor and worker restart; live work waited for the finalized proxy Pod after CONNECT closed, with runtime/model projection intact.",
+    "Combined revision access: reader policy and native Harness closed while proxy deletion was denied; restored settings plus worker restart never repaired either route. Live work waited for the finalized proxy Pod after CONNECT closed, retaining the Gateway and canonical model source.",
   );
   topology.request = topology.adminRequest;
 }
 
-async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
-  const snapshot = JSON.parse(
-    await kubectl("get", "services", "--namespace", topology.gatewayPlacement, "-o", "json"),
-  );
+async function watchRevisionAccessRepairs({ kind, apiPath, namespace, name, barrierName }) {
+  const snapshot = JSON.parse(await kubectl("get", kind, "--namespace", namespace, "-o", "json"));
   assert.equal(
-    snapshot.items.some(({ metadata }) => metadata.name === proxyName),
+    snapshot.items.some(({ metadata }) => metadata.name === name),
     false,
   );
   const parameters = new URLSearchParams({
     watch: "true",
     resourceVersion: snapshot.metadata.resourceVersion,
-    timeoutSeconds: "240",
+    timeoutSeconds: "480",
   });
   const child = spawn(
     "kubectl",
-    kubectlArguments([
-      "get",
-      "--raw",
-      `/api/v1/namespaces/${topology.gatewayPlacement}/services?${parameters}`,
-    ]),
+    kubectlArguments(["get", "--raw", `${apiPath}/namespaces/${namespace}/${kind}?${parameters}`]),
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   const events = [];
@@ -3934,12 +3968,12 @@ async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
     failure = error;
   });
   child.stderr.on("data", () => {
-    failure = new Error("The real Kubernetes Service watch reported an error.");
+    failure = new Error(`The real Kubernetes ${kind} watch reported an error.`);
   });
   const exited = new Promise((resolve) =>
     child.once("close", (code) => {
       if (!closing) {
-        failure ??= new Error(`The real Kubernetes Service watch ended unexpectedly (${code}).`);
+        failure ??= new Error(`The real Kubernetes ${kind} watch ended unexpectedly (${code}).`);
       }
       resolve();
     }),
@@ -3948,7 +3982,7 @@ async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
     try {
       const event = JSON.parse(line);
       if (event.type === "ERROR") {
-        failure = new Error("The real Kubernetes Service watch returned a failure event.");
+        failure = new Error(`The real Kubernetes ${kind} watch returned a failure event.`);
       }
       events.push({
         type: event.type,
@@ -3956,26 +3990,22 @@ async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
         resourceVersion: event.object.metadata?.resourceVersion,
       });
     } catch {
-      failure = new Error("The real Kubernetes Service watch returned an invalid event.");
+      failure = new Error(`The real Kubernetes ${kind} watch returned an invalid event.`);
     }
   });
   await once(child, "spawn");
   return {
     async assertNoRepair() {
       const key = "openclaw.dev/test-outbound-watch-barrier";
-      const gatewayService = await resource(
-        "service",
-        topology.gatewayServiceName,
-        topology.gatewayPlacement,
-      );
-      const previous = gatewayService.metadata.annotations?.[key];
+      const barrierObject = await resource(kind, barrierName, namespace);
+      const previous = barrierObject.metadata.annotations?.[key];
       const patchAnnotation = (value) =>
         kubectl(
           "patch",
-          "service",
-          topology.gatewayServiceName,
+          kind,
+          barrierName,
           "--namespace",
-          topology.gatewayPlacement,
+          namespace,
           "--type=merge",
           "--patch",
           JSON.stringify({ metadata: { annotations: { [key]: value } } }),
@@ -3985,21 +4015,21 @@ async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
       try {
         // Observing this real event proves the ordered watch has caught up through withdrawal.
         const barrier = JSON.parse(await patchAnnotation(randomUUID()));
-        await waitFor("the Service watch to catch up through the no-repair barrier", () => {
+        await waitFor(`the ${kind} watch to catch up through the no-repair barrier`, () => {
           if (failure !== undefined) {
             throw failure;
           }
           return events.some(
             (event) =>
               event.type === "MODIFIED" &&
-              event.name === topology.gatewayServiceName &&
+              event.name === barrierName &&
               event.resourceVersion === barrier.metadata.resourceVersion,
           );
         });
         assert.equal(
-          events.some(({ type, name }) => type === "ADDED" && name === proxyName),
+          events.some((event) => event.type === "ADDED" && event.name === name),
           false,
-          "pending withdrawal must never recreate the missing proxy Service, even temporarily",
+          `pending withdrawal must never recreate ${kind}/${name}, even temporarily`,
         );
       } finally {
         await patchAnnotation(previous ?? null);
@@ -4015,7 +4045,7 @@ async function watchGatewayOutboundServiceRepairs(topology, proxyName) {
 }
 
 async function assertManagedGatewayOutbound(context, topology) {
-  await assertGatewayOutboundActorWithdrawal(context, topology);
+  await assertRevisionAccessConfigurationWithdrawal(context, topology);
   const pluginRoot = "/home/node/.openclaw/state/plugins/oce-outbound-proof";
   for (const name of ["openclaw.plugin.json", "package.json", "index.mjs"]) {
     await writeFileInPod(
@@ -4038,6 +4068,14 @@ async function assertManagedGatewayOutbound(context, topology) {
   const initialRevisionId = topology.revision.id;
   await redeployGatewayOutbound(topology);
   await assertProxyResourcesAbsent(topology, initialRevisionId);
+  assert.notEqual(topology.revision.id, initialRevisionId);
+  assert.match(topology.revision.compute.admission, /^public-github-read:v1:/);
+  await resource(
+    "networkpolicy",
+    `allow-public-github-read-${hash(topology.agent.id)}-rev-${hash(topology.revision.id)}`,
+    topology.placement,
+  );
+  await assertActualPublicGithubRead(topology);
   const nativeFetch = (url) => gatewayCall(topology, "outbound-proof.fetch", { url });
   const allowed = await nativeFetch("https://example.com/");
   assert.equal(
@@ -4207,9 +4245,9 @@ async function assertManagedGatewayOutbound(context, topology) {
   tunnel.assertOpen();
   const gatewayUid = topology.gatewayPod.metadata.uid;
   // Restart actual controllers with a tighter startup profile; active maintenance must remove the old authority.
-  await topology.updateGatewayOutboundInstallation({
-    ...topology.gatewayOutboundInstallation,
-    allowPublicHttps: false,
+  await topology.updateRevisionAccessInstallation({
+    gatewayOutbound: { ...topology.gatewayOutboundInstallation, allowPublicHttps: false },
+    publicGithubRead: topology.publicGithubRead.peer,
   });
   await waitFor("active public proxy Pods to terminate after Installation tightening", async () =>
     (await resources("pods", topology.gatewayPlacement)).every(
@@ -5011,6 +5049,26 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   );
   assert.equal(response.status, 200, `dedicated Agent model turn failed: ${body}`);
   return JSON.parse(body).choices?.[0]?.message?.content ?? "";
+}
+
+async function assertActualPublicGithubRead(topology) {
+  const status = await gatewayCall(topology, "skills.status", { agentId: "main" });
+  assert.ok(
+    status.skills.some(({ name }) => name === "public-github-read"),
+    "native managed skill discovery did not report the revision's public reader",
+  );
+  // The fresh, unbound Agent must discover the actual endpoint and obtain a
+  // title absent from its prompt using the limited native proxy and Helm Service.
+  const answer = await requestDedicatedAgentTurn(
+    topology,
+    `agent:main:read-public-pull-${randomUUID()}`,
+    "Use your credential-free public GitHub reader to read pull request 27 in known public repository example/public-project. " +
+      "Request the single pull's detail, not a list. Return its exact title. Use no credentials or escalated execution.",
+  );
+  assert.ok(
+    answer.includes(topology.publicGithubRead.marker),
+    "the Agent did not return the provider's pull title",
+  );
 }
 
 async function assertDedicatedNativeChildRelay(topology) {
@@ -6821,6 +6879,7 @@ export {
   gatewayOutboundInfrastructureCidrs,
   assertActualModelTurn,
   assertManagedGatewayOutbound,
+  assertActualPublicGithubRead,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertDedicatedNativeChildRelay,
   assertLegacyModelSecretBindingDenied,

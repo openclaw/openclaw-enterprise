@@ -101,6 +101,7 @@ function planRequest(
     return deny();
   }
   const git = selected.kind !== "api";
+  const uploadPack = selected.kind === "git-fetch";
   if (head.contentEncoding === "gzip" && (!git || head.method !== "POST")) {
     return deny();
   }
@@ -119,11 +120,17 @@ function planRequest(
     limits: Object.freeze({
       inputWireBytes: input,
       inputDecodedBytes: input,
-      responseBytes: git ? options.limits.gitResponseBytes : options.limits.apiResponseBytes,
-      totalMs: options.limits.exchangeMs,
+      responseBytes: uploadPack
+        ? options.limits.gitFetchResponseBytes
+        : git
+          ? options.limits.gitResponseBytes
+          : options.limits.apiResponseBytes,
+      totalMs: uploadPack ? options.limits.gitFetchExchangeMs : options.limits.exchangeMs,
       inputMs: selected.kind === "git-push" ? options.limits.exchangeMs : options.limits.inputMs,
-      firstHeaderMs: options.limits.firstHeaderMs,
-      stallMs: options.limits.stallMs,
+      firstHeaderMs: uploadPack
+        ? options.limits.gitFetchFirstHeaderMs
+        : options.limits.firstHeaderMs,
+      stallMs: uploadPack ? options.limits.gitFetchStallMs : options.limits.stallMs,
       connectMs: options.limits.connectMs,
     }),
     responsePolicy: dependencies.responsePolicy(git, selected.target, selected.rawResponse),

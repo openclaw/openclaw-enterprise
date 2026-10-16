@@ -123,6 +123,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 			child.Run, child.RunE = nil, helpTopic
 		}
 	}
+	app.addRefusalHints(command)
 	return command
 }
 
@@ -830,9 +831,9 @@ func (app *application) agentCommand() *cobra.Command {
 	revisions.Flags().StringVar(&revisionCursor, "cursor", "", "continue from the cursor a previous page printed")
 	deploymentStatus := &cobra.Command{
 		Use:   "deployment-status AGENT_ID [DEPLOYMENT_ID]",
-		Short: "Show durable status for one Agent deployment, by default the latest revision",
+		Short: "Show durable status for one Agent deployment, by default the latest revision you can read",
 		Args:  idArgs(agentIDArg, optionalID(revisionIDArg)),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			namespace, client, err := app.namespaceClient()
 			if err != nil {
 				return err
@@ -841,9 +842,11 @@ func (app *application) agentCommand() *cobra.Command {
 			if len(args) == 2 {
 				deploymentID = args[1]
 			} else {
-				if deploymentID, err = latestRevisionID(client, namespace, args[0]); err != nil {
+				var number float64
+				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
 					return err
 				}
+				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
 			}
 			deployment, err := client.GetAgentDeployment(namespace, args[0], deploymentID)
 			if err != nil {
@@ -908,6 +911,36 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentLogsCommand(),
 	)
 	return command
+}
+
+// defaultDeploymentNotice says which revision deployment-status chose without
+// an ID. Revision lists are permission-filtered, so the latest revision the
+// caller can read may be an old failed one while the active revision is hidden.
+func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namespace, agentID, latest string, number float64) {
+	agent, err := client.GetAgent(namespace, agentID)
+	resource, _ := agent.(map[string]any)
+	active, _ := resource["activeRevisionId"].(string)
+	switch {
+	case err != nil:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read", latest)
+		return
+	case active == "":
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; agent %s has no active revision", latest, agentID)
+		return
+	case active == latest:
+		noticef(notices, "notice: showing the active revision %s", latest)
+		return
+	}
+	order, err := revisionOrder(client, namespace, agentID, active, number)
+	var apiErr *occclient.APIError
+	switch {
+	case order != "":
+		noticef(notices, "notice: showing revision %s, %s than the active revision %s; run \"occ --namespace %s agent deployment-status %s %s\" for the active revision", latest, order, active, namespace, agentID, active)
+	case errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision %s is not readable with your permissions", latest, active)
+	default:
+		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision is %s", latest, active)
+	}
 }
 
 // describeAgentRevisions adds what tells revisions apart to each listed

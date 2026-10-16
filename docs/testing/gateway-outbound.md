@@ -56,9 +56,17 @@ OCC_TEST_GATEWAY_OUTBOUND_K3D=1 node --env-file=<prepared-file-env> --test \
   tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-The existing `k3d-model` lane requires this case. Record image IDs, the source revision, allowed/denied requests and
-lifecycle results. Fixture manifests or SDK client doubles do not prove actual
-network isolation or native plugin execution.
+The existing `k3d-model` lane requires this case. Record image IDs, the source
+revision, allowed/denied requests and lifecycle results. Fixture manifests or SDK
+client doubles do not prove actual network isolation or native plugin execution.
+
+For a revision with both Gateway access and an admitted public GitHub reader,
+verify that terminal refusal starts both withdrawals even if one Kubernetes delete
+fails. Restart the worker while withdrawal is pending, restore authority and prove
+that neither access route repairs. Completion requires the exact proxy Pods and
+reader Harness to terminate. Qualify this composition on the refreshed source;
+separate earlier passes do not establish the combined outcome. Protected Harness
+and Credential Proxy compositions remain unqualified.
 
 Storybook **Pages/Agent detail** includes Gateway Network, Restricted, Empty,
 Read Only, Disabled, Embedded, Loading and Error scenarios. Rebuild from current

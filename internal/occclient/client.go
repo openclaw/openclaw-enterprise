@@ -408,9 +408,8 @@ func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int,
 }
 
 // LatestAgentRevision returns the newest revision summary the caller can read,
-// or nil when there is none. The server returns a cursor only while a readable
-// revision remains, so the first page answers; the loop still follows a cursor
-// past an empty page, as an older server could return one.
+// or nil when there is none. A cursor reflects a read check in its issuing request;
+// a later page may be empty if access changes. The loop also supports older servers.
 func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
 	cursor := ""
 	for {
@@ -426,6 +425,11 @@ func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, err
 		}
 		cursor = page.NextCursor
 	}
+}
+
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
 }
 
 // GetAgentDeployment fetches durable deployment status for one Agent revision.

@@ -30,12 +30,12 @@ async function scratch(t) {
   return dir;
 }
 
-/** Sends `bytes` of body after a 200 and never ends the response. */
-async function holdingServer(t, listenOn, bytes, contentType) {
+/** Sends `bytes` of body after `status` (200 by default) and never ends the response. */
+async function holdingServer(t, listenOn, bytes, contentType, status = 200) {
   const server = createServer((request, response) => {
     request.resume();
     response.on("error", () => {});
-    response.writeHead(200, { "content-type": contentType });
+    response.writeHead(status, { "content-type": contentType });
     const chunk = Buffer.alloc(64 * 1024, 0x20);
     let sent = 0;
     const pump = () => {
@@ -191,25 +191,83 @@ function statusReadback(port) {
   );
 }
 
-test("runtime status readback stops reading past its size limit (finding 1327)", async (t) => {
-  const server = await holdingServer(t, 0, 1024 * 1024, "text/plain");
-  const started = performance.now();
-  const outcome = await settled(statusReadback(server.address().port), 8_000);
-  assert.equal(outcome.pending, undefined, "the readback settles");
-  assert.equal(outcome.error?.message, "Runtime status returned oversized data.");
-  assert.ok(performance.now() - started < 5_000, "rejected at the limit, not the deadline");
-});
+// Every 2xx is a status answer, so an oversized one is refused, up to 299.
+for (const status of [200, 299]) {
+  test(`runtime status readback stops reading a ${status} past its size limit (finding 1327)`, async (t) => {
+    const server = await holdingServer(t, 0, 1024 * 1024, "text/plain", status);
+    const started = performance.now();
+    const outcome = await settled(statusReadback(server.address().port), 8_000);
+    assert.equal(outcome.pending, undefined, "the readback settles");
+    assert.equal(outcome.error?.message, "Runtime status returned oversized data.");
+    assert.ok(performance.now() - started < 5_000, "rejected at the limit, not the deadline");
+  });
+}
 
-test("runtime status readback still parses an in-limit status", async (t) => {
+for (const status of [404, 503]) {
+  test(`an oversized ${status} from the status port still reads as not serving (finding 1339)`, async (t) => {
+    const server = await holdingServer(t, 0, 1024 * 1024, "text/plain", status);
+    const started = performance.now();
+    const outcome = await settled(statusReadback(server.address().port), 8_000);
+    assert.equal(outcome.pending, undefined, "the readback settles");
+    assert.equal(outcome.error, undefined);
+    assert.equal(outcome.value, undefined);
+    assert.ok(performance.now() - started < 5_000, "answered at the limit, not the deadline");
+  });
+}
+
+// Every 2xx is a status answer, up to 299 (which is not a redirect).
+for (const status of [200, 299]) {
+  test(`runtime status readback still parses an in-limit ${status} status`, async (t) => {
+    const server = createServer((request, response) => {
+      response.writeHead(status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => server.close(resolve)));
+    assert.deepEqual(await statusReadback(server.address().port), {
+      status: { revisionId: "revision-1", container: "agent" },
+      podUid: "agent-uid",
+      containerId: undefined,
+    });
+  });
+}
+
+test("runtime status readback refuses a redirect even on a client built elsewhere (finding 1347)", async (t) => {
+  // statusReadback's client keeps client-node's default HTTP library, which follows
+  // redirects: the status read must bring its own instead of relying on the shared clients.
+  const requests = [];
   const server = createServer((request, response) => {
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
+    requests.push(request.url);
+    response.writeHead(302, { location: "../../../../../../../api/v1/namespaces/x/secrets/y" });
+    response.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
-  assert.deepEqual(await statusReadback(server.address().port), {
-    status: { revisionId: "revision-1", container: "agent" },
-    podUid: "agent-uid",
-    containerId: undefined,
+  const outcome = await settled(statusReadback(server.address().port), 8_000);
+  assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
+  assert.equal(requests.length, 1);
+});
+
+// A 3xx is decided by its status before any body is read, at both ends of the range: one
+// 64 KiB chunk (within the limit) and a response that never ends must not hold it.
+for (const status of [300, 399]) {
+  test(`runtime status readback settles a ${status} as a redirect without reading its body`, async (t) => {
+    const server = await holdingServer(t, 0, 1, "text/plain", status);
+    const outcome = await settled(statusReadback(server.address().port), 4_000);
+    assert.equal(outcome.pending, undefined, "the readback settles");
+    assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
   });
+}
+
+// A 4xx other than 404 is not an answer, and not a redirect: it surfaces as the client's error.
+test("runtime status readback reports a 400 as the client's error, not a redirect", async (t) => {
+  const server = createServer((request, response) => {
+    response.writeHead(400, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const refused = await settled(statusReadback(server.address().port), 8_000);
+  assert.equal(refused.pending, undefined, "the readback settles");
+  assert.equal(refused.error?.code, 400);
 });

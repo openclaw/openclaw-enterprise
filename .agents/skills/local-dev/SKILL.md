@@ -57,7 +57,8 @@ THE REVISED DESIGN RESOLVES THE BOUNDARY VIOLATION AND THE USER APPROVES IT.
    Update affected current references, guides, and navigation. Preserve historical
    specs and user-owned Manual Notes. Do not create a second source of truth.
 5. Use $enterprise-testing to select proportional checks and satisfy repository
-   integration requirements for new functionality. For instruction-only changes,
+   integration requirements for new functionality. Follow
+   [Add integration tests](#add-integration-tests) when adding coverage. For instruction-only changes,
    check docs, links, skill resources, and any bundled executable; do not run
    product runtime suites solely for prose. Never run `npm run precommit`.
    When changing a default image version, source pin, or bundled runtime version,
@@ -74,6 +75,26 @@ THE REVISED DESIGN RESOLVES THE BOUNDARY VIOLATION AND THE USER APPROVES IT.
 7. Report changed behavior, the flow updated (or a short reason none is needed),
    checks run, and remaining verification gaps. Do not equate a structural doc
    check with proof of runtime behavior.
+
+## Add integration tests
+
+Register new integration scenarios in the QA matrix:
+
+1. Extend the supported Agent workflow in
+   `tests/integration/qa-matrix-real.test.mjs`. Exercise real callers and dependencies,
+   including meaningful failure cases. Use owned disposable fixtures and cleanup.
+2. Register the scenario, applicable presets, and required inputs in
+   `tests/helpers/qa-selection.mjs`. Update
+   [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json) for new inputs, files, or preparation;
+   update [hosted credential setup](../../../scripts/ci/qa-matrix-credentials.mjs) when credentials change.
+3. For scenarios that must run automatically on PRs, update
+   `.github/workflows/qa-advisory.yml`. Add the selector to `OCC_TEST_QA_SCENARIOS`
+   with applicable presets/installations, or add a job for a separate lane.
+   Preserve trusted-PR eligibility and scope credentials to the job's environment.
+4. Update the [QA scenarios and PR coverage](../../../docs/testing/ci.md#qa-matrix).
+   Follow the [fixture conventions](../../../docs/testing/fixtures-and-scenarios.md)
+   and run the selected scenario with its required prerequisites. Verify passing
+   cases without skips and complete run-owned cleanup; report any missing proof.
 
 ## When a flow doc is required
 

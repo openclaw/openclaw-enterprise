@@ -351,7 +351,7 @@ export interface CredentialSourceReference extends ResourceRef {
 }
 
 /** Login modes a Harness can use when its model credential arrives from a source. */
-export type CredentialSourceLoginMode = "api_key";
+export type CredentialSourceLoginMode = "api_key" | "codex_pat";
 
 export interface CredentialSourceFieldSpec {
   readonly name: string;
@@ -818,6 +818,8 @@ export interface AgentRevision extends Scope {
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
+    /** Private, immutable admission state owned by the selected Compute Driver. */
+    readonly admission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly secretDriverId?: string;
@@ -1136,6 +1138,8 @@ export interface SandboxHarnessEndpoint {
   readonly url: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /** Request this native Codex profile when the provider supplies the sandbox boundary. */
+  readonly codexPermissionProfile?: ":danger-full-access";
 }
 
 export interface SandboxNamespaceContext {
@@ -1832,8 +1836,17 @@ export interface ComputeDriver extends Driver {
     readonly executionMode: HarnessExecutionMode;
     readonly requirements: readonly GatewayOutboundRequirement[];
   }): GatewayOutboundSnapshot | undefined;
-  /** Remove this revision's proxy and live tunnels without starting or repairing workloads. */
-  withdrawGatewayOutbound?(revision: AgentRevision): Promise<void>;
+  /**
+   * Pure status of immutable access admission against current Installation approval.
+   * `withdrawn` must be observed before effects; restored approval cannot cancel recorded cleanup.
+   */
+  revisionAccessStatus?(revision: Readonly<AgentRevision>): "none" | "current" | "withdrawn";
+  /**
+   * Withdraw the access identified by revisionAccessStatus, attempting independent closures
+   * even when another fails. Return only after required backing workloads and connections end.
+   * Use immutable ownership, never current approval to omit cleanup; do not start or repair.
+   */
+  withdrawRevisionAccess?(revision: Readonly<AgentRevision>): Promise<void>;
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
@@ -1843,6 +1856,8 @@ export interface ComputeDriver extends Driver {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
+  admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive

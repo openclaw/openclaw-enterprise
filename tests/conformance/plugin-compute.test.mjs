@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import {
+  readStatusFromHandler,
+  readRuntimeStatusFromHandler,
+} from "../fixtures/codex-native-startup.mjs";
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
@@ -78,24 +82,6 @@ async function waitForCondition(description, condition, timeoutMs = 1_000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail(`Timed out waiting for ${description}.`);
-}
-
-function readStatusFromHandler(handler, path = "/openclaw/plugin-runtime/status") {
-  let body = "";
-  handler(
-    { method: "GET", url: path },
-    {
-      writeHead() {},
-      end(chunk) {
-        body += chunk;
-      },
-    },
-  );
-  return JSON.parse(body);
-}
-
-function readRuntimeStatusFromHandler(handler) {
-  return readStatusFromHandler(handler, "/openclaw/runtime/status");
 }
 
 async function readStatusFromHandlerAsync(handler, path) {
@@ -3234,655 +3220,6 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(channelStatusCalls, 15);
 });
 
-test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
-  const started = { type: "turn.started" };
-  const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
-  const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
-  const advisory = {
-    type: "item.completed",
-    item: { type: "error", message: "Model catalog metadata unavailable" },
-  };
-  const recoveredStreamError = {
-    type: "error",
-    message: "Reconnecting... 1/3 stream disconnected before completion",
-  };
-  const recoveredRetryingSamplingError = {
-    type: "error",
-    message: "Reconnecting... 2/3 stream disconnected - retrying sampling request",
-  };
-  const scenarios = [
-    {
-      name: "verifier-only app server starts without exposing either token input",
-      tokenVerifier: true,
-      events: [started, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "delayed retry uses only the remaining budget",
-      probeTimeouts: 2,
-      retryDelayMs: 30500,
-      expectedTimeouts: [30000, 500],
-      failureCode: "MODEL_PROBE_TIMEOUT",
-    },
-    {
-      name: "expired retry budget starts no process",
-      probeTimeouts: 1,
-      retryDelayMs: 32000,
-      expiredBudget: true,
-      failureCode: "MODEL_PROBE_TIMEOUT",
-    },
-    {
-      name: "tool output followed by timeout is not retried",
-      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
-      probeError: "ETIMEDOUT",
-      events: [started, { type: "item.completed", item: { type: "command_execution" } }],
-    },
-    {
-      name: "rejection followed by timeout is not retried",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      probeError: "ETIMEDOUT",
-      events: [{ type: "error", message: "authentication rejected" }],
-    },
-    {
-      name: "malformed output followed by timeout is not retried",
-      cause: { kind: "INVALID_OUTPUT", detail: "json" },
-      probeError: "ETIMEDOUT",
-      probeOutput: "not-json",
-    },
-    {
-      name: "model timeout recovers on the second attempt",
-      probeTimeouts: 1,
-      events: [started, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "model timeout exhausts two attempts",
-      probeTimeouts: 2,
-      failureCode: "MODEL_PROBE_TIMEOUT",
-    },
-    {
-      name: "external SIGKILL is not a timeout or retried",
-      probeSignal: "SIGKILL",
-      cause: { kind: "PROCESS_EXIT", detail: "signal-SIGKILL" },
-    },
-    {
-      name: "malformed model output is not retried",
-      probeOutput: "not-json",
-      cause: { kind: "INVALID_OUTPUT", detail: "json" },
-    },
-    {
-      name: "non-event model output is not retried",
-      probeOutput: "null",
-      cause: { kind: "INVALID_OUTPUT", detail: "shape" },
-    },
-    { name: "failed login", loginStatus: 1 },
-    {
-      name: "API-key login timeout is not retried",
-      loginTimeouts: 1,
-      loginAttempts: 1,
-      loginFailed: true,
-    },
-    {
-      name: "access-token spawn failure is not retried",
-      pat: true,
-      loginError: "ENOENT",
-      loginFailed: true,
-    },
-    { name: "access-token login refusal is not retried", pat: true, loginStatus: 1 },
-    {
-      // Native text observed from codex-cli 0.154 with a revoked access token.
-      name: "access-token login credential rejection is a deterministic authentication failure",
-      pat: true,
-      loginStatus: 1,
-      loginStderr:
-        "Error logging in with access token: personal access token metadata request failed with status 403 Forbidden\n",
-      failureCode: "AUTHENTICATION_FAILED",
-    },
-    {
-      name: "access-token login transport error remains a login failure",
-      pat: true,
-      loginStatus: 1,
-      loginStderr:
-        "Error logging in with access token: failed to request personal access token metadata: error sending request for url (https://auth.openai.com/)\n",
-    },
-    {
-      name: "access-token login recovers one timeout before probing",
-      pat: true,
-      loginTimeouts: 1,
-      events: [started, assistant, completed],
-      ready: true,
-    },
-    { name: "access-token login stops after three timeouts", pat: true, loginTimeouts: 3 },
-    {
-      name: "service account token uses native access-token login before probe and clears credentials",
-      pat: true,
-      events: [started, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "nonfatal advisory followed by completed assistant turn",
-      events: [started, advisory, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "recovered native stream error during active turn",
-      events: [started, recoveredStreamError, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "recovered native sampling retry error during active turn",
-      events: [started, recoveredRetryingSamplingError, assistant, completed],
-      ready: true,
-    },
-    {
-      name: "fatal top-level error despite assistant output",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [started, assistant, { type: "error", message: "authentication failed" }, completed],
-    },
-    {
-      name: "reconnecting error with auth marker remains fatal",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [
-        started,
-        {
-          type: "error",
-          message: "Reconnecting... 1/3 stream disconnected before completion after 401 auth",
-        },
-        assistant,
-        completed,
-      ],
-    },
-    {
-      name: "recovered native stream error with provider detail during active turn",
-      events: [
-        started,
-        {
-          type: "error",
-          message:
-            "Reconnecting... 1/5 (stream disconnected before completion: connection reset by peer)",
-        },
-        assistant,
-        completed,
-      ],
-      ready: true,
-    },
-    {
-      name: "reconnecting error after completed turn remains fatal",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [started, assistant, completed, recoveredStreamError],
-    },
-    {
-      name: "reconnecting error before the turn starts remains fatal",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [recoveredStreamError, started, assistant, completed],
-    },
-    ...[
-      [
-        "with auth detail",
-        "Reconnecting... 1/3 stream disconnected before completion: 401 Unauthorized",
-      ],
-      [
-        "with credential detail",
-        "Reconnecting... 1/3 stream disconnected before completion: invalid credential",
-      ],
-      ["with an unknown reason", "Reconnecting... 1/3 request failed with status 500", 500],
-      ["with trailing reason text", "Reconnecting... 1/3 stream disconnected before completionist"],
-      ["not at the start", "Error: Reconnecting... 1/3 stream disconnected before completion"],
-      ["past its retry limit", "Reconnecting... 4/3 stream disconnected before completion"],
-      ["above the retry budget", "Reconnecting... 1/50 stream disconnected before completion"],
-      ["with a zero attempt", "Reconnecting... 0/3 stream disconnected before completion"],
-    ].map(([description, message, status]) => ({
-      name: `reconnecting error ${description} remains fatal`,
-      events: [started, { type: "error", message }, assistant, completed],
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      ...(status && { provider: { status } }),
-    })),
-    {
-      name: "unbounded reconnecting errors remain fatal",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [
-        started,
-        ...Array.from({ length: 11 }, () => recoveredStreamError),
-        assistant,
-        completed,
-      ],
-    },
-    {
-      name: "failed turn",
-      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      events: [
-        started,
-        assistant,
-        { type: "turn.failed", error: { message: "authentication failed" } },
-      ],
-    },
-    {
-      // Native terminal event observed from codex-cli 0.154 with an invalid API key.
-      name: "provider credential rejection is a deterministic authentication failure",
-      events: [
-        started,
-        {
-          type: "error",
-          message: "unexpected status 401 Unauthorized: Incorrect API key provided",
-        },
-        {
-          type: "turn.failed",
-          error: { message: "unexpected status 401 Unauthorized: Incorrect API key provided" },
-        },
-      ],
-      probeStatus: 1,
-      failureCode: "AUTHENTICATION_FAILED",
-    },
-    {
-      name: "provider server error is not an authentication failure",
-      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      provider: { status: 503 },
-      events: [
-        started,
-        { type: "turn.failed", error: { message: "unexpected status 503 Service Unavailable" } },
-      ],
-      probeStatus: 1,
-    },
-    // A provider usage limit, quota or 429 is rate_limit, not a generic error-event or
-    // failed turn. The log line keeps the HTTP status and a known code, never the text.
-    {
-      // Native text for an exhausted ChatGPT-plan Codex usage limit.
-      name: "usage limit error event is a rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-      events: [
-        started,
-        {
-          type: "error",
-          message:
-            "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again in 3 days.",
-        },
-        { type: "turn.failed", error: { message: "You've hit your usage limit." } },
-      ],
-      probeStatus: 1,
-    },
-    {
-      name: "usage limit with a provider status and code is a rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-      provider: { status: 429, code: "usage_limit_reached" },
-      events: [
-        started,
-        {
-          type: "error",
-          message:
-            'unexpected status 429 Too Many Requests: {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached for fixture-api-key"}}',
-        },
-      ],
-      probeStatus: 1,
-    },
-    {
-      name: "exhausted 429 retries in a failed turn are a rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-      provider: { status: 429 },
-      events: [
-        started,
-        {
-          type: "turn.failed",
-          error: {
-            message: "exceeded retry limit, last status: 429 Too Many Requests, request id: req_1",
-          },
-        },
-      ],
-      probeStatus: 1,
-    },
-    {
-      name: "exceeded API quota is a rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-      provider: { code: "insufficient_quota" },
-      events: [
-        started,
-        {
-          type: "error",
-          message:
-            "Quota exceeded: You exceeded your current quota, please check your plan and billing details. (insufficient_quota)",
-        },
-      ],
-      probeStatus: 1,
-    },
-    {
-      // Native text when a workspace owner's spend cap blocks the account.
-      name: "workspace spend cap is a rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
-      events: [
-        started,
-        {
-          type: "error",
-          message:
-            "You've reached the spend cap set by the owner of your workspace. Ask an owner to increase your spend cap to continue.",
-        },
-      ],
-      probeStatus: 1,
-    },
-    {
-      name: "local disk quota is not a provider rate limit",
-      cause: { kind: "PROBE_STATUS", detail: "error-event" },
-      events: [started, { type: "error", message: "failed to write session: Disk quota exceeded" }],
-      probeStatus: 1,
-    },
-    {
-      name: "completed turn without visible assistant",
-      events: [started, advisory, completed],
-      cause: { kind: "PROBE_STATUS", detail: "no-reply" },
-    },
-    {
-      // Provider text that echoes the credential never reaches the cause.
-      name: "provider text in a failed turn stays out of the cause",
-      events: [
-        started,
-        {
-          type: "turn.failed",
-          error: {
-            message: "unexpected status 400 Bad Request: model rejected for fixture-api-key",
-          },
-        },
-      ],
-      probeStatus: 1,
-      cause: { kind: "PROBE_STATUS", detail: "turn-failed" },
-      provider: { status: 400 },
-    },
-    {
-      name: "tool event despite completed assistant turn",
-      cause: { kind: "PROBE_STATUS", detail: "tool-event" },
-      events: [
-        started,
-        {
-          type: "item.completed",
-          item: { type: "command_execution", command: "echo READY", exit_code: 0 },
-        },
-        assistant,
-        completed,
-      ],
-    },
-    {
-      name: "nonzero native exit despite completed assistant turn",
-      cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
-      events: [started, assistant, completed],
-      probeStatus: 1,
-    },
-  ];
-  for (const scenario of scenarios) {
-    await t.test(scenario.name, () => {
-      const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
-      const marker = join(directory, "ready");
-      writeFileSync(marker, "stale\n", { mode: 0o600 });
-      try {
-        const diagnostics = [];
-        const idleTimers = [];
-        const revisionId = "revision-runtime-auth-gate";
-        let statusHandler;
-        let appServerStarts = 0;
-        let nativeCalls = 0;
-        let loginCalls = 0;
-        let probeCalls = 0;
-        let clock = 0;
-        const retryTimers = [];
-        const sandbox = {
-          URL,
-          setTimeout(callback, delay) {
-            retryTimers.push({ callback, delay });
-          },
-          console: {
-            error(message) {
-              diagnostics.push(message);
-            },
-          },
-          setInterval(callback, delay) {
-            idleTimers.push({ callback, delay });
-          },
-          process: {
-            env: {
-              CODEX_HOME: join(directory, "codex"),
-              CODEX_LOGIN_MODE: scenario.pat ? "codex_pat" : "api_key",
-              ...(scenario.pat
-                ? { CODEX_ACCESS_TOKEN: "at-fixture-token" }
-                : { OPENAI_API_KEY: "fixture-api-key" }),
-              OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
-              OPENCLAW_AGENT_REVISION_ID: revisionId,
-              OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
-              OPENCLAW_RUNTIME_STATUS_PORT: "18791",
-              OPENCLAW_POD_UID: "pod-runtime-auth-gate",
-              OPENCLAW_PLUGIN_READY_MARKER: marker,
-              ...(scenario.tokenVerifier
-                ? { APP_TOKEN_SHA: sha256("fixture-transport-token") }
-                : { APP_SERVER_TOKEN: "fixture-transport-token" }),
-              APP_SERVER_PORT: "4500",
-            },
-            on() {},
-            exit() {
-              assert.fail("startup must either remain unready or start the app server");
-            },
-          },
-          require(specifier) {
-            if (specifier === "node:perf_hooks") {
-              return { performance: { now: () => clock } };
-            }
-            if (specifier === "node:fs") {
-              return {
-                mkdirSync() {},
-                mkdtempSync: () => mkdtempSync(join(directory, "probe-")),
-                rmSync,
-                readFileSync() {
-                  throw new Error("no plugin runtime payload is configured");
-                },
-                writeFileSync,
-              };
-            }
-            if (specifier === "node:http") {
-              return {
-                createServer(handler) {
-                  statusHandler = handler;
-                  return { listen() {} };
-                },
-              };
-            }
-            if (specifier === "node:child_process") {
-              return {
-                spawnSync(command, args, options) {
-                  nativeCalls++;
-                  const isLogin = args.includes("login");
-                  if (isLogin) {
-                    loginCalls++;
-                    const loginEnvironment = options.env ?? sandbox.process.env;
-                    assert.equal(Object.hasOwn(loginEnvironment, "APP_SERVER_TOKEN"), false);
-                    assert.equal(Object.hasOwn(loginEnvironment, "APP_TOKEN_SHA"), false);
-                    assert.equal(
-                      loginEnvironment.CODEX_LOGIN_MODE,
-                      sandbox.process.env.CODEX_LOGIN_MODE,
-                    );
-                    if (scenario.tokenVerifier) {
-                      assert.equal(
-                        sandbox.process.env.APP_TOKEN_SHA,
-                        sha256("fixture-transport-token"),
-                      );
-                    } else {
-                      assert.equal(sandbox.process.env.APP_SERVER_TOKEN, "fixture-transport-token");
-                    }
-                  }
-                  if (isLogin && scenario.pat) {
-                    assert.equal(command, "codex");
-                    assert.deepEqual(Array.from(args), [
-                      "-c",
-                      "cli_auth_credentials_store=file",
-                      "login",
-                      "--with-access-token",
-                    ]);
-                    assert.equal(options.input, "at-fixture-token");
-                  }
-                  if (!isLogin) {
-                    assert.equal(sandbox.process.env.CODEX_ACCESS_TOKEN, undefined);
-                    assert.equal(sandbox.process.env.OPENAI_API_KEY, undefined);
-                    assert.equal(sandbox.process.env.CODEX_CHATGPT_WORKSPACE_ID, undefined);
-                  }
-                  // Substitute only native process output; execute the production
-                  // login/probe parser and readiness control flow unmodified.
-                  if (isLogin) {
-                    if (scenario.loginError) {
-                      return { status: null, error: { code: scenario.loginError } };
-                    }
-                    if (loginCalls <= (scenario.loginTimeouts ?? 0)) {
-                      return { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
-                    }
-                    return {
-                      status: scenario.loginStatus ?? 0,
-                      ...(scenario.loginStderr ? { stderr: scenario.loginStderr } : {}),
-                    };
-                  }
-                  probeCalls++;
-                  assert.ok(options.timeout > 0 && options.timeout <= 30000);
-                  if (scenario.expectedTimeouts) {
-                    assert.equal(options.timeout, scenario.expectedTimeouts[probeCalls - 1]);
-                  }
-                  if (probeCalls <= (scenario.probeTimeouts ?? 0)) {
-                    clock += options.timeout;
-                    return { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
-                  }
-                  if (scenario.probeSignal) {
-                    return { status: null, signal: scenario.probeSignal };
-                  }
-                  return {
-                    status: scenario.probeStatus ?? 0,
-                    ...(scenario.probeError ? { error: { code: scenario.probeError } } : {}),
-                    stdout:
-                      scenario.probeOutput ??
-                      scenario.events.map((event) => JSON.stringify(event)).join("\n"),
-                  };
-                },
-                spawn(_command, args, options) {
-                  assert.ok(args.includes("app-server"));
-                  // Plugin reviewer validation must observe the admitted model, not a native default.
-                  assert.ok(args.includes('model="gpt-4.1"'));
-                  const tokenDigest = args[args.indexOf("--ws-token-sha256") + 1];
-                  assert.equal(tokenDigest, sha256("fixture-transport-token"));
-                  assert.equal(Object.hasOwn(options.env, "APP_SERVER_TOKEN"), false);
-                  assert.equal(Object.hasOwn(options.env, "APP_TOKEN_SHA"), false);
-                  appServerStarts++;
-                  return { on() {}, kill() {} };
-                },
-              };
-            }
-            return nodeRequire(specifier);
-          },
-        };
-        vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
-        if (scenario.probeTimeouts) {
-          assert.equal(appServerStarts, 0);
-          assert.equal(existsSync(marker), false);
-          assert.equal(readRuntimeStatusFromHandler(statusHandler).runtimeFailure, undefined);
-          assert.equal(retryTimers.length, 1);
-          assert.equal(retryTimers[0].delay, 1000);
-          clock += scenario.retryDelayMs ?? 1000;
-          retryTimers[0].callback();
-          assert.equal(retryTimers.length, 1, "exhaustion must not schedule another retry");
-        } else {
-          assert.equal(retryTimers.length, 0);
-        }
-        const loginFailed =
-          scenario.loginFailed || scenario.loginStatus === 1 || scenario.loginTimeouts === 3;
-        assert.equal(
-          loginCalls,
-          scenario.loginAttempts ?? Math.min((scenario.loginTimeouts ?? 0) + 1, 3),
-        );
-        assert.equal(
-          nativeCalls,
-          loginCalls +
-            (loginFailed ? 0 : scenario.probeTimeouts && !scenario.expiredBudget ? 2 : 1),
-        );
-        const jsonDiagnostics = diagnostics
-          .filter((message) => message.startsWith("{"))
-          .map(JSON.parse);
-        const probeDiagnostics = jsonDiagnostics.filter(
-          ({ event }) => event !== "runtime.startup_phase",
-        );
-        const startupPhases = jsonDiagnostics.filter(
-          ({ event }) => event === "runtime.startup_phase",
-        );
-        assert.equal(probeDiagnostics.length, probeCalls);
-        for (const [index, diagnostic] of probeDiagnostics.entries()) {
-          assert.equal(diagnostic.event, "codex.model_probe");
-          assert.equal(diagnostic.attempt, index + 1);
-          assert.ok(diagnostic.elapsedMs >= 0);
-        }
-        if (scenario.probeTimeouts) {
-          assert.equal(probeDiagnostics[0].code, "MODEL_PROBE_TIMEOUT");
-        }
-        // Startup timing reports fixed phase names and outcomes only: no model,
-        // provider, credential or path value can appear in these lines.
-        assert.deepEqual(
-          startupPhases.map(({ phase, outcome }) => [phase, outcome]),
-          [
-            ["codex-login", loginFailed ? "failed" : "ok"],
-            ...(loginFailed ? [] : [["model-probe", scenario.ready ? "ok" : "failed"]]),
-            ...(scenario.ready ? [["native-spawn", "ok"]] : []),
-          ],
-        );
-        for (const phase of startupPhases) {
-          assert.deepEqual(Object.keys(phase), [
-            "event",
-            "container",
-            "phase",
-            "outcome",
-            "ms",
-            "sinceStartMs",
-          ]);
-          assert.equal(phase.container, "agent");
-          assert.ok(Number.isInteger(phase.ms) && phase.ms >= 0);
-          assert.ok(phase.sinceStartMs >= phase.ms);
-        }
-        const failureMessages = diagnostics.filter((message) => !message.startsWith("{"));
-        assert.ok(statusHandler);
-        const runtimeStatus = readRuntimeStatusFromHandler(statusHandler);
-        assert.equal(runtimeStatus.revisionId, revisionId);
-        assert.equal(runtimeStatus.container, "agent");
-        assert.equal(runtimeStatus.podUid, "pod-runtime-auth-gate");
-        if (scenario.ready) {
-          assert.equal(appServerStarts, 1);
-          assert.deepEqual(failureMessages, []);
-          assert.equal(probeDiagnostics.at(-1).code, "READY");
-          assert.equal(idleTimers.length, 0);
-          assert.equal(readFileSync(marker, "utf8"), "ready\n");
-          assert.equal(runtimeStatus.runtimeFailure, undefined);
-        } else {
-          assert.equal(appServerStarts, 0);
-          assert.deepEqual(failureMessages, ["Harness model authentication probe failed."]);
-          assert.equal(idleTimers.length, 1);
-          assert.equal(typeof idleTimers[0].callback, "function");
-          assert.ok(idleTimers[0].delay > 0);
-          assert.equal(existsSync(marker), false);
-          assert.equal(runtimeStatus.runtimeFailure.component, "agent");
-          assert.equal(runtimeStatus.runtimeFailure.check, loginFailed ? "login" : "model-probe");
-          assert.equal(
-            runtimeStatus.runtimeFailure.code,
-            scenario.failureCode ?? (loginFailed ? "LOGIN_FAILED" : "MODEL_PROBE_FAILED"),
-          );
-          assert.match(runtimeStatus.runtimeFailure.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
-          // Only a failed model probe carries a cause: a closed kind and a fixed
-          // token, never native output, provider text or the credential.
-          if (runtimeStatus.runtimeFailure.code === "MODEL_PROBE_FAILED") {
-            assert.ok(scenario.cause, "every model-probe failure scenario names its cause");
-          }
-          assert.deepEqual(runtimeStatus.runtimeFailure.cause, scenario.cause);
-          assert.deepEqual(probeDiagnostics.at(-1)?.cause, scenario.cause);
-          const { providerStatus, providerCode } = probeDiagnostics.at(-1) ?? {};
-          assert.deepEqual(
-            { providerStatus, providerCode },
-            { providerStatus: scenario.provider?.status, providerCode: scenario.provider?.code },
-          );
-          assert.doesNotMatch(
-            JSON.stringify(runtimeStatus) + JSON.stringify(probeDiagnostics),
-            /fixture-api-key|at-fixture-token|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
-          );
-        }
-      } finally {
-        rmSync(directory, { recursive: true, force: true });
-      }
-    });
-  }
-});
-
 test("Codex agent app-server uses a per-startup plugin status token", () => {
   const directory = mkdtempSync(join(tmpdir(), "oce-plugin-token-"));
   const marker = join(directory, "ready");
@@ -5171,8 +4508,13 @@ test("Codex gateway supervisor stops respawning a Gateway whose Harness keeps ch
   assert.equal(gateway.children.length, 6);
 });
 
-for (const withBroker of [false, true]) {
-  test(`Codex gateway supervisor applies plugin-free bridge runtime (broker=${withBroker})`, async () => {
+for (const [dedicated, withBroker, proxyEnabled] of [
+  [true, true, true],
+  [true, false, true],
+  [false, true, true],
+  [true, false, false],
+]) {
+  test(`Codex gateway supervisor applies plugin-free bridge runtime (dedicated=${dedicated}, broker=${withBroker}, proxy=${proxyEnabled})`, async () => {
     const revisionId = "revision-plugin-compute-1";
     const runtime = pluginRuntimeSpecForRevision(
       revision({ plugins: codexNoPluginState() }),
@@ -5187,11 +4529,21 @@ for (const withBroker of [false, true]) {
       [
         "/etc/openclaw/openclaw.json",
         JSON.stringify({
+          ...JSON.parse(
+            readFileSync(
+              new URL("../../deploy/presets/standard-codex.json", import.meta.url),
+              "utf8",
+            ),
+          ).template.configuration.values,
           gateway: { port: 8080 },
-          plugins: { entries: { codex: { enabled: true, config: { keep: true } } } },
         }),
       ],
     ]);
+    if (!proxyEnabled) {
+      const base = JSON.parse(files.get("/etc/openclaw/openclaw.json"));
+      base.plugins.entries.codex.config.appServer.networkProxy.enabled = false;
+      files.set("/etc/openclaw/openclaw.json", JSON.stringify(base));
+    }
     const intervals = [];
     let statusHandler;
     let child;
@@ -5205,6 +4557,7 @@ for (const withBroker of [false, true]) {
       process: {
         env: {
           APP_SERVER_TOKEN: "base-app-server-token",
+          ...(dedicated ? { APP_SERVER_URL: "ws://harness.example.test:4500" } : {}),
           HOME: "/home/node",
           OPENCLAW_AGENT_REVISION_ID: revisionId,
           OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
@@ -5273,26 +4626,41 @@ for (const withBroker of [false, true]) {
     assert.equal(intervals.length, 0);
 
     const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
-    assert.equal(effective.plugins.entries.codex.config.keep, true);
     assert.equal(effective.plugins.entries.codex.config.codexPlugins, undefined);
-    assert.deepEqual(
-      effective.plugins.entries.codex.config.appServer.networkProxy,
-      withBroker
+    const proxy = effective.plugins.entries.codex.config.appServer.networkProxy;
+    const presetProxy = JSON.parse(
+      readFileSync(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    ).template.configuration.values.plugins.entries.codex.config.appServer.networkProxy;
+    assert.deepEqual(proxy, {
+      ...presetProxy,
+      enabled: proxyEnabled,
+      ...(withBroker
         ? {
             enabled: true,
             mode: "full",
             allowLocalBinding: true,
-            readOnlyPaths: [
-              "/app/node_modules/openclaw",
-              "/home/node/.openclaw/plugin-skills",
-              "/home/node/openclaw-runtime-assets/plugin-skills",
-              "/opt/oce/repository-credentials",
-              "/run/oce/repository-credentials",
-            ],
-            domains: { "github.com": "allow", "*.oce.svc": "deny", "git.oce.svc": "allow" },
+            domains: {
+              ...presetProxy.domains,
+              "github.com": "allow",
+              "*.oce.svc": "deny",
+              "git.oce.svc": "allow",
+            },
           }
-        : { readOnlyPaths: ["/app/node_modules/openclaw"] },
-    );
+        : {}),
+      readOnlyPaths: withBroker
+        ? [
+            "/app/node_modules/openclaw",
+            "/home/node/.openclaw/plugin-skills",
+            "/home/node/openclaw-runtime-assets/plugin-skills",
+            "/opt/oce/repository-credentials",
+            "/run/oce/repository-credentials",
+            ...(dedicated ? ["/home/node/.codex/skills/.system"] : []),
+          ]
+        : [
+            "/app/node_modules/openclaw",
+            ...(dedicated && proxyEnabled ? ["/home/node/.codex/skills/.system"] : []),
+          ],
+    });
     const status = readStatusFromHandler(statusHandler);
     assert.deepEqual(status, {
       revisionId,

@@ -259,6 +259,9 @@ import {
   provisioningEffectReceipt as readProvisioningEffectReceipt,
   provisioningPendingEffect,
   settleProvisioningEffect as buildProvisioningEffectSettlement,
+  unrecordedProvisioningConfiguration,
+  withUnrecordedProvisioningConfiguration,
+  withoutUnrecordedProvisioningConfiguration,
   type ProvisioningEffectReceipt,
   type ProvisioningEffectTarget,
 } from "./provisioning-effects.ts";
@@ -327,6 +330,7 @@ export {
   RuntimeLogsError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
+  SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   SecretBindingDriverError,
@@ -772,6 +776,8 @@ export interface UpdateConfigurationInput {
   readonly configurationId: string;
   readonly values: Readonly<OpenClawConfigurationDocument>;
   readonly secretBindings?: SecretBindings;
+  /** Refuses the update unless the Configuration is still at this generation. */
+  readonly expectedGeneration?: number;
 }
 
 export interface DeployAgentInput {
@@ -806,6 +812,11 @@ export type AgentProvisioningWorkerOutcome =
       readonly code: string;
       /** A Compute refusal's reason for the operator log; status keeps the fixed text. */
       readonly reason?: string;
+      /**
+       * For the operator log: a Configuration the refused job wrote but never recorded, which
+       * its Driver could not delete. Nothing references it any more.
+       */
+      readonly orphanedConfigurationId?: string;
     };
 
 export interface AgentProvisioningWorkerOptions {
@@ -884,6 +895,14 @@ const CREDENTIAL_REGISTRATION_FENCE_MS = 2 * CREDENTIAL_GATEWAY_TIMEOUT_MS + 10_
  * sent again. A late original then meets an existing ConfigMap and fails AlreadyExists.
  */
 const PROVISIONING_CONFIGURATION_SETTLE_MS = 90_000;
+
+/**
+ * How far a stored Configuration may run ahead of its record and still count as a leftover of
+ * failed writes (finding 1396). Each failed update whose compensation could not run adds one, and
+ * update advances the record once per skipped generation, so the bound also caps that work.
+ * A document further ahead fails closed, as any other mismatch does.
+ */
+const MAX_CONFIGURATION_LEFTOVER_LEAD = 100;
 
 /**
  * The most references a Secret read or delete examines. Each one costs authorization work,
@@ -2704,6 +2723,13 @@ export class OpenClawController {
         completedPhase: record.completedPhase,
         status: "running",
       });
+      if (await this.deleteMarkedProvisioningConfiguration(record, runEffect)) {
+        record = await this.checkpointAgentProvisioning(claim, {
+          completedPhase: record.completedPhase,
+          status: "running",
+          progress: withoutUnrecordedProvisioningConfiguration(record.progress),
+        });
+      }
       if (this.provisioningBefore(record, "configuration")) {
         record = await this.processAgentProvisioningConfiguration(claim, record, runEffect);
       }
@@ -2832,6 +2858,34 @@ export class OpenClawController {
       const authorizationDenied =
         error instanceof AuthorizationDeniedError && !(error instanceof DependencyUnavailableError);
       const message = provisioningFailureMessage(code, error);
+      // A refusal deletes the Configuration it wrote but never recorded. The job first forgets
+      // the write and marks it for deletion, under its claim, so neither a retry nor a crash can
+      // trust a receipt for a deleted document; the refusal then drops the mark only once the
+      // delete has succeeded. A delete that fails, or never runs, leaves the mark: the next
+      // attempt deletes it before writing another, and a refusal deletes it too (finding 1399).
+      const unrecorded =
+        disposition === "permanent"
+          ? await this.mutate(async (state) => {
+              const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
+              if (current === undefined) {
+                throw new WorkClaimLostError();
+              }
+              const written = await this.unrecordedProvisioningConfiguration(state, current);
+              if (written === undefined) {
+                return this.markedProvisioningConfiguration(state, current);
+              }
+              await this.commitProvisioningCheckpoint(state, claim, {
+                completedPhase: current.completedPhase,
+                status: "running",
+                progress: withUnrecordedProvisioningConfiguration(current.progress, written.id),
+              });
+              return this.provisioningConfiguration(current, written.id);
+            })
+          : undefined;
+      const orphanedConfigurationId =
+        unrecorded === undefined
+          ? undefined
+          : await this.deleteUnrecordedProvisioningConfiguration(unrecorded);
       await this.mutate(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (current === undefined) {
@@ -2842,7 +2896,9 @@ export class OpenClawController {
           {
             completedPhase: current.completedPhase,
             progress: {
-              ...current.progress,
+              ...(unrecorded !== undefined && orphanedConfigurationId === undefined
+                ? withoutUnrecordedProvisioningConfiguration(current.progress)
+                : current.progress),
               error: { code, message },
             },
           },
@@ -2880,6 +2936,7 @@ export class OpenClawController {
         outcome: disposition === "defer" ? ("pending" as const) : disposition,
         code,
         ...(error instanceof ComputeProvisioningRefusedError ? { reason: error.reason } : {}),
+        ...(orphanedConfigurationId === undefined ? {} : { orphanedConfigurationId }),
       });
     }
   }
@@ -3481,7 +3538,7 @@ export class OpenClawController {
    * One page of the Agent's revisions the principal may read, newest first, as summaries: a
    * list never decodes a saved snapshot (finding 1323). The page holds up to `limit` readable
    * revisions numbered below `before`; unreadable ones are skipped. `nextBefore` names the
-   * page's last revision, and only when a readable revision remains below it (finding 1334).
+   * page's last revision, and only when an older revision was found readable when checked.
    */
   async listRevisions(
     principalId: string,
@@ -3496,12 +3553,12 @@ export class OpenClawController {
       throw new ScopeViolationError("The revision page cursor is invalid.");
     }
     const agent = await this.getAgentForBrowsing(principalId, namespaceId, agentId);
-    // Read checks stay per revision. Scanning on past unreadable revisions keeps the cursor on
-    // a readable one, so a page never names a revision the caller cannot read. The scan reads
-    // the store in batches of at least 100, whatever the page size, so a small page over many
-    // unreadable revisions costs few queries. A full page looks ahead for one more readable
-    // revision before it emits a cursor, so a cursor never leads to an empty page; a batch one
-    // larger than the page lets a fully readable page find that revision in the same query.
+    // Read checks stay per revision. The cursor names only a revision found readable when
+    // checked. The scan reads the store in batches of at least 100, reducing queries for
+    // small pages, but it may still scan all older revisions. A full page looks ahead for
+    // one more revision found readable when checked before it emits a cursor.
+    // Access can change before the next request, so that page may be empty. A batch one
+    // larger than the page lets a fully readable page find the next revision in one query.
     const batch = Math.max(page.limit + 1, 100);
     return this.read(async (state) => {
       const readable: Readonly<AgentRevisionSummary>[] = [];
@@ -3645,7 +3702,15 @@ export class OpenClawController {
         });
         return Object.freeze({ outcome: "succeeded" as const, revisionId });
       }
-      const error = deploymentErrorForWork(work);
+      const deploymentError = deploymentErrorForWork(work);
+      // Stopping the first rollout is the owner's choice, not a fault to correct.
+      const error =
+        deploymentError?.code === "REVISION_STOPPED"
+          ? Object.freeze({
+              code: "REVISION_STOPPED",
+              message: "The Agent was stopped before its first deployment finished.",
+            })
+          : deploymentError;
       const pending = status !== "failed";
       const code = pending
         ? "PROVISIONING_DEPLOYMENT_PENDING"
@@ -5439,12 +5504,17 @@ export class OpenClawController {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
-      const previous = this.exactConfiguration(
-        await this.driverOperation(() =>
-          driver.read({ id: metadata.id, namespaceId: namespace.id }),
-        ),
-        metadata,
-      );
+      // Compared under the row lock, so a save that read an older generation cannot replace a
+      // newer one (finding 1505).
+      if (
+        input.expectedGeneration !== undefined &&
+        input.expectedGeneration !== metadata.generation
+      ) {
+        throw new ResourceStateConflictError(
+          "The Configuration changed since it was read. Read its current generation before updating it.",
+        );
+      }
+      const previous = await this.lockedConfiguration(driver, metadata);
       let secretBindings: SecretBindings;
       if (input.secretBindings === undefined) {
         secretBindings = this.bindings(metadata.secretBindings);
@@ -5453,12 +5523,23 @@ export class OpenClawController {
         rejectCrossNamespaceSecretSources(namespace.id, secretBindings, undefined);
       }
       await this.authorizeBindings(state, principalId, namespace.id, secretBindings);
-      const advanced = await state.configurations.advanceConfigurationGeneration(
+      let advanced = await state.configurations.advanceConfigurationGeneration(
         namespace.id,
         metadata.id,
         metadata.generation,
         secretBindings,
       );
+      // A stored document ahead of the record holds content that was never recorded. The
+      // replacement skips past every generation it went through, one advance at a time (the
+      // record moves by exactly one per write), so no number names two documents.
+      while (advanced && advanced.generation <= previous.generation) {
+        advanced = await state.configurations.advanceConfigurationGeneration(
+          namespace.id,
+          metadata.id,
+          advanced.generation,
+          secretBindings,
+        );
+      }
       if (!advanced) {
         throw new ResourceStateConflictError(
           "The Configuration generation changed during its update.",
@@ -5481,11 +5562,13 @@ export class OpenClawController {
       // Registered before the write: a replace that applied but answered with an error (a
       // timeout, a lost response) would otherwise leave the stored Configuration one generation
       // ahead of the rolled-back metadata (finding 911). A write that never applied is left alone,
-      // and so is a stored generation another update committed after the lock was released.
+      // and so is a stored generation another update committed after the lock was released. A
+      // replacement of a leftover ahead of the record restores that leftover, which a retry can
+      // replace again (finding 1396).
       this.registerRollback(async () => {
         const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
         if (
-          stored.generation !== previous.generation &&
+          stored.generation === configuration.generation &&
           (await this.configurationRecordUnchanged(metadata))
         ) {
           await driver.update(previous);
@@ -5533,37 +5616,43 @@ export class OpenClawController {
           "An Agent provisioning request that has not succeeded still references the Configuration. Let it finish or retry it, or delete the Agent it provisioned, first.",
         );
       }
-      const previous = this.exactConfiguration(
-        await this.driverOperation(() =>
-          driver.read({ id: configuration.id, namespaceId: namespace.id }),
-        ),
-        configuration,
+      // A record whose document a failed delete already removed has nothing left to delete or
+      // restore (finding 1396); only a Driver that confirms the absence lets it go.
+      const previous = await this.lockedConfiguration(driver, configuration).catch(
+        async (error: unknown) => {
+          if (await this.configurationAbsent(driver, configuration)) {
+            return undefined;
+          }
+          throw error;
+        },
       );
-      // Registered before the write: a delete that applied but answered with an error would
-      // otherwise leave the metadata without its ConfigMap (finding 916). The rollback recreates
-      // the previous Configuration only when it is gone and its record is still the one locked
-      // here; one still stored exactly means the delete never applied, and a record another
-      // request deleted or changed in the meantime is that request's (finding 945). A Driver that
-      // cannot inspect it is compensated only after a delete it saw succeed.
-      let deleted = false;
-      this.registerRollback(async () => {
-        if (driver.inspectExact === undefined) {
-          if (!deleted) {
+      if (previous !== undefined) {
+        // Registered before the write: a delete that applied but answered with an error would
+        // otherwise leave the metadata without its ConfigMap (finding 916). The rollback
+        // recreates the previous Configuration only when it is gone and its record is still the
+        // one locked here; one still stored exactly means the delete never applied, and a record
+        // another request deleted or changed in the meantime is that request's (finding 945). A
+        // Driver that cannot inspect it is compensated only after a delete it saw succeed.
+        let deleted = false;
+        this.registerRollback(async () => {
+          if (driver.inspectExact === undefined) {
+            if (!deleted) {
+              return;
+            }
+          } else if (
+            (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
+          ) {
             return;
           }
-        } else if (
-          (await this.driverOperation(() => driver.inspectExact!(previous))) !== undefined
-        ) {
-          return;
-        }
-        if (await this.configurationRecordUnchanged(configuration)) {
-          await this.driverOperation(() => driver.create(previous));
-        }
-      });
-      await this.driverOperation(() =>
-        driver.delete({ id: configuration.id, namespaceId: namespace.id }),
-      );
-      deleted = true;
+          if (await this.configurationRecordUnchanged(configuration)) {
+            await this.driverOperation(() => driver.create(previous));
+          }
+        });
+        await this.driverOperation(() =>
+          driver.delete({ id: configuration.id, namespaceId: namespace.id }),
+        );
+        deleted = true;
+      }
       const removed = await accessBindingsTargeting(
         state,
         namespace.id,
@@ -7097,7 +7186,10 @@ export class OpenClawController {
           "The Compute Driver returned invalid Gateway outbound admission.",
         );
       }
-      if (gatewayOutbound !== undefined && compute.withdrawGatewayOutbound === undefined) {
+      if (
+        gatewayOutbound !== undefined &&
+        (compute.revisionAccessStatus === undefined || compute.withdrawRevisionAccess === undefined)
+      ) {
         throw new ResourceStateConflictError(
           "The selected Compute Driver cannot withdraw Gateway outbound access.",
         );
@@ -7107,7 +7199,9 @@ export class OpenClawController {
           "The selected Compute Driver cannot admit Gateway outbound access.",
         );
       }
-      const previous = await state.revisions.listRevisionMetadata(namespace.id, lockedAgent.id);
+      // Decode every earlier revision: one that is unreadable refuses the deploy here (503,
+      // nothing created), because the worker must decode them all to stop or retire them.
+      const previous = await state.revisions.listRevisions(namespace.id, lockedAgent.id);
       const createdAt = this.timestamp();
       const repositoryCredentials = this.admitRepositoryCredentials(
         lockedAgent,
@@ -7159,35 +7253,55 @@ export class OpenClawController {
       }
       // PostgreSQL restamps createdAt on its own clock; the response carries the stored value.
       // The repository credential deadline above stays on this controller's clock.
-      const revision = await state.revisions.createRevision(
-        freezeAgentRevision({
-          id: this.nextIdentifier("agent_revision"),
-          namespaceId: namespace.id,
-          agentId: lockedAgent.id,
-          revision: previous.length + 1,
-          backendId,
-          configurationId: configuration.id,
-          configurationKind: configuration.kind,
-          configurationGeneration: configuration.generation,
-          configuration: admittedConfiguration,
-          ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
-          harness: revisionHarness,
-          compute: { id: compute.id, implementation: compute.implementation },
-          ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
-          ...(secretDriver === undefined
-            ? {}
-            : { secretDriverId: secretDriver.id, secretBindings }),
-          ...(pluginState === undefined ? {} : { plugins: pluginState }),
-          ...(lockedAgent.pluginApprovers === undefined
-            ? {}
-            : { pluginApprovers: lockedAgent.pluginApprovers }),
-          ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
-          harnessAuth,
-          ...(credentialSources.length === 0 ? {} : { credentialSources }),
-          servicePrincipalId: lockedAgent.servicePrincipalId,
-          createdAt,
-        }),
-      );
+      const revisionDraft: AgentRevision = {
+        id: this.nextIdentifier("agent_revision"),
+        namespaceId: namespace.id,
+        agentId: lockedAgent.id,
+        revision: previous.length + 1,
+        backendId,
+        configurationId: configuration.id,
+        configurationKind: configuration.kind,
+        configurationGeneration: configuration.generation,
+        configuration: admittedConfiguration,
+        ...(gatewayOutbound === undefined ? {} : { gatewayOutbound }),
+        harness: revisionHarness,
+        compute: { id: compute.id, implementation: compute.implementation },
+        ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
+        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
+        ...(pluginState === undefined ? {} : { plugins: pluginState }),
+        ...(lockedAgent.pluginApprovers === undefined
+          ? {}
+          : { pluginApprovers: lockedAgent.pluginApprovers }),
+        ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
+        harnessAuth,
+        ...(credentialSources.length === 0 ? {} : { credentialSources }),
+        servicePrincipalId: lockedAgent.servicePrincipalId,
+        createdAt,
+      };
+      const computeAdmission = compute.admitRevision?.(freezeAgentRevision(revisionDraft));
+      const admittedRevision = freezeAgentRevision({
+        ...revisionDraft,
+        compute: {
+          ...revisionDraft.compute,
+          ...(computeAdmission === undefined ? {} : { admission: computeAdmission }),
+        },
+      });
+      const accessStatus = compute.revisionAccessStatus?.(admittedRevision) ?? "none";
+      if (!["none", "current", "withdrawn"].includes(accessStatus)) {
+        throw new ResourceStateConflictError(
+          "The Compute Driver returned invalid revision access status.",
+        );
+      }
+      const hasRevisionAccess = accessStatus !== "none";
+      if (
+        (gatewayOutbound !== undefined && !hasRevisionAccess) ||
+        (hasRevisionAccess && compute.withdrawRevisionAccess === undefined)
+      ) {
+        throw new ResourceStateConflictError(
+          "The selected Compute Driver cannot withdraw admitted revision access.",
+        );
+      }
+      const revision = await state.revisions.createRevision(admittedRevision);
       const running = await state.agents.transitionAgentDesiredRuntimeState(
         namespace.id,
         lockedAgent.id,
@@ -7482,7 +7596,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespaceId, agentId, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by Stop.",
+        message: "Provisioning was cancelled because the Agent was stopped.",
       });
       const stopped = await state.agents.transitionAgentDesiredRuntimeState(
         namespaceId,
@@ -7702,7 +7816,7 @@ export class OpenClawController {
       }
       await state.provisioning.cancelByAgent(namespace.id, agent.id, {
         code: "PROVISIONING_CANCELLED",
-        message: "Provisioning was cancelled by deletion.",
+        message: "Provisioning was cancelled because the Agent was deleted.",
       });
       // Deletion ends delivery ownership immediately, including never-deployed Agents.
       await state.workspaceSetups.delete(namespace.id, agent.id);
@@ -8797,8 +8911,9 @@ export class OpenClawController {
     return found;
   }
 
+  /** Callers hold the Namespace lock. */
   private async guardAgentProvisioning(
-    state: PlatformReadView,
+    state: PlatformUnitOfWork,
     namespaceId: string,
     agentId: string,
     handoff = false,
@@ -8815,13 +8930,61 @@ export class OpenClawController {
       record.status === "queued" ||
       record.status === "running" ||
       this.provisioningBefore(record, "configuration") ||
-      (record.status === "failed" && record.revisionId === undefined) ||
-      (record.status === "cancelled" && this.provisioningHasUnresolvedEffect(record))
+      (record.status === "failed" && record.revisionId === undefined)
     ) {
       throw new ResourceStateConflictError(
         "The Agent is reserved for provisioning. Stop or delete it, or retry its failed provisioning request.",
       );
     }
+    if (record.status === "cancelled" && this.provisioningHasUnresolvedEffect(record)) {
+      await this.settleAbandonedProvisioningEffect(state, namespaceId, agentId);
+    }
+  }
+
+  /**
+   * A cancelled job never runs again, so nothing else settles the runtime-credential write it
+   * left pending, and without this its stopped Agent could only be deleted (finding 1384). Once
+   * the claim that began the write has lapsed (at once if no worker held it when Stop cancelled
+   * the job), its worker has stopped issuing requests, so this settles it under the Namespace and
+   * Agent locks, as Agent deletion does. A request already sent may still land; that is safe
+   * because the write creates only absent Secrets, and deploy admission checks the runtime
+   * credentials and creates missing ones. Inside the lease the Agent stays reserved; with
+   * conflicting or malformed evidence it can only be deleted.
+   */
+  private async settleAbandonedProvisioningEffect(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<void> {
+    const agent = await state.agents.lockAgent(namespaceId, agentId);
+    if (agent?.status !== "active") {
+      throw new AgentDeletingError();
+    }
+    const current =
+      (await state.provisioning.settleAbandonedEffect(namespaceId, agentId)) ??
+      (await state.provisioning.findByAgent(namespaceId, agentId));
+    if (
+      current === undefined ||
+      current.revisionId !== undefined ||
+      !this.provisioningHasUnresolvedEffect(current)
+    ) {
+      return;
+    }
+    const pending = provisioningPendingEffect(current);
+    // Only a well-formed write still inside its cancelled claim's lease settles by waiting.
+    if (
+      pending?.kind === "transport" &&
+      pending.ownerPresent &&
+      current.progress.effectReceipt === undefined &&
+      current.progress.cancelledClaimExpiresAt !== undefined
+    ) {
+      throw new ResourceStateConflictError(
+        "The Agent's cancelled provisioning may still be writing its runtime credentials. Try again in a few seconds, or delete the Agent.",
+      );
+    }
+    throw new ResourceStateConflictError(
+      "The Agent's cancelled provisioning left a runtime-credential write that cannot be settled. Delete the Agent.",
+    );
   }
 
   private async guardProvisioningConfiguration(
@@ -9130,6 +9293,134 @@ export class OpenClawController {
       }
       return this.settleProvisioningEffect(workId, record, effect);
     });
+  }
+
+  /**
+   * The Configuration a failing job wrote through its Driver but never recorded (finding 1395).
+   * The write settled, then the Configuration step's transaction refused (a duplicate Agent name,
+   * for example) and rolled back the record, or a later fence refused the job before that step
+   * ran again. Nothing else deletes that document. A write that has not settled, a job past its
+   * Configuration step, a Configuration record with the ID, or a write made through a Driver the
+   * Installation no longer selects leaves it alone.
+   */
+  private async unrecordedProvisioningConfiguration(
+    state: PlatformUnitOfWork,
+    record: Readonly<AgentProvisioningRecord>,
+  ): Promise<Readonly<{ id: string; namespaceId: string }> | undefined> {
+    if (!this.provisioningBefore(record, "configuration") || record.configurationId !== undefined) {
+      return undefined;
+    }
+    const receipt = readProvisioningEffectReceipt(record);
+    const pending = provisioningPendingEffect(record);
+    if (
+      receipt?.kind !== "configuration" ||
+      pending?.kind !== "configuration" ||
+      pending.owner !== receipt.owner ||
+      pending.targetId !== receipt.targetId ||
+      !this.provisioningConfigurationDriverSelected(record)
+    ) {
+      return undefined;
+    }
+    if (
+      (await state.configurations.findConfiguration(record.namespaceId, receipt.targetId)) !==
+      undefined
+    ) {
+      return undefined;
+    }
+    return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
+  }
+
+  /** Whether the accepted plan names the Configuration Driver the Installation selects. */
+  private provisioningConfigurationDriverSelected(
+    record: Readonly<AgentProvisioningRecord>,
+  ): boolean {
+    return (
+      this.selections.has("configuration") &&
+      asRecord(record.plan.drivers)?.configuration === this.configurationDriver().id
+    );
+  }
+
+  /**
+   * The Configuration an earlier refusal of this job marked for deletion but did not finish
+   * deleting: its delete failed, or the worker lost its claim first (finding 1399). A
+   * Configuration record with the ID, or a Driver the accepted plan no longer names, leaves it
+   * alone.
+   */
+  private async markedProvisioningConfiguration(
+    state: PlatformReadView,
+    record: Readonly<AgentProvisioningRecord>,
+  ): Promise<Configuration | undefined> {
+    const configurationId = unrecordedProvisioningConfiguration(record.progress);
+    if (
+      configurationId === undefined ||
+      !this.provisioningConfigurationDriverSelected(record) ||
+      (await state.configurations.findConfiguration(record.namespaceId, configurationId)) !==
+        undefined
+    ) {
+      return undefined;
+    }
+    return this.provisioningConfiguration(record, configurationId);
+  }
+
+  /**
+   * Deletes a Configuration the job wrote but never recorded, through the Driver call
+   * Configuration deletion uses. Nothing references it: the job forgot it when it marked it, and
+   * its ID is unique to the job. It is inspected first, so a document already gone (an applied
+   * delete whose response was lost) is not an error.
+   */
+  private async removeUnrecordedProvisioningConfiguration(
+    configuration: Configuration,
+  ): Promise<void> {
+    const driver = this.configurationDriver();
+    if (driver.inspectExact === undefined) {
+      throw new DependencyUnavailableError(
+        "The Configuration Driver does not support exact provisioning recovery.",
+      );
+    }
+    if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
+      await this.driverOperation(() =>
+        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+      );
+    }
+  }
+
+  /**
+   * A refusal's delete of its unrecorded or marked Configuration, once the mark has committed.
+   * A failed delete keeps the refusal as it is, leaves the mark, and returns the ID for the
+   * operator log.
+   */
+  private async deleteUnrecordedProvisioningConfiguration(
+    configuration: Configuration,
+  ): Promise<string | undefined> {
+    try {
+      await this.removeUnrecordedProvisioningConfiguration(configuration);
+      return undefined;
+    } catch {
+      return configuration.id;
+    }
+  }
+
+  /**
+   * Deletes the marked Configuration after this attempt's first fence and before it writes
+   * another, so the mark is never dropped with the document still stored. A failed delete fails
+   * the attempt and keeps the mark. Returns whether the job had a mark to drop.
+   */
+  private async deleteMarkedProvisioningConfiguration(
+    record: Readonly<AgentProvisioningRecord>,
+    runEffect: <T>(operation: (signal: AbortSignal) => Promise<T>) => Promise<T>,
+  ): Promise<boolean> {
+    if (unrecordedProvisioningConfiguration(record.progress) === undefined) {
+      return false;
+    }
+    if (!this.provisioningConfigurationDriverSelected(record)) {
+      // The fence refuses this first; never let a new write replace the mark.
+      throw new DependencyUnavailableError("The selected Configuration Driver is unavailable.");
+    }
+    const marked = await this.read((state) => this.markedProvisioningConfiguration(state, record));
+    if (marked !== undefined) {
+      await runEffect(() => this.removeUnrecordedProvisioningConfiguration(marked));
+    }
+    return true;
   }
 
   /** The Configuration that provisioning writes through the Configuration Driver. */
@@ -10788,6 +11079,69 @@ export class OpenClawController {
       current.generation === expected.generation &&
       current.createdAt === expected.createdAt
     );
+  }
+
+  /**
+   * The stored Configuration behind a record that update or delete holds locked. A failed update
+   * whose compensation could not run (a crash, a lost COMMIT acknowledgement that hid a rollback,
+   * or a compensation read that failed in the same outage) leaves the stored document one
+   * generation ahead of the record, and each such failure during recovery one more (finding
+   * 1396). The record lock keeps other requests out, so a document up to
+   * MAX_CONFIGURATION_LEFTOVER_LEAD generations ahead is a leftover, not a write in flight; it is
+   * returned at its own generation, for update to replace and delete to remove. Another
+   * request's compensation runs without the lock, but the Kubernetes Driver refuses a replace
+   * that does not move the generation by exactly one from the document it read, or whose
+   * resource version changed since, so the later of two writes fails and rolls back. Reads and
+   * deploys keep refusing the leftover, so unrecorded content is never served or recorded.
+   */
+  private async lockedConfiguration(
+    driver: ConfigurationDriver,
+    record: Pick<
+      Configuration,
+      "id" | "namespaceId" | "kind" | "generation" | "createdAt" | "secretBindings"
+    >,
+  ): Promise<Readonly<Configuration>> {
+    const stored = await this.driverOperation(() =>
+      driver.read({ id: record.id, namespaceId: record.namespaceId }),
+    );
+    const lead = Number.isSafeInteger(stored?.generation)
+      ? stored.generation - record.generation
+      : 0;
+    return this.exactConfiguration(
+      stored,
+      lead > 0 && lead <= MAX_CONFIGURATION_LEFTOVER_LEAD
+        ? { ...record, generation: stored.generation }
+        : record,
+    );
+  }
+
+  /**
+   * Whether the Driver confirms that nothing is stored for a record: a failed delete whose
+   * compensation could not run leaves the record without its document (finding 1396). Only exact
+   * inspection tells absence from an unreachable backend: it answers undefined only when nothing
+   * is stored, and any stored document answers or conflicts with the placeholder values. A Driver
+   * without it, or one that fails, does not confirm absence.
+   */
+  private async configurationAbsent(
+    driver: ConfigurationDriver,
+    record: Pick<Configuration, "id" | "namespaceId" | "kind" | "generation" | "createdAt">,
+  ): Promise<boolean> {
+    if (driver.inspectExact === undefined) {
+      return false;
+    }
+    const placeholder: Configuration = {
+      id: record.id,
+      namespaceId: record.namespaceId,
+      kind: record.kind,
+      generation: record.generation,
+      values: {},
+      createdAt: record.createdAt,
+    };
+    try {
+      return (await driver.inspectExact(placeholder)) === undefined;
+    } catch {
+      return false;
+    }
   }
 
   private exactConfiguration(

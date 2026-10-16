@@ -26,7 +26,8 @@ function nonempty(value: unknown): value is string {
 }
 
 function identifier(value: string): string {
-  if (!nonempty(value)) {
+  // A `.` or `..` segment would resolve to a parent path, such as the account itself.
+  if (!nonempty(value) || value === "." || value === "..") {
     throw new DependencyUnavailableError("The ChatGPT account identity is invalid.");
   }
   return encodeURIComponent(value);

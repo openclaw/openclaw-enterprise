@@ -70,20 +70,27 @@ func idArgs(args ...idArg) cobra.PositionalArgs {
 
 // latestRevisionID returns the ID of the newest revision the caller can read.
 func latestRevisionID(client *occclient.Client, namespace, agentID string) (string, error) {
+	id, _, err := latestReadableRevision(client, namespace, agentID)
+	return id, err
+}
+
+// latestReadableRevision retains the summary number for ordering diagnostics.
+func latestReadableRevision(client *occclient.Client, namespace, agentID string) (string, float64, error) {
 	latest, err := client.LatestAgentRevision(namespace, agentID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if latest == nil {
-		return "", fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
+		return "", 0, fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
 	}
 	revision, ok := latest.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("OCC returned an invalid resource")
+		return "", 0, fmt.Errorf("OCC returned an invalid resource")
 	}
 	id, idOK := revision["id"].(string)
-	if _, numberOK := revision["revision"].(float64); !idOK || !numberOK {
-		return "", fmt.Errorf("OCC returned an invalid revision")
+	number, numberOK := revision["revision"].(float64)
+	if !idOK || !numberOK {
+		return "", 0, fmt.Errorf("OCC returned an invalid revision")
 	}
-	return id, nil
+	return id, number, nil
 }

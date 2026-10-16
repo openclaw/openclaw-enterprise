@@ -416,8 +416,11 @@ export function createOpenShellKubernetesFixture({
       "OCC_TEST_OPENSHELL_K3D_REAL=1 is required for the real OpenShell integration.",
     );
     assert.ok(
-      process.env.OPENAI_API_KEY,
-      "OPENAI_API_KEY is required for the API binding workflow; a model turn additionally requires genuine upstream Secret projection support.",
+      process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ||
+        process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim()
+        ? process.env.OPENAI_API_KEY
+        : process.env.CODEX_ACCESS_TOKEN,
+      "The selected Harness requires OPENAI_API_KEY (native or custom endpoint) or CODEX_ACCESS_TOKEN (default Codex).",
     );
     assert.ok(
       openShellHelmPath,
@@ -1055,10 +1058,46 @@ export function createOpenShellKubernetesFixture({
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let failedCommands = 0;
+      let approvalRequests = 0;
+      const sandboxSignals = new Set();
+
+      function rememberFailureSignals(message) {
+        if (message.id !== undefined && message.method === "item/commandExecution/requestApproval") {
+          approvalRequests += 1;
+        }
+        const item = message.params?.item;
+        if (message.method === "item/completed" && item?.type === "commandExecution" && Number.isSafeInteger(item.exitCode) && item.exitCode !== 0) {
+          failedCommands += 1;
+        }
+        // Retain only fixed labels from command output, never prompts, commands or payloads.
+        let output;
+        if (item?.type === "commandExecution") {
+          output = item.aggregatedOutput;
+        } else if (message.method === "item/commandExecution/outputDelta") {
+          output = message.params?.delta;
+        }
+        if (typeof output !== "string") {
+          return;
+        }
+        for (const [pattern, label] of [
+          [/bubblewrap|bwrap/i, "bubblewrap"],
+          [/user namespace|new namespace|unshare|CLONE_NEWUSER/i, "namespace"],
+          [/operation not permitted|permission denied/i, "permission_denied"],
+          [/filesystem-restricted execution requires bubblewrap/i, "restricted_requires_bubblewrap"],
+        ]) {
+          if (pattern.test(output.slice(0, 16384))) {
+            sandboxSignals.add(label);
+          }
+        }
+      }
 
       function fail(error) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
+        process.stderr.write("\nNative execution summary: " + JSON.stringify({
+          failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+        }));
         process.exit(1);
       }
 
@@ -1076,21 +1115,28 @@ export function createOpenShellKubernetesFixture({
         try {
           await request("initialize", {
             clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+            capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
           // cannot start exec tools in a working directory that does not exist there.
+          const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
           const started = await request("thread/start", {
-            cwd: process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace",
+            cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: "danger-full-access",
+            approvalsReviewer: "user",
+            permissions: ":danger-full-access",
             config: { project_doc_max_bytes: 131072 },
           });
+          // Fail before inference when account policy refuses the outer-sandbox mode.
+          if (started.sandbox?.type !== "dangerFullAccess") {
+            throw new Error("OpenShell requires the Codex account to allow :danger-full-access.");
+          }
           await request("turn/start", {
             threadId: started.thread.id,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            sandboxPolicy: { type: "dangerFullAccess", networkAccess: true },
+            permissions: ":danger-full-access",
           });
         } catch (error) {
           fail(error);
@@ -1099,7 +1145,16 @@ export function createOpenShellKubernetesFixture({
 
       socket.addEventListener("message", ({ data }) => {
         const message = JSON.parse(String(data));
+        rememberFailureSignals(message);
         items.push(message);
+        if (message.id !== undefined && (
+          message.method === "item/commandExecution/requestApproval" ||
+          message.method === "item/fileChange/requestApproval"
+        )) {
+          // Boundary probes must observe denials, never grant escalation or wait for a human.
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { decision: "decline" } }));
+          return;
+        }
         if (message.id !== undefined) {
           const entry = pending.get(message.id);
           pending.delete(message.id);

@@ -256,6 +256,50 @@ test("a revision page leaves out revisions the caller cannot read and still cont
   assert.equal(refused.status, 403);
 });
 
+test("a revision cursor can lead to an empty page after access is revoked", async (t) => {
+  const { fixture, namespace, agent, first, revisionsPath, seedRevisions, page } =
+    await listFixture(t, "Revoked revision access");
+  const [newer] = await seedRevisions(1);
+  let olderBinding;
+  const reader = await fixture.createAccountWithPolicy("revoked-revision-reader", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: `agent-reader-${randomUUID()}`,
+      namespaceId: namespace.id,
+      permissions: { agent: ["read"] },
+      resource: { kind: "agent", id: agent.id },
+    });
+    for (const revision of [first, newer]) {
+      const { binding } = grantRole(fixture.policy, principal.id, {
+        id: `revision-reader-${revision.id}`,
+        namespaceId: namespace.id,
+        permissions: { agent_revision: ["read"] },
+        resource: { kind: "agent_revision", id: revision.id },
+      });
+      if (revision.id === first.id) {
+        olderBinding = binding;
+      }
+    }
+  });
+  const session = await fixture.signIn(reader.credentials);
+  const olderPath = `${revisionsPath}/${first.id}`;
+  assert.equal((await fixture.request("GET", olderPath, { session })).status, 200);
+  const top = await page("?limit=1", { session });
+  assert.deepEqual([top.numbers, top.data[0].id, top.nextCursor], [[2], newer.id, "v1.2"]);
+
+  // Remove only the older revision binding; the Agent and newer revision grants remain.
+  const bindingIndex = fixture.policy.bindings.indexOf(olderBinding);
+  assert.notEqual(bindingIndex, -1);
+  fixture.policy.bindings.splice(bindingIndex, 1);
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`, { session }))
+      .status,
+    200,
+  );
+  const next = await page(`?limit=1&cursor=${top.nextCursor}`, { session });
+  assert.deepEqual([next.data, next.nextCursor], [[], null]);
+  assert.equal((await fixture.request("GET", olderPath, { session })).status, 403);
+});
+
 test("a revision cursor needs a readable revision below it, and the scan reads in batches", async (t) => {
   const { state, fixture, namespace, agent, first, seedRevisions, page } = await listFixture(
     t,
@@ -306,7 +350,7 @@ test("a revision cursor needs a readable revision below it, and the scan reads i
   };
 
   // Finding 1334: a full page whose remaining revisions are all unreadable carries no cursor,
-  // so a cursor never leads to an empty page.
+  // so no cursor is issued when no older revision was found readable when checked.
   const onlyNewest = await reader("newest-reader", [newest]);
   const alone = await counted("?limit=1", { session: onlyNewest });
   assert.deepEqual([alone.numbers, alone.nextCursor], [[251], null]);

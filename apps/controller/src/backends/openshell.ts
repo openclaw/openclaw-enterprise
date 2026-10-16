@@ -19,6 +19,12 @@ const OCC_PROVIDER_NAME = /^oce-cs-[0-9a-f]{24}$/;
 
 export class OpenShellBackendConfigurationFailure extends Error {}
 
+/** The gateway's Service name and the Kubernetes namespace its Pods run in. */
+export interface OpenShellGatewayPlacement {
+  readonly service: string;
+  readonly namespace: string;
+}
+
 export interface OpenShellGatewaySelection {
   /** Replaces gRPC clients for every namespace, as when a caller owns the transport. */
   readonly gatewayClient?: OpenShellGatewayClient;
@@ -60,6 +66,30 @@ export class OpenShellGateway {
     return created;
   }
 
+  /**
+   * Where the gateway runs, when the configuration names it (finding 1356). A bare Service name
+   * runs in each tenant `namespace`, so it needs one. A dotted Service name, or an endpoint host
+   * `<service>.<namespace>.svc[.<cluster domain>]`, one Pod's
+   * `<pod>.<service>-peer.<namespace>.svc[...]` or one port's
+   * `<port>.<protocol>.<service>.<namespace>.svc[...]` (finding 1369), names one namespace. An IP
+   * address, a node address or any other host names none.
+   */
+  placement(namespace?: string): OpenShellGatewayPlacement | undefined {
+    const { endpoint, serviceName } = this.configuration;
+    if (endpoint !== undefined) {
+      return serviceDnsPlacement(
+        new URL(endpoint.includes("://") ? endpoint : `http://${endpoint}`).hostname,
+      );
+    }
+    const labels = (serviceName as string).toLowerCase().split(".");
+    if (labels.length === 1) {
+      return namespace === undefined ? undefined : { service: labels[0]!, namespace };
+    }
+    return labels.length === 2
+      ? { service: labels[0]!, namespace: labels[1]! }
+      : serviceDnsPlacement(serviceName as string);
+  }
+
   close(): void {
     this.injectedClient?.close();
     for (const client of this.clients.values()) {
@@ -81,6 +111,23 @@ export class OpenShellGateway {
         : { rootCertificatePath: configuration.rootCertificatePath }),
     };
   }
+}
+
+/**
+ * `<service>.<namespace>.svc[...]`, a StatefulSet Pod's `<pod>.<service>-peer.<namespace>.svc[...]`
+ * or a port's `<port>.<protocol>.<service>.<namespace>.svc[...]`, which CoreDNS answers like the
+ * Service (an `_` before the port and protocol is optional). A Service or namespace named `svc` is
+ * read as the first form that fits.
+ */
+function serviceDnsPlacement(host: string): OpenShellGatewayPlacement | undefined {
+  const labels = host.toLowerCase().split(".");
+  if (labels[2] === "svc") {
+    return { service: labels[0]!, namespace: labels[1]! };
+  }
+  if (labels[3] === "svc") {
+    return { service: labels[1]!.replace(/-peer$/, ""), namespace: labels[2]! };
+  }
+  return labels[4] === "svc" ? { service: labels[2]!, namespace: labels[3]! } : undefined;
 }
 
 function serviceEndpoint(configuration: OpenShellBackendConfiguration, namespace: string): string {

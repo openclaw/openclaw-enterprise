@@ -11,6 +11,7 @@ export function createSlackApproverField({
   inheritedLabel = "Inherit Agent default",
   allowInherit = true,
   lazyNames = false,
+  directorySetup = null,
 }) {
   const select = element(
     "select",
@@ -67,6 +68,9 @@ export function createSlackApproverField({
           ? "No Slack user can approve until people are selected."
           : `${slack.length} Slack approver${slack.length === 1 ? "" : "s"} selected.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`;
     picker.hidden = select.value !== "chosen";
+    if (directorySetup) {
+      directorySetup.hidden = picker.hidden;
+    }
   }
   function refresh() {
     const current = getValue();
@@ -84,9 +88,11 @@ export function createSlackApproverField({
     { className: "slack-approver-field" },
     element("label", {}, label, select),
     helper,
+    directorySetup,
     picker,
   );
   field.refreshValue = refresh;
+  field.refreshDirectory = () => picker.refreshValue();
   field.refreshNames = () => {
     render();
     picker.refreshNames();

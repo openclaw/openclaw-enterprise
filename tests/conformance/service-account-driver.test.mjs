@@ -1021,6 +1021,25 @@ test("a ChatGPT account create whose reply is lost deletes nothing it cannot pro
   }
 });
 
+test("a ChatGPT credential revocation never sends a dot path segment", async () => {
+  // `.../credentials/..` would resolve to the account itself, so a revocation naming a dot
+  // segment (for example from an edited leftover Secret annotation) is refused before any
+  // request.
+  await withFakeChatGPT(async ({ client, server }) => {
+    server.accounts.set("acct-own", { name: "own", credentials: new Set(["cred-own"]) });
+    for (const credentialId of [".", ".."]) {
+      await assert.rejects(
+        client.deleteCredential({ accountId: "acct-own", credentialId }),
+        (error) =>
+          error instanceof DependencyUnavailableError &&
+          error.message === "The ChatGPT account identity is invalid.",
+      );
+    }
+    assert.deepEqual(server.requests, []);
+    assert.equal(server.accounts.has("acct-own"), true);
+  });
+});
+
 test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {
   const { ChatGPTServiceAccountDriver } =
     await import("../../apps/controller/src/drivers/service-account/chatgpt.ts");

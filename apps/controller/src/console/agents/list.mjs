@@ -27,6 +27,34 @@ export const NAMESPACE_NOT_READY_MESSAGE =
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
 export const GENERIC_CONFLICT = "The requested platform resource already exists.";
 
+// The API records these deployment endings as failed, but nothing went wrong with the version,
+// so the console shows a neutral outcome instead. A newer version took over before this one
+// became current (finding 1353; the record never names the newer version, so neither does the
+// console), or the owner stopped the Agent while this version was deploying (finding 1375).
+// REPOSITORY_REVISION_STOPPED stays a failure: it can also mean the Namespace is not ready.
+const NEUTRAL_DEPLOYMENT_OUTCOMES = new Map([
+  ["REVISION_SUPERSEDED", "superseded"],
+  ["REPOSITORY_REVISION_SUPERSEDED", "superseded"],
+  ["REVISION_STOPPED", "stopped"],
+]);
+
+// "superseded" or "stopped" for a neutral ending, otherwise null.
+export function neutralDeploymentOutcome(status) {
+  return status?.status === "failed"
+    ? (NEUTRAL_DEPLOYMENT_OUTCOMES.get(status.error?.code) ?? null)
+    : null;
+}
+
+// The recorded outcome to show: the API's status, except that a neutral ending is not a failure.
+export function deploymentOutcome(status) {
+  return neutralDeploymentOutcome(status) ?? status.status;
+}
+
+export const NEUTRAL_DEPLOYMENT_NOTES = {
+  superseded: "Superseded by a newer version",
+  stopped: "Stopped before it finished",
+};
+
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
 async function latestReadableRevision(context, path) {
@@ -113,7 +141,26 @@ export function renderAgentList(context) {
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  view.replaceChildren(element("div", { className: "agent-toolbar" }, search, create), rows);
+  const createNote = element(
+    "p",
+    { className: "muted", role: "status", hidden: true },
+    "Your access does not include creating Agents in this Namespace.",
+  );
+  view.replaceChildren(
+    element("div", { className: "agent-toolbar" }, search, create),
+    createNote,
+    rows,
+  );
+  // Gating only: the API still authorizes creation, so an unknown answer keeps the control.
+  void context.request(`${namespacePath(context.namespaceId)}/permissions`).then(
+    (permissions) => {
+      if (context.isCurrent() && permissions?.agents?.create === false) {
+        create.disabled = true;
+        createNote.hidden = false;
+      }
+    },
+    () => {},
+  );
   function render() {
     const query = search.value.trim().toLowerCase();
     const matches = items
@@ -152,7 +199,9 @@ export function renderAgentList(context) {
     );
     const body = element("tbody");
     for (const item of matches) {
-      const deployment = element("td", {}, "Reading deployment…");
+      // The cell keeps its column's width once its read lands, and its outcome link and one
+      // note line fit the two lines the Agent cell already gives the row (finding 1488).
+      const deployment = element("td", { className: "agent-deployment" }, "Reading deployment…");
       if (!deployments.has(item.id)) {
         deployments.set(
           item.id,
@@ -182,22 +231,27 @@ export function renderAgentList(context) {
           }
           deployment.replaceChildren(
             link(
-              `v${result.revision.revision} · ${result.status.status}`,
+              `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
               `agents/${item.id}?revision=${result.revision.id}`,
               context,
             ),
           );
-          if (result.status.status === "failed") {
-            deployment.append(
-              element(
-                "span",
-                { className: "resource-id" },
-                result.status.error?.message ?? "Deployment failed.",
-              ),
-            );
-          }
+          const neutral = neutralDeploymentOutcome(result.status);
+          const failure =
+            !neutral && result.status.status === "failed"
+              ? (result.status.error?.message ?? "Deployment failed.")
+              : null;
+          // A long failure fits one line; its title and the Agent page give the whole text.
           deployment.append(
-            element("span", { className: "resource-id" }, "Serving health unverified"),
+            element(
+              "span",
+              {
+                className: "resource-id agent-deployment-note",
+                ...(failure ? { title: failure } : {}),
+              },
+              failure ??
+                (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
+            ),
           );
         })
         .catch((error) => {

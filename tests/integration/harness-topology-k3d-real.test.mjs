@@ -48,6 +48,7 @@ test(
     );
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayOutbound: { mode: "restricted", hosts: ["example.com"] },
+      publicGithubRead: true,
     });
     await assertManagedGatewayOutbound(context, topology);
   },

@@ -394,7 +394,7 @@ const RECOVERING_ACTIVATIONS_SQL = `
       JOIN continuing_maintenance AS continuing
         ON continuing.idempotency_key = work.idempotency_key
       WHERE work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
-        AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_gateway_outbound)
+        AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)
         AND NOT EXISTS (
           SELECT 1 FROM occ.audit_events AS prior
           WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
@@ -443,10 +443,10 @@ const RECOVERING_REFUSED_STOPS_SQL = `
         )
     ),`;
 
-// A committed outbound withdrawal is irreversible for this work item. Lease recovery
+// A committed revision access withdrawal is irreversible for this work item. Lease recovery
 // preserves its removal-only phase even after IAM restoration or an attempt-limit change.
-const RECOVERING_GATEWAY_OUTBOUND_SQL = `
-    recovering_gateway_outbound AS MATERIALIZED (
+const RECOVERING_REVISION_ACCESS_SQL = `
+    recovering_revision_access AS MATERIALIZED (
       SELECT work.idempotency_key,
         (SELECT jsonb_object_agg(key, value) FROM jsonb_each(latest.details)
          WHERE key IN ('refusal', 'refusalData', 'cleanupFailedPreparation')) AS evidence
@@ -459,7 +459,7 @@ const RECOVERING_GATEWAY_OUTBOUND_SQL = `
           AND prior.resource_kind = 'agent_revision'
           AND prior.resource_id = work.revision_id
           AND prior.details->>'workId' = work.idempotency_key
-          AND prior.details->>'reasonCode' = 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
+          AND prior.details->>'reasonCode' = 'REVISION_ACCESS_WITHDRAWAL_PENDING'
           AND prior.namespace_id = work.namespace_id AND prior.actor_id = work.actor_id
           AND prior.occurred_at >= work.created_at
         ORDER BY prior.occurred_at DESC, prior.id DESC
@@ -1494,7 +1494,7 @@ export class PostgresWorkQueue {
     const predecessorStop =
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)";
     const outboundWithdrawal =
-      "work.idempotency_key IN (SELECT idempotency_key FROM recovering_gateway_outbound)";
+      "work.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)";
     const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop} AND NOT ${predecessorStop} AND NOT ${outboundWithdrawal})`;
     const stale = await this.client.query(
       `WITH candidates AS (
@@ -1506,12 +1506,12 @@ export class PostgresWorkQueue {
          ORDER BY lease_expires_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_GATEWAY_OUTBOUND_SQL} ${RECOVERING_ACTIVATIONS_SQL}
+       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_REVISION_ACCESS_SQL} ${RECOVERING_ACTIVATIONS_SQL}
        ${RECOVERING_REFUSED_STOPS_SQL} ${recoveringPredecessorStopsSql(
          "candidates",
          `work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_activations)
           AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)
-          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_gateway_outbound)`,
+          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = CASE
@@ -1557,11 +1557,11 @@ export class PostgresWorkQueue {
          "",
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
             THEN '${ACTIVE_REVISION_RECOVERY}'
-            WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_gateway_outbound)
-            THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
+            WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)
+            THEN 'REVISION_ACCESS_WITHDRAWAL_PENDING'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
             THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT withdrawal.evidence FROM recovering_gateway_outbound AS withdrawal
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_revision_access AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key),
            (SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
@@ -1590,9 +1590,9 @@ export class PostgresWorkQueue {
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_GATEWAY_OUTBOUND_SQL} ${recoveringPredecessorStopsSql(
+       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_REVISION_ACCESS_SQL} ${recoveringPredecessorStopsSql(
          "candidates",
-         "work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_gateway_outbound)",
+         "work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)",
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
@@ -1613,10 +1613,10 @@ export class PostgresWorkQueue {
        ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${insertEvidenceCteSql(
          "",
-         `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_gateway_outbound)
-            THEN 'GATEWAY_OUTBOUND_WITHDRAWAL_PENDING'
+         `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)
+            THEN 'REVISION_ACCESS_WITHDRAWAL_PENDING'
             WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT withdrawal.evidence FROM recovering_gateway_outbound AS withdrawal
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_revision_access AS withdrawal
             WHERE withdrawal.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
        )}
        SELECT transitioned.* FROM transitioned`,

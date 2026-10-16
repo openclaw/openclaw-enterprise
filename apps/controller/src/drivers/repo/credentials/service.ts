@@ -362,7 +362,7 @@ export function createCredentialService(
       }
       const deadline = Math.min(
         session.admission.deadlineMonoMs,
-        head.receivedMonoMs + Math.min(limits.exchangeMs, plan.limits.totalMs),
+        head.receivedMonoMs + Math.min(limits.maxExchangeMs, plan.limits.totalMs),
       );
       if (clock.monotonicNow() >= deadline) {
         return deny(408, "request-expired");

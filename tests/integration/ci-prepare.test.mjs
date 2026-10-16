@@ -708,25 +708,44 @@ describe("CI preparation", { concurrency }, () => {
     });
   }
 
+  // The schedule retries a store commit that lost to other jobs' commits (finding 1340).
+  test("a scheduled run on main warms the image cache and keeps main's runtime image", async (t) => {
+    const commands = await fixtureImageCommands(t, "success", "images-packaging", {
+      ...warmCacheEnv,
+      GITHUB_EVENT_NAME: "schedule",
+    });
+    const warmed = await commands.warmImageCache();
+    assert.equal(warmed.status, 0, warmed.stderr);
+    assert.match(warmed.stderr, /"stage":"runtime-image-kept"/);
+    const cleaned = await commands.cleanup();
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+  });
+
   test("the image cache warm job refuses refs other than main and lane arguments before building", async (t) => {
     for (const [label, env, args, error] of [
       [
         "pull request",
         { GITHUB_REF: "refs/pull/1/merge", GITHUB_EVENT_NAME: "pull_request" },
         [],
-        /Only a push or dispatch on main may warm the image cache/,
+        /Only a push, schedule or dispatch on main may warm the image cache/,
       ],
       [
         "branch dispatch",
         { GITHUB_REF: "refs/heads/feature", GITHUB_EVENT_NAME: "workflow_dispatch" },
         [],
-        /Only a push or dispatch on main may warm the image cache/,
+        /Only a push, schedule or dispatch on main may warm the image cache/,
+      ],
+      [
+        "branch schedule",
+        { GITHUB_REF: "refs/heads/feature", GITHUB_EVENT_NAME: "schedule" },
+        [],
+        /Only a push, schedule or dispatch on main may warm the image cache/,
       ],
       [
         "merge queue on main",
         { GITHUB_EVENT_NAME: "merge_group" },
         [],
-        /Only a push or dispatch on main may warm the image cache/,
+        /Only a push, schedule or dispatch on main may warm the image cache/,
       ],
       [
         "lane argument",
@@ -763,6 +782,7 @@ describe("CI preparation", { concurrency }, () => {
     );
     const paths = workflow.on.push.paths;
     assert.deepEqual(workflow.on.push.branches, ["main"]);
+    assert.ok(workflow.on.schedule?.length > 0, "the warm job retries on a schedule");
     assert.equal(workflow.concurrency["cancel-in-progress"], false);
     assert.deepEqual(workflow.permissions, { contents: "read" });
     const patterns = paths.map(
@@ -2208,6 +2228,10 @@ if (args[0] === "pull") {
       OPENAI_API_KEY: "test-openai-key",
       OCC_TEST_OPENAI_MODEL: "gpt-test",
     };
+    const openShellModelEnv = {
+      CODEX_ACCESS_TOKEN: "synthetic-codex-pat",
+      OCC_TEST_OPENAI_MODEL: "gpt-test",
+    };
     const k3dImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,
       OCC_TEST_KUBERNETES_AGENT_IMAGE: immutableImage,
@@ -2274,7 +2298,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,
@@ -2288,7 +2312,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: mutableImage,
@@ -2302,7 +2326,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_KUBERNETES_GATEWAY_IMAGE: mutableImage,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
@@ -2317,7 +2341,7 @@ if (args[0] === "pull") {
         lane: "openshell",
         envName: "OCC_TEST_KEYCLOAK_IMAGE",
         env: {
-          ...baseModelEnv,
+          ...openShellModelEnv,
           ...k3dImages,
           OCC_TEST_OPENSHELL_GATEWAY_IMAGE: immutableImage,
           OCC_TEST_OPENSHELL_SANDBOX_IMAGE: immutableImage,

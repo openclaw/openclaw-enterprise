@@ -74,10 +74,15 @@ import Fastify, {
   type FastifySchema,
   type HTTPMethods,
   type InjectOptions,
+  type RouteGenericInterface,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "./auth/configuration.ts";
 import {
   OCC_SERVICE_KEY_HEADER,
   SERVICE_KEY_NAME_MAX_LENGTH,
@@ -118,6 +123,9 @@ import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
+  nativeAdminReturnSchema,
+  limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -130,6 +138,7 @@ import {
   runtimeLogQuery,
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
+import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
@@ -137,6 +146,8 @@ import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
   readonly installationId?: string;
+  /** Exact browser origin for a loopback-owned development endpoint. */
+  readonly browserOrigin?: string;
   readonly trustedCidrs?: readonly string[];
 }
 
@@ -421,6 +432,16 @@ function validateTrustedDevelopmentCidrs(development: DevelopmentAdmission): voi
   for (const cidr of development.trustedCidrs ?? []) {
     cidrContains(cidr, "127.0.0.1");
   }
+}
+
+function developmentBrowserOrigin(development: DevelopmentAdmission): URL | undefined {
+  if (development.browserOrigin === undefined) {
+    return undefined;
+  }
+  if (!development.enabled || !isDevelopmentBrowserOrigin(development.browserOrigin)) {
+    throw new Error(`The development browser origin must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
+  }
+  return new URL(development.browserOrigin);
 }
 
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {
@@ -1082,6 +1103,7 @@ function clientInstallation(
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const development = Object.freeze({ ...options.development });
+  const browserOrigin = developmentBrowserOrigin(development);
   if (
     options.controller &&
     development.installationId !== undefined &&
@@ -1594,6 +1616,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
+  }
+
   async function denial(
     operation: OccApiRoute,
     request: FastifyRequest,
@@ -1779,10 +1826,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const host = request.headers.host;
     let hostname: string;
+    let requestHost: string;
     try {
-      hostname = new URL(`http://${host ?? "127.0.0.1"}`).hostname;
+      const parsed = new URL(`http://${host ?? "127.0.0.1"}`);
+      hostname = parsed.hostname;
+      requestHost = parsed.host;
     } catch {
       hostname = "";
+      requestHost = "";
     }
     const remoteAddress = request.raw.socket.remoteAddress ?? "127.0.0.1";
     const origin = request.headers.origin;
@@ -1796,6 +1847,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } else if (Array.isArray(origin)) {
       originAllowed = false;
     }
+    const browserEndpointAllowed =
+      browserOrigin !== undefined &&
+      requestHost === browserOrigin.host &&
+      (origin === undefined || origin === browserOrigin.origin);
     // Forwarded headers are never used for admission. They are tolerated only from a
     // configured trusted proxy, which adds them to every request it relays.
     const forwarded =
@@ -1809,8 +1864,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       forwarded ||
       (development.enabled &&
-        (!LOOPBACK_HOSTNAMES.has(hostname) ||
-          !originAllowed ||
+        (((!LOOPBACK_HOSTNAMES.has(hostname) || !originAllowed) && !browserEndpointAllowed) ||
           !trustedDevelopmentAddress(development, remoteAddress)))
     ) {
       throw failure(
@@ -2141,6 +2195,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "deleteNamespace") {
       const namespace = await controller.transact(async (unit) => {
         const deleting = await controller!.deleteNamespace(context.actorId, namespaceId);
@@ -2356,6 +2422,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
+      return;
     }
 
     if (
@@ -2603,12 +2686,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2638,9 +2722,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
@@ -3945,6 +4029,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      nativeAdminReturnOperation.path,
+      {
+        schema: nativeAdminReturnSchema,
+        // Bound session admission per direct peer. Proxies share this more generous budget;
+        // the resolver separately limits expensive lookups by authenticated principal.
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, nativeAdminReturnOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      },
+      nativeAdmin.resolveReturn,
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -4027,9 +4126,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 

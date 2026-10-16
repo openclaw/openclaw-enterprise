@@ -339,6 +339,7 @@ export async function composePostgresDevelopment(
       development: {
         enabled: true,
         installationId,
+        browserOrigin: config.authBaseURL,
         ...(config.trustedDevelopmentBridgeCidr === undefined
           ? {}
           : {

@@ -155,7 +155,10 @@ Its closed `configuration` accepts:
 - `serviceName`, `scheme`, and `port`: used when `endpoint` is omitted. A dotted
   name is used as-is; a bare name resolves in each tenant namespace. `port`
   defaults to `8080`, and `scheme` defaults to `https` only when
-  `rootCertificatePath` is set.
+  `rootCertificatePath` is set. OAuth2 credential sources refuse `token_url`
+  hosts in the gateway's namespace only when OCE knows it: from a bare or
+  `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
+  `<service>.<namespace>.svc[.<cluster domain>]`.
 - `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
   an absolute path.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
@@ -307,7 +310,7 @@ request. Successful issuance does not prove that an Agent can reach its model.
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
-[service-account testing](../testing/service-accounts.md) for real provider
+[service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
 verification requirements.
 
 ## Deferred behavior

@@ -420,17 +420,17 @@ function httpOrigin(value) {
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
-// hex, shorthand, a single integer or a trailing dot publish a different host. Callers refuse
-// user info first (writtenUserinfo), so the host follows scheme:// directly.
+// hex, shorthand, a single integer or a trailing dot publish a different host. isIP accepts
+// only four decimal octets from 0 to 255 with no leading zeros, and the parser serializes every
+// IPv4 host that way, so the written host must equal the parsed one. Callers refuse user info
+// first (writtenUserinfo), so the host follows scheme:// directly.
 function ipv4HostKept(raw, url) {
   if (isIP(url.hostname) !== 4) {
     return true;
   }
   const stripped = stripUrlEdges(raw);
   const written = /^[a-z][a-z\d+.-]*:\/\/([^/?#:]+)/i.exec(stripped)?.[1];
-  return (
-    written === url.hostname && /^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(url.hostname)
-  );
+  return written === url.hostname;
 }
 
 // KubernetesComputeDriver.validateCodexSeccompProfile. A localhost profile is a
@@ -1110,6 +1110,7 @@ function buildInput(rawInput, diagnostics) {
       "controlPlaneOutbound",
       "codex",
       "repository",
+      "publicGithubRead",
       "presets",
     ],
     diagnostics,
@@ -1120,6 +1121,13 @@ function buildInput(rawInput, diagnostics) {
   const controlPlaneOutbound = section(input, "controlPlaneOutbound", diagnostics, false);
   const codex = section(input, "codex", diagnostics, false);
   const repository = section(input, "repository", diagnostics, false);
+  const publicGithubRead = section(input, "publicGithubRead", diagnostics, false);
+  closed(
+    publicGithubRead,
+    "publicGithubRead",
+    ["enabled", "clusterIP", "upstreamCidrs"],
+    diagnostics,
+  );
   const presets = section(input, "presets", diagnostics, false);
   closed(presets, "presets", ["files"], diagnostics);
   closed(
@@ -1270,6 +1278,7 @@ function buildInput(rawInput, diagnostics) {
     controlPlaneOutbound,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -1433,6 +1442,7 @@ function buildRendered(profile, parsed, diagnostics) {
     controlPlaneOutbound,
     codex,
     repository,
+    publicGithubRead,
     dns,
     metrics,
     databaseCa,
@@ -2114,6 +2124,44 @@ function buildRendered(profile, parsed, diagnostics) {
       },
       port: 8443,
     };
+  }
+
+  if (asBoolean(publicGithubRead, ["publicGithubRead", "enabled"], diagnostics)) {
+    if (profile.name !== "codex") {
+      diagnostics.errors.push("publicGithubRead requires the codex profile.");
+    }
+    const clusterIP = asString(publicGithubRead, ["publicGithubRead", "clusterIP"], diagnostics, {
+      validate: (value) => isIP(value) === 4,
+      description: "the reserved IPv4 Service ClusterIP",
+    });
+    const upstreamCidrs = stringArray(
+      publicGithubRead,
+      ["publicGithubRead", "upstreamCidrs"],
+      diagnostics,
+      { validate: isIpv4Cidr, description: "an approved IPv4 CIDR for api.github.com" },
+    );
+    values.publicGithubRead = { enabled: true, clusterIP, upstreamCidrs };
+    installation.drivers.compute.configuration.network.publicGithubRead = {
+      namespace,
+      address: clusterIP,
+      podLabels: {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": releaseName,
+        "app.kubernetes.io/component": "public-github-read",
+      },
+    };
+    diagnostics.prerequisites.push(
+      "Reserve the public GitHub reader ClusterIP until every AgentRevision that allows it has retired; enforce both NetworkPolicies.",
+    );
+    diagnostics.nextSteps.push(
+      "Select public reads in a dedicated Codex Agent Configuration or Preset: enable plugins.entries.codex.config.appServer.networkProxy and allow its exact Service IP " +
+        clusterIP +
+        " in domains, then deploy the Agent.",
+    );
+  } else if (Object.keys(publicGithubRead).some((key) => key !== "enabled")) {
+    diagnostics.errors.push(
+      "publicGithubRead fields are only consumed when publicGithubRead.enabled is true.",
+    );
   }
 
   dedicatedSecrets(values, releaseName, namespace, diagnostics);

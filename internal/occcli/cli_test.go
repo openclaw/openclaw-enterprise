@@ -160,11 +160,15 @@ type runtimeLogStub struct {
 	queries       []url.Values
 	pages         []func(http.ResponseWriter, url.Values)
 	activeID      string
+	// activeRevision is the exact revision response; "forbidden" denies the read.
+	activeRevision string
 	// revisions is the JSON revision list; empty means the Agent has none.
 	revisions string
 	paths     []string
 	// podless lists revisions whose runtime description has no Pods.
 	podless []string
+	// harness is the provider status returned for a podless newer revision.
+	harness map[string]any
 	// forbidden lists revisions whose runtime description is refused with 403.
 	forbidden []string
 }
@@ -176,6 +180,12 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 		fmt.Fprintf(response, `{"data":{"id":"agt_1","activeRevisionId":%q},"meta":{}}`, stub.activeID)
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions":
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.revisions, "[]"))
+	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions/"+stub.activeID:
+		if stub.activeRevision == "forbidden" {
+			logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
+		} else {
+			fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.activeRevision, `{"id":"rev_1","revision":1}`))
+		}
 	case strings.HasSuffix(request.URL.Path, "/runtime/logs"):
 		if request.Header.Get("x-api-key") != "test-key" {
 			stub.t.Errorf("missing service key")
@@ -200,9 +210,19 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 	case strings.HasSuffix(request.URL.Path, "/runtime") && slices.ContainsFunc(stub.podless, func(id string) bool {
 		return strings.HasSuffix(request.URL.Path, "/deployments/"+id+"/runtime")
 	}):
-		fmt.Fprint(response, `{"data":{"revisionId":"rev_x","observedAt":"2026-09-30T12:00:00.000Z","pods":[],"sources":[]},"meta":{}}`)
+		segments := strings.Split(request.URL.Path, "/")
+		data := map[string]any{"revisionId": segments[len(segments)-2], "observedAt": "2026-09-30T12:00:00.000Z", "pods": []any{}, "sources": []any{}}
+		if stub.harness != nil {
+			data["harness"] = stub.harness
+		}
+		payload, err := json.Marshal(map[string]any{"data": data, "meta": map[string]any{}})
+		if err != nil {
+			stub.t.Fatal(err)
+		}
+		_, _ = response.Write(payload)
 	case strings.HasSuffix(request.URL.Path, "/runtime"):
-		fmt.Fprint(response, `{"data":{"revisionId":"rev_1","observedAt":"2026-09-30T12:00:00.000Z","pods":[{"role":"gateway","cluster":"control","name":"gw-0","uid":"u","phase":"Running","ready":true,"createdAt":null,"containers":[{"name":"gateway","state":"running","reason":null,"ready":true,"restartCount":2,"startedAt":null,"lastTermination":{"reason":"OOMKilled","exitCode":137,"finishedAt":null}}],"events":[{"type":"Warning","container":"gateway","reason":"Unhealthy","message":"Readiness probe failed","count":146,"lastObservedAt":"2026-09-30T11:59:00.000Z"},{"type":"Normal","container":"prepare-private-state","reason":"Started","message":"Container started","count":1,"lastObservedAt":"2026-09-30T11:00:00.000Z"},{"type":"Normal","container":null,"reason":"Scheduled","message":"Successfully assigned","count":1,"lastObservedAt":null}]}],"sources":[{"id":"gateway","kind":"container","pods":[],"available":true,"retention":"current and previous instance"}]},"meta":{}}`)
+		segments := strings.Split(request.URL.Path, "/")
+		fmt.Fprintf(response, `{"data":{"revisionId":%q,"observedAt":"2026-09-30T12:00:00.000Z","pods":[{"role":"gateway","cluster":"control","name":"gw-0","uid":"u","phase":"Running","ready":true,"createdAt":null,"containers":[{"name":"gateway","state":"running","reason":null,"ready":true,"restartCount":2,"startedAt":null,"lastTermination":{"reason":"OOMKilled","exitCode":137,"finishedAt":null}}],"events":[{"type":"Warning","container":"gateway","reason":"Unhealthy","message":"Readiness probe failed","count":146,"lastObservedAt":"2026-09-30T11:59:00.000Z"},{"type":"Normal","container":"prepare-private-state","reason":"Started","message":"Container started","count":1,"lastObservedAt":"2026-09-30T11:00:00.000Z"},{"type":"Normal","container":null,"reason":"Scheduled","message":"Successfully assigned","count":1,"lastObservedAt":null}]}],"sources":[{"id":"gateway","kind":"container","pods":[],"available":true,"retention":"current and previous instance"}]},"meta":{}}`, segments[len(segments)-2])
 	default:
 		stub.t.Errorf("unexpected request %s", request.URL)
 		response.WriteHeader(http.StatusNotFound)
@@ -411,7 +431,8 @@ func TestAgentRuntimeAndLogsDefaultToLatestRevisionWithoutActiveRevision(t *test
 	if !strings.Contains(out, "startup failed") {
 		t.Fatalf("logs output = %q", out)
 	}
-	if !strings.Contains(errOut, "has no active revision; using latest revision rev_2") {
+	// Every CLI notice carries the notice: prefix (D610).
+	if !strings.HasPrefix(errOut, "notice: agent agt_1 has no active revision; using latest revision rev_2\n") {
 		t.Fatalf("logs notice = %q", errOut)
 	}
 	_, runtimeErr, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_1")
@@ -498,6 +519,165 @@ func TestAgentLogsDefaultToANewerRevisionWithPodsAndNameTheRevision(t *testing.T
 	}
 	if want := []string{"/namespaces/ns_1/agents/agt_1/deployments/rev_1/runtime/logs"}; !slices.Equal(stub.paths, want) {
 		t.Fatalf("requests = %v, want %v", stub.paths, want)
+	}
+}
+
+// Revision lists are permission-filtered, so the only other readable revision
+// can be older than the active one. A refused runtime probe must name its order
+// only when the active revision's metadata proves it, never assume "newer" (D607).
+func TestAgentLogsNameTheOrderOfAnUnprobedOtherRevision(t *testing.T) {
+	for _, test := range []struct{ name, metadata, other string }{
+		{"older", `{"id":"rev_2","revision":2}`, "an older revision rev_1"},
+		{"active metadata refused", "forbidden", "another readable revision rev_1"},
+		{"active number missing", `{"id":"rev_2"}`, "another readable revision rev_1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &runtimeLogStub{t: t, activeID: "rev_2", activeRevision: test.metadata, revisions: `[{"id":"rev_1","revision":1}]`, forbidden: []string{"rev_1"}, pages: []func(http.ResponseWriter, url.Values){
+				logPage("", logLine(1, "info", "ready")),
+			}}
+			_, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "notice: reading the active revision rev_2; " + test.other + " exists but its runtime could not be read"
+			if !strings.Contains(errOut, want) || strings.Contains(errOut, "newer") {
+				t.Fatalf("notice = %q, want %q", errOut, want)
+			}
+			if got := stub.paths[len(stub.paths)-1]; got != "/namespaces/ns_1/agents/agt_1/deployments/rev_2/runtime/logs" {
+				t.Fatalf("final request = %s", got)
+			}
+		})
+	}
+}
+
+// A readable revision with Pods is still read, but the list it came from is
+// permission-filtered, so it can be older than the active revision: the notice
+// names its order only when the active revision's metadata proves it (1513).
+func TestAgentLogsNameTheOrderOfAnOtherRevisionWithPods(t *testing.T) {
+	for _, test := range []struct{ name, metadata, notice string }{
+		{"older", `{"id":"rev_2","revision":2}`, "notice: reading revision rev_1, older than the active revision rev_2, because it still has Pods; pass --revision rev_2 for the active revision"},
+		{"active metadata refused", "forbidden", "notice: reading revision rev_1, another readable revision that still has Pods, not the active revision rev_2; pass --revision rev_2 for the active revision"},
+		{"active number missing", `{"id":"rev_2"}`, "notice: reading revision rev_1, another readable revision that still has Pods, not the active revision rev_2; pass --revision rev_2 for the active revision"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stub := &runtimeLogStub{t: t, activeID: "rev_2", activeRevision: test.metadata, revisions: `[{"id":"rev_1","revision":1}]`, pages: []func(http.ResponseWriter, url.Values){
+				logPage("", logLine(1, "info", "ready")),
+			}}
+			_, errOut, err := runLogsCommand(t, context.Background(), stub, "agent", "logs", "agt_1", "--source", "gateway")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if errOut != test.notice+"\n" {
+				t.Fatalf("notice = %q, want %q", errOut, test.notice)
+			}
+			if got := stub.paths[len(stub.paths)-1]; got != "/namespaces/ns_1/agents/agt_1/deployments/rev_1/runtime/logs" {
+				t.Fatalf("final request = %s", got)
+			}
+		})
+	}
+}
+
+// Selection reads the active revision's metadata once, and the notice uses that
+// same observation: a second read that failed would misname a Podless Harness
+// revision as "another readable revision that still has Pods".
+func TestAgentRuntimeNamesHarnessSelectionFromOneMetadataRead(t *testing.T) {
+	stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`, podless: []string{"rev_2"}, harness: map[string]any{"state": "lost", "code": "SANDBOX_FAILED"}}
+	_, notices, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_1", "-o", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "notice: reading revision rev_2, newer than the active revision rev_1 and not yet active; pass --revision rev_1 for the active revision\n"; notices != want {
+		t.Fatalf("notice = %q, want %q", notices, want)
+	}
+	reads := 0
+	for _, path := range stub.paths {
+		if path == "/namespaces/ns_1/agents/agt_1/revisions/rev_1" {
+			reads++
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("active revision metadata read %d times, want 1 (requests %v)", reads, stub.paths)
+	}
+}
+
+func TestAgentCommandsSelectNewerPodlessHarnessStatus(t *testing.T) {
+	for _, state := range []string{"running", "starting", "lost", "unknown"} {
+		for _, action := range []string{"runtime", "logs"} {
+			t.Run(state+"/"+action, func(t *testing.T) {
+				expected := "rev_2"
+				if state == "unknown" {
+					expected = "rev_1"
+				}
+				harness := map[string]any{"state": state}
+				switch state {
+				case "starting":
+					harness["code"], harness["exitCode"], harness["restarts"] = "HARNESS_RESTARTING", 1, 1
+				case "lost":
+					harness["code"] = "SANDBOX_FAILED"
+				case "unknown":
+					harness["code"] = "UNAVAILABLE"
+				}
+				message := "sandbox policy denied egress for " + expected
+				page := func(response http.ResponseWriter, _ url.Values) {
+					fmt.Fprintf(response, `{"data":{"revisionId":%q,"source":"sandbox","stream":{"source":"sandbox","sandbox":%q},"observedAt":"2026-09-30T12:00:00.000Z","records":[{"type":"line","time":"2026-09-30T12:00:00.000Z","stream":{"source":"sandbox","sandbox":%q},"contentClass":"operational","kind":"sandbox","level":"warn","message":%q}],"withheld":0,"truncated":false,"cursor":null},"meta":{}}`, expected, "sandbox-"+expected, "sandbox-"+expected, message)
+				}
+				stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`, podless: []string{"rev_2"}, harness: harness, pages: []func(http.ResponseWriter, url.Values){page}}
+				args := []string{"agent", action, "agt_1"}
+				if action == "logs" {
+					args = append(args, "--source", "sandbox")
+				}
+				out, notices, err := runLogsCommand(t, context.Background(), stub, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				suffix := "/runtime"
+				if action == "logs" {
+					suffix += "/logs"
+					if !strings.Contains(out, message) {
+						t.Fatalf("sandbox log output=%q", out)
+					}
+				}
+				path := "/namespaces/ns_1/agents/agt_1/deployments/" + expected + suffix
+				if !slices.Contains(stub.paths, path) {
+					t.Fatalf("requests=%v; want final %s", stub.paths, path)
+				}
+				if !strings.Contains(notices, "revision "+expected) {
+					t.Fatalf("notice=%q", notices)
+				}
+				if action == "runtime" && state != "unknown" && !strings.Contains(out, "Harness Sandbox: "+state) {
+					t.Fatalf("output=%q", out)
+				}
+			})
+		}
+	}
+}
+
+func TestAgentRuntimeRetainsActiveWhenPodlessCandidateIsNotProvablyNewer(t *testing.T) {
+	for _, test := range []struct{ name, activeID, revisions, metadata string }{
+		{"older-only readable list", "rev_2", `[{"id":"rev_1","revision":1}]`, `{"id":"rev_2","revision":2}`},
+		{"active metadata denied", "rev_1", `[{"id":"rev_2","revision":2}]`, "forbidden"},
+		{"active number missing", "rev_1", `[{"id":"rev_2","revision":2}]`, `{"id":"rev_1"}`},
+		{"active identity mismatched", "rev_1", `[{"id":"rev_2","revision":2}]`, `{"id":"rev_other","revision":1}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := "rev_2"
+			if test.activeID == "rev_2" {
+				candidate = "rev_1"
+			}
+			stub := &runtimeLogStub{t: t, activeID: test.activeID, activeRevision: test.metadata, revisions: test.revisions, podless: []string{candidate}, harness: map[string]any{"state": "lost", "code": "SANDBOX_FAILED"}}
+			out, notices, err := runLogsCommand(t, context.Background(), stub, "agent", "runtime", "agt_1", "-o", "json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The runtime description returned to the operator must be the active revision.
+			var description map[string]any
+			if err := json.Unmarshal([]byte(out), &description); err != nil || description["revisionId"] != test.activeID {
+				t.Fatalf("runtime output=%q error=%v", out, err)
+			}
+			if !strings.Contains(notices, "reading the active revision "+test.activeID) || strings.Contains(notices, "newer than") {
+				t.Fatalf("notice=%q", notices)
+			}
+		})
 	}
 }
 
