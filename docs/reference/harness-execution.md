@@ -49,14 +49,11 @@ Agent-entry, and provider policy, and rejects conflicting explicit policies
 rather than choosing one. All configured Agent entries must resolve to the same
 primary model and Harness.
 
-For dedicated Codex with a custom endpoint, OCE compiles the private Gateway
-configuration using an explicit native provider. For example, the admitted
-`codex/vendor/organization/model` becomes
-`codex/openai-compatible/vendor/organization/model` in the generated Gateway
-configuration. OpenClaw resolves that to provider `openai-compatible` and
-the complete native ID `vendor/organization/model`. Primary and fallback order,
-catalog metadata, and runtime policies are preserved. The stored Configuration,
-AgentRevision, and Harness probe model remain unchanged.
+For a custom endpoint, private Gateway configuration compiles
+`codex/vendor/organization/model` to `codex/openai-compatible/vendor/organization/model`.
+OpenClaw selects `openai-compatible` and ID `vendor/organization/model`, preserving
+fallback order, metadata and policies. Stored Configuration, revision and probe
+model remain unchanged.
 
 The resolver selects OpenClaw when there is no model candidate, or when an
 unambiguous built-in provider without custom provider or plugin routing has no
@@ -66,6 +63,8 @@ supported runtime policy.
 
 Dedicated Codex accepts only the native `codex` provider, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
+Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
+in the separate Harness workspace.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an
@@ -105,25 +104,30 @@ revoked authority, or a missing required Driver fail closed; see
 The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
 model-auth selector. Kubernetes supports these combinations:
 
-| Binding                           | Topology                           | Credential consumer                                                                                               |
-| --------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `api_key` with an OCC Secret      | Embedded OpenClaw                  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
-| `api_key` with an OCC Secret      | Dedicated OpenClaw                 | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
-| `api_key` with an OCC Secret      | Dedicated Codex                    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
-| `codex_pat` with an OCC Secret    | Dedicated Codex                    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
-| `oauth` (**Experimental**)        | Dedicated Codex, no Sandbox Driver | Codex owns its credential bundle on [private storage](drivers/kubernetes-compute/codex-oauth-storage.md).         |
-| `codex_pat` with a ServiceAccount | Dedicated Codex                    | Only Codex receives the account token; Backend and workspace ownership stay in control-plane checks.              |
-| `credential_source`               | Dedicated Harness                  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
+| Binding                                     | Topology           | Credential consumer                                                                                               |
+| ------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `api_key` with an OCC Secret                | Embedded OpenClaw  | Combined gateway/Harness receives `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, selected by its native model provider. |
+| `api_key` with an OCC Secret                | Dedicated OpenClaw | Only the native Harness receives `OPENAI_API_KEY`.                                                                |
+| `api_key` with an OCC Secret                | Dedicated Codex    | Only Codex receives `OPENAI_API_KEY` and logs in through stdin.                                                   |
+| `codex_pat` with a Secret or ServiceAccount | Dedicated Codex    | Only Codex receives `CODEX_ACCESS_TOKEN`; native login validates its account identity.                            |
+| `credential_source`                         | Dedicated Harness  | The Harness receives only a placeholder; the Sandbox egress proxy inserts the key from the Credential Gateway.    |
 
 A selected Sandbox uses only Compute's
 [rendered login mode and Secret projections](drivers/sandbox.md#provisioning-inputs).
 
+The `codex_pat` binding accepts a Secret or managed ServiceAccount source and
+renders `CODEX_LOGIN_MODE=codex_pat` for both. Source ownership and authorization
+remain distinct; native Codex derives account identity from the access token.
+
 A [`credential_source`](credential-sources.md) binding requires a selected
 Credential Gateway, the paired OpenShell Sandbox, a dedicated Codex or native
-OpenClaw Harness, and a source type whose Harness authentication is OpenAI
-`api_key`. Compute projects no model Secret, passes the gateway's attachments
-to the Sandbox, and for Codex sets `CODEX_LOGIN_MODE=api_key`. The revision
-activates only after every attachment is `ready`.
+OpenClaw Harness, and a compatible source type. The bundled catalog exposes
+OpenAI `api_key` authentication. Dedicated Codex also accepts the
+[external ChatGPT authentication contract](drivers/credential-gateway.md#external-chatgpt-authentication)
+through the bundled experimental `codex-oauth` source, with paired Refresh
+and operator-TLS setup described in the [OpenShell reference](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc). Compute projects no model Secret and
+passes the gateway's attachments to the Sandbox. The revision activates only
+after every attachment is `ready`.
 While a Credential Gateway is selected, deployment rejects the Secret-backed and
 account methods with `409`. Other Compute
 implementations reject bindings they do not support. SSH embedded OpenClaw accepts
@@ -132,12 +136,11 @@ outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
-Before app-server startup, Codex rejects missing/conflicting runtime inputs and
-requires a successful bounded native model turn after login; stored credentials
-do not prove provider acceptance. API-key/PAT state stays in its bounded ephemeral
-home, separate from transport/workload identity. Dedicated Gateways get no model
-credentials. Configuration `secretBindings` and the initial runtime credential API
-own Gateway transport/channel setup, not model auth.
+Codex validates inputs and requires a successful native model probe before serving.
+API-key/PAT/external-token state stays ephemeral; `chatgptAuthTokens` delegates
+refresh externally with no refresh token or native fallback. Dedicated Gateways
+receive no model credentials. Configuration `secretBindings` and the initial
+runtime credential API serve separate Gateway transport/channel authentication.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
@@ -156,11 +159,9 @@ environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
 `SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Dedicated Codex
 reaches its model over Responses WebSocket by default (embedded OpenClaw uses
 HTTP streaming), so an egress proxy or firewall in front of that model host must
-allow the WebSocket upgrade. An explicitly configured compatible endpoint uses
-HTTPS Responses streaming, including during the probe that ignores user config.
-For Secret-backed dedicated Codex, select the endpoint through the Kubernetes
-Compute Driver's [runtime configuration](drivers/kubernetes-compute.md#configuration);
-an OpenShell credential source supplies its own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
+allow the WebSocket upgrade. Compatible endpoints use HTTPS Responses streaming, including the probe.
+Secret-backed Codex uses [Compute configuration](drivers/kubernetes-compute.md#configuration);
+OpenShell sources supply their own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
 subprocess timeout once after one second. Each attempt has a 30-second cap within
 one 61-second budget, including the delay. Authentication rejection, malformed
 output, tool events, and external signals without timeout evidence do not retry.

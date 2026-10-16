@@ -7,14 +7,14 @@ Harness never receives the real credential. An Agent uses a model source through
 [`harnessAuth`](agents.md#harness-authentication) and other sources through its
 `credentialSources` list.
 
-Credential sources require a selected Credential Gateway. The only
-implementation is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
-Its `openai` API-key and `codex-pat` personal-access-token types authenticate dedicated Codex models, and its `bearer-token`
-type carries a static token to one API endpoint. With a
-[Credential Refresh Driver](drivers/credential-refresh.md) selected, its
-`oauth2-client-credentials` and `oauth2-refresh-token` types carry OAuth2
-access tokens that the gateway mints and refreshes itself. OpenShell is not a supported
-production Agent path; see its
+Credential sources require a selected Credential Gateway. The only implementation
+is the [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md).
+Its `openai` API-key and `codex-pat` personal-access-token types authenticate
+dedicated Codex models; `bearer-token` carries a static token to one API endpoint.
+Selecting a [Credential Refresh Driver](drivers/credential-refresh.md) also enables
+experimental `codex-oauth` device login and the `oauth2-client-credentials` and
+`oauth2-refresh-token` types, whose access tokens the gateway mints and refreshes.
+OpenShell is not a supported production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
 ## Register a source
@@ -40,11 +40,8 @@ production Agent path; see its
    }
    ```
 
-A successful request returns `201` with the source metadata. Its `id` starts
-with `cs_`, and `ref` is the reference used in Agent bindings. The response
-includes the gateway's `status` but never a credential value.
-
-The request fields are:
+Success returns `201` with source metadata (`cs_` ID and binding `ref`) and
+gateway `status`, never credential values. Request fields:
 
 - `name`: required; unique within the Namespace.
 - `type`: required; a type from the gateway catalog. A type the selected gateway
@@ -64,16 +61,17 @@ The request fields are:
   the Namespace does not hold fails with `404`.
 
 OCC rejects unknown fields, missing required fields, and Driver-invalid configuration
-before it reads any Secret. It reads each value through the Secret Driver, sends the values to the
-gateway, and stores only the Secret references. OCC records the source as
-`registering` before the gateway call. If the gateway rejects the registration,
-OCC deletes any copy and the record. If the call fails without an answer, such as
-on a timeout, a copy may still appear later, so the record stays listed as
-`deleting`; send DELETE to remove it.
+before reading Secrets through
+the Secret Driver. It passes values to the owning Gateway or Refresh Driver and
+stores only references, recording `registering` before the call. After rejection, OCC deletes any copy and
+the record. An uncertain result, such as a timeout, leaves the record `deleting`
+because a copy may appear later; send DELETE to remove it.
 
-A `refresh`-type source becomes `ready` only after the gateway mints its first
-token. If the issuer refuses the material or cannot be reached, registration
-fails with `503` naming the Driver's failure code, and OCC removes the source.
+Secret-backed refresh sources complete registration only after the gateway
+mints the first token. If the issuer refuses the material or cannot be reached,
+registration fails with `503` naming the Driver's failure code, and OCC removes
+the source. Device-authorized sources register before login; their live status
+stays `pending` until login and managed-token setup complete.
 
 ## Read and list sources
 
@@ -108,29 +106,26 @@ the source separately. A request that names an unlisted source, or removes the
 named source from the list, fails with `400` "The Harness credential source must
 be listed in the Agent's credentialSources." after the grant checks below.
 
-The caller needs `credential_source:operate` on each exact
-source, including any the update removes. Every source a request lists, including
-one it keeps, must be `ready` and registered through the selected Credential
-Gateway. Sources the Agent already binds need only `operate`, so after the
-Installation selects another Credential Gateway, an update that leaves
-`credentialSources` out still succeeds, and one that sets `harnessAuth` to
-another method or source and lists only new sources, or `[]`, removes the old
-ones. Listing an old source again fails with `503`, and so does deploying an
-Agent that still lists one; see [After a Credential Gateway change](#after-a-credential-gateway-change). Deployment also requires the Agent's
-service principal to have `operate` on each source; grant it with a
-[Namespace IAM](authorization.md#manage-namespace-policy) Role and an exact
-`credential_source` AccessBinding. The principal needs no permission on the
-underlying Secret. The worker rechecks both grants before it
-provisions the revision. On an Installation with no Credential Gateway, binding
-any source fails with `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, as registration
-does, once the caller holds `operate` on it. The paired Sandbox applies the
-sources, and a Credential Gateway requires a Sandbox Driver, so on an
-Installation without one, deploying an Agent that binds a source normally fails
-with that `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`. Only an Agent whose
-`harnessAuth` names no source, but whose list kept sources from an earlier
-configuration, fails first with `409 RESOURCE_CONFLICT` "Agent credential
-sources require a selected Sandbox Driver." See [Harness execution](harness-execution.md#harness-authentication)
-for the supported topology.
+The caller needs exact `credential_source:operate` on every current and requested
+source, including removals. Requested entries must be `ready` and owned by the
+selected gateway; existing bindings need only `operate`. After a gateway change,
+omitting `credentialSources` leaves existing bindings unchanged. To remove old bindings, change
+`harnessAuth` and replace the list with new sources or `[]`. Relisting an old
+source, or deploying one, returns `503`; see
+[After a Credential Gateway change](#after-a-credential-gateway-change).
+
+Deployment also requires the Agent's service principal to have exact `operate`
+on every source through a [Namespace IAM](authorization.md#manage-namespace-policy)
+Role and `credential_source` AccessBinding, but no underlying Secret permission.
+The worker rechecks both grants before provisioning.
+
+Without a Credential Gateway, binding fails with
+`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` after the caller's `operate` check.
+A gateway requires a Sandbox Driver, so deploying without one normally returns
+the same error. If `harnessAuth` names no source but an earlier configuration's
+list retains sources, deployment instead returns `409 RESOURCE_CONFLICT`:
+"Agent credential sources require a selected Sandbox Driver." See
+[Harness execution](harness-execution.md#harness-authentication).
 
 While a Credential Gateway is selected, deployment rejects `api_key` and
 `codex_pat` bindings (both Secret and ServiceAccount sources) with `409`. Guided Agent
@@ -138,6 +133,9 @@ provisioning rejects credential sources with `400`; create the Agent, then
 deploy it.
 
 ## Update a source
+
+Device-authorized sources reject PATCH with `409` before reading Secrets or
+changing refresh state. Sign in again and replace the Agent binding instead.
 
 Updating the underlying Secret does not change the gateway's copy. To push a new
 value, send
@@ -165,8 +163,7 @@ Migration `0048_administrator_credential_source_grants` adds the current
 Installation administrator Role from an earlier bootstrap. Other Roles keep
 their exact grants; grant `update` through a Namespace Role where needed.
 
-A running Agent keeps the previous value until its Harness restarts, because the
-gateway gives updated values only to new processes. To rotate a key:
+Updated static values reach new Harness processes only. To rotate a key:
 
 1. Update the Secret's value (`occ secret update`), or create a replacement
    Secret.
@@ -174,7 +171,7 @@ gateway gives updated values only to new processes. To rotate a key:
    `secrets` if you created a new Secret.
 3. Redeploy each Agent that uses the source.
 
-A `refresh`-type source keeps no static value: an update replaces its refresh
+A Secret-backed `refresh` source keeps no static value: an update replaces its refresh
 material and mints a new token, and OCC commits replacement Secret references
 only after that mint succeeds. If the mint fails, the update returns `503`, but
 the gateway keeps the new material; the source stays `ready` and its
@@ -204,8 +201,9 @@ Rotation does not revoke the previous token at the issuer, and Agents need no
 redeploy.
 
 When `status.refresh.recoveryAction` is `reauthorize`, the issuer revoked the
-refresh token. Complete a new sign-in, store its refresh token in a new Secret,
-and update the source to reference it.
+refresh token. For a Secret-backed source, store new authorization material in a
+new Secret and update the source. For device authorization, sign in again and
+replace the Agent binding.
 
 ## Withdraw a source from an Agent
 
@@ -233,8 +231,9 @@ requires exact `delete` and returns `204`:
   `409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`, and for a source the selected driver
   did not register it returns `503`; neither changes the record.
 - It marks the record `deleting` before it asks the gateway to remove its copy.
-  A gateway failure returns `503` and leaves the record `deleting`. Send the same
-  request again; an already-removed copy counts as deleted.
+  A dependency failure returns `503`; an OpenShell provider ownership mismatch
+  returns `404`. Both retain `deleting`. Resolve ownership drift before retrying;
+  an already-removed copy counts as deleted.
 - Within 70 seconds of registration, deletion removes the copy but returns `503`
   and keeps the record, because a timed-out registration could still create a
   copy. Retry after that window.
@@ -254,11 +253,9 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 - To keep an Agent running, register a replacement source through the selected
   driver, list it in place of the old one, and deploy again.
-- To delete an old source, an administrator changes the Installation
-  configuration to select the driver ID that registered it again, deletes the
-  source, then selects the new driver. The same steps finish a source that an earlier release left
-  `deleting` after a gateway change, which otherwise keeps its Namespace and
-  Secrets from being deleted.
+- To delete an old source, an administrator reselects its original driver ID,
+  deletes it, then selects the new driver. This also finishes sources left
+  `deleting` by earlier releases, unblocking Namespace and Secret deletion.
 
 ## Errors
 

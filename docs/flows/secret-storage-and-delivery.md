@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-15
-last_updated_session: authoring-run/7eb24321-3670-4154-adde-41a0f1b36728
+updated: 2026-10-16
+last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -140,6 +140,7 @@ execution topology.
 
 `scripts/first-agent.mjs:main`;
 `scripts/first-agent.mjs:assertManagedRevision`;
+`internal/occdev/kubernetes.go:openShellInstallationConfiguration`;
 `scripts/first-agent-database.mjs:grantFirstAgentSecret`
 
 The [tool](../../scripts/first-agent.mjs) targets the persistent installation
@@ -171,9 +172,12 @@ a new revision. The private helper record freezes the Harness and Sandbox Driver
 choices so a rerun cannot silently change topology.
 
 The tool provisions initial runtime credentials and requests deployment through
-OCC. Its revision check expects OpenShell's frozen Codex policy:
-`sandbox: "danger-full-access"` and `approvalsReviewer: "user"` for both API-key
-and PAT sources. Other Configuration differences fail the drift check. Once the revision is active,
+OCC. Its revision check expects the local OpenShell profile's Driver-owned
+workspace, `/sandbox/enterprise`, and frozen Codex policy:
+`sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
+or PAT sources. It can recognize a prior PAT revision frozen with
+`workspace-write`; a new deployment uses the current policy. Other workspace or
+Configuration differences fail the drift check. Once the revision is active,
 [`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
 tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
@@ -302,6 +306,10 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 01:36: Combine the OpenShell workspace guard with credential-independent Codex permissions. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
+
+- 2026-10-16 00:10: Align the first-Agent revision guard with the selected OpenShell workspace while preserving exact drift checks. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 22e779fab82cccc65cadf5b518a881278f2f62f9)
 
 - 2026-10-15 09:40: Align first-Agent revision validation with OpenShell full access for API-key and PAT sources. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 7d777fb82e9af717fe40c46b6602df9851ec519e)
 

@@ -675,6 +675,16 @@ test(
       original.values?.tools?.deny?.includes("*"),
       "The native Configuration must deny tools before the regression check",
     );
+    if (selectedSandboxDriver === "openshell") {
+      // Admission pins the Harness workspace to Local Setup's selected Sandbox data mount.
+      const admitted = await requestLocalApi(
+        first.origin,
+        serviceKey,
+        "GET",
+        `${agentPath}/revisions/${first.identity.revisionId}`,
+      );
+      assert.equal(admitted.configuration.agents.defaults.workspace, "/sandbox/enterprise");
+    }
     if (selectedControlUi) {
       assert.equal(original.generation, 2);
       assert.equal(original.values.gateway.publicOrigin, first.controlUiOrigin);

@@ -38,7 +38,7 @@ import {
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
 } from "./credentials.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 
 // One page of revision summaries, newest first (finding 1323). Summaries carry no saved
 // settings; read the exact revision for those.
@@ -2939,7 +2939,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             try {
               if (options.changedSecrets !== undefined) {
                 for (const secret of options.changedSecrets) {
-                  await ensureSecretOperateBinding(context, freshAgent, secret);
+                  await ensureCredentialOperateBinding(context, freshAgent, secret);
                 }
               }
             } catch (error) {
@@ -3078,8 +3078,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
       const originalFields = retained?.originalFields ?? auth.capture();
-      const bindingFields = ({ method, secretSource, account }) =>
-        JSON.stringify({ method, secretSource, account });
+      const bindingFields = ({ method, secretSource, credentialSource, account }) =>
+        JSON.stringify({ method, secretSource, credentialSource, account });
       syncUnsavedAuthentication = () => {
         // Pending and saved states already gate deployment with their own messages.
         data.setAuthenticationUnsaved(
@@ -3160,17 +3160,36 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             return;
           }
           if (!savedAuthentication) {
+            const credentialSources = (current.credentialSources ?? []).filter(
+              (source) =>
+                current.harnessAuth?.method !== "credential_source" ||
+                current.harnessAuth.sourceId === harnessAuth?.sourceId ||
+                source.sourceId !== current.harnessAuth.sourceId,
+            );
+            if (
+              harnessAuth?.method === "credential_source" &&
+              !credentialSources.some((source) => source.sourceId === harnessAuth.sourceId)
+            ) {
+              credentialSources.push({ sourceId: harnessAuth.sourceId });
+            }
             mutationStarted = true;
             savedAuthentication = await request(path, {
               method: "PATCH",
-              body: { configurationId: agent.configurationId, harnessAuth },
+              body: { configurationId: agent.configurationId, harnessAuth, credentialSources },
             });
             savedAgent = savedAuthentication;
             details = null;
           }
-          if (harnessAuth?.source?.kind === "secret") {
+          if (harnessAuth?.method === "credential_source") {
+            feedback.textContent = "Authentication saved. Checking credential source access…";
+            await ensureCredentialOperateBinding(context, current, {
+              kind: "credential_source",
+              namespaceId: context.namespaceId,
+              id: harnessAuth.sourceId,
+            });
+          } else if (harnessAuth?.source?.kind === "secret") {
             feedback.textContent = "Authentication saved. Checking Secret access…";
-            await ensureSecretOperateBinding(context, current, harnessAuth.source);
+            await ensureCredentialOperateBinding(context, current, harnessAuth.source);
           }
           if (context.isCurrent()) {
             context.drafts.forget("authentication");
@@ -3187,7 +3206,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           if (error.status === 401) {
             context.onExpired();
           } else if (savedAuthentication) {
-            feedback.textContent = `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
+            feedback.textContent =
+              savedAuthentication.harnessAuth?.method === "credential_source"
+                ? `Authentication source saved, but this Agent's credential source access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent operate access to the selected credential source, then retry credential access. Deployment readiness is not confirmed.`
+                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
           } else {
             outcomeUnknown =
               error.outcomeUnknown ??

@@ -393,6 +393,13 @@
       "when": 1787000000056,
       "tag": "0056_held_authentication_session",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1787000000057,
+      "tag": "0057_canonical_harness_auth",
+      "breakpoints": true
     }
   ]
 }

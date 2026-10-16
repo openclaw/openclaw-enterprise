@@ -1144,6 +1144,33 @@ test("Back after an abandoned Refresh rebuilds the page instead of restoring it"
   assert.equal(await viewTag(page), null);
 });
 
+// Refresh, and a navigation to the shown page's own URL (save and reload actions make one), read
+// the page again and rebuild it, even when every read still matches the page kept for Back
+// (finding 1585).
+for (const c of [
+  { name: "Refresh", act: clickRefresh },
+  {
+    name: "Following the Agents link from the Agents list",
+    act: (page) =>
+      page
+        .getByRole("navigation", { name: "Main navigation" })
+        .getByRole("link", { name: "Agents", exact: true })
+        .click(),
+  },
+]) {
+  test(`${c.name} rebuilds the shown page instead of remounting it`, async (t) => {
+    const { namespace, page, listUrl } = await openList(t, "Same page", "Unchanged Agent");
+    await tagView(page, "shown");
+    const read = page.waitForResponse(agentsRead(namespace));
+    await c.act(page);
+    await read;
+    await listShown(page, "Unchanged Agent");
+    // The link must reach the same URL, or this would test an ordinary visit.
+    assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, listUrl);
+    assert.equal(await viewTag(page), null, "the shown page was remounted instead of rebuilt");
+  });
+}
+
 test("A first visit's read that answers after a second navigation paints nothing", async (t) => {
   const { namespace, agent, page } = await openList(t, "Superseded visit", "Late Agent");
   const agentRead = await holdAgent(t, page, namespace, agent);

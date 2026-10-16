@@ -31,7 +31,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
       "p",
       { className: "hint" },
       element("strong", {}, "Experimental. "),
-      "Codex OAuth is intended for trying a first deployment. Reconnects, later versions, and credential recovery have known limitations.",
+      "ChatGPT sign-in, plugin access, deployment, and credential recovery may not work as expected.",
     ),
     element("p", { className: "hint" }, hint),
     instructions,
@@ -52,7 +52,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
     }
     start.hidden = Boolean(login);
     cancel.hidden = !login;
-    cancel.textContent = login?.status === "ready" ? "Discard staged login" : "Cancel login";
+    cancel.textContent = login?.status === "ready" ? "Clear selection" : "Cancel login";
     for (const control of [start, cancel]) {
       control.disabled = disabled || busy;
     }
@@ -61,7 +61,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
       (busy
         ? "Checking Codex login…"
         : login?.status === "ready"
-          ? "ChatGPT login ready. Credentials are stored on the server."
+          ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
           : login
             ? "Waiting for you to complete sign-in in the other tab…"
             : "Sign in to connect your ChatGPT account.");
@@ -137,7 +137,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
     error = "";
     update();
     try {
-      const result = await context.request(`${base}/${encodeURIComponent(login.source.id)}/poll`, {
+      const result = await context.request(`${base}/${encodeURIComponent(login.session.id)}/poll`, {
         method: "POST",
         body: {},
       });
@@ -166,7 +166,7 @@ export function createDeviceLogin({ context, agentId, initial, onChange, hint })
     error = "";
     update();
     try {
-      await context.request(`${base}/${encodeURIComponent(discarded.source.id)}`, {
+      await context.request(`${base}/${encodeURIComponent(discarded.session.id)}`, {
         method: "DELETE",
         expectedStatus: 204,
       });

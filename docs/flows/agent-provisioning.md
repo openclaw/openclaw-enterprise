@@ -8,7 +8,7 @@ last_updated_session: fix-1375-1377
 
 ## Overview
 
-Console saves new Slack token Secrets from the channel setup modal through the existing Secrets API, then sends inline Configuration and ordinary Secret references to the provisioning API. Model authentication discovers models from an entered API key or service account token, then saves the credential as a Secret before provisioning. Presets retain their existing Secret binding. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves entered Slack and model credentials through the Secrets API, then submits inline Configuration and Secret references for provisioning. Presets retain existing bindings. OCC queues work without placeholder resources. The worker creates Configuration and Agent, grants exact Secret access, prepares trusted-proxy runtime credentials, and admits the first deployment.
 
 The original provisioning handle follows the first deployment to activation or failure. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own runtime reconciliation; later deployments use separate handles.
 
@@ -72,7 +72,7 @@ On ordinary draft creation paths, Console creates the Configuration and Agent, t
 
 `apps/controller/src/http/agents.ts:createAgentHandlers` receives schema-validated inputs after shared admission. It supplies the Namespace from the route and creates the audit event inside the controller transaction.
 
-OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. A Secret binding with a reserved or invalid destination, a Secret reference to another Namespace, or missing, `runtime` or credential-source Harness authentication is rejected with `400 INVALID_REQUEST` and a message naming the rule; a reference to a Secret the Namespace does not hold stays `404`. After the Installation selects another Secret Driver, a request, status read or retry that uses a Secret stored through the previous one answers `503` after the Secret's `operate` check and lookup, with a message to save replacement Secrets and submit a new request. A worker that meets such a Secret fails the accepted work on that attempt with `PROVISIONING_REJECTED` and the same message; with no usable Secret Driver selected, it keeps retrying. Before a new API request enters the write transaction, the selected ChannelDriver checks configured credentials through authorized Secret callbacks. The Slack Driver checks token roles and bot authentication; this does not pin Secret versions or add worker revalidation. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent. Repository bindings the Compute topology cannot deliver (for example, any Agent in a Sandbox) and initial workspace files in a Sandbox get Agent create's `409` before queueing, and again on retry ([Compute admission](../reference/drivers/compute-admission.md)). Deployment still checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
+OCC first authorizes Agent `create`, Configuration `create` and Installation `administer` for the Namespace, as status and retry do, so a caller without them gets `403` whatever the body says. It then validates the accepted Configuration, references, workspace inputs, supported execution mode and current authority. A Secret binding with a reserved or invalid destination, a Secret reference to another Namespace, or missing, `runtime` or credential-source Harness authentication is rejected with `400 INVALID_REQUEST` and a message naming the rule; a reference to a Secret the Namespace does not hold stays `404`. After the Installation selects another Secret Driver, a request, status read or retry that uses a Secret stored through the previous one answers `503` after the Secret's `operate` check and lookup, with a message to save replacement Secrets and submit a new request. A worker that meets such a Secret fails the accepted work on that attempt with `PROVISIONING_REJECTED` and the same message; with no usable Secret Driver selected, it keeps retrying. Before a new API request enters the write transaction, the selected ChannelDriver checks configured credentials through authorized Secret callbacks. The Slack Driver checks token roles and bot authentication; this does not pin Secret versions or add worker revalidation. The repository Driver validates current Namespace selections before job admission and again when the worker creates the Agent. Repository bindings the Compute topology cannot deliver (for example, any Agent in a Sandbox) get Agent create's `409` before queueing and on retry. Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates to it or refuses unsupported placement before staging files ([Compute admission](../reference/drivers/compute-admission.md)). Deployment still checks the exact Harness topology through the Compute Driver. It stores the accepted request and its deduplication fingerprint in `agent_provisioning_work`, then enqueues `controller_work` with `work_kind = 'provisioning'`. Agent and Configuration creation happen later. Identical actor/Namespace/request IDs return the same work; changed input conflicts.
 
 The `202` response contains `data.provisioning`, with the work ID and status URL. Public progress exposes result IDs and safe errors without input values or backend credentials.
 
@@ -97,12 +97,13 @@ with all required containment facets. The pinned runtime lacks that support;
 an operator must declare a compatible custom image in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
-Admission does not prove that the
-Driver can deliver every workload requirement. The current Sandbox handoff
-rejects workspace initialization, and stock OpenShell rejects Secret-backed
-environment projection. These requirements remain enforced; the
+Admission does not prove workload delivery. Sandbox receives private setup
+identity and the exact Secret reference through `HarnessWorkloadRequirements.workspaceSetup`;
+OpenShell executes initialization through `ExecSandbox` before Harness startup.
+See [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
+Stock OpenShell rejects Secret-backed environment projection; the
 [OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
-describes the upstream delivery limits and verification-only path.
+covers remaining limits and verification-only support.
 
 ### 5. Failures preserve useful outputs
 
@@ -141,9 +142,14 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 - 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
 - 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
 - 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
 - 2026-10-12 22:30: Provisioning refuses undeliverable repository bindings and Sandbox workspace files before queueing. (fix-1144-1145b - d34b4a8f7)
 
 - 2026-10-12 11:55: Follow the initial deployment on the original provisioning handle and retain its failure identity. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
+
+- 2026-10-09 13:59: Keep OpenShell initialization and current provisioning limits within the flow budget. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - a9298d2ed)
 
 - 2026-10-09 12:00: A Configuration create still absent 90 seconds after it began is resent. (fix-911)
 - 2026-10-08 14:00: Missing or `runtime` Harness authentication is a named `400`, not a generic `404`. (fix-821-824)

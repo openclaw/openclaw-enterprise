@@ -3,7 +3,9 @@
 ## Overview
 
 Use these tests to check OpenShell setup and real Agent execution. Run commands
-from the repository root.
+from the repository root. The current setup selects official OpenShell
+`v0.1.4`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
+for the exact versions and qualification boundary.
 
 ## Start a reusable development environment
 
@@ -64,6 +66,20 @@ The real Sandbox suite tests a dedicated Codex Agent, including authenticated
 Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
+
+The suite delivers initial workspace files through real `ExecSandbox` and reads
+them through the Agent API. Separate startup integration checks completion
+markers, uncertain acknowledgments and edit preservation with a local native
+initializer; those checks alone do not prove the OpenShell transport.
+
+<a id="external-chatgpt-authentication-boundary"></a>
+
+Experimental ChatGPT OAuth has separate [receiver fixtures and full-stack
+qualification](openshell-oauth.md#receiver-fixtures-and-full-stack-qualification).
+The [controlled-issuer proof](openshell-oauth.md) covers Gateway refresh and
+official operator-mTLS access-token retrieval. Synthetic issuer results do not
+prove real ChatGPT login or model execution; repeat credentialed qualification
+against the exact selected images.
 
 The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` and an
 `OCC_TEST_OPENAI_MODEL` that the token can use. Do not put the token in a command,

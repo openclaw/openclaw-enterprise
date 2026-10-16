@@ -36,6 +36,7 @@ import {
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
+  type CredentialSourceReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -2295,9 +2296,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2311,9 +2312,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2341,9 +2342,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2360,9 +2361,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         {
           pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
       );
       reply.header("cache-control", "no-store");
@@ -4264,7 +4265,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        host: "auth.openai.com",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
       });
