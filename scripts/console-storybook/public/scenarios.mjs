@@ -820,6 +820,14 @@ export const scenarios = {
       "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
     ],
   },
+  agentsCreateRestrictedEmpty: {
+    group: "Pages/Agents",
+    name: "Empty, Create Agent unavailable",
+    emptyAgents: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -2306,6 +2314,14 @@ export const scenarios = {
     description:
       "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
     gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+  },
+  createRestricted: {
+    group: "Pages/Create Agent",
+    name: "Create Agent unavailable for this caller",
+    path: create,
+    readOnlyPermissionSummary: true,
+    description:
+      "Opened by URL, Create Agent refuses up front when the permission summary says this caller cannot create an Agent here. The API still decides.",
   },
   createCapabilitiesError: {
     group: "Pages/Create Agent",
