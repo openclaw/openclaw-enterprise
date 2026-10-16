@@ -46,8 +46,11 @@ const secretShapes = [
 // the safe side.
 const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
+// A JSON document embedded in a string escapes its quotes ({\"password\":\"value\"}), up to
+// three levels deep, so backslashes may precede the quotes around the key and the value
+// (finding 1551). A value may hold a backslash, but not one that escapes its closing quote.
 const secretAssignment =
-  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?["']?\s*[:=]\s*["']?)[^\s"',;}&]+/giu;
+  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?\\{0,3}["']?\s*[:=]\s*\\{0,3}["']?)(?:[^\s"'\\,;}&]|\\(?!\\{0,3}["']))+/giu;
 
 function isPublicEnvName(name) {
   return (
@@ -247,6 +250,27 @@ export function maskPrivateKeyLines(lines) {
     mask(endLine - orphanKeyLines, endLine);
   }
   return masked;
+}
+
+// The newest lines of a container log that match `pattern` and not `exclude`, each
+// redacted and then clipped to `lineChars`, within `budget` characters, oldest first.
+// Private keys are masked across lines before the filter: a key's body line could match
+// a short pattern word, and redactLogLine sees one line at a time (finding 1551).
+export function newestMatchingLogLines(logs, secrets, { pattern, exclude, budget, lineChars }) {
+  const kept = [];
+  let length = 0;
+  for (const line of maskPrivateKeyLines(logs.split("\n")).reverse()) {
+    if (!pattern.test(line) || exclude?.test(line)) {
+      continue;
+    }
+    const shown = redactLogLine(line, secrets, lineChars);
+    if (length + shown.length + 1 > budget) {
+      break;
+    }
+    kept.push(shown);
+    length += shown.length + 1;
+  }
+  return kept.reverse().join("\n");
 }
 
 // Lines of a failed file's output (or a component log) for the diagnostics

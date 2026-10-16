@@ -2143,6 +2143,79 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
   assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
 });
 
+test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
+  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
+  // Synthetic values only; none is in the env or has a known token shape.
+  for (const [line, expected] of [
+    [
+      String.raw`body {\"password\":\"plainvalue123\"} end`,
+      String.raw`body {\"password\":\"[redacted]\"} end`,
+    ],
+    [
+      String.raw`{\"client_secret\":\"syntheticClientValue0123\",\"realm\":\"occ\"}`,
+      String.raw`{\"client_secret\":\"[redacted]\",\"realm\":\"occ\"}`,
+    ],
+    [
+      String.raw`{\\\"api_key\\\":\\\"syntheticApiValue456\\\"}`,
+      String.raw`{\\\"api_key\\\":\\\"[redacted]\\\"}`,
+    ],
+    // Unescaped forms keep their behaviour, and a backslash inside a value is redacted with it.
+    [`{"password":"plainvalue123"}`, `{"password":"[redacted]"}`],
+    [String.raw`password=synthetic\value tail`, "password=[redacted] tail"],
+    // Prose that names a keyword without assigning it is untouched.
+    ["SyntaxError: Unexpected token in JSON at position 3", null],
+    ["SyntaxError: Unexpected token '}'", null],
+  ]) {
+    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line);
+  }
+  assert.doesNotMatch(
+    redactFailureDetail(
+      { message: String.raw`config {\"password\":\"plainvalue123\"}` },
+      secrets,
+      "/repo",
+    ).message,
+    /plainvalue123/,
+  );
+
+  // A private key's body line that matches the filter is masked before the filter keeps it.
+  const logs = [
+    "worker start",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "MIIEsyntheticWorkerBodyLineAAAA",
+    "syntheticBodyLineTwoBBBBBBBB",
+    "-----END RSA PRIVATE KEY-----",
+    "worker turn failed: ECONNRESET",
+    "debug noise",
+  ].join("\n");
+  const shown = newestMatchingLogLines(logs, secrets, {
+    pattern: /worker|turn/iu,
+    exclude: /noise/u,
+    budget: 1_000,
+    lineChars: 400,
+  });
+  assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  // Newest lines win the budget, and each kept line is clipped after redaction.
+  assert.equal(
+    newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
+      pattern: /turn/u,
+      budget: 20,
+      lineChars: 400,
+    }),
+    "turn two\nturn three",
+  );
+  assert.equal(
+    newestMatchingLogLines(`turn password=${"x".repeat(50)}`, secrets, {
+      pattern: /turn/u,
+      budget: 1_000,
+      lineChars: 20,
+    }),
+    "turn password=[redac... [truncated]",
+  );
+});
+
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
