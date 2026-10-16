@@ -5060,7 +5060,7 @@ export const scenarios = {
     steps: [
       "Open View all 50 people. Search for Riley and then a name that is absent.",
       "Clear the search, scroll the full list, and close with Escape or Close. Focus returns to View all people.",
-      "Repeat at 390px; the panel fits the screen and its list scrolls.",
+      "Repeat at 390px with a reserved scrollbar gutter; both panel edges stay visible and its list scrolls.",
     ],
   },
   gatewayPeopleSearch: {

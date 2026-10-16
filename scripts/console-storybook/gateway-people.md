@@ -12,7 +12,8 @@ identity-provider admission; use the installed Gateway proof for that boundary.
 4. Inspect **Empty**, **Not Configured**, **Loading**, **Denied**, **Stopped**, **Avatar**, **50 People**, **Search People**, and **No Matching People**.
 5. Open **50 People**. Confirm the overview shows six profiles and the total count.
    Open the panel, search by name, clear the search, scroll, and close with Escape
-   and Close. Check focus returns to the launch button; repeat at 390px. Inspect
+   and Close. Check focus returns to the launch button; repeat at 390px with a
+   reserved scrollbar gutter and confirm both panel edges stay visible. Inspect
    **Search People** and **No Matching People**.
 6. Record the panel search/close and refresh/recovery interactions. Label these captures as simulated UI proof.
 7. Repeat the populated roster and avatar checks against installed OCC after two real humans connect.

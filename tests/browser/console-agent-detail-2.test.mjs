@@ -3534,7 +3534,9 @@ test("Gateway people preview opens a searchable, alphabetized full roster", asyn
   const namespace = await fixture.createNamespace("Large team", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, {
+    args: ["--disable-features=OverlayScrollbar"],
+  });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const card = page.getByRole("region", { name: "People" });
   const preview = card.getByRole("list", { name: "Gateway people", exact: true });
@@ -3546,6 +3548,16 @@ test("Gateway people preview opens a searchable, alphabetized full roster", asyn
   );
   await viewAll.click();
   const panel = page.getByRole("dialog", { name: "People", exact: true });
+  // A stable scrollbar gutter reduces the containing width below 100vw.
+  // Check actual bounds: document scrollWidth alone misses negative-left overflow.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const bounds = await panel.boundingBox();
+  const availableWidth = await page.evaluate(
+    () => globalThis.document.documentElement.getBoundingClientRect().width,
+  );
+  assert.ok(availableWidth < 390, "the regression must exercise a reserved scrollbar gutter");
+  assert.ok(bounds.x >= 0, `drawer left edge ${bounds.x} must remain visible`);
+  assert.ok(bounds.x + bounds.width <= availableWidth, "drawer must fit its containing width");
   const search = panel.getByRole("searchbox", { name: "Search people" });
   assert.equal(await search.evaluate((node) => node === globalThis.document.activeElement), true);
   const fullList = panel.getByRole("list", { name: "All Gateway people", exact: true });
