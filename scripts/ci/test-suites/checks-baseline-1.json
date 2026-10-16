@@ -356,7 +356,10 @@
     },
     {
       "path": "tests/integration/dev-entry-cdpath.test.mjs",
-      "expectedTests": ["development wrappers resolve relative paths without changing CDPATH"]
+      "expectedTests": [
+        "development wrappers resolve relative paths without changing CDPATH",
+        "k3d and CI tool setup resolve the checkout without CDPATH"
+      ]
     },
     {
       "path": "tests/integration/dev-up.test.mjs",

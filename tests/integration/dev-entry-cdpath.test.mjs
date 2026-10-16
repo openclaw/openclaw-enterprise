@@ -64,3 +64,38 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
     }
   }
 });
+
+test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
+  // Each wrapper exits on a path that needs no cluster, container engine or download:
+  // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.
+  const directory = await mkdtemp(join(tmpdir(), "openclaw tool entry-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const checkout = join(directory, "checkout");
+  const search = join(directory, "shell search");
+  await mkdir(join(checkout, "scripts", "ci"), { recursive: true });
+  await mkdir(join(search, "scripts", "ci"), { recursive: true });
+  for (const script of ["k3d", "ci/setup-tools.sh"]) {
+    await copyFile(join(repository, "scripts", script), join(checkout, "scripts", script));
+  }
+  for (const cdpath of ["", ".:", search]) {
+    const env = { ...process.env, CDPATH: cdpath, RUNNER_TEMP: join(directory, "runner") };
+    delete env.BASH_ENV;
+    delete env.ENV;
+    delete env.SHELLOPTS;
+    delete env.GITHUB_ENV;
+    const k3d = spawnSync("/bin/bash", ["scripts/k3d", "help"], {
+      cwd: checkout,
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(k3d.status, 0, `CDPATH=${cdpath}: ${k3d.stderr || k3d.error?.message}`);
+    assert.match(k3d.stdout, /^usage: \.\/scripts\/k3d/);
+    const setup = spawnSync("/bin/bash", ["scripts/ci/setup-tools.sh", "unknown-profile"], {
+      cwd: checkout,
+      encoding: "utf8",
+      env,
+    });
+    assert.equal(setup.status, 64, `CDPATH=${cdpath}: ${setup.stderr || setup.error?.message}`);
+    assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
+  }
+});
