@@ -84,7 +84,12 @@ export function carryDocument(base, mine, current, path = "") {
   // with a plain sibling: `gateway.auth.mode` against `gateway.port` names nothing (finding 1541).
   // An object one browser added still counts as plain, since an added `auth.token` reference
   // beside a changed `auth.mode` is the pair finding 1524 must name.
-  const plain = (key) => ![base, mine, current].every((side) => isRecord(own(side, key)));
+  const plain = (key) =>
+    [base, mine, current].some((side) => {
+      const value = own(side, key);
+      // A Secret reference is a setting, even though its JSON value is an object.
+      return !isRecord(value) || (value.source === "env" && typeof value.id === "string");
+    });
   const minePlain = mineKeys.filter(plain);
   const theirPlain = theirKeys.filter(plain);
   if (path && !grouping && minePlain.length && theirPlain.some((key) => !minePlain.includes(key))) {

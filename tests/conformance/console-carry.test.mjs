@@ -148,3 +148,25 @@ test("an object-valued change beside a plain sibling's change names nothing", ()
   );
   assert.deepEqual(auth.mixed, ["/gateway/auth"]);
 });
+
+// A Secret reference is an object in the document, but changing its id selects another Secret.
+// Whether the reference was added or changed must not decide if we flag the mixed auth settings.
+test("changing an existing Secret reference beside an auth mode change names their object", () => {
+  const auth = { mode: "token", token: ref("GATEWAY_TOKEN") };
+  const base = { gateway: { auth } };
+  const switched = {
+    gateway: { auth: { ...auth, mode: "password", password: ref("GATEWAY_PASSWORD") } },
+  };
+  const rotated = { gateway: { auth: { ...auth, token: ref("NEXT_GATEWAY_TOKEN") } } };
+  const expected = { ...switched.gateway.auth, token: rotated.gateway.auth.token };
+
+  for (const [mine, current] of [
+    [switched, rotated],
+    [rotated, switched],
+  ]) {
+    const { value, conflicts, mixed } = carryDocument(base, mine, current);
+    assert.deepEqual(value.gateway.auth, expected);
+    assert.deepEqual(conflicts, []);
+    assert.deepEqual(mixed, ["/gateway/auth"]);
+  }
+});
