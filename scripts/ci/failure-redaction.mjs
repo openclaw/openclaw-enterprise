@@ -33,7 +33,8 @@ const privateKeyShape =
 // header keeps its closing quote (finding 1556); one followed by more of the value (`\/`, `a)b`)
 // is part of it. A quote may open the value and is kept. A short value is redacted when it has
 // a digit, so "Bearer token expired" stays readable.
-const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|["'\\)\]}](?=[^\s"'\\)\]}]))`;
+// A run of delimiters followed by more value (including a log-escaped quote) belongs to it.
+const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|["'\\)\]}]+(?=[^\s"'\\)\]}]))`;
 const authSchemeShape = new RegExp(
   String.raw`\b(?:[Bb]earer|BEARER|Basic|Token)\s+(["']?)(?:${authSchemeValueChar}{8,}|(?=${authSchemeValueChar}*\d)${authSchemeValueChar}+)`,
   "gu",

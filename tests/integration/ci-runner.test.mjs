@@ -2273,6 +2273,9 @@ test("a quoted auth header keeps the failure text after it", async () => {
       String.raw`{\"authorization\":\"[redacted]\"}`,
     ],
     ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
+    // Logs can escape or repeat delimiters inside the value. Keep only the actual closing ones.
+    [String.raw`got Bearer synthetic0\"private-tail`, "got [redacted]"],
+    ["map[Authorization:[Basic synthetic0))private-tail]]", "map[Authorization:[redacted]]"],
     // A quote that opens the value is kept with it.
     [`curl -H "Authorization: Bearer 'synthetic0'"`, `curl -H "Authorization: '[redacted]'"`],
     ['Authorization: Bearer "synthetic0"', 'Authorization: "[redacted]"'],
