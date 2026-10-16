@@ -46,11 +46,39 @@ const secretShapes = [
 // the safe side.
 const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
-// A JSON document embedded in a string escapes its quotes ({\"password\":\"value\"}); up to
-// three levels deep that is 1, 3 or 7 backslashes before the quotes around the key and the
-// value (finding 1551). A value may hold a backslash, but not one that escapes its closing quote.
-const secretAssignment =
-  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?\\{0,7}["']?\s*[:=]\s*\\{0,7}["']?)(?:[^\s"'\\,;}&]|\\(?!\\{0,7}["']))+/giu;
+
+// A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
+// been serialized, its opening delimiter tells us how many backslashes end the value.
+function redactSecretAssignments(text) {
+  const assignment =
+    /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?(?:\\*["'])?\s*[:=]\s*)(?:(\\*)(["'])|[^\s"',;}&]+)/giu;
+  let result = "";
+  let end = 0;
+  for (let match; (match = assignment.exec(text));) {
+    const [, key, escapes = "", quote = ""] = match;
+    const delimiter = escapes + quote;
+    result += text.slice(end, match.index) + key + delimiter + "[redacted]";
+    end = assignment.lastIndex;
+    if (!quote) {
+      continue;
+    }
+
+    // In ordinary JSON, a closing quote follows an even number of backslashes. Each
+    // serialization doubles that escape width. If the log ends mid-value, redact to its end.
+    const escapeWidth = 2 * delimiter.length;
+    let backslashes = 0;
+    while (end < text.length) {
+      const char = text[end++];
+      if (char === quote && backslashes % escapeWidth === escapes.length) {
+        result += delimiter;
+        break;
+      }
+      backslashes = char === "\\" ? backslashes + 1 : 0;
+    }
+    assignment.lastIndex = end;
+  }
+  return result + text.slice(end);
+}
 
 function isPublicEnvName(name) {
   return (
@@ -114,8 +142,7 @@ function redactText(text, limit, secrets, root, cut = text?.length >= failureInp
   for (const shape of secretShapes) {
     result = result.replace(shape, "[redacted]");
   }
-  result = result
-    .replace(secretAssignment, "$1[redacted]")
+  result = redactSecretAssignments(result)
     .replace(urlCredential, "://[redacted]@")
     .replace(/[^\P{Cc}\n\t]/gu, "");
   if (cut) {
