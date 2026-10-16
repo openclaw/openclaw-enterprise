@@ -748,6 +748,46 @@ test("Configuration HTTP names a model provider baseUrl or api the runtime canno
   assert.deepEqual(updated.body.data.values, local);
 });
 
+test("Deployment refuses a stored model provider baseUrl or api that saves refuse, with the save's text", async () => {
+  // Finding 1549: a row an older release stored with such a value deployed (202) and failed
+  // later as an unexplained model probe failure. The rule is OCC's, so it holds on any Compute.
+  const field = (path) => `/models/providers/openai/${path}`;
+  const rows = [
+    [{ baseUrl: "ftp://models.example/v1" }, absoluteUrl(field("baseUrl"))],
+    [
+      { baseUrl: "https:/models.example/v1" },
+      `Configuration field ${field("baseUrl")} must start with https:// or http:// (the // after the scheme is missing).`,
+    ],
+    [{ baseUrl: "https://models.example/v1", api: "openai-bogus" }, modelApi(field("api"))],
+    [
+      { models: [{ id: "gpt-4.1", name: "gpt-4.1", baseUrl: "/v1" }] },
+      absoluteUrl(field("models/0/baseUrl")),
+    ],
+  ];
+  for (const [label, computeDriver] of [
+    ["Kubernetes", kubernetesRules("compute-model-provider-deploy", ...configurationRules)],
+    [
+      "ready",
+      createReadyComputeDriver("compute-model-provider-deploy-ready", { validateHarnessAuth() {} }),
+    ],
+  ]) {
+    const configurationDriver = createConfigurationBackend();
+    const context = await fixture({ configurationDriver, computeDriver });
+    const agent = await storedRowAgent(context, configurationDriver, runtimeSelected, {
+      name: `${label} model provider consumer`,
+      secretName: `${label.toLowerCase()}-model-provider-key`,
+    });
+    for (const [settings, message] of rows) {
+      const values = { ...runtimeSelected, ...at("/models/providers/openai", settings) };
+      await refusedAtSaveAndDeploy(context, agent, values, message);
+    }
+    assert.equal(configurationDriver.storedConfigurations().length, 1, label);
+    // No refused deployment admitted a revision.
+    const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
+    assert.deepEqual(revisions.body.data, [], label);
+  }
+});
+
 test("Configuration HTTP refuses a model provider models setting that is not a list", async (t) => {
   // Finding 1186: the credential rules walk only a list of model rows, so a record of rows
   // carried a literal credential header past them into storage, and OpenClaw refused the

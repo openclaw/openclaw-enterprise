@@ -7025,8 +7025,11 @@ export class OpenClawController {
         compute,
         sandbox,
       );
-      // The Compute rules first, as on Configuration save, so a stored Configuration that
-      // predates a rule both refuse gets the message its next save would.
+      // The model provider settings, then the Compute rules, as on Configuration save, so a
+      // stored Configuration that predates a rule gets the message its next save would. A
+      // baseUrl or api the runtime cannot use would otherwise fail later, as an unexplained
+      // model probe failure (finding 1549).
+      validateModelProviderSettings(configuration.values);
       this.validateComputeConfiguration(configuration.values);
       await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
