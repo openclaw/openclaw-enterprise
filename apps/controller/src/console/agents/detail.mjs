@@ -19,6 +19,8 @@ import {
   displayDate,
   shortId,
   namespacePath,
+  refusedSave,
+  AGENT_UPDATE_DENIED,
   link,
   message,
   rejectionMessage,
@@ -882,6 +884,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     .finally(() => {
       callerPermissionsSettled = true;
     });
+  // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
+  // Configuration saves have no bit in this answer and stay enabled (finding 1530).
+  const agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -2618,6 +2623,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           path,
           onState: data.setPluginEditorState,
           savedNotice,
+          updateAllowed: agentUpdateAllowed,
           // Saves and reloads rebuild the tab in place (finding 1445's rest).
           onSaved: (savedAgent) =>
             refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
@@ -2709,6 +2715,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             if (!context.isCurrent()) {
               throw error;
             }
+            if (!configurationSaved) {
+              refusedSave(error, "configuration");
+            }
             if (error.status === 401) {
               context.onExpired();
               throw new Error("Your session has expired.");
@@ -2797,10 +2806,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           await refreshDraftInPlace({ agent: fresh, focus: "Reload authentication source" });
         }
       });
+      const updateNote = element("p", { className: "muted", role: "status", hidden: true });
       const form = element(
         "form",
         { className: "agent-card" },
         auth.section,
+        updateNote,
         save,
         reload,
         feedback,
@@ -2808,6 +2819,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       data.setAuthenticationForm(form);
       let outcomeUnknown = retained?.outcomeUnknown ?? false;
       let pending = false;
+      // Set when the caller's permission answer denies Agent update (finding 1530).
+      let updateDenied = false;
+      void agentUpdateAllowed.then((allowed) => {
+        if (allowed === false && context.isCurrent()) {
+          updateDenied = true;
+          updateNote.textContent = AGENT_UPDATE_DENIED;
+          updateNote.hidden = false;
+          save.disabled = true;
+        }
+      });
       let savedAuthentication = retained?.savedAuthentication ?? null;
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({ method, secretSource, account }) =>
@@ -2926,7 +2947,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
             feedback.textContent = error.outcomeUnknown
               ? error.message
-              : rejectionMessage(error, mutationStarted);
+              : rejectionMessage(refusedSave(error, "agent"), mutationStarted);
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
@@ -2937,7 +2958,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               : "Save authentication source";
             pending = false;
             reload.disabled = false;
-            save.disabled = outcomeUnknown;
+            save.disabled = outcomeUnknown || updateDenied;
             auth.setDisabled(outcomeUnknown || savedAuthentication !== null);
             syncUnsavedAuthentication();
           }
@@ -3013,6 +3034,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderRepositoryEditor(context, data) {
     let fields;
     let saveState = "idle";
+    // Set when the caller's permission answer denies Agent update (finding 1530).
+    let updateDenied = false;
+    const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
     // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
@@ -3052,7 +3076,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const reloadRequired = saveState === "conflict";
       const locked = saveState !== "idle";
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
-      save.disabled = locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      save.disabled =
+        updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
       fields?.setDisabled(locked);
@@ -3116,7 +3141,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent = rejectionMessage(error, mutationStarted);
+          feedback.textContent = rejectionMessage(refusedSave(error, "agent"), mutationStarted);
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
             saveState = "uncertain";
           }
@@ -3131,10 +3156,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     update();
+    void agentUpdateAllowed.then((allowed) => {
+      if (allowed === false && context.isCurrent()) {
+        updateDenied = true;
+        updateNote.textContent = AGENT_UPDATE_DENIED;
+        updateNote.hidden = false;
+        update();
+      }
+    });
     return element(
       "section",
       { className: "agent-card" },
       fields.section,
+      updateNote,
       element("div", { className: "form-actions" }, save, cancel, reload),
       feedback,
     );
@@ -3444,6 +3478,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
           return;
+        }
+        if (!configurationSaved) {
+          refusedSave(error, "configuration");
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;

@@ -2774,7 +2774,8 @@ export const scenarios = {
         status: 403,
       },
     ],
-    description: "A denied save retains the draft and does not change the saved Configuration.",
+    description:
+      "A denied save names the Configuration update grant it needs, retains the draft and does not change the saved Configuration.",
   },
   gatewayPasswordSaving: {
     group: "Pages/Agent detail",
@@ -2790,6 +2791,19 @@ export const scenarios = {
     ],
     description:
       "A pending save blocks further Configuration edits and deployment; a timed-out write requires draft readback.",
+  },
+  pluginsUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections, viewer cannot update the Agent",
+    path: `${draft}&tab=plugins`,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save plugin selections is disabled from the first paint and the note names the grant to ask for. The API still decides.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
@@ -3014,6 +3028,20 @@ export const scenarios = {
     ],
     description:
       "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+  },
+  repositoryEditorUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Repository access, viewer cannot update the Agent",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save repository access stays disabled and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
@@ -4123,6 +4151,23 @@ export const scenarios = {
     description:
       "A rejected Configuration write keeps the drawer and feedback visible, with focus back on Save configuration.",
   },
+  channelSaveDenied: {
+    group: "Components/Channels",
+    name: "Save denied",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "A caller without Configuration update is refused. The drawer stays open with the edits and names the grant to ask an administrator for; the text is the same for every refusal.",
+  },
   channelChangedElsewhere: {
     group: "Components/Channels",
     name: "Configuration changed elsewhere",
@@ -4226,6 +4271,15 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     description:
       "The saved harness authentication source can be reviewed or changed before deployment.",
+  },
+  credentialsUpdateDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, viewer cannot update the Agent",
+    path: `${draft}&tab=credentials`,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save authentication source is disabled and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlack: {
     group: "Components/Credentials",

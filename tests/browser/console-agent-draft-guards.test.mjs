@@ -527,8 +527,11 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         effect: "deny",
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
+      // A refused Agent save names the grants it needs (finding 1530).
       await page
-        .getByText("Access denied. You do not have permission for this operation.")
+        .getByText(
+          "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+        )
         .waitFor();
       assert.equal(await deploy.isEnabled(), true);
       fixture.policy.restrictions.pop();

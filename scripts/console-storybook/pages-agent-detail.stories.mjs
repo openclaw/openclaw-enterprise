@@ -14,6 +14,7 @@ export const GatewayPasswordEnabled = story("gatewayPasswordEnabled");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");
 export const GatewayPasswordSaving = story("gatewayPasswordSaving");
 export const PluginsDraft = story("pluginsDraft");
+export const PluginsUpdateDenied = story("pluginsUpdateDenied");
 export const PluginApproversInherited = story("pluginApproversInherited");
 export const PluginApproversOverrides = story("pluginApproversOverrides");
 export const PluginApproversLookup = story("pluginApproversLookup");
@@ -81,6 +82,7 @@ export const DeployAgentPrincipalDenied = {
 };
 
 export const RepositoryEditor = story("repositoryEditor");
+export const RepositoryEditorUpdateDenied = story("repositoryEditorUpdateDenied");
 export const ConfigurationNavigation = story("configurationNavigation");
 
 export const RevisionDeployDenied = {

@@ -1226,7 +1226,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
   assert.equal((await deniedResponse).status(), 403);
   await page
     .getByText(
-      "Access denied. Check Agent update, Configuration read, and access to this Agent's bound Secrets or Service Account.",
+      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
     )
     .waitFor();
   assert.deepEqual(JSON.parse(await json.inputValue()), editedPlugins);

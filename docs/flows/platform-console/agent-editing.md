@@ -105,6 +105,9 @@ admitted versions remain unchanged; Cancel discards the edit. On deployment, Kub
 Saving refreshes the draft in place, keeping scroll and focus; admitted snapshots stay. Invalid input,
 denial, and stale drafts retain editor text. Uncertain saves require readback.
 Unsaved edits block deployment; pending saves block tab and version changes.
+A `403` names that save's required grants, identical for every refusal. Permission advice
+denying Agent `update` disables plugin, repository, and authentication saves with that reason;
+Configuration saves have no such advice.
 
 `agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
 **Save plugin selections** PATCHes the Agent map, preserving Configuration and

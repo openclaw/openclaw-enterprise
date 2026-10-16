@@ -86,7 +86,7 @@ export function message(error, mutation = false) {
     return `Saved ${field ?? "configuration"} could not be read. Editing and deployment are unavailable for these settings. Ask an administrator to repair the saved configuration, then refresh this page.`;
   }
   if (error.status === 403) {
-    return "Access denied. You do not have permission for this operation.";
+    return error.refusal ?? "Access denied. You do not have permission for this operation.";
   }
   if (error.status === 404) {
     return "Resource unavailable in this Namespace. Check the ID and your access.";
@@ -108,6 +108,29 @@ export function message(error, mutation = false) {
     : error.name === "TypeError" || error.name === "TimeoutError"
       ? "Request interrupted. Retry to check current access and saved state."
       : "Service unavailable. The read could not be completed. Try again.";
+}
+
+// A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
+// shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
+// about whether a resource exists.
+export const SAVE_REFUSALS = Object.freeze({
+  configuration:
+    "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.",
+  agent:
+    "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+});
+
+// Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
+// Gating only: an unknown answer keeps the controls, and the API still decides.
+export const AGENT_UPDATE_DENIED =
+  "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
+
+// Marks a 403 from a save (or from its preflight reads) so message() names that save's grants.
+export function refusedSave(error, save) {
+  if (error?.status === 403) {
+    error.refusal = SAVE_REFUSALS[save];
+  }
+  return error;
 }
 
 // The API refused a Configuration update because another save moved its generation, which a
