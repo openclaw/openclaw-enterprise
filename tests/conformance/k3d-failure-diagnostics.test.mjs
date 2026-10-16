@@ -510,6 +510,26 @@ test("a skipped probe's turn trace names each step without item text", () => {
   assert.doesNotMatch(trace, /run it|I'll|\/secret|sandbox\/enterprise/);
 });
 
+test("turn trace redacts known values in RPC metadata as well as error text", () => {
+  const trace = codexTurnTrace(
+    [
+      {
+        id: syntheticSecret,
+        result: { [syntheticSecret]: true, sandbox: { type: syntheticSecret } },
+      },
+      { method: `fixture/${syntheticSecret}`, params: { item: { type: syntheticSecret } } },
+      { method: "turn/completed", params: { turn: { status: syntheticSecret } } },
+    ],
+    secrets,
+  );
+  assert.equal(
+    trace.includes(syntheticSecret),
+    false,
+    "an invented value survived in trace metadata",
+  );
+  assert.match(trace, /turn\/completed \[env:SYNTHETIC_SECRET\]/u);
+});
+
 test("a long turn trace keeps its start and end", () => {
   const messages = [
     { method: "turn/started", params: {} },

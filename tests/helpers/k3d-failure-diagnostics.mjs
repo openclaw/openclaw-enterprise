@@ -287,7 +287,8 @@ function codexTurnStep(message, secrets) {
 export function codexTurnTrace(messages, secrets = [], budget = 3_000) {
   const steps = [];
   for (const message of messages ?? []) {
-    const step = codexTurnStep(message, secrets);
+    // Free text was filtered above. Redact the assembled step too, including RPC metadata.
+    const step = redactLogLine(codexTurnStep(message, secrets), secrets, fieldChars);
     const last = steps.at(-1);
     if (last?.step === step) {
       last.count += 1;
