@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -78,7 +78,13 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
     await copyFile(join(repository, "scripts", script), join(checkout, "scripts", script));
   }
   for (const cdpath of ["", ".:", search]) {
-    const env = { ...process.env, CDPATH: cdpath, RUNNER_TEMP: join(directory, "runner") };
+    // setup-tools checks the Node on PATH before its profile, so put this Node first.
+    const env = {
+      ...process.env,
+      CDPATH: cdpath,
+      PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}`,
+      RUNNER_TEMP: join(directory, "runner"),
+    };
     delete env.BASH_ENV;
     delete env.ENV;
     delete env.SHELLOPTS;
