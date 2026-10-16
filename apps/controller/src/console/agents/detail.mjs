@@ -1892,7 +1892,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               viewedSnapshot = configuration;
               renderDetailHeading();
             },
-            onReload: () => context.navigate(target("draft", "credentials"), namespaceId, true),
+            onReload: () =>
+              reloadDraftInPlace(context, {
+                saved: "Draft reloaded.",
+                focus: "Save channel Secrets",
+              }),
           })
         : null;
     activeCredentials = credentials;
@@ -2235,6 +2239,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
 
+  // Reload draft rereads the Agent, then refreshes in place. The read goes through the tab's
+  // request, so a tab left mid-read is rebuilt rather than retained; a failed read reloads the
+  // page as before.
+  async function reloadDraftInPlace(tabContext, options) {
+    let fresh;
+    try {
+      fresh = await tabContext.request(path);
+    } catch {
+      if (tabContext.isCurrent()) {
+        context.navigate(target("draft", selectedTab), namespaceId, true);
+      }
+      return;
+    }
+    if (tabContext.isCurrent()) {
+      await refreshDraftInPlace({ agent: fresh, ...options });
+    }
+  }
+
   async function refreshDraft(freshAgent, saved, focus) {
     if (freshAgent) {
       agent = freshAgent;
@@ -2267,17 +2289,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!context.isCurrent()) {
       return;
     }
-    const control =
-      [...content.querySelectorAll("button")].find(
-        (candidate) => candidate.textContent === focus && !candidate.disabled,
-      ) ?? tabControls.get(selectedTab);
+    const named = [...content.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent === focus && !candidate.disabled,
+    );
     const status = saved
       ? [...content.querySelectorAll('[role="status"]')].find((node) => node.textContent === saved)
       : null;
-    if (status) {
+    let control = named ?? tabControls.get(selectedTab);
+    if (status && named) {
       // A status inserted with its text is rarely announced; the focused control names it.
       status.id = "draft-save-status";
       control.setAttribute("aria-describedby", status.id);
+    } else if (status) {
+      // A save that leaves nothing to save disables its own button; the status takes focus
+      // instead of the tab bar above, which would scroll the reader away.
+      status.tabIndex = -1;
+      control = status;
     }
     // Focus scrolls only if the control left the viewport.
     control.focus();
@@ -2426,10 +2453,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           draft,
           path,
           onState: data.setPluginEditorState,
-          onSaved: () => change("draft", "plugins"),
+          savedNotice,
+          // Saves and reloads rebuild the tab in place (finding 1445's rest).
+          onSaved: (savedAgent) =>
+            refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
           onReload: () => {
             context.drafts.forget("plugins");
-            context.navigate(target("draft", "plugins"), namespaceId, true);
+            return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
           },
         }),
       );
@@ -2506,7 +2536,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             if (context.isCurrent()) {
               data.setDraftEditorState({ saving: false, outcomeUnknown: false });
               context.drafts.forget("channels");
-              change("draft", "channels");
             }
           } catch (error) {
             if (!context.isCurrent()) {
@@ -2536,9 +2565,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             data.setDraftEditorState({ dirty: false, saving: pending, outcomeUnknown });
           }
         },
+        savedNotice,
+        // The section calls these once its dialog has closed; both rebuild the tab in place.
+        onSaved: (focus) => refreshDraftInPlace({ saved: "Channels saved.", focus }),
         onReload: () => {
           context.drafts.forget("channels");
-          context.navigate(target("draft", "channels"), namespaceId, true);
+          return reloadDraftInPlace(context, { saved: "Draft reloaded." });
         },
       });
       const navigationFeedback = element("p", { className: "hint", role: "status" });
@@ -2797,10 +2829,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderRepositoryEditor(context, data) {
     let fields;
     let saveState = "idle";
-    const feedback = element("p", { className: "hint", role: "status" });
-    const reload = button("Reload draft", () =>
-      context.navigate(target("draft", "repositories"), namespaceId, true),
-    );
+    const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
+    // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
+    function rebuild(saved, focus) {
+      reload.disabled = true;
+      cancel.disabled = true;
+      void reloadDraftInPlace(context, { saved, focus });
+    }
+    const reload = button("Reload draft", () => rebuild("Draft reloaded."));
     const save = button("Save repository access", () => void submit(), {
       className: "primary",
       disabled: true,
@@ -2812,7 +2848,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         outcomeUnknown: false,
         reloadRequired: false,
       });
-      context.navigate(target("draft", "repositories"), namespaceId, true);
+      rebuild("", "Cancel");
     });
     function update() {
       const dirty = fields?.isDirty() ?? false;
@@ -2866,7 +2902,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
         // is implemented; this preflight cannot prevent a write between requests.
         mutationStarted = true;
-        await request(path, {
+        const savedAgent = await request(path, {
           method: "PATCH",
           body: {
             configurationId: agent.configurationId,
@@ -2876,7 +2912,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         fields.recordSuccessfulSave();
         if (context.isCurrent()) {
           data.setDraftEditorState({ dirty: false, saving: false });
-          context.navigate(target("draft", "repositories"), namespaceId, true);
+          await refreshDraftInPlace({ agent: savedAgent, saved: "Repository access saved." });
         }
       } catch (error) {
         if (!context.isCurrent()) {
@@ -3000,7 +3036,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     });
     const reload = button("Reload draft", () => {
       context.drafts.forget("configuration");
-      context.navigate(target("draft", "configuration"), namespaceId, true);
+      reload.disabled = true;
+      void reloadDraftInPlace(context, { saved: "Draft reloaded.", focus: "Edit Configuration" });
     });
 
     function currentDirty() {
