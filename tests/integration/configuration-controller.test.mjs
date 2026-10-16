@@ -1421,11 +1421,8 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       const agentSaved = await request(context.app, "PATCH", agentPath, {
         body: { configurationId },
       });
-      assert.equal(agentSaved.status, 400, `${label}: ${JSON.stringify(agentSaved.body)}`);
-      assert.equal(agentSaved.body.error.message, message, label);
-      const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-      assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
-      assert.equal(deployed.body.error.message, message, label);
+      assertRefused(agentSaved, message, label);
+      assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, label);
       // Refused before a revision exists.
       const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
       assert.deepEqual(revisions.body.data, [], label);
@@ -1441,9 +1438,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     };
     const message = setting("agents.defaults.heartbeat.model", openaiOnly);
     await writePastOcc(configurationDriver, configurationId, values);
-    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
-    assert.equal(deployed.body.error.message, message);
+    assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message);
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, []);
     await writePastOcc(configurationDriver, configurationId, valid);
@@ -1451,32 +1446,30 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
 
   // A Configuration whose model policy selects the Codex Harness runs as Dedicated Codex, which
   // takes no provider apiKey at all.
-  await t.test("a provider apiKey on Dedicated Codex", async () => {
-    const codexValues = {
-      agents: {
-        defaults: {
-          model: "codex/gpt-5",
-          models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
-        },
-      },
-    };
+  const codexDefaults = {
+    model: "codex/gpt-5",
+    models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
+  };
+  const codexItem = async () => {
     const codex = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values: codexValues },
+      body: { kind: "agent", values: { agents: { defaults: codexDefaults } } },
     });
     assert.equal(codex.status, 201, JSON.stringify(codex.body));
+    return `${collection}/${codex.body.data.id}`;
+  };
+  await t.test("a provider apiKey on Dedicated Codex", async () => {
+    const codex = await codexItem();
     // A null key is still set: deployment refuses it, so save does too.
     for (const apiKey of ["${OPENAI_API_KEY}", null]) {
-      const codexKey = await request(context.app, "PATCH", `${collection}/${codex.body.data.id}`, {
-        body: { values: { ...codexValues, models: { providers: { codex: { apiKey } } } } },
-      });
-      assert.equal(codexKey.status, 400, JSON.stringify(codexKey.body));
-      assert.equal(
-        codexKey.body.error.message,
-        setting(
-          "models.providers.codex.apiKey",
-          "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-        ),
+      const values = {
+        agents: { defaults: codexDefaults },
+        models: { providers: { codex: { apiKey } } },
+      };
+      const message = setting(
+        "models.providers.codex.apiKey",
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
       );
+      await refusedOnSave(context, values, message, { item: codex });
     }
   });
 
@@ -1484,15 +1477,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
   // policy key, so an entry needs its provider, and OpenClaw calls media and voice models
   // directly, which Codex does not serve.
   await t.test("an allowlist entry, media or voice model on Dedicated Codex", async () => {
-    const codexDefaults = {
-      model: "codex/gpt-5",
-      models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
-    };
-    const codex = await request(context.app, "POST", collection, {
-      body: { kind: "agent", values: { agents: { defaults: codexDefaults } } },
-    });
-    assert.equal(codex.status, 201, JSON.stringify(codex.body));
-    const codexItem = `${collection}/${codex.body.data.id}`;
+    const codex = await codexItem();
     const unset =
       "must be unset: Dedicated Codex serves chat models only, not media or voice models";
     for (const [defaults, message] of [
@@ -1514,9 +1499,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       [{ voiceModel: "codex/gpt-realtime" }, setting("agents.defaults.voiceModel", unset)],
     ]) {
       const values = { agents: { defaults: { ...codexDefaults, ...defaults } } };
-      const replaced = await request(context.app, "PATCH", codexItem, { body: { values } });
-      assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
-      assert.equal(replaced.body.error.message, message, JSON.stringify(values));
+      await refusedOnSave(context, values, message, { item: codex });
     }
     // A qualified entry or wildcard saves.
     const allowed = {
@@ -1524,7 +1507,7 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
         defaults: { ...codexDefaults, modelPolicy: { allow: ["codex/gpt-5", "codex/*"] } },
       },
     };
-    const saved = await request(context.app, "PATCH", codexItem, { body: { values: allowed } });
+    const saved = await request(context.app, "PATCH", codex, { body: { values: allowed } });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
   });
 
@@ -2205,13 +2188,8 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
   const rejected = await request(context.app, "POST", collection, {
     body: { kind: "agent", values: unsafe },
   });
-  assert.equal(rejected.status, 400);
   // The caller learns which field must become a reference, never the submitted value.
-  assert.equal(
-    rejected.body.error.message,
-    "Configuration field /models/providers/openai/apiKey holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.",
-  );
-  assert.equal(JSON.stringify(rejected.body).includes(sentinel), false);
+  assertRefused(rejected, literalModelKey("/models/providers/openai/apiKey"), "", sentinel);
   assert.deepEqual(await readdir(root), []);
 
   const values = createOpenClawConfiguration();
@@ -3044,8 +3022,10 @@ test("Configuration save refuses a document too large to store before its conten
       },
     }),
   });
-  const contentRefusal =
-    "Configuration setting models.providers.openai.models must be an array of model entries.";
+  const contentRefusal = setting(
+    "models.providers.openai.models",
+    "must be an array of model entries",
+  );
   // A document that breaks a content rule, padded to `bytes` of JSON.
   const document = (bytes) => {
     const values = {
@@ -3068,13 +3048,8 @@ test("Configuration save refuses a document too large to store before its conten
     });
 
   // Just under the cap the content rule refuses it by name; at the cap the size refusal wins.
-  const named = await save("POST", collection, under);
-  assert.equal(named.status, 400, JSON.stringify(named.body));
-  assert.equal(named.body.error.message, contentRefusal);
-  const oversized = await save("POST", collection, over);
-  assert.equal(oversized.status, 400, JSON.stringify(oversized.body));
-  assert.equal(oversized.body.error.code, "INVALID_REQUEST");
-  assert.equal(oversized.body.error.message, sizeRefusal);
+  assertRefused(await save("POST", collection, under), contentRefusal);
+  assertRefused(await save("POST", collection, over), sizeRefusal);
   await assert.rejects(
     context.controller.createConfiguration(context.principal.id, {
       namespaceId: namespace.id,
@@ -3109,13 +3084,8 @@ test("Configuration save refuses a document too large to store before its conten
   const created = await save("POST", collection, {});
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${collection}/${created.body.data.id}`;
-  const renamed = await save("PATCH", item, under);
-  assert.equal(renamed.status, 400, JSON.stringify(renamed.body));
-  assert.equal(renamed.body.error.message, contentRefusal);
-  const replaced = await save("PATCH", item, over);
-  assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
-  assert.equal(replaced.body.error.code, "INVALID_REQUEST");
-  assert.equal(replaced.body.error.message, sizeRefusal);
+  assertRefused(await save("PATCH", item, under), contentRefusal);
+  assertRefused(await save("PATCH", item, over), sizeRefusal);
   assert.deepEqual(
     configurationDriver.storedConfigurations().map(({ values }) => values),
     [{}],
@@ -3934,8 +3904,14 @@ test("A stored Configuration with request credentials an older release accepted 
   const path = join(root, namespace.id, `${configurationId}.json`);
   const sentinel = `synthetic-request-credential-${randomUUID()}`;
   const binding = "model credentials come from the Agent's Harness authentication binding";
-  const requestAuth = `Configuration setting models.providers.openai.request.auth must be unset or {mode: "provider-default"}: ${binding}.`;
-  const credentialHeader = `Configuration setting models.providers.openai.request.headers must not set the credential header "x-goog-api-key" (its name marks a credential): ${binding}.`;
+  const requestAuth = setting(
+    "models.providers.openai.request.auth",
+    `must be unset or {mode: "provider-default"}: ${binding}`,
+  );
+  const credentialHeader = setting(
+    "models.providers.openai.request.headers",
+    `must not set the credential header "x-goog-api-key" (its name marks a credential): ${binding}`,
+  );
 
   for (const [label, stale, message] of [
     [
@@ -3992,14 +3968,9 @@ test("A stored Configuration with request credentials an older release accepted 
     // Saving it unchanged and deploying it are refused with the same named message, and no
     // revision is admitted.
     const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
-    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
-    assert.equal(resaved.body.error.message, message, label);
+    assertRefused(resaved, message, label, sentinel);
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
-    assert.equal(deployed.body.error.message, message, label);
-    for (const body of [resaved.body, deployed.body]) {
-      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
-    }
+    assertRefused(deployed, message, label, sentinel);
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
 
@@ -4049,17 +4020,10 @@ test("A stored Configuration with a literal Gateway password an older release ac
     assert.equal(read.status, 200, `${label}: ${JSON.stringify(read.body)}`);
     assert.deepEqual(read.body.data.values, stale, label);
     // Saving it unchanged and deploying it are refused with the same message.
-    const message =
-      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.";
     const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
-    assert.equal(resaved.status, 400, `${label}: ${JSON.stringify(resaved.body)}`);
-    assert.equal(resaved.body.error.message, message, label);
+    assertRefused(resaved, gatewayPassword, label, sentinel);
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
-    assert.equal(deployed.body.error.message, message, label);
-    for (const body of [resaved.body, deployed.body]) {
-      assert.equal(JSON.stringify(body).includes(sentinel), false, label);
-    }
+    assertRefused(deployed, gatewayPassword, label, sentinel);
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
   }
