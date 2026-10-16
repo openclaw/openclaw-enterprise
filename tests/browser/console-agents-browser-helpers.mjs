@@ -339,7 +339,8 @@ export function repositoryCheckbox(page, name) {
 }
 
 // Holds requests matching `url` until release(). `requested` resolves when the first one is
-// held and rejects after 10 s if none is, so a test fails instead of hanging. With `once`, only
+// held. Once a test awaits it, it rejects if none is held within 10 s, so a test fails instead
+// of hanging. With `once`, only
 // the first match is held; with `method`, only matches with that method. Requests not held fall
 // through to earlier routes. `once` is a hand-written flag, not Playwright's { times: 1 }: that
 // turns interception off once no routes remain, which silently releases other held requests.
@@ -356,13 +357,14 @@ export async function holdRequests(
     release = resolve;
   });
   let markRequested;
+  let failRequested;
   let timer;
   const requested = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`No ${url} request was held`)), 10_000);
     markRequested = () => {
       clearTimeout(timer);
       resolve();
     };
+    failRequested = () => reject(new Error(`No ${url} request was held`));
   });
   requested.catch(() => {});
   let taken = false;
@@ -383,7 +385,17 @@ export async function holdRequests(
     clearTimeout(timer);
     release();
   });
-  return { requested, release, wasRequested: () => taken };
+  return {
+    // The deadline starts at the first await, not at registration (a hold set before sign-in).
+    get requested() {
+      if (!taken && timer === undefined) {
+        timer = setTimeout(failRequested, 10_000);
+      }
+      return requested;
+    },
+    release,
+    wasRequested: () => taken,
+  };
 }
 
 // Records layout shifts from the first paint, naming the elements that moved. Install it with

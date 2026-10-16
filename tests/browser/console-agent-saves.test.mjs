@@ -146,7 +146,7 @@ const inPlaceCases = [
     focus: "Edit Configuration",
     described: true,
     async verify(page, c, requests) {
-      // Two preflight reads and one read of the saved Configuration; no Agent page reload.
+      // Two reads of the saved Configuration and none of an Agent page reload's reads.
       const reads = requests
         .filter((request) => request.method === "GET")
         .map((request) => request.path);

@@ -44,8 +44,7 @@ const createConsoleAppFixture = (t, options = {}) =>
 // side by side in the Console Browser 2 lane. Name sibling test files only by suffix: CI Impact
 // runs full CI for a test file that another file names.
 
-// The Installation provisions dedicated Agents and offers no repositories, so Create Agent
-// needs no repository choices.
+// The Installation provisions dedicated Agents and the Namespace offers no repository choices.
 async function routeDedicatedProvisioning(page, fixture, namespace) {
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>

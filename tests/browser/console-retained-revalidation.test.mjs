@@ -68,8 +68,8 @@ async function pauseClock(page) {
   await page.clock.pauseAt(new Date(now + 1000));
 }
 
-// Signs in to a loaded Agents list and records every page shown. Unless `running`, the page
-// clock is installed and paused once the list loads, so timers run only when a test runs it.
+// Signs in to a loaded Agents list. Unless `running`, the page clock is installed and paused once
+// the list loads, so timers run only when a test runs it, and every page shown is recorded.
 async function openList(t, name, agentNames, { deploy = false, running = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -93,8 +93,8 @@ async function openList(t, name, agentNames, { deploy = false, running = false }
   await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
   if (!running) {
     await pauseClock(page);
+    await page.evaluate(recordShownPages);
   }
-  await page.evaluate(recordShownPages);
   return { fixture, namespace, agents, agent: agents[0], page, listUrl };
 }
 
@@ -188,13 +188,13 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   await page.locator(activeView).getByText(secondRow, { exact: true }).waitFor();
   const scope = page.locator(".content .scope");
-  const heldView = page.locator('.content [aria-live="polite"][inert]');
+  const held = page.locator(heldView);
 
   const session = await holdRequests(t, page, SESSION);
   const collection = await holdRequests(t, page, `**/namespaces/${first.id}/agents`);
   await page.goBack();
   await session.requested;
-  await heldView.waitFor();
+  await held.waitFor();
   // The shown page keeps its scope; the disabled selector already names the destination.
   assert.equal(await scope.textContent(), "Namespace · Second scope");
   assert.equal(
@@ -209,9 +209,9 @@ test("Back after switching Namespace keeps the shown page until the return is ad
   await collection.requested;
   await page.locator("#namespace-selector:not(:disabled)").waitFor();
   assert.equal(await selector.inputValue(), first.id);
-  await heldView.getByText(secondRow, { exact: true }).waitFor();
+  await held.getByText(secondRow, { exact: true }).waitFor();
   assert.equal(await scope.textContent(), "Namespace · Second scope");
-  assert.equal(await heldView.getByText(firstRow, { exact: true }).count(), 0);
+  assert.equal(await held.getByText(firstRow, { exact: true }).count(), 0);
 
   collection.release();
   const visibleView = page.locator(activeView);
