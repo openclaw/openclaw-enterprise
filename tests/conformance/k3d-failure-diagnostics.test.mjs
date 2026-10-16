@@ -294,6 +294,41 @@ test("an event or turn error that names a credential is dropped whole", async ()
   assert.equal(trace, "error: [redacted credential-bearing line]");
 });
 
+test("Pod messages and failed reads suppress credential-bearing prose before clipping", async () => {
+  // An upstream can name a credential the fixture does not know. Put the keyword past the
+  // display limit as well: clipping first must not turn the start of that line into safe text.
+  const opaque = "synthetic-opaque-handle";
+  const message = `${opaque} ${"padding ".repeat(45)}authorization unavailable`;
+  const { kubectl } = fakeKubectl({
+    pods: [
+      {
+        ...hookPod,
+        status: {
+          conditions: [{ type: "Ready", status: "False", message }],
+          initContainerStatuses: [
+            { name: "init", state: { terminated: { exitCode: 1, message } } },
+          ],
+          containerStatuses: [{ name: "app", state: { waiting: { reason: "BackOff", message } } }],
+        },
+      },
+    ],
+    fail: { logs: message },
+  });
+  const detail = await podFailureDiagnostic({
+    kubectl,
+    namespace: "oce-observe-1234",
+    logLabels: { "job-name": "obs-1234-initialization" },
+  });
+  assert.equal(
+    detail.includes(opaque),
+    false,
+    "do not copy any part of a credential-bearing message",
+  );
+  assert.equal(detail.split("[redacted credential-bearing line]").length - 1, 4);
+  assert.match(detail, /"exitCode":1/);
+  assert.match(detail, /"waiting":"BackOff"/);
+});
+
 test("a failed read leaves a redacted note and the other sections", async () => {
   const { kubectl } = fakeKubectl({
     fail: { logs: `Error from server: dial tcp: token ${syntheticSecret}` },

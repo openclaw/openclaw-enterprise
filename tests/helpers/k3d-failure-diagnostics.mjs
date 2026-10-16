@@ -21,7 +21,7 @@ function eventTime(event) {
 function containerState(state, secrets) {
   const message = (text) =>
     typeof text === "string" && text.length > 0
-      ? { message: redactLogLine(text, secrets, fieldChars) }
+      ? { message: redactedLine(text, secrets, fieldChars) }
       : {};
   if (state?.waiting !== undefined) {
     return { waiting: state.waiting.reason ?? "Unknown", ...message(state.waiting.message) };
@@ -61,7 +61,7 @@ function describePod(pod, secrets) {
     .map(({ type, reason, message }) => ({
       type,
       ...(reason === undefined ? {} : { reason }),
-      ...(message === undefined ? {} : { message: redactLogLine(message, secrets, fieldChars) }),
+      ...(message === undefined ? {} : { message: redactedLine(message, secrets, fieldChars) }),
     }));
   const init = describeContainers(status.initContainerStatuses, secrets);
   return {
@@ -141,7 +141,7 @@ export async function podFailureDiagnostic({
     return kubectl(diagnosticRequestTimeout, ...args);
   };
   const unavailable = (label, error) =>
-    `${label} unavailable: ${redactLogLine(error?.message ?? String(error), secrets, fieldChars)}`;
+    `${label} unavailable: ${redactedLine(error?.message ?? String(error), secrets, fieldChars)}`;
   const logged = (pod) =>
     logLabels !== undefined &&
     Object.entries(logLabels).every(([key, value]) => pod.metadata?.labels?.[key] === value);
