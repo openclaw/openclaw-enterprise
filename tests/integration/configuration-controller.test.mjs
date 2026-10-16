@@ -416,26 +416,38 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
   assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(first.body.data.generation, 2);
 
-  const stale = await request(context.app, "PATCH", pathname, {
-    body: { values: { model: "stale" }, expectedGeneration: 1 },
-  });
-  assert.equal(stale.status, 409, JSON.stringify(stale.body));
-  assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    stale.body.error.message,
-    "The Configuration changed since it was read. Read its current generation before updating it.",
-  );
-  // The detail tells a stale read apart from other Configuration conflicts, such as a
-  // provisioning reservation, which a reread does not fix (finding 1511).
-  assert.deepEqual(stale.body.error.details, [
-    { path: "/expectedGeneration", code: "INVALID_VALUE" },
-  ]);
+  // The refusal comes before any write: the substrate never holds the refused content, not even
+  // until a rollback restores the newer document.
+  const writes = [];
+  const update = configurationDriver.update;
+  configurationDriver.update = (configuration) => {
+    writes.push(configuration.values.model);
+    return update(configuration);
+  };
+  // Any generation but the current one is refused, a generation ahead of it included.
+  for (const expectedGeneration of [1, 3]) {
+    const stale = await request(context.app, "PATCH", pathname, {
+      body: { values: { model: "stale" }, expectedGeneration },
+    });
+    assert.equal(stale.status, 409, JSON.stringify(stale.body));
+    assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
+    assert.equal(
+      stale.body.error.message,
+      "The Configuration changed since it was read. Read its current generation before updating it.",
+    );
+    // The detail tells a stale read apart from other Configuration conflicts, such as a
+    // provisioning reservation, which a reread does not fix (finding 1511).
+    assert.deepEqual(stale.body.error.details, [
+      { path: "/expectedGeneration", code: "INVALID_VALUE" },
+    ]);
+  }
+  assert.deepEqual(writes, []);
   const read = await request(context.app, "GET", pathname);
   assert.equal(read.body.data.generation, 2);
   assert.deepEqual(read.body.data.values, { model: "first" });
   assert.deepEqual(configurationDriver.storedConfigurations()[0].values, { model: "first" });
 
-  for (const expectedGeneration of [0, -1, 1.5, "2", null]) {
+  for (const expectedGeneration of [0, -1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 1]) {
     const invalid = await request(context.app, "PATCH", pathname, {
       body: { values: { model: "invalid" }, expectedGeneration },
     });
@@ -448,6 +460,7 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
   });
   assert.equal(unchecked.status, 200, JSON.stringify(unchecked.body));
   assert.equal(unchecked.body.data.generation, 3);
+  assert.deepEqual(writes, ["unchecked"]);
   assert.deepEqual(
     context.auditSink.events
       .filter((event) => event.resource.kind === "configuration")
@@ -2115,6 +2128,9 @@ for (const runtimeLogging of [undefined, "driver"]) {
     const referenced = await request(context.app, "DELETE", `${collection}/${configurationId}`);
     assert.equal(referenced.status, 409);
     assert.equal(referenced.body.error.code, "RESOURCE_CONFLICT");
+    // Only a stale expectedGeneration carries the /expectedGeneration detail; the console offers
+    // Reload draft for that one, and a reread cannot fix this conflict (finding 1511).
+    assert.equal(referenced.body.error.details, undefined);
 
     // Admission requires a ready Namespace; revision snapshots remain immutable independently.
     await readyAgent(
