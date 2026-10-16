@@ -5052,6 +5052,15 @@ export const scenarios = {
     description: "Review the Gateway people empty state.",
     steps: ["Inspect the people card and its refresh control."],
   },
+  gatewayPeopleNotConfigured: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Not configured and hidden",
+    gatewayPeople: null,
+    description: "An installation without a Gateway people adapter hides the card.",
+    steps: ["Check that the Agent overview remains usable without a People card."],
+  },
   gatewayPeopleLoading: {
     group: "Components/Gateway people",
     path: revision,

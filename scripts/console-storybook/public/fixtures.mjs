@@ -1287,7 +1287,9 @@ export function installFixture(scenario, evidence) {
           return response(saved, 202);
         }
         if (suffix === "/gateway/people" && method === "GET") {
-          return response({ people: scenario.gatewayPeople ?? [] });
+          return response({
+            people: Object.hasOwn(scenario, "gatewayPeople") ? scenario.gatewayPeople : [],
+          });
         }
         if (/^\/gateway\/people\/[^/]+\/avatar$/.test(suffix) && method === "GET") {
           const bytes = Uint8Array.from(

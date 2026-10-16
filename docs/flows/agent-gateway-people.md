@@ -72,6 +72,8 @@ avatar URLs with initials as fallback. A failed read clears stale entries and
 leaves an explicit retry. An empty roster explains that profiles appear after
 connection. Denied reads hide the card and are remembered for that view to avoid
 repeated audited denials. A serving-version change refreshes the roster.
+An installation without the adapter returns `people: null` and hides the card
+without turning normal unavailability into a failed Console read.
 
 ## Debugging and Verification
 
