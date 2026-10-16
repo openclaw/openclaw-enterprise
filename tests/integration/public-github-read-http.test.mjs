@@ -502,6 +502,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   );
   await t.test(
     "idle sockets from one caller address cannot lock other callers out",
+    // Room for the 2 s answer bound, the 15 s close window and setup.
     aliased ? { timeout: 30_000 } : multipleCallers,
     async (st) => {
       const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
