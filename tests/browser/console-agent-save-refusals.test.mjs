@@ -258,12 +258,15 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
 });
 
 // A save first rereads what it saves. A 403 from that read is a missing read grant, not a
-// missing update grant (finding 1540).
+// missing update grant (finding 1540). The read is revoked once the editor is ready.
 const readRefusals = [
   {
     name: "authentication source",
     tab: "credentials",
     deny: (agent) => ({ resourceKind: "agent", resourceId: agent.id, action: "read" }),
+    async edit(page) {
+      await page.getByLabel("Authentication source", { exact: true }).waitFor();
+    },
     async save(page) {
       await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
     },
@@ -276,12 +279,14 @@ const readRefusals = [
       resourceId: agent.configurationId,
       action: "read",
     }),
-    async save(page) {
+    async edit(page) {
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
       await page
         .getByLabel("Configuration JSON")
         .fill(JSON.stringify(nativeValues("edited after a revoke"), null, 2));
+    },
+    async save(page) {
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
   },
@@ -301,7 +306,7 @@ for (const c of readRefusals) {
       }
     });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab));
-    await page.getByRole("heading", { name: `Read ${c.tab}` }).waitFor();
+    await c.edit(page);
     fixture.policy.restrictions.push({
       id: `deny-${c.tab}-read`,
       namespaceId: namespace.id,
