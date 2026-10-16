@@ -1272,7 +1272,7 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   // Leave before the reveal and let its timer pass while the page is away.
   await page.clock.runFor(300);
   await page.goBack();
-  await listShown(page, "Revealed Agent");
+  await page.locator(settledView).getByRole("link", { name: "Revealed Agent" }).waitFor();
   await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS);
   firstRecord.release();
 
