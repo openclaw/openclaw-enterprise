@@ -763,6 +763,19 @@ test("Deployment refuses a stored model provider baseUrl or api that saves refus
       { models: [{ id: "gpt-4.1", name: "gpt-4.1", baseUrl: "/v1" }] },
       absoluteUrl(field("models/0/baseUrl")),
     ],
+    // Deployment already refused a models record (Harness resolution); a header name, only on
+    // Kubernetes Compute.
+    [
+      { models: {} },
+      setting("models.providers.openai.models", "must be an array of model entries"),
+    ],
+    [
+      { headers: { "X-Trace ": "v" } },
+      setting(
+        "models.providers.openai.headers",
+        'must use valid HTTP header names, not "X-Trace…"',
+      ),
+    ],
   ];
   for (const [label, computeDriver] of [
     ["Kubernetes", kubernetesRules("compute-model-provider-deploy", ...configurationRules)],
@@ -782,9 +795,11 @@ test("Deployment refuses a stored model provider baseUrl or api that saves refus
       await refusedAtSaveAndDeploy(context, agent, values, message);
     }
     assert.equal(configurationDriver.storedConfigurations().length, 1, label);
-    // No refused deployment admitted a revision.
+    // No refused deployment admitted a revision; the restored row deploys.
     const revisions = await request(context.app, "GET", `${agent.agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
+    const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
+    assert.equal(deployed.status, 202, `${label}: ${JSON.stringify(deployed.body)}`);
   }
 });
 

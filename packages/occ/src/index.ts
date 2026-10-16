@@ -169,6 +169,7 @@ import {
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
+  ModelProviderSettingError,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
   NativeWorkerSupportError,
@@ -1118,7 +1119,8 @@ function provisioningFailureMessage(code: string, error: unknown): string {
     if (
       error instanceof PluginPolicyValidationError ||
       error instanceof NativeWorkerSupportError ||
-      error instanceof ConfigurationHarnessError
+      error instanceof ConfigurationHarnessError ||
+      error instanceof ModelProviderSettingError
     ) {
       // A Configuration refusal can name a submitted key; status stores the message as is.
       const characters = Array.from(error.message.replace(/[\p{Cc}\p{Cf}]|\p{Cs}/gu, "?"));
@@ -2827,7 +2829,10 @@ export class OpenClawController {
             // the same way on every attempt, as HTTP retry does with a 400. A Compute plan
             // refusal arrives as a ResourceConflictError (409) and is rejected the same way.
             error instanceof PluginPolicyValidationError ||
-            error instanceof NativeWorkerSupportError))
+            error instanceof NativeWorkerSupportError ||
+            // Deployment refuses a model provider setting a rule tightened after the request
+            // was queued; every attempt would (finding 1549).
+            error instanceof ModelProviderSettingError))
       ) {
         code = "PROVISIONING_REJECTED";
       }
