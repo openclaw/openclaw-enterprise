@@ -1773,9 +1773,11 @@ test("runtime log cursors from before keyed hashes expire into a new audited vie
   assert.equal(decoded.status, "expired");
   assert.deepEqual(decoded.position.lastHashes, []);
   assert.equal(decoded.position.containerWindow, undefined);
-  // Forged, foreign or malformed legacy envelopes stay invalid.
+  // Forged, foreign or malformed legacy envelopes stay invalid. The forged MAC always
+  // differs: about one MAC in 1024 already ends in "AA".
+  const forgedEnd = legacy.endsWith("AA") ? "AE" : "AA";
   for (const [cursor, binding] of [
-    [`${legacy.slice(0, -2)}AA`, reader.binding],
+    [`${legacy.slice(0, -2)}${forgedEnd}`, reader.binding],
     [legacy, { ...reader.binding, principalId: "other-person" }],
     [legacyCursor(secret, { ...current, r: -1 }), reader.binding],
   ]) {
