@@ -159,11 +159,11 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 	if err == nil || !strings.HasSuffix(err.Error(), `hint: "occ agent runtime" needs Agent operate, Agent read and revision read; ask an administrator to grant what is missing. OCC refuses an ID that does not exist the same way.`) {
 		t.Fatalf("runtime refusal = %v", err)
 	}
-	// A list filtered per item needs no grant, so a generic refusal (an identity
-	// OCC no longer admits) names nothing to ask for.
+	// OCC filters this list by what the caller can read. Keep its refusal intact;
+	// the CLI cannot name a missing grant for the list itself.
 	err = runRefused(t, keyFile, denied, "namespace", "list")
-	if err == nil || strings.Contains(err.Error(), "hint:") {
-		t.Fatalf("namespace list refusal = %v, want no hint", err)
+	if want := "OCC operation failed (HTTP 403): FORBIDDEN: " + denied; err == nil || err.Error() != want {
+		t.Fatalf("namespace list refusal = %v, want %q", err, want)
 	}
 	// A 403 that names its own cause, such as an Agent principal's missing
 	// grant, and other failures ("" answers 404) keep OCC's text alone.
