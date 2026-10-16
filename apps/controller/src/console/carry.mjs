@@ -5,7 +5,7 @@
 
 const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
-export function sameValue(left, right) {
+function sameValue(left, right) {
   if (Array.isArray(left) || Array.isArray(right)) {
     return (
       Array.isArray(left) &&
