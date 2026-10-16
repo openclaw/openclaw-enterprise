@@ -4107,20 +4107,21 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
 // Each section keeps its newest matching lines within its own budget, so the Harness and
 // OpenShell supervisor lines still fit the 16 KiB failure message after the Gateway's.
 // Workspace-node disconnects (finding 1496) need the node host's close line and the
-// supervisor's connection events, so those sources keep timestamps.
+// supervisor's connection events, so those sources keep timestamps. Every clip runs after
+// redaction: a value cut in half could no longer be matched by the reporter.
 const turnDiagnosticLineChars = 400;
+const turnDiagnosticErrorChars = 300;
 const turnDiagnosticNoise =
   /identity scope grant elevated connection identity=occ-workspace-files|authenticated user (?:connected|disconnected) .*user=occ-workspace-files/u;
 
-function turnDiagnosticLines(logs, pattern, budget) {
+function turnDiagnosticLines(logs, pattern, budget, secrets) {
   const kept = [];
   let length = 0;
   for (const line of logs.split("\n").reverse()) {
     if (!pattern.test(line) || turnDiagnosticNoise.test(line)) {
       continue;
     }
-    const shown =
-      line.length > turnDiagnosticLineChars ? `${line.slice(0, turnDiagnosticLineChars)}…` : line;
+    const shown = redactLogLine(line, secrets, turnDiagnosticLineChars);
     if (length + shown.length + 1 > budget) {
       break;
     }
@@ -4131,29 +4132,39 @@ function turnDiagnosticLines(logs, pattern, budget) {
 }
 
 // The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
-// proof below. Without one, the newest supervisor is named as unmatched.
+// proof below. Anything other than exactly one match reads no supervisor: another Agent's
+// supervisor in the same namespace is not evidence for this Harness.
 async function openShellSupervisorPod(topology) {
   const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
-  const supervisors = (await resources("pods", topology.placement))
-    .filter((pod) => pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor")
-    .sort((a, b) =>
-      String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
-    );
-  const matching = supervisors.find(
+  if (!boundaryPair) {
+    throw new Error("the Harness has no openshell.ai/boundary-pair label");
+  }
+  const supervisors = (await resources("pods", topology.placement)).filter(
     (pod) =>
-      boundaryPair !== undefined &&
+      pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
       pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
   );
-  if (matching !== undefined) {
-    return { pod: matching, matched: true };
+  if (supervisors.length !== 1) {
+    throw new Error(`${supervisors.length} supervisor Pods match the Harness boundary pair`);
   }
-  return supervisors[0] === undefined ? undefined : { pod: supervisors[0], matched: false };
+  return supervisors[0];
 }
 
 async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
-  const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
-    (secret) => typeof secret === "string" && secret.length > 0,
-  );
+  const secrets = failureSecrets([
+    process.env,
+    {
+      MODEL_CREDENTIAL: modelCredential,
+      GATEWAY_PASSWORD: gatewayPassword,
+      APP_SERVER_TOKEN: topology.appServerToken,
+    },
+  ]);
+  const unavailable = (label, error) =>
+    `${label} diagnostics unavailable: ${redactLogLine(
+      error?.message ?? String(error),
+      secrets,
+      turnDiagnosticErrorChars,
+    )}`;
   const sources = [
     {
       label: "Gateway",
@@ -4175,48 +4186,38 @@ async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
     },
   ];
   try {
-    const supervisor = await openShellSupervisorPod(topology);
-    if (supervisor === undefined) {
-      sources.push({ label: "OpenShell supervisor", unavailable: new Error("no supervisor Pod") });
-    } else {
-      const { pod, matched } = supervisor;
-      sources.push({
-        label: `OpenShell supervisor ${pod.metadata.name}${matched ? "" : " (unmatched, newest)"}`,
-        name: pod.metadata.name,
-        namespace: topology.placement,
-        logArguments: ["--container", "supervisor", "--tail=2000", "--timestamps"],
-        budget: 4_000,
-        pattern:
-          /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire/iu,
-      });
-    }
+    const pod = await openShellSupervisorPod(topology);
+    sources.push({
+      label: `OpenShell supervisor ${pod.metadata.name}`,
+      name: pod.metadata.name,
+      namespace: topology.placement,
+      logArguments: ["--container", "supervisor", "--tail=2000", "--timestamps"],
+      budget: 4_000,
+      pattern:
+        /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire/iu,
+    });
   } catch (error) {
-    sources.push({ label: "OpenShell supervisor", unavailable: error });
+    sources.push({ label: "OpenShell supervisor", lookupError: error });
   }
   const sections = [];
   for (const source of sources) {
-    if (source.unavailable !== undefined) {
-      sections.push(
-        `${source.label} diagnostics unavailable: ${source.unavailable?.message ?? String(source.unavailable)}`,
-      );
+    if (source.lookupError !== undefined) {
+      sections.push(unavailable(source.label, source.lookupError));
       continue;
     }
     try {
-      let logs = await kubectl(
+      const logs = await kubectl(
         "logs",
         source.name,
         "--namespace",
         source.namespace,
         ...source.logArguments,
       );
-      for (const secret of redactions) {
-        logs = logs.replaceAll(secret, "[REDACTED]");
-      }
       sections.push(
-        `${source.label} diagnostics:\n${turnDiagnosticLines(logs, source.pattern, source.budget)}`,
+        `${source.label} diagnostics:\n${turnDiagnosticLines(logs, source.pattern, source.budget, secrets)}`,
       );
     } catch (error) {
-      sections.push(`${source.label} diagnostics unavailable: ${error?.message ?? String(error)}`);
+      sections.push(unavailable(source.label, error));
     }
   }
   try {
@@ -4228,10 +4229,10 @@ async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
     }));
     // A terminated container's message can hold 4 KB; keep the other sections in the message.
     sections.push(
-      `Harness Pod: ${JSON.stringify({ phase: pod.status?.phase, containers }).slice(0, 1_000)}`,
+      `Harness Pod: ${redactLogLine(JSON.stringify({ phase: pod.status?.phase, containers }), secrets, 1_000)}`,
     );
   } catch (error) {
-    sections.push(`Harness Pod status unavailable: ${error?.message ?? String(error)}`);
+    sections.push(unavailable("Harness Pod status", error));
   }
   return `\n${sections.join("\n")}`;
 }
