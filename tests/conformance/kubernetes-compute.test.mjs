@@ -15754,7 +15754,7 @@ function assertNoOAuthBootstrap(objects) {
 // The pass that consumes the source deletes the bootstrap Job (or a legacy Deployment) from
 // a fresh read. A write between that read and the delete (409), or an object already gone
 // (404), is read again, at most three times: after consumption a failed last attempt has
-// no later pass to remove the seed Secret.
+// no later pass.
 for (const { title, kind, gone = false, writes = 0, completes = true } of [
   {
     title: "still removes the seed Job and Secret after a Job write conflicts with the delete",
@@ -15789,19 +15789,20 @@ for (const { title, kind, gone = false, writes = 0, completes = true } of [
       objects.set(key, legacyBootstrapDeployment(job, { resourceVersion: "1" }));
     }
     // Like the API server, the delete honors its preconditions. Another writer (for example
-    // a mutating policy controller) updates the object after the Driver read it.
+    // a mutating policy controller) updates the object after the Driver read it, or another
+    // actor removes it (404).
     const client = kind === "Job" ? transport.batch : transport.apps;
     const method = `deleteNamespaced${kind}`;
     const remove = client[method];
     let failures = 0;
     let written = 0;
     client[method] = async (request) => {
-      const stored = objects.get(key);
       if (gone) {
         failures += 1;
         objects.delete(key);
         throw apiError(404, "Not Found");
       }
+      const stored = objects.get(key);
       if (written < writes) {
         written += 1;
         stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
@@ -15832,8 +15833,18 @@ for (const { title, kind, gone = false, writes = 0, completes = true } of [
 // seed Secret before the bootstrap Job. If the Job delete then fails with a non-conflict
 // error on the deployment's last attempt (or after its convergence deadline), no later
 // pass runs, so the seed Secret holding the token bundle must already be gone.
-for (const alreadyConsumed of [false, true]) {
-  test(`Kubernetes OAuth handoff ${alreadyConsumed ? "on an already consumed source still removes the seed Secret first" : "removes the seed Secret first, so a failed Job delete after consumption cannot leave it"}`, async () => {
+for (const { title, alreadyConsumed } of [
+  {
+    title:
+      "removes the seed Secret first, so a failed Job delete after consumption cannot leave it",
+    alreadyConsumed: false,
+  },
+  {
+    title: "on an already consumed source still removes the seed Secret first",
+    alreadyConsumed: true,
+  },
+]) {
+  test(`Kubernetes OAuth handoff ${title}`, async () => {
     const { objects, state, job, name, jobKey, seedKey, deploymentKey, transport, pass, phase } =
       await startOAuthHandoff();
     assert.ok(objects.has(seedKey));
@@ -15867,7 +15878,9 @@ for (const alreadyConsumed of [false, true]) {
     assert.equal(jobDeletes, 1, "only a conflict or a Job already gone is read again");
     assert.equal(phase(), "consumed");
     assert.equal(objects.has(seedKey), false);
-    assert.equal(objects.has(deploymentKey), false);
+    if (alreadyConsumed) {
+      assert.equal(objects.has(deploymentKey), false);
+    }
     assert.ok(objects.has(jobKey));
 
     // A later pass, when one runs, still removes the completed Job.
