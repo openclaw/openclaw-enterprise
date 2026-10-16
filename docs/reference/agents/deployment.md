@@ -217,7 +217,7 @@ then repeats the stop without spending attempts.
 A `RUNTIME_MODEL_PROBE_FAILED` deployment error's `data.runtimeFailure` names
 the runtime component, check, time and, when classified, a `cause`: a `kind` and
 an optional `detail` token from this closed vocabulary. A Codex `detail` ending
-`-attempt2`, such as `exit-1-attempt2`, comes from a check retried once.
+`-attempt2` comes from a check retried once.
 
 | `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
 | ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -226,8 +226,8 @@ an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 | `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
 | `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
 
-OpenClaw's `format` covers an unknown model or a request rejected as malformed,
-such as invalid provider settings. A 429 or usage limit is
+OpenClaw's `format` covers an unknown model or a request the provider rejected
+as malformed, such as invalid provider settings. A 429 or usage limit is
 `rate_limit`. A rejected credential is
 `RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
 neither has a cause. Compute drops any cause outside these tokens but keeps the

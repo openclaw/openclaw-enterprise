@@ -542,7 +542,9 @@ test("Codex runtime retries a transient startup model probe failure once", async
     ],
     [
       "a rejected provider certificate",
-      erroredWith("stream disconnected before completion: invalid peer certificate: UnknownIssuer"),
+      erroredWith(
+        "stream disconnected before completion: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
+      ),
       "error-event",
     ],
     [
