@@ -1221,6 +1221,62 @@ select:not([multiple])[size="1"] {
   font-weight: 550;
   text-decoration: none;
 }
+.agent-table .badge {
+  display: inline-block;
+  margin: 7px 6px 0 0;
+}
+.agent-row-actions {
+  display: flex;
+  gap: 6px;
+}
+.agent-row-actions .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--muted);
+}
+.agent-row-actions .icon-button:not(:disabled):hover {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+.agent-row-actions .icon-button:disabled {
+  cursor: not-allowed;
+}
+.action-icon {
+  width: 16px;
+  height: 16px;
+}
+.icon-button-spacer {
+  width: 34px;
+  height: 34px;
+}
+/* Like the deployment cell: a set width and one reserved note line, so permission advice that
+   lands after the first paint neither grows its row nor re-flows the columns. */
+.agent-table .agent-row-actions-cell::before {
+  content: "";
+  display: block;
+  width: 10.5rem;
+}
+.row-action-note {
+  display: block;
+  height: 16px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+  contain: inline-size;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-list-feedback > .notice,
+.agent-list-feedback > .error {
+  margin: 0 0 20px;
+}
 .agent-tabs {
   display: flex;
   overflow-x: auto;
@@ -1283,12 +1339,16 @@ select:not([multiple])[size="1"] {
   border-color: var(--danger-subtle);
 }
 .deletion-note .danger,
-.stop-note .danger {
+.stop-note .danger,
+.agent-delete-dialog .danger,
+.agent-stop-dialog .danger {
   color: var(--danger);
   border-color: var(--danger);
 }
 .deletion-note .danger:not(:disabled):hover,
-.stop-note .danger:not(:disabled):hover {
+.stop-note .danger:not(:disabled):hover,
+.agent-delete-dialog .danger:not(:disabled):hover,
+.agent-stop-dialog .danger:not(:disabled):hover {
   background: var(--danger-subtle);
   color: var(--danger);
 }

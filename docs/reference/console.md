@@ -211,36 +211,38 @@ through the API or operator workflow.
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, review its effect, and
+Select **Stop Agent** or the Agent's list-row Stop icon, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining revision history, credentials, gateway state, and workspace files.
 
-An accepted request means shutdown was queued. **Refresh stop status** rereads
-the Agent's desired state and selected revision without probing the runtime.
-Refresh before retrying an uncertain result. Denials remain visible; the console
-never repeats a stop automatically. After Stop, **Request Stop again** confirms
-a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
-finished.
+An accepted request means shutdown was queued; the list row shows **Stop
+requested**. **Refresh stop status** rereads the Agent's desired state and
+selected revision without probing the runtime. After Stop, **Request Stop
+again** confirms a new stop intent, even without a selected version, but not
+when you can read no version, as before a first deploy (the list then shows no
+Stop icon). That does not prove cleanup finished.
 
-To resume, open **Create new version** and select **Deploy new version**, which
-creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
-worker lifecycle and preservation guarantees.
+To resume, open **Create new version** and select **Deploy new version**. See
+[Stop and resume](agents/deployment.md#stop-and-resume) for worker lifecycle and
+preservation.
 
 ## Delete an Agent
 
-Select **Delete Agent**, then **Permanently delete Agent**. Exact Agent `delete`
-is required; `read` or `operate` is not enough. Deletion removes the Agent, its
-versions, and its workspace data. Namespace Configurations and Secrets remain;
-see [Agent deletion](agents.md#deletion).
+Select **Delete Agent** or the Agent's list-row Delete icon, then **Permanently
+delete Agent**. Exact Agent `delete` is required; `read` or `operate` is
+insufficient. Deletion removes the Agent, its versions, and its workspace data.
+Namespace Configurations and Secrets remain; see
+[Agent deletion](agents.md#deletion).
 
 **Refresh deletion status** follows asynchronous cleanup. When the API confirms
-the Agent is gone, the console returns to that Namespace. A deleting Agent keeps
-**Request deletion again** behind confirmation. Failed cleanup can be replenished;
-queued or running cleanup is unchanged. An uncertain repeat stays disabled until
-a status read confirms deletion. The API keeps retry ownership and exact-Agent
-permission. A denial stays visible, and a refused repeat keeps the retry-ownership explanation.
-Refresh before retrying an unconfirmed outcome. The console never resends a
-delete automatically.
+the Agent is gone, the console returns to that Namespace; meanwhile its row shows
+**Deleting**. A deleting Agent keeps **Request deletion again** behind
+confirmation. Failed cleanup can be replenished; queued or running cleanup is
+unchanged. A refused repeat explains the API's retry ownership.
+
+Missing access disables a row icon with a reason. Denials remain visible; the
+console never resends either write. After an uncertain result, the action stays
+blocked until a status read succeeds or, in the list, until **Refresh**.
 
 ## Failures and logout
 

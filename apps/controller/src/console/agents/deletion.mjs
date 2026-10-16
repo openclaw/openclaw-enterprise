@@ -4,6 +4,19 @@ import { message } from "./list.mjs";
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
 
+export const DELETE_CONFIRMATION =
+  "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.";
+
+// Agent deletion keeps the Configuration and model credential Secret, even ones Create Agent made
+// for this Agent, and the console cannot list or delete them, so name them and the commands.
+export function keptResourcesText(agent) {
+  const source = agent.harnessAuth?.source;
+  if (source?.kind !== "secret") {
+    return `Its Configuration is kept, even if it was created with this Agent. Once nothing else uses it, delete it with occ configuration delete ${agent.configurationId}.`;
+  }
+  return `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${source.id}.`;
+}
+
 export function createAgentDeletion(context, path, agent, onDeleting, allowed = null) {
   const section = element("section", {
     className: "agent-card deletion-note",
@@ -265,16 +278,6 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }
   }
 
-  // Agent deletion keeps the Configuration and model credential Secret, even ones Create Agent made
-  // for this Agent, and the console cannot list or delete them, so name them and the commands.
-  function keptResourcesText() {
-    const source = agent.harnessAuth?.source;
-    if (source?.kind !== "secret") {
-      return `Its Configuration is kept, even if it was created with this Agent. Once nothing else uses it, delete it with occ configuration delete ${agent.configurationId}.`;
-    }
-    return `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${source.id}.`;
-  }
-
   function openConfirmation() {
     if (state.forbidden || (state.pending && !state.polling) || state.needsRefresh) {
       return;
@@ -298,7 +301,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       { id: "agent-delete-confirm-description", "aria-live": "polite" },
       retry
         ? "Request cleanup again for this Agent already marked for deletion. Cleanup that is queued or running continues unchanged. Removed data cannot be restored."
-        : "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.",
+        : DELETE_CONFIRMATION,
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
@@ -317,7 +320,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
       ),
       description,
-      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText()),
+      element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText(agent)),
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {

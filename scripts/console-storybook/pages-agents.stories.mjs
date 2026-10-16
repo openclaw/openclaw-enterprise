@@ -21,6 +21,14 @@ export const AgentsInterruptedResponse = {
 };
 export const AgentsLoading = { ...story("agentsLoading"), name: "Loading" };
 
+export const RowStopConfirmation = story("agentsRowStopConfirm");
+export const RowStopped = story("agentsRowStopped");
+export const RowDeleteConfirmation = story("agentsRowDeleteConfirm");
+export const RowStopDenied = story("agentsRowStopDenied");
+export const RowDeleteDenied = story("agentsRowDeleteDenied");
+export const RowStopUnknown = story("agentsRowStopUnknown");
+export const RowRestricted = story("agentsRowRestricted");
+
 export const LatestDeploymentFailed = story("agentsDeploymentFailed");
 export const LatestDeploymentDenied = story("agentsDeploymentDenied");
 export const LatestDeploymentLoading = story("agentsDeploymentLoading");

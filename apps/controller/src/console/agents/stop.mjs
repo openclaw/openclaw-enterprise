@@ -1,6 +1,10 @@
 import { button, element } from "../dom.mjs";
 import { message, shortId } from "./list.mjs";
 
+// Shared with the Agents list's row action, so both confirmations describe the same effect.
+export const STOP_CONFIRMATION =
+  "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
+
 export function createAgentStop(
   context,
   path,
@@ -278,7 +282,7 @@ export function createAgentStop(
     const description = element(
       "p",
       { id: "agent-stop-confirm-description", "aria-live": "polite" },
-      "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.",
+      STOP_CONFIRMATION,
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.

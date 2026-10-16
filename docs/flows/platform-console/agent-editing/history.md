@@ -8,9 +8,15 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-15 04:40: Hide stop controls for a never-deployed Agent in the accompanying change. (authoring-run/2aecf15b-82ac-4724-94d9-45b8c1c99fc6 - c78f96b706ce94dbfe6aadfdac9c40e7e7e759ae)
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
+- 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
 - 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
 - 2026-10-10 01:41: Trace confirmed manual deletion recovery and uncertain repeat readback in the accompanying change. (authoring-run/da61175b-df1b-4e96-b202-94e9e82538f9 - 243b38ba6d951240065e5061e1e4abccdb44410c)
 - 2026-10-10 00:08: Trace explicit repeated Stop recovery in the accompanying change. (authoring-run/52a975bb-0283-40ba-9126-2c2f6eb8992c - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+- 2026-10-09 20:35: Replace only the old Harness source binding while preserving unrelated sources. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
+- 2026-10-07 17:42: Trace exact CredentialSource grants alongside Secret grants after authentication saves. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 - 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
 - 2026-09-29 02:55: Trace Gateway password access staging through the existing Configuration editor and save path. (01a0eb0e-dbc1-78d1-91b0-ea91ee87c00f - fdccee5cab532bc7ef2085c5ec6f8f922663f5ce)
 - 2026-09-28 21:31: Trace metadata-preserving browsing and unreadable saved settings in the accompanying change. (01a0e9c2-e0cd-7ed2-a1b9-a70247c43db2 - 176a52892f72aefc45505f89ae6d33e7526fe4da)

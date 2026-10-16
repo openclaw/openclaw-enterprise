@@ -19,7 +19,7 @@ API and IAM authorize access.
 - `api-client.mjs` owns cancellation and session expiry; `view-lifetime.mjs`
   owns generation and abort state; `navigation.mjs` owns return paths and history;
   `shell.mjs` owns navigation and collections.
-- `agents/{list,create,detail}.mjs` own Agent views;
+- `agents/{collection,create,detail}.mjs` own Agent views;
   `channels/{slack,shared-ui}.mjs` own Slack editing. `agents.mjs` and
   `channels.mjs` compose them.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.

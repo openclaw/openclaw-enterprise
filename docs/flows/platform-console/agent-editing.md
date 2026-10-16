@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-16
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+last_updated_session: authoring-run/ec250085-6194-47f8-afe8-37bcf489e158
 ---
 
 # Console Agent editing and runtime requests
@@ -13,7 +13,7 @@ Trace Agent edits, credentials, workspace, stop, and deletion. See the
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` loads the exact Agent and composes the detail actions; Agents list rows also offer Stop and Delete.
 - `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a revision after first-deployment credential setup.
 - A signed-in caller must hold each action's permission on the exact resource.
@@ -32,6 +32,8 @@ graph TD
     B --> D["Read or write workspace files"]
     B --> E["Confirm Agent deletion"]
     B --> S["Confirm Agent stop"]
+    L["Agents list row icon"] --> E
+    L --> S
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]
@@ -300,22 +302,28 @@ reference covers worker shutdown and preservation of revisions, credentials, and
 `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
 
 **Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
-exact Agent URL. The controller requires Agent `delete`; a `403` stays visible on
-the detail page. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
-rereads the exact Agent every few seconds; **Refresh deletion status** reads it
-on demand. A read error stops polling. Only a not-found read after
-an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An already deleting Agent
-keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
-and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
-work stays unchanged; terminal work can restart under the controller's existing
-current-permission and retry-ownership checks. The view does not infer a worker
-outcome from the Agent's deleting state or add a separate status contract.
+exact Agent URL. The controller requires Agent `delete`; a `403` stays visible.
+Acceptance starts asynchronous cleanup and marks the Agent deleting; the page
+rereads the exact Agent every few seconds, **Refresh deletion status** reads on
+demand, and a read error stops polling. Only a not-found read after an accepted
+or uncertain request, or when an already-deleting Agent is opened, returns to the
+Agents list. An already deleting Agent keeps **Request deletion again** beside
+Refresh; its cancel-first confirmation sends the same DELETE. Queued or claimed
+work stays unchanged; terminal work can restart under the controller's
+current-permission and retry-ownership checks. The view infers no worker outcome
+from the deleting state.
 
 An uncertain initial or repeated deletion blocks writes until a successful exact
-Agent read. A deleting read clears that guard even when the view was already deleting;
-a failed read does not. Cancel returns focus to the repeat-request button, and
-successful writes retain status refresh. The browser never retries DELETE automatically.
+Agent read; a deleting read clears that guard, a failed read does not. Cancel
+returns focus to the repeat-request button. The browser never retries DELETE automatically.
+
+`apps/controller/src/console/agents/collection.mjs:renderAgentList` rows use the
+same Stop and Delete confirmations. Each row reads
+[permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions).
+Refusal disables the action and explains why; in an open confirmation, it also
+disables confirmation and focuses Cancel. A stopped Agent without a selected
+revision has no Stop action. Acceptance updates the row without polling.
+After `404`, `409`, or an uncertain outcome, the actions stay disabled until **Refresh**.
 
 `packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
 [Agent deletion reference](../../reference/agents.md#deletion) covers
@@ -354,21 +362,10 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-16 22:16: Trace Stop and Delete from Agents list rows, with permission advice, in the accompanying change. (authoring-run/ec250085-6194-47f8-afe8-37bcf489e158 - 846c86a3a81b3cdbe3387012c9690f74f25f112b)
 - 2026-10-16 00:38: Reconcile in-place OAuth save feedback after merging main. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 697ca86d47f67a9671f07708f362bcfb671650e6)
-
 - 2026-10-15 22:35: Reconcile failed-version recovery and OAuth editing. (authoring-run/8c4ab973-b5a0-4bcf-8fcf-5f9d908ea26c - c997748f661b5df1198047de5a97c9cf23fb241a)
-
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
-
 - 2026-10-15 21:30: Separate selected version, recorded deployment, and live-serving uncertainty; surface failed-version recovery. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
-- 2026-10-15 04:40: Hide stop controls for a never-deployed Agent in the accompanying change. (authoring-run/2aecf15b-82ac-4724-94d9-45b8c1c99fc6 - c78f96b706ce94dbfe6aadfdac9c40e7e7e759ae)
-- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
-- 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
-
-- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
-
-- 2026-10-09 20:35: Replace only the old Harness source binding while preserving unrelated sources. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
-
-- 2026-10-07 17:42: Trace exact CredentialSource grants alongside Secret grants after authentication saves. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

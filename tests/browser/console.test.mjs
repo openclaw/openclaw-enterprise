@@ -342,13 +342,16 @@ test("console browser flow keeps Namespace URL state across global pages and log
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
   );
   assert.deepEqual(writeRequests, []);
-  // List rows read revision history for Latest deployment. Browsing these draft
-  // Agents must not read their detail or invoke any deployment operation.
+  // List rows read revision history for Latest deployment and advisory permissions for their
+  // Stop and Delete icons. Browsing these draft Agents must not read their detail or invoke any
+  // deployment operation.
   const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
   assert.deepEqual(
     [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
     [
+      `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
+      `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/revisions`,
     ].sort(),
   );
