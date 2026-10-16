@@ -285,12 +285,14 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
-**Open vN Logs** selects the failed revision, even from a draft or another version.
-The tab keeps its height while loading; Stop and Delete appear in place. If the view
-is still current, focus moves to Logs and the output scrolls into view; an address or reload
-shows the page already there. Clicking the
-Logs tab instead keeps the strip in place when the output is already visible.
-[Agent runtime logs](agent-runtime-logs.md) covers status, output, and access errors.
+**Open vN Logs** opens the failed revision from any version or draft. Logs reserves space;
+Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
+the tab leaves visible output in place.
+
+[Runtime logs](agent-runtime-logs.md) explains access. A status `403` hides Pod details,
+not separately authorized logs. Denials last until logout; newly granted `operate` permits
+another status read. A refused log read or download clears the rows. A late success cannot
+restore them or start a download. Back rebuilds a refused view; otherwise it shows the page it checked.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -368,8 +370,8 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
 - 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
-- 2026-10-16 14:30: Scroll a Logs view that loads before its Agent page shows to its newest output. (flake-fix-1016)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

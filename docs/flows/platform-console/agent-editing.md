@@ -77,12 +77,13 @@ The UI preserves navigation and exact-resource permissions, refusing unreadable-
 editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
-version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
-health. Routine completion folds; pending work, read errors, warnings, and cleanup
-stay visible. Failed deployments link Logs unless denied in this tab, and draft
-settings once `update` is confirmed, even with an older selected version.
-Hidden or unlisted current versions suppress recovery. Viewed versions show their
-own results. Pending activity is reread every
+version's persisted status, not live health. Routine completion folds; pending work,
+read errors, warnings, and cleanup stay visible. Failed deployments offer Logs
+unless log text or revision access was denied during this sign-in. Configuration recovery
+requires Agent `update` or `deploy` and an existing Configuration without known read
+errors or denials; access remains separately authorized. Credentials recovery
+requires Agent `update`. Hidden or unlisted current versions suppress recovery;
+viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection. **Current observations** requests timestamped
@@ -212,7 +213,7 @@ ServiceAccount PATs and runtime authentication skip this grant.
 Grant failure preserves saved authentication and freezes controls.
 **Retry credential access** rejects changed bindings and retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
-**Reload authentication source** before saving or granting again. Pending access
+**Reload authentication source** before saving or granting. Pending access
 survives navigation and blocks deployment until confirmed or reloaded. Admission
 remains authoritative; preflight/authorization errors stay separate from credential
 metadata. Confirmed access does not prove provider readiness.

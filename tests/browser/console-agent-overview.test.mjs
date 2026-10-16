@@ -350,7 +350,7 @@ test("A succeeded version says when the current version is on no loaded page", a
   await summary.getByText("Newer version hidden", { exact: true }).waitFor();
 });
 
-test("Recovery offers the draft link only to callers who may update the Agent", async (t) => {
+test("Recovery offers no draft link without Agent update or deploy permission", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(
     t,
     "Read-only recovery",
@@ -360,7 +360,7 @@ test("Recovery offers the draft link only to callers who may update the Agent", 
   // v1 keeps serving; the v2 redeploy failed.
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   await routeFailedRecord(page, fixture, namespace, agent, revision);
-  // The caller's permission answer says this reader may not update the Agent's Configuration.
+  // Agent permissions do not describe this reader's Configuration permissions.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
     (route) =>
