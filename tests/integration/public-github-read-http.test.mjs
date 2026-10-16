@@ -14,7 +14,7 @@ import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
 // The fixed answer to a connection over the per-address cap, as the client reads it.
 const refusal =
-  /^HTTP\/1\.1 429 Too Many Requests\r\n[^]*retry-after: 1\r\nconnection: close\r\n[^]*too many reader connections/;
+  /^HTTP\/1\.1 429 Too Many Requests\r\n(?=[^]*\r\nretry-after: 1\r\n)(?=[^]*\r\nconnection: close\r\n)[^]*too many reader connections/;
 // Unlike events.once, these never reject on the socket errors a reset produces.
 const event = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 const closed = (socket) => socket.closed || event(socket, "close");
@@ -149,9 +149,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   const multipleCallers = aliased
     ? { timeout: 15_000 }
     : { skip: "loopback aliases 127.0.0.2-4 are unavailable" };
-  const answer = (status, body, headers) =>
-    (reply = (req, res) =>
-      res.writeHead(status, { ...json, ...headers }).end(JSON.stringify(body)));
+  const answer = (status, body, headers) => {
+    reply = (req, res) => res.writeHead(status, { ...json, ...headers }).end(JSON.stringify(body));
+  };
   // GitHub denies its anonymous quota once. Every later read, from any caller, is parked with
   // the shared retry time (above `minimum` seconds) instead of spending more quota.
   const assertParked = async (headers, minimum, reads) => {
@@ -396,8 +396,8 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.deepEqual(statuses, [200, 200, 200]);
 
       await assertParked({ "retry-after": "300" }, 290, [
-        ["127.0.0.1", "/pulls/7"],
-        ["127.0.0.1", "/releases/9"],
+        [aliases[0], "/pulls/7"],
+        [aliases[1], "/releases/9"],
       ]);
     },
   );
@@ -429,7 +429,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
           answered.push(response);
           settle();
           return response;
-        }),
+        }, settled.reject),
       );
       await settled.promise;
       assert.equal(held.length, 1, "one caller must not occupy every provider slot");
@@ -468,18 +468,16 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
     async (st) => {
       const reader = await startReader(st);
       const [idler, other] = aliases;
-      // One address opens the reader's whole 48-connection budget and never
-      // finishes its request headers. Each is in by the time `hold` returns.
+      // One address opens 48 connections, the reader's whole budget without the per-address cap,
+      // and never finishes its request headers. The reader keeps four and refuses the rest.
       const idle = await reader.hold(48, idler);
       const idling = Date.now();
-      // Without a per-address cap the reader is full, so another caller is reset until
-      // the idle sockets reach the 6 s headers timeout (about 30 s with Node's default
-      // check interval). With it, that caller is answered at once.
-      const status = await request(reader.base + "/healthz", other).then(
-        (response) => response.status,
-        (error) => error.code,
+      // Without the cap the reader is full and resets another caller until the idle sockets
+      // time out (6 s, or about 30 s with Node's default check interval). With it, at once.
+      const { status, code } = await request(reader.base + "/healthz", other).catch(
+        (error) => error,
       );
-      assert.equal(status, 200, "another caller is answered while one address idles");
+      assert.equal(status ?? code, 200, "another caller is answered while one address idles");
       // The idle sockets the reader did accept close at the 6 s headers timeout, checked
       // every second (about 7 s). Node checks that timeout in native code against the real
       // clock, so the wait is real; it ends when the last socket closes. Allow 15 s for loaded
@@ -505,7 +503,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.match(refused.body.message, /too many reader connections/);
       // Once this address closes its connections, it is served again.
       held.forEach(({ client }) => client.destroy());
+      const closing = Date.now();
       await Promise.all(held.map(({ socket }) => closed(socket)));
+      assert.ok(Date.now() - closing < 5000, "the reader closes its side when the client does");
       const served = await healthz();
       assert.equal(served.status, 200);
       assert.equal(served.body.message, "ready");
