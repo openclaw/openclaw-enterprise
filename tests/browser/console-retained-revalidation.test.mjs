@@ -1124,13 +1124,18 @@ test("Back after an abandoned Refresh rebuilds the page instead of restoring it"
   assert.equal(await viewTag(page), null);
 });
 
-// Refresh, and a navigation to the shown page's own URL (as save/reload actions make), read the
-// page again and rebuild it, even when every read still matches the page kept for Back (finding 1585).
+// Refresh, and a navigation to the shown page's own URL (save and reload actions make one), read
+// the page again and rebuild it, even when every read still matches the page kept for Back
+// (finding 1585).
 for (const c of [
   { name: "Refresh", act: clickRefresh },
   {
-    name: "Following the shown page's own navigation link",
-    act: (page) => page.locator('.nav a[data-nav="agents"]').click(),
+    name: "Following the Agents link from the Agents list",
+    act: (page) =>
+      page
+        .getByRole("navigation", { name: "Main navigation" })
+        .getByRole("link", { name: "Agents", exact: true })
+        .click(),
   },
 ]) {
   test(`${c.name} rebuilds the shown page instead of remounting it`, async (t) => {
@@ -1140,6 +1145,7 @@ for (const c of [
     await c.act(page);
     await read;
     await listShown(page, "Unchanged Agent");
+    // The link must reach the same URL, or this would test an ordinary visit.
     assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, listUrl);
     assert.equal(await viewTag(page), null, "the shown page was remounted instead of rebuilt");
   });
