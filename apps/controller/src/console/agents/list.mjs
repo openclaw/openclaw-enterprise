@@ -138,28 +138,26 @@ export function renderAgentList(context) {
   context.drafts.track("agent-search", () => search.value || undefined);
   const rows = element("div");
   const deployments = new Map();
+  // The page renders with the caller's permission answer, so Create Agent is never painted
+  // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
+  // only: the API still authorizes creation, so an unknown answer keeps the control.
+  const createDenied = context.permissions?.agents?.create === false;
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  const createNote = element(
-    "p",
-    { className: "muted", role: "status", hidden: true },
-    "Your access does not include creating Agents in this Namespace.",
-  );
+  create.disabled = createDenied;
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
-    createNote,
+    ...(createDenied
+      ? [
+          element(
+            "p",
+            { className: "muted", role: "status" },
+            "Your access does not include creating Agents in this Namespace.",
+          ),
+        ]
+      : []),
     rows,
-  );
-  // Gating only: the API still authorizes creation, so an unknown answer keeps the control.
-  void context.request(`${namespacePath(context.namespaceId)}/permissions`).then(
-    (permissions) => {
-      if (context.isCurrent() && permissions?.agents?.create === false) {
-        create.disabled = true;
-        createNote.hidden = false;
-      }
-    },
-    () => {},
   );
   function render() {
     const query = search.value.trim().toLowerCase();
@@ -177,7 +175,11 @@ export function renderAgentList(context) {
             {},
             query
               ? "Try another name or ID."
-              : "Create an Agent in this Namespace using an editable Configuration template.",
+              : createDenied
+                ? // Under the note above: say what the reader can expect, not invite creating
+                  // (finding 1521).
+                  "Agents in this Namespace that are shared with you appear here."
+                : "Create an Agent in this Namespace using an editable Configuration template.",
           ),
         ),
       );

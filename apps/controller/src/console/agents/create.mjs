@@ -249,6 +249,24 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
+  // Gating only: an unknown answer keeps the start page, and the API still decides.
+  if (context.permissions?.agents?.create === false) {
+    context.view.replaceChildren(
+      link("← Agents", "agents", context),
+      element(
+        "section",
+        { className: "state-panel" },
+        element("h2", {}, "Creating Agents is not available"),
+        element(
+          "p",
+          { role: "status" },
+          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
+        ),
+      ),
+    );
+    return;
+  }
   // Starting the form replaces the launch view, and with it the control that started it. Give
   // focus to the page heading instead of dropping it to the document (finding 1446).
   const startForm = (rendered, options, draft) => {

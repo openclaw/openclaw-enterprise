@@ -114,6 +114,56 @@ test("a failed deployment's Logs link opens its version in view without reloadin
   }
 });
 
+// Clicking the Logs tab scrolled the page 357 px (307 px at 390x844) up to a second later,
+// moving the strip the reader had just used (finding 1518).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`the Logs tab opens under the strip it was clicked in at ${viewport.width}x${viewport.height}`, async (t) => {
+    const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+    computeDriver.state.lines = [line(1, "tab click output")];
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, revisionId, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    // The strip sits in the middle of the viewport, as after reading the overview.
+    await page.evaluate(() => {
+      const strip = globalThis.document.querySelector(".agent-tabs").getBoundingClientRect();
+      globalThis.scrollBy(0, strip.top - globalThis.innerHeight / 2);
+    });
+    const before = await page.evaluate(() => ({
+      scrollY: globalThis.scrollY,
+      strip: globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top,
+    }));
+    assert.ok(before.scrollY > 0, "the page scrolled to put the strip mid-viewport");
+    await logsTab.click();
+    await page
+      .getByRole("log", { name: "Runtime log output" })
+      .getByText("tab click output")
+      .waitFor();
+    // The scroll came after the Logs view's first reads and two more frames; wait past them.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 1000)));
+    const after = await page.evaluate(() => ({
+      scrollY: globalThis.scrollY,
+      strip: globalThis.document.querySelector(".agent-tabs").getBoundingClientRect().top,
+    }));
+    assert.ok(
+      Math.abs(after.strip - before.strip) <= 1,
+      `the tab strip moved from ${before.strip} to ${after.strip} (scroll ${before.scrollY} -> ${after.scrollY})`,
+    );
+    assert.equal(
+      await logsTab.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
+  });
+}
+
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "phone-width output")];
