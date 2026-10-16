@@ -64,14 +64,37 @@ async function launchBrowser(options = {}) {
 }
 
 // One Chromium for every test in a file, launched on first use and closed after the file's
-// last test. Pass the result as newPage's `browser` option. Each test still gets its own
-// context (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test.
+// last test. Call it once at module top level (`after` attaches to the test that is running)
+// and pass the result as newPage's `browser` option. Each test still gets its own context
+// (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test. A
+// failed launch or a crashed browser is launched again for the next test.
 export function fileBrowser() {
   let launched;
   after(async () => {
     await (await launched?.catch(() => null))?.close();
   });
-  return () => (launched ??= launchBrowser());
+  return () => {
+    if (launched === undefined) {
+      const launching = launchBrowser().then(
+        (browser) => {
+          browser.on("disconnected", () => {
+            if (launched === launching) {
+              launched = undefined;
+            }
+          });
+          return browser;
+        },
+        (error) => {
+          if (launched === launching) {
+            launched = undefined;
+          }
+          throw error;
+        },
+      );
+      launched = launching;
+    }
+    return launched;
+  };
 }
 
 export async function newPage(t, fixture, options = {}) {

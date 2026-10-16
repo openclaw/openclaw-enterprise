@@ -586,10 +586,10 @@ test("repository Cancel keeps the replaced editor locked while choices finish lo
   await reread.requested;
   options.release();
   await page.waitForResponse((response) => response.url().endsWith("/repository-options"));
-  // The choices' completion updates the editor; it must stay locked, so no field can make
-  // the cancelled edit savable again.
-  // The editor is updated in the same task that marks the choices loaded.
   const profile = page.locator("#repository-default-git-read");
+  // Loading the choices sets aria-busy="false", re-renders and updates the editor in one
+  // synchronous step, so the editor's final state is set once this is seen. It must stay
+  // locked, so no field can make the cancelled edit savable again.
   await page.locator('.repository-options[aria-busy="false"]').waitFor({ state: "attached" });
   assert.equal(await cancel.isDisabled(), true, "the cancelled editor is still shown");
   assert.equal(await profile.isDisabled(), true);
@@ -839,8 +839,9 @@ async function saveSlackElsewhere(c, slack) {
   assert.equal(changed.status, 200, JSON.stringify(changed.body));
 }
 
-// Edits Slack (after `slack` was saved, if given), lets another browser save first, then saves
-// and reloads the carried draft.
+// Edits Slack, lets another browser save first, then saves and reloads the carried draft. A
+// `slack` object, even {}, is saved first and moves the Configuration to generation 2 before the
+// page opens; `undefined` opens the page at generation 1.
 async function carrySlackEdit(t, name, slack, edit, elsewhere) {
   const context = await slackAgent(t, name);
   const { fixture, namespace, agent } = context;
@@ -1162,14 +1163,16 @@ async function channelSecretsConflict(t, name, { otherApp = false, agentRead, el
     context.otherApp = await fixture.createSecret(namespace.id, "Other app token", "xapp-other");
   }
   const page = await openTab(t, fixture, namespace, agent, "credentials", {
+    // Only callers that answer the Agent reads install a route.
     beforeLogin:
-      agentRead &&
-      ((routed) =>
-        routed.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
-          if (route.request().method() !== "GET" || !(await agentRead(route))) {
-            await route.continue().catch(() => {});
-          }
-        })),
+      agentRead === undefined
+        ? undefined
+        : (routed) =>
+            routed.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+              if (route.request().method() !== "GET" || !(await agentRead(route))) {
+                await route.continue().catch(() => {});
+              }
+            }),
   });
   await page.getByRole("heading", { name }).waitFor();
   await selectSecret(page, "Slack bot token", context.secondBot);
