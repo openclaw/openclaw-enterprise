@@ -2969,9 +2969,10 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
       .map(([name]) => name);
   for (const [endpoint, admitted] of rows) {
     const configuration = endpointInstallation(endpoint);
+    const failedConsumers = failing(endpoint);
     if (admitted) {
       await loadInstallationFile(t, configuration);
-      assert.deepEqual(failing(endpoint), [], `${endpoint}: admitted but a consumer throws`);
+      assert.deepEqual(failedConsumers, [], `${endpoint}: admitted but a consumer throws`);
     } else {
       await assert.rejects(
         loadInstallationFile(t, configuration),
@@ -2980,8 +2981,8 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
       );
     }
     // Startup never admits what either consumer would throw on at first use.
-    if (failing(endpoint).length > 0) {
-      assert.equal(admitted, false, `${endpoint}: ${failing(endpoint).join(", ")} throws`);
+    if (failedConsumers.length > 0) {
+      assert.equal(admitted, false, `${endpoint}: ${failedConsumers.join(", ")} throws`);
     }
   }
   for (const endpoint of [
