@@ -40,7 +40,7 @@ function render(loginMode, node, initialSetup, environment = {}) {
     initialSetup ? setup : undefined,
   );
   const revision = { agentId: owner.agentId, configuration: { agents: { defaults: {} } } };
-  if (node === "setup-file")
+  if (node === "setup-file") {
     driver.addWorkspaceNode(
       deployment,
       nodeName,
@@ -49,7 +49,10 @@ function render(loginMode, node, initialSetup, environment = {}) {
       true,
       initialSetup ? setup : undefined,
     );
-  if (node === "native") driver.addNativeWorker(deployment, nodeName, undefined, revision);
+  }
+  if (node === "native") {
+    driver.addNativeWorker(deployment, nodeName, undefined);
+  }
   return { driver, deployment, pod: deployment.spec.template.spec };
 }
 
@@ -65,8 +68,9 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
           const volumeNames = new Set(pod.volumes.map(({ name }) => name));
           assert.equal(volumeNames.size, pod.volumes.length);
           for (const container of [...pod.initContainers, ...pod.containers]) {
-            for (const mount of container.volumeMounts)
+            for (const mount of container.volumeMounts) {
               assert(volumeNames.has(mount.name), `dangling mount ${mount.name}`);
+            }
           }
           const mounts = pod.containers[0].volumeMounts;
           const workspaceMounts = mounts.filter(({ name }) => name === claimVolume);
@@ -124,8 +128,9 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
             // Run the actual generated init program against task-owned directories.
             const root = mkdtempSync(join(tmpdir(), "harness-init-"));
             try {
-              for (const dir of ["runtime-state", "runtime-temporary", "harness-workspace-state"])
+              for (const dir of ["runtime-state", "runtime-temporary", "harness-workspace-state"]) {
                 mkdirSync(join(root, dir));
+              }
               const script = privateInit.args[0]
                 .replaceAll("/runtime-state", `${root}/runtime-state`)
                 .replaceAll("/runtime-temporary", `${root}/runtime-temporary`)
@@ -163,8 +168,9 @@ test("provider projection rejects unexpected node and OAuth home mounts", () => 
     mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)),
     mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)),
     [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
-  ])
+  ]) {
     assert.throws(() => project(bad));
+  }
   assert.throws(() => project(mounts, false));
 });
 

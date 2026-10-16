@@ -7552,7 +7552,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   assert.equal(
     worker.volumeMounts.some(
       ({ name, mountPath }) =>
-        name === "openclaw-node-state" && mountPath === "/home/node/.openclaw-node",
+        name === "openclaw-workspace" && mountPath === "/home/node/.openclaw-node",
     ),
     true,
   );
@@ -12469,7 +12469,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   const initialization = initializedHarness.spec.template.spec.initContainers[0].args[0];
   assert.match(initialization, /chmodSync\(path, 0o700\)/);
   assert.equal(
-    initialization.includes(`/workspace-node-state/${driver.workspaceNodeName(revision)}`),
+    initialization.includes(`/harness-workspace-state/${driver.workspaceNodeName(revision)}`),
     true,
   );
   const node = mounts.find(({ mountPath }) => mountPath === "/home/node/.openclaw-node");
