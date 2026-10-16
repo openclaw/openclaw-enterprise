@@ -3832,6 +3832,9 @@ test("Preset and Configuration saves refuse a baseUrl or api that a variable fil
     [{ baseUrl: "https://api.123:99999/v1" }, baseUrl()],
     [{ baseUrl: "https://api.a<1/v1" }, baseUrl()],
     [{ baseUrl: "https://api.1<a/v1" }, baseUrl()],
+    // Only the last label is replaced to test the rest: a bad label before it keeps the general
+    // message.
+    [{ baseUrl: "https://api.a<b.123/v1" }, baseUrl()],
   ]) {
     await refusedOnSave(context, gateway(settings), message, { item });
   }
