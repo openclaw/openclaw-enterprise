@@ -449,6 +449,51 @@ func TestDeploymentStatusDefaultsToTheLatestRevision(t *testing.T) {
 	}
 }
 
+// Revision lists are permission-filtered: without a DEPLOYMENT_ID the command
+// reads the latest revision the caller can read, which can be an old failed
+// version while the active one is hidden. It must say which one it showed (D608).
+func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	forbidden := `raw:403 {"error":{"code":"FORBIDDEN","message":"The exact platform operation was not authorized."}}`
+	olderOnly := `[{"id":"` + testRevision1ID + `","revision":1}]`
+	for _, test := range []struct {
+		name      string
+		responses map[string]string
+		notice    string
+	}{
+		{"active revision unreadable", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      olderOnly,
+			"GET " + agentPath + "/revisions/" + testRevision2ID:   forbidden,
+			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision1ID + ", the latest revision you can read; the active revision " + testRevision2ID + " is not readable with your permissions\n"},
+		{"newer than the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
+			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
+			"GET " + agentPath + "/revisions/" + testRevision1ID:   `{"id":"` + testRevision1ID + `","revision":1}`,
+			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
+		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + "; pass " + testRevision1ID + " for the active revision's status\n"},
+		{"the active revision", map[string]string{
+			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
+			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
+			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"succeeded"}`,
+		}, "notice: showing the active revision " + testRevision2ID + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			out, notices, requested, err := runOCCWithNotices(t, test.responses, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+			if err != nil {
+				t.Fatalf("%v (requests %v)", err, requested)
+			}
+			if notices != test.notice {
+				t.Fatalf("notices = %q, want %q", notices, test.notice)
+			}
+			if strings.Contains(out, "notice:") {
+				t.Fatalf("notice leaked to stdout:\n%s", out)
+			}
+		})
+	}
+}
+
 func TestDeploymentStatusShowsModelProbeFailureCause(t *testing.T) {
 	// Finding 323: a failed startup model check names its classified cause.
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
