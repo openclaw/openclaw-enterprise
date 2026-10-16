@@ -436,6 +436,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
     probe([started, failedTurn(message)], { status: 1 }, undefined, elapsed);
   const erroredWith = (message) => probe([started, errorEvent(message)], { status: 1 });
   const killed = probe([], { status: null, signal: "SIGKILL" });
+  const recoveredNotice = errorEvent("Reconnecting... 1/3 stream disconnected before completion");
   // Each transient class, by the one marker that makes it transient.
   const transient = [
     [
@@ -594,7 +595,37 @@ test("Codex runtime retries a transient startup model probe failure once", async
       ),
       lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
       probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+      // The first attempt reports its first transient failure.
+      probeCauses: [
+        { kind: "PROBE_STATUS", detail: "error-event" },
+        { kind: "PROBE_STATUS", detail: "turn-failed" },
+      ],
     },
+    {
+      name: "two transient failures then a tool event in one attempt hold the tool event",
+      native: [
+        login(),
+        probe([
+          started,
+          errorEvent("unexpected status 502"),
+          errorEvent("broken pipe"),
+          { type: "item.completed", item: { type: "command_execution" } },
+        ]),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
+    },
+    // A recovered stream notice is never a transient failure, before or after one.
+    ...[
+      ["before", [recoveredNotice, errorEvent("unexpected status 503")]],
+      ["after", [errorEvent("unexpected status 503"), recoveredNotice]],
+    ].map(([order, events]) => ({
+      name: `a recovered stream notice ${order} a transient error is still retried`,
+      native: [login(), probe([started, ...events, assistant, completed]), success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+      probeCauses: [{ kind: "PROBE_STATUS", detail: "error-event" }, undefined],
+    })),
     {
       name: "a transient failure then a timeout holds the timeout",
       native: [login(), failedWith("unexpected status 503"), probe([], timedOut, 30000)],

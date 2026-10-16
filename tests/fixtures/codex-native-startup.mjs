@@ -357,6 +357,12 @@ function checkStartupDiagnostics(runtime, scenario) {
     probes.map(({ code }) => code),
     scenario.probeCodes ?? (expected.check === "login" ? [] : [expected.code]),
   );
+  if (scenario.probeCauses !== undefined) {
+    assert.deepEqual(
+      probes.map(({ cause }) => cause),
+      scenario.probeCauses,
+    );
+  }
   for (const [index, diagnostic] of probes.entries()) {
     assert.equal(diagnostic.event, "codex.model_probe");
     assert.equal(diagnostic.attempt, index + 1);
