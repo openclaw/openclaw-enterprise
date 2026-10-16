@@ -161,6 +161,7 @@ import {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialSourceDriverError,
@@ -294,6 +295,7 @@ export {
   ChannelCredentialError,
   ComputeGatewaySettingError,
   ComputeProvisioningRefusedError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
   configurationSettingMessage,
@@ -5702,9 +5704,7 @@ export class OpenClawController {
         input.expectedGeneration !== undefined &&
         input.expectedGeneration !== metadata.generation
       ) {
-        throw new ResourceStateConflictError(
-          "The Configuration changed since it was read. Read its current generation before updating it.",
-        );
+        throw new ConfigurationGenerationConflictError();
       }
       const previous = await this.lockedConfiguration(driver, metadata);
       let secretBindings: SecretBindings;

@@ -786,7 +786,11 @@ for (const changed of ["generation", "identity"]) {
       (await fixture.request("GET", configurationPath)).data.values,
       changed === "generation" ? newerValues : values,
     );
-    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
+    // The chosen Secret stays shown, unsaved, for Reload draft to carry (finding 1512).
+    await waitForInputValue(
+      page.getByLabel("Slack app token"),
+      secretOptionLabel(replacementSecret),
+    );
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
     assert.equal(await deploy.isDisabled(), true);
     assert.equal(
