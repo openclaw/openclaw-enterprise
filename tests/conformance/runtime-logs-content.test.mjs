@@ -2405,9 +2405,10 @@ test("container byte-window changes expose a fresh snapshot and fitting untimed 
 test("container byte-window checkpoints retain the pre-cut deduplication baseline", async () => {
   const route = await logsRoute({ label: "container-window-baseline" });
   const time = recently();
-  const anchor = { time, raw: JSON.stringify({ level: "info", message: "previous diagnostic" }) };
+  const anchor = { time, raw: gatewayJson("previous diagnostic") };
   route.state.lines = [anchor];
   const initial = await route.read({ tailLines: 100 });
+  assert.deepEqual(messages(initial.data), ["previous diagnostic"]);
   route.state.lines = [anchor, ...wireContainerRows(iso(Date.parse(time) + 1))];
   const { rows } = await drain(route, {
     tailLines: 100,
