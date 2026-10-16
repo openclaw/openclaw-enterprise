@@ -741,18 +741,18 @@ async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId 
   };
 }
 
-// Finding 1532: a revision whose lifecycle work failed permanently never activates, so a wait
-// for its activation stops at once. Returns that work's code, attempt and result data, which
-// for a failed model probe holds the runtime's classified cause; otherwise undefined.
+// Finding 1532: a revision whose reconcile work failed permanently never activates (the
+// worker's own maintenance check reads the same row), so a wait for its activation stops at
+// once. Maintenance and credential-withdrawal rows for the revision do not decide activation.
+// Returns that work's code, attempt and result data, which for a failed model probe holds the
+// runtime's classified cause; otherwise undefined.
 async function permanentRevisionFailure(pool, { namespaceId, revisionId }) {
   const { rows } = await diagnosticQuery(
     pool,
     `SELECT state, reason_code, attempt_count, result_data
      FROM occ.controller_work
-     WHERE namespace_id = $1 AND revision_id = $2 AND work_kind = 'lifecycle'
-     ORDER BY updated_at DESC, created_at DESC
-     LIMIT 1`,
-    [namespaceId, revisionId],
+     WHERE namespace_id = $1 AND idempotency_key = $2`,
+    [namespaceId, `agent_revision:${revisionId}:reconcile`],
   );
   const work = rows[0];
   return work?.state === "failed_permanent"
@@ -4827,6 +4827,11 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     );
     if (run === undefined) {
       traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+    } else if (traces.length > 0) {
+      // How often the model skips the tool, even when a retry recovers.
+      process.stderr.write(
+        `OpenShell integration: the probe ran on attempt ${attempt} after skipped turns:\n${traces.join("\n")}\n`,
+      );
     }
   }
   if (run === undefined) {

@@ -90,6 +90,16 @@ function loggedContainers(pod) {
     }));
 }
 
+// A line that names a credential goes whole, tested on the raw text and again after
+// redaction, as redactOutputLine does: redaction can consume the keyword.
+function redactedLine(line, secrets, limit) {
+  if (isCredentialLine(line)) {
+    return credentialLineMarker;
+  }
+  const redacted = redactLogLine(line, secrets, limit);
+  return isCredentialLine(redacted) ? credentialLineMarker : redacted;
+}
+
 function redactedLogTail(logs, secrets, budget) {
   // Private keys are masked across lines first; then any line that names a credential goes.
   const lines = maskPrivateKeyLines(String(logs).split("\n")).map((line) =>
@@ -99,7 +109,10 @@ function redactedLogTail(logs, secrets, budget) {
     pattern: /\S/u,
     budget,
     lineChars: logLineChars,
-  });
+  })
+    .split("\n")
+    .map((line) => (isCredentialLine(line) ? credentialLineMarker : line))
+    .join("\n");
 }
 
 /**
@@ -129,6 +142,9 @@ export async function podFailureDiagnostic({
   };
   const unavailable = (label, error) =>
     `${label} unavailable: ${redactLogLine(error?.message ?? String(error), secrets, fieldChars)}`;
+  const logged = (pod) =>
+    logLabels !== undefined &&
+    Object.entries(logLabels).every(([key, value]) => pod.metadata?.labels?.[key] === value);
   let pods = [];
   const scope = selector === undefined ? "" : ` (${selector})`;
   try {
@@ -143,12 +159,16 @@ export async function podFailureDiagnostic({
         "json",
       ),
     ).items;
-    // Newest first: a rollout or a Job retry leaves its latest Pod there.
-    pods = [...items]
-      .sort((a, b) =>
-        String(b.metadata?.creationTimestamp).localeCompare(String(a.metadata?.creationTimestamp)),
-      )
-      .slice(0, maxPods);
+    // Newest first: a rollout or a Job retry leaves its latest Pod there. Pods whose logs are
+    // read come first, so newer ones (a Helm --wait timeout's API and worker) cannot crowd out
+    // the hook Job's Pod.
+    const newest = [...items].sort((a, b) =>
+      String(b.metadata?.creationTimestamp).localeCompare(String(a.metadata?.creationTimestamp)),
+    );
+    pods = [...newest.filter((pod) => logged(pod)), ...newest.filter((pod) => !logged(pod))].slice(
+      0,
+      maxPods,
+    );
     const each = Math.floor(podBudget / Math.max(1, pods.length));
     const described = pods.map((pod) =>
       redactLogLine(JSON.stringify(describePod(pod, secrets)), secrets, each),
@@ -172,7 +192,7 @@ export async function podFailureDiagnostic({
     for (const event of events.reverse()) {
       const object = event.involvedObject ?? {};
       const count = (event.count ?? 1) > 1 ? ` x${event.count}` : "";
-      const line = redactLogLine(
+      const line = redactedLine(
         `${eventTime(event)} ${event.type} ${event.reason} ${object.kind}/${object.name}${count}: ${event.message ?? ""}`,
         secrets,
         fieldChars,
@@ -192,9 +212,7 @@ export async function podFailureDiagnostic({
   }
   if (logLabels !== undefined) {
     const sources = pods
-      .filter((pod) =>
-        Object.entries(logLabels).every(([key, value]) => pod.metadata?.labels?.[key] === value),
-      )
+      .filter((pod) => logged(pod))
       .flatMap((pod) =>
         loggedContainers(pod).map((container) => ({ pod: pod.metadata.name, ...container })),
       )
@@ -227,7 +245,7 @@ export async function podFailureDiagnostic({
 }
 
 function codexTurnStep(message, secrets) {
-  const text = (value) => redactLogLine(String(value ?? ""), secrets, fieldChars);
+  const text = (value) => redactedLine(String(value ?? ""), secrets, fieldChars);
   if (message?.method === undefined) {
     if (message?.error !== undefined) {
       return `response ${message.id}: error ${text(message.error.message)}`;

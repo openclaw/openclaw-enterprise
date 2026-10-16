@@ -239,6 +239,61 @@ test("a restarted container that waits again has its previous run's logs read", 
   );
 });
 
+test("newer Pods do not crowd the logged hook Pod out of the diagnostic", async () => {
+  // A Helm --wait timeout: API and worker Pods, all newer than the hook Job's Pod.
+  const newer = Array.from({ length: 6 }, (_, index) => ({
+    metadata: {
+      name: `obs-1234-api-${index}`,
+      creationTimestamp: `2026-10-16T18:2${index}:00Z`,
+      labels: {},
+    },
+    status: { phase: "Pending" },
+  }));
+  const { kubectl, calls } = fakeKubectl({
+    pods: [hookPod, ...newer],
+    logs: { "obs-1234-initialization-abcde/migration": "migration failed" },
+  });
+  const detail = await podFailureDiagnostic({
+    kubectl,
+    namespace: "oce-observe-1234",
+    logLabels: { "job-name": "obs-1234-initialization" },
+  });
+  assert.match(detail, /"name":"obs-1234-initialization-abcde"/);
+  assert.match(detail, /Logs obs-1234-initialization-abcde\/migration:\nmigration failed/);
+  assert.equal(calls.filter(([, verb]) => verb === "logs").length, 1);
+  // Five Pods are described: the hook Pod and the four newest others.
+  assert.match(detail, /obs-1234-api-5/);
+  assert.doesNotMatch(detail, /obs-1234-api-1"/);
+});
+
+test("an event or turn error that names a credential is dropped whole", async () => {
+  const { kubectl } = fakeKubectl({ pods: [] });
+  const leaky = async (...args) =>
+    args[2] === "events"
+      ? JSON.stringify({
+          items: [
+            {
+              lastTimestamp: "2026-10-16T18:15:10Z",
+              type: "Warning",
+              reason: "Failed",
+              involvedObject: { kind: "Pod", name: "p" },
+              message: "pull failed with authorization synthetic-handle-77",
+            },
+          ],
+        })
+      : kubectl(...args);
+  const detail = await podFailureDiagnostic({ kubectl: leaky, namespace: "oce-x" });
+  assert.doesNotMatch(detail, /synthetic-handle-77/);
+  assert.match(detail, /\[redacted credential-bearing line\]/);
+  const trace = codexTurnTrace([
+    {
+      method: "error",
+      params: { error: { message: "upstream echoed authorization synthetic-handle-78" } },
+    },
+  ]);
+  assert.equal(trace, "error: [redacted credential-bearing line]");
+});
+
 test("a failed read leaves a redacted note and the other sections", async () => {
   const { kubectl } = fakeKubectl({
     fail: { logs: `Error from server: dial tcp: token ${syntheticSecret}` },
@@ -317,7 +372,7 @@ test("a stalled pod diagnostic gives way to its deadline and starts no read afte
   );
   assert.equal(settled, "late");
   // Let the abandoned diagnostic finish: past its deadline it reads nothing.
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await new Promise((resolve) => setTimeout(resolve, 500));
   assert.deepEqual(late, []);
 });
 
