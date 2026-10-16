@@ -72,6 +72,17 @@ async function answerRuntimeReadiness(response, readiness) {
   response.writeHead(ready ? 200 : 503, { "cache-control": "no-store" });
   response.end();
 }
+// A request target that is not a URL path, such as "//", gets 400: an uncaught
+// parse error would end the wrapper, and the restart would probe the model again.
+function runtimeRequestPathname(request, response) {
+  try {
+    return new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    response.writeHead(400, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(JSON.stringify({ error: "bad_request" }));
+    return undefined;
+  }
+}
 `;
 
 const RUNTIME_READINESS_SERVER_HELPER = String.raw`
@@ -82,7 +93,8 @@ function startRuntimeReadinessServer(readiness) {
     throw new Error("Runtime status port is invalid.");
   }
   const server = readinessCreateServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const pathname = runtimeRequestPathname(request, response);
+    if (pathname === undefined) return;
     if (request.method !== "GET" || pathname !== ${JSON.stringify(RUNTIME_READINESS_PATH)}) {
       response.writeHead(404, { "cache-control": "no-store" });
       response.end();
@@ -343,7 +355,8 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       response.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
-    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const pathname = runtimeRequestPathname(request, response);
+    if (pathname === undefined) return;
     // Anything else, such as the Agent Gateway's app-server upgrade, is told the
     // Harness is unavailable and why, by code only, not that the route is missing.
     if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
@@ -660,7 +673,8 @@ function startPluginRuntimeStatusServer(readiness) {
   const port = runtimeStatusPort() ?? pluginRuntimeStatusPort();
   if (port === undefined) return;
   const server = pluginCreateServer(async (request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    const pathname = runtimeRequestPathname(request, response);
+    if (pathname === undefined) return;
     if (request.method === "GET" && pathname === RUNTIME_READINESS_PATH) {
       await answerRuntimeReadiness(response, readiness);
       return;
@@ -3442,9 +3456,17 @@ function codexRateLimited(message) {
 // pass on its own, so the startup probe tries such a failure once more. A rate limit,
 // a credential marker or a Reconnecting notice the recovered-stream rule refused is
 // never transient: the provider account or the event shape failed, not the transport.
+// Nor is any provider 4xx, whatever its body says: the request itself was refused.
+// Codex reports a content-filter stop, a DNS name that does not resolve and a rejected
+// certificate as a dropped stream; they fail the same way again. Codex's HTTP client
+// prints a failed connection as "error sending request" without its cause, so a DNS
+// or TLS failure it reports only that way cannot be told from a dropped connection
+// and keeps its retry.
 function codexTransientFailure(message, summary) {
   if (typeof message !== "string" || codexRateLimited(message) ||
     /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b|Reconnecting\.\.\./i.test(message)) return false;
+  if (summary.providerStatus >= 400 && summary.providerStatus < 500) return false;
+  if (/content_filter|certificate|Name or service not known|No address associated with hostname/i.test(message)) return false;
   return summary.providerStatus >= 500 ||
     /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
 }

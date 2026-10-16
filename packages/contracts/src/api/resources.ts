@@ -67,7 +67,7 @@ const RuntimeFailureCauseSchema = Type.Object(
         maxLength: 32,
         pattern: "^[A-Za-z0-9_-]{1,32}$",
         description:
-          "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. Never native output.",
+          "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. A Codex token ends -attempt2, such as rate_limit-attempt2, when a retried check failed again. Never native output.",
       }),
     ),
   },

@@ -446,6 +446,12 @@ test("Codex runtime retries a transient startup model probe failure once", async
       { status: 502 },
     ],
     [
+      "the lowest provider 5xx",
+      failedWith("unexpected status 500"),
+      "turn-failed",
+      { status: 500 },
+    ],
+    [
       "a provider server error",
       erroredWith('{"error":{"type":"server_error"}}'),
       "error-event",
@@ -474,6 +480,20 @@ test("Codex runtime retries a transient startup model probe failure once", async
       "error-event",
     ],
     ["a failed connection", erroredWith("connection refused"), "error-event"],
+    // Codex's HTTP client names no cause for a failed connection, so a DNS or TLS
+    // failure reported this way cannot be told from a transient one.
+    [
+      "a failed connection that names no cause",
+      erroredWith("Connection failed: error sending request"),
+      "error-event",
+    ],
+    [
+      "a DNS lookup that may recover",
+      failedWith(
+        "stream disconnected before completion: failed to lookup address information: Temporary failure in name resolution",
+      ),
+      "turn-failed",
+    ],
     ["a broken pipe", erroredWith("broken pipe"), "error-event"],
     ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
     [
@@ -484,7 +504,64 @@ test("Codex runtime retries a transient startup model probe failure once", async
       "PROCESS_EXIT",
     ],
   ];
+  // Findings 1601 and 1602: each of these fails the same way again, even with a
+  // transient word in its text, so it is held at once without a second model call.
+  const heldAtOnce = [
+    [
+      "a provider 404 that says overloaded",
+      failedWith("unexpected status 404 Not Found: overloaded"),
+      "turn-failed",
+      { status: 404 },
+    ],
+    [
+      "a provider 402 with a server error body",
+      failedWith('unexpected status 402 Payment Required: {"error":{"type":"server_error"}}'),
+      "turn-failed",
+      { status: 402, code: "server_error" },
+    ],
+    [
+      "a provider 400 with a server error body",
+      failedWith(
+        'unexpected status 400 Bad Request: {"error":{"type":"server_error","message":"bad input"}}',
+      ),
+      "turn-failed",
+      { status: 400, code: "server_error" },
+    ],
+    [
+      "a content-filter stop",
+      failedWith(
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter",
+      ),
+      "turn-failed",
+    ],
+    [
+      "a rejected provider certificate",
+      erroredWith(
+        "stream disconnected before completion: TLS error: rustls error: invalid peer certificate: UnknownIssuer",
+      ),
+      "error-event",
+    ],
+    [
+      "a provider host name that does not resolve",
+      erroredWith(
+        "stream disconnected before completion: failed to lookup address information: Name or service not known",
+      ),
+      "error-event",
+    ],
+    [
+      "a provider host name with no address",
+      erroredWith(
+        "stream disconnected before completion: failed to lookup address information: No address associated with hostname",
+      ),
+      "error-event",
+    ],
+  ];
   const scenarios = [
+    ...heldAtOnce.map(([description, first, detail, provider]) => ({
+      name: `${description} is held at once, with no second probe`,
+      native: [login(), first],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail }, provider),
+    })),
     ...transient.map(([description, first]) => ({
       name: `${description} recovers on the second attempt`,
       native: [login(), first, success],

@@ -137,7 +137,9 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
   `RUNTIME_MODEL_PROBE_FAILED`. While it holds a failure, the Harness answers
-  the Agent Gateway's connection with `503` naming the held code. The
+  the Agent Gateway's connection with `503` naming the held code, but the
+  Gateway logs only `Unexpected server response: 503`; Compute's authenticated
+  status read carries the code. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
   decisions; an operator can read the
   [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
