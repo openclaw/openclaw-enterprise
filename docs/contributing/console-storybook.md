@@ -79,9 +79,9 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages** and **Return to Agent panels**.
-Search, expanded configuration, native admin access, and Credentials should survive
-Back/Forward and tab changes. Refresh reloads.
+Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
+**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
+survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
 
 ## Agent flows and UI gaps
 

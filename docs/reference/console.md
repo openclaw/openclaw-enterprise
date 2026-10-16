@@ -49,8 +49,8 @@ the destination heading when the previous control disappears.
 and releases page controls.
 
 Navigation keeps the shown page inert until session, Namespace access, and the
-destination's first reads pass; only matching returns reappear. Refresh always
-rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
+destination's first reads pass; only matching returns reappear, showing
+**Still checking…** after 1 s. Refresh always rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
 header selector. Retained views are scoped to account, session, route, and
 Namespace; sign-out, session changes, exit, or Backend denial clear them.
 
