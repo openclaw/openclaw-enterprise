@@ -149,8 +149,13 @@ provider acceptance or runtime readiness. See
 
 Successful draft-save steps retain IDs and freeze inputs, including authentication.
 Correct conflicting names or permissions, then retry those resources.
-If model/Slack Secret grants fail after Agent creation,
-select **Retry credential access** or ask an administrator to check its grants.
+Ordinary draft creation grants the Agent's service principal exact `operate`
+access to the model Secret and unique same-Namespace environment Secrets in its
+saved Configuration, including Preset bindings.
+[Installation administration](../authorization.md#manage-namespace-policy) is required;
+Secret-use permission cannot delegate.
+**Retry credential access** reuses the saved Agent, Configuration, and existing
+grants.
 Uncertain responses block another attempt: check displayed IDs and the Agents list;
 give the request ID to your operator if the outcome remains unknown.
 

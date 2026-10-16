@@ -166,6 +166,10 @@ export const CreateSecretDenied = {
   name: "API key storage denied",
 };
 export const CreateGrantDenied = { ...story("createGrantDenied"), name: "Credential access retry" };
+export const CreateBoundSecretsGrantDenied = {
+  ...story("createBoundSecretsGrantDenied"),
+  name: "Preset Secret access retry",
+};
 export const CreateInvalid = { ...story("createInvalid"), name: "Invalid JSON" };
 export const CreateConflict = { ...story("createConflict"), name: "Provisioning conflict" };
 export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning outcome unknown" };

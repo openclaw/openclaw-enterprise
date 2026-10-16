@@ -1878,26 +1878,44 @@ test("Preset marks referenced variables without defaults as required before rend
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Required Agent");
 });
 
-test("Preset with a prebound model Secret grants the created draft access", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+test("Embedded Preset grants all bound Secrets and retries denied access without duplicate writes", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: [] });
+  const installation = await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Bound Secret Preset", { ready: true });
   const modelSecret = await fixture.createSecret(namespace.id, "Model token", "hidden-model-token");
+  // A distinct generic source prevents the model grant from masking missing Configuration grants.
+  const toolSecret = await fixture.createSecret(namespace.id, "Tool token", "hidden-tool-token");
+  const unusedSecret = await fixture.createSecret(
+    namespace.id,
+    "Unbound token",
+    "hidden-unbound-token",
+  );
   const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    await readFile(new URL("../../deploy/presets/standard-openclaw.json", import.meta.url), "utf8"),
   );
   delete artifact.template.variables.modelSecret;
   artifact.template.agent.harnessAuth = { method: "api_key", source: modelSecret.ref };
+  artifact.template.configuration.secretBindings = {
+    TOOL_TOKEN: { source: toolSecret.ref },
+    SECOND_TOOL_TOKEN: { source: toolSecret.ref, delivery: { type: "env" } },
+  };
   const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
     body: artifact,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  fixture.policy.restrictions.push({
+    id: "deny-bound-secret-delegation",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
   const { page } = await newPage(t, fixture);
-  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template").selectOption(preset.data.id);
   await page.getByLabel("Name", { exact: true }).fill("Bound Secret Agent");
-  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -1906,8 +1924,26 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const created = (await (await createdResponse).json()).data;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /credential access is not confirmed/ })
+    .waitFor();
+  assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
+  assert.match(
+    await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href"),
+    new RegExp(created.id),
+  );
+  const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 0);
+
+  // Removing the delegation denial repairs access to the retained draft, without recreating it.
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-bound-secret-delegation"),
+    1,
+  );
+  await page.getByRole("button", { name: "Retry credential access" }).click();
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  const bindings = await fixture.request("GET", bindingPath);
   const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
   const secretOperateRole = roles.data.find(
     (role) =>
@@ -1916,16 +1952,59 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
       role.permissions[0].action === "operate",
   );
   assert.ok(secretOperateRole);
-  assert.ok(
-    bindings.data.some(
-      (binding) =>
-        binding.subjectKind === "identity" &&
-        binding.subjectId === created.servicePrincipalId &&
-        binding.roleId === secretOperateRole.id &&
-        binding.resourceKind === "secret" &&
-        binding.resourceId === modelSecret.id,
-    ),
+  assert.deepEqual(
+    bindings.data
+      .map((binding) => ({
+        subjectKind: binding.subjectKind,
+        subjectId: binding.subjectId,
+        roleId: binding.roleId,
+        resourceKind: binding.resourceKind,
+        resourceId: binding.resourceId,
+      }))
+      .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
+    [modelSecret, toolSecret]
+      .map((secret) => ({
+        subjectKind: "identity",
+        subjectId: created.servicePrincipalId,
+        roleId: secretOperateRole.id,
+        resourceKind: "secret",
+        resourceId: secret.id,
+      }))
+      .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
   );
+  assert.equal(pathRequests(requests, "POST", bindingPath).length, 2);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+  const savedConfiguration = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+  );
+  assert.equal(savedConfiguration.data.secretBindings.TOOL_TOKEN.delivery.type, "env");
+  assert.equal(savedConfiguration.data.secretBindings.SECOND_TOOL_TOKEN.delivery.type, "env");
+  const unrelated = await fixture.iamDriver.authorize({
+    principalId: created.servicePrincipalId,
+    action: "operate",
+    resource: unusedSecret.ref,
+  });
+  assert.equal(unrelated.allowed, false, "a saved draft must not gain access to unbound Secrets");
+
+  // Real deployment admission requires the generic grant independently of the model grant.
+  const toolBinding = bindings.data.find((binding) => binding.resourceId === toolSecret.id);
+  assert.equal((await fixture.request("DELETE", `${bindingPath}/${toolBinding.id}`)).status, 204);
+  const deployPath = `/namespaces/${namespace.id}/agents/${created.id}/deploy`;
+  assert.equal((await fixture.request("POST", deployPath)).status, 403);
+  const restored = await fixture.request("POST", bindingPath, {
+    body: {
+      subjectKind: toolBinding.subjectKind,
+      subjectId: toolBinding.subjectId,
+      roleId: toolBinding.roleId,
+      resourceKind: toolBinding.resourceKind,
+      resourceId: toolBinding.resourceId,
+    },
+  });
+  assert.equal(restored.status, 201, JSON.stringify(restored.body));
+  const deployed = await fixture.request("POST", deployPath);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
 test("password Preset can reuse an existing Secret and retry an uncertain grant without duplicate writes", async (t) => {

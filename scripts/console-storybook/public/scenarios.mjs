@@ -2556,6 +2556,53 @@ export const scenarios = {
     description:
       "The Agent is saved but its Secret grant failed. Retry credential access reuses the same Agent and Secret.",
   },
+  createBoundSecretsGrantDenied: {
+    unsupportedProvisioning: true,
+    group: "Pages/Create Agent",
+    name: "Preset Secret access retry",
+    path: create,
+    extraSecrets: [{ id: "sec_demo_tool_token", name: "Tool token (simulated)" }],
+    presetSecretBindings: {
+      TOOL_TOKEN: {
+        source: {
+          kind: "secret",
+          namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+          id: "sec_demo_tool_token",
+        },
+        delivery: { type: "env" },
+      },
+      SECOND_TOOL_TOKEN: {
+        source: {
+          kind: "secret",
+          namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+          id: "sec_demo_tool_token",
+        },
+        delivery: { type: "env" },
+      },
+    },
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      { selector: "#preset-variable-name", value: "Bound Secret assistant" },
+      { selector: "#preset-variable-model", value: "codex/gpt-5.1" },
+      click("Use Preset"),
+      click("Create Agent"),
+    ],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/iam/access-bindings",
+        method: "POST",
+        status: 403,
+        once: true,
+      },
+    ],
+    description:
+      "The Preset binds a separate tool Secret to two environment variables. A denied grant retains the saved Agent and Configuration; Retry credential access completes their exact grants.",
+    steps: [
+      "Check the saved IDs, disabled draft fields, and Open saved Agent recovery link.",
+      "Select Retry credential access. The fixture permits this attempt and opens the retained Agent draft.",
+    ],
+    gap: "Simulated UI proof only; the real browser/API test verifies authorization and retry persistence.",
+  },
   createInvalid: {
     group: "Pages/Create Agent",
     name: "Invalid JSON",

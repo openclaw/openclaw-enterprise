@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-15
-last_updated_session: authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3
+updated: 2026-10-16
+last_updated_session: authoring-run/6691150e-3d93-42a5-b59a-803299783d65
 ---
 
 # Platform console request flow
@@ -234,11 +234,12 @@ Ordinary drafts post `{kind: "agent", values, secretBindings}` to
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](workspace-files.md).
 
-`create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Failed Agent writes retain Configuration ID
-and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
-admit no revision and start no runtime.
+`create.mjs:grantConfigurationSecretAccess` delegates unique saved same-Namespace
+`env` sources through `agents/secret-access.mjs:ensureSecretOperateBinding`;
+exact `operate` grants require Installation administration.
+**Retry credential access** retains IDs and reuses grants. Failed Agent writes
+lock retained Configuration JSON/Harness. Writes never retry automatically;
+drafts create no revisions or runtime.
 
 `agents/harness-auth.mjs` edits bindings and shows
 [Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
@@ -367,10 +368,12 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 13:00: Preserve directory refreshes and Configuration grants. (authoring-run/6691150e-3d93-42a5-b59a-803299783d65 - 6690b557210a079a47541289fafd64e31f36a46c)
 - 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
 - 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
+- 2026-10-13 14:40: Trace Configuration Secret grants. (authoring-run/de7ed7a0-de53-4712-b6bd-1baf0d296d55 - 1d7772d11b2874ae7fb1f5253a998bd0463395b2)
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 

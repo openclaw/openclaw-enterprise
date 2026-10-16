@@ -257,16 +257,32 @@ export async function createConsoleAppFixture(t, options = {}) {
           const namespaces = await view.namespaces.listNamespaces();
           const roles = [];
           const bindings = [];
+          const identities = [];
           for (const namespace of namespaces) {
             roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
             bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
+            // Agent creation persists this identity in PostgresPlatformState.agents.createAgent.
+            for (const agent of await view.agents.listAgents(namespace.id)) {
+              identities.push({
+                id: agent.servicePrincipalId,
+                kind: "service_principal",
+                namespaceId: agent.namespaceId,
+                agentId: agent.id,
+              });
+            }
           }
-          return { roles, bindings };
+          return { roles, bindings, identities };
         };
         const unit = policyUnit.getStore();
         const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
         return {
           ...policy,
+          identities: [
+            ...policy.identities,
+            ...managed.identities.filter(
+              (identity) => !policy.identities.some((existing) => existing.id === identity.id),
+            ),
+          ],
           roles: [...policy.roles, ...managed.roles],
           bindings: [...policy.bindings, ...managed.bindings],
         };
