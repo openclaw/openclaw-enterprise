@@ -3321,7 +3321,7 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit-attempt2" },
     description:
-      "v7's startup model check hit a provider rate limit, was retried once and failed again. The cause gives the rate-limit advice and says the retry also failed, instead of the generic label.",
+      "The startup model check was retried once. On the second attempt, the provider reported a rate limit.",
     steps: [
       "In the failed deployment, confirm the Cause gives the rate or usage limit advice and says the check was retried once and failed again.",
     ],
