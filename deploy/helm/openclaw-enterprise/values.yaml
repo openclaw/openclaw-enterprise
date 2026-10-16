@@ -178,6 +178,15 @@ repositoryCredentials:
   publicCaKey: ca.crt
   upstreamCidrs: []
 
+# Anonymous reads of known public GitHub repositories, for ordinary dedicated
+# Codex Agents whose authored proxy allows the exact Service IP. No GitHub App or token required.
+publicGithubRead:
+  enabled: false
+  # Reserve this Service IP until all revisions granting access to it retire.
+  clusterIP: ""
+  # Operator-approved IPv4 CIDRs for api.github.com; no default Internet grant.
+  upstreamCidrs: []
+
 gatewayRouting:
   enabled: false
   # Empty derives the private Envoy Service DNS name:

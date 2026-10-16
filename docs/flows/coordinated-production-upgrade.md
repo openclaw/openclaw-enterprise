@@ -110,7 +110,7 @@ the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
 Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `create`,
 and `delete`). Worker Job grants are required even with runtime logs disabled.
 A missing rule refuses the candidate and points to
-[upgrading the execution chart](../testing/two-cluster-local.md#upgrade-the-execution-chart).
+[upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
 `openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.

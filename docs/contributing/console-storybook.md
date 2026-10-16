@@ -59,9 +59,9 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                              |
+| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
 | Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                                                                     |
-| Backends                | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                                                         |
+| Backends                | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                                                                 |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                                              |
 | Create Agent            | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
@@ -79,9 +79,9 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages** and **Return to Agent panels**.
-Search, expanded configuration, native admin access, and Credentials should survive
-Back/Forward and tab changes. Refresh reloads.
+Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
+**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
+survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
 
 ## Agent flows and UI gaps
 
@@ -134,12 +134,12 @@ gives presenter actions, expected visible states, and fallbacks for creating an
 Agent from the SWE Agent Preset and opening the deployed `oceclaw` Agent's
 simulated Admin UI, connected to no gateway, Slack, credential, or model.
 
-**Choose provider, harness, and authentication** covers supported combinations.
-**Enter another model ID** allows unverified models. Harness sets execution;
-tokens require Codex. **Experimental Dedicated OpenClaw** shows the runtime
-warning. **Native plugins** preserve policy. **Codex allowlist
-round-trip** preserves restrictions and rejects blocked OpenClaw; **Native plugins with an allowlist**
-and **Codex denied by native policy** require explicit JSON edits before creation.
+**Choose provider, harness, and authentication** shows supported combinations;
+Harness sets execution, tokens require Codex. **Enter another model ID** allows
+unverified models. **Experimental Dedicated OpenClaw** shows the runtime warning.
+**Native plugins** preserve policy. **Codex allowlist round-trip** rejects blocked
+OpenClaw. **Native plugins with an allowlist** and **Codex denied by native policy**
+require explicit permission edits.
 
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and

@@ -1,6 +1,6 @@
 # Docker Hub promotion
 
-[`container-promote.yml`](workflows/container-promote.yml) copies the exact
+[`container-promote.yml`](../../.github/workflows/container-promote.yml) copies the exact
 controller and runtime digests already published by
 [Enterprise Containers](containers.md). It never builds images, creates a
 repository, changes visibility, or falls back to an alternate destination.
@@ -12,22 +12,14 @@ not create a promotion source.
 
 ## Operator setup
 
-Complete the GHCR setup first. Under separate operator authorization, create two
-private Docker Hub repositories. In the same protected `container-publish`
-environment, configure:
-
-- Variables `DOCKERHUB_CONTROLLER_IMAGE` and `DOCKERHUB_RUNTIME_IMAGE`: different
-  full `docker.io/<namespace>/<repository>` names, without tags or digests.
-- Secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`: an account identifier and
-  scoped PAT or organization access token with read/write access only to the
-  approved repositories. With an organization token, the identifier is its
-  organization name.
+Complete the [publication configuration](configuration.md#publication-configuration),
+including the separately authorized private Docker Hub destinations and scoped
+credentials. That page owns the environment, variable, and secret requirements.
 
 The workflow checks Docker Hub's authenticated namespace-scoped repository API
 for exact identity and `is_private: true` before any image transfer. A missing
 repository, inaccessible API, public visibility, or conflicting source tag fails
-closed. No private-code bootstrap is attempted. The GitHub token needs only
-`packages: read`; Docker Hub credentials exist only in the promotion step.
+closed. No private-code bootstrap is attempted.
 
 ## Promote
 
@@ -35,11 +27,9 @@ closed. No private-code bootstrap is attempted. The GitHub token needs only
 2. From a successful GHCR publication, record its full source SHA, run ID, and
    exact attempt. Its publication receipt must still be retained.
 3. Under an explicit publication request, manually dispatch **Promote Enterprise
-   Containers to Docker Hub** on `main` with those three inputs. Approve the
-   protected environment after checking the producer, destinations, and
-   [GHCR package linkage](containers.md#confirm-package-linkage). When repository
-   metadata is absent, include the linkage confirmation for this promotion run
-   and attempt in the approval comment.
+   Containers to Docker Hub** on `main` with those three inputs after checking
+   the producer, destinations, and
+   [GHCR package linkage](containers.md#confirm-package-linkage).
 4. Use the digest references in the job summary. Skopeo copies from GHCR by digest
    with `--all --preserve-digests`; the copied digest is verified at Docker Hub.
    Existing identical tags are left unchanged; conflicting tags are rejected.

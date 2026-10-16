@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -176,6 +178,104 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   );
 });
 
+test("caller permission summaries report primary IAM decisions without authorizing a later operation", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const fixture = await createConsoleAppFixture(t, { auditSink });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Permission summaries", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Summarized agent");
+  const other = await fixture.createAgent(namespace.id, "Unshared agent");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissionsPath = `${agentPath}/permissions`;
+  const namespacePath = `/namespaces/${namespace.id}/permissions`;
+
+  const admin = await fixture.request("GET", permissionsPath);
+  assert.equal(admin.status, 200);
+  assert.deepEqual(admin.data, { update: true, deploy: true, operate: true, delete: true });
+  const adminNamespace = await fixture.request("GET", namespacePath);
+  assert.equal(adminNamespace.status, 200);
+  assert.deepEqual(adminNamespace.data, { agents: { create: true } });
+
+  // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
+  const limited = await fixture.createAccountWithPolicy("permission-summary", (principal) => {
+    fixture.policy.roles.push(
+      {
+        id: "role-permission-summary-namespace",
+        namespaceId: namespace.id,
+        permissions: [{ action: "read", resourceKind: "namespace" }],
+      },
+      {
+        id: "role-permission-summary-agent",
+        namespaceId: namespace.id,
+        permissions: [
+          { action: "read", resourceKind: "agent" },
+          { action: "deploy", resourceKind: "agent" },
+        ],
+      },
+    );
+    fixture.policy.bindings.push(
+      {
+        id: "binding-permission-summary-namespace",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "role-permission-summary-namespace",
+      },
+      {
+        id: "binding-permission-summary-agent",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "role-permission-summary-agent",
+        resourceKind: "agent",
+        resourceId: agent.id,
+      },
+    );
+  });
+  const session = await fixture.signIn(limited.credentials);
+  const summary = await fixture.request("GET", permissionsPath, { session });
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.data, { update: false, deploy: true, operate: false, delete: false });
+  const namespaceSummary = await fixture.request("GET", namespacePath, { session });
+  assert.equal(namespaceSummary.status, 200);
+  assert.deepEqual(namespaceSummary.data, { agents: { create: false } });
+  // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
+  const denials = () => auditSink.list().filter((event) => event.kind === "authorization_denial");
+  assert.equal(denials().length, 0);
+
+  // The summary itself requires Agent read and an existing Agent.
+  const unshared = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${other.id}/permissions`,
+    { session },
+  );
+  assert.equal(unshared.status, 403);
+  assert.equal(unshared.body.error.code, "FORBIDDEN");
+  assert.deepEqual(
+    denials().map((event) => event.action),
+    ["openclaw.agents.permissions.read"],
+  );
+  const missing = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/agt_00000000-0000-4000-8000-000000000000/permissions`,
+  );
+  assert.equal(missing.status, 404);
+
+  // The summary reported deploy: true. This caller lacks the Configuration read needed to deploy.
+  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  assert.equal((await fixture.request("GET", configurationPath, { session })).status, 403);
+  const revisionsPath = `${agentPath}/revisions`;
+  const before = await fixture.request("GET", revisionsPath);
+  assert.equal(before.status, 200);
+  const deploy = await fixture.request("POST", `${agentPath}/deploy`, { session });
+  assert.equal(deploy.status, 403);
+  assert.equal(deploy.body.error.code, "FORBIDDEN");
+  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  const after = await fixture.request("GET", revisionsPath);
+  assert.equal(after.status, 200);
+  assert.deepEqual(after.data, before.data, "denied deployment created no revision");
+});
+
 test("console static routes expose only public assets and preserve API JSON failures", async (t) => {
   const fixture = await createConsoleAppFixture(t);
 
@@ -230,6 +330,86 @@ test("console static routes expose only public assets and preserve API JSON fail
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
   assert.equal(JSON.parse(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+});
+
+test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const host = new URL(fixture.origin).host;
+  const consoleFile = (path) =>
+    readFile(new URL(`../../apps/controller/src/console/${path}`, import.meta.url));
+  const fetchRaw = (url, headers = {}, method = "GET") =>
+    fixture.app.inject({ method, url, headers: { host, ...headers } });
+
+  const script = await consoleFile("agents/detail.mjs");
+  const plain = await fetchRaw("/console/agents/detail.mjs");
+  assert.equal(plain.statusCode, 200);
+  assert.equal(plain.headers["content-encoding"], undefined);
+  assert.equal(plain.headers.vary, "Accept-Encoding");
+  assert.deepEqual(plain.rawPayload, script);
+  const csp = plain.headers["content-security-policy"];
+  assert.match(csp, /script-src 'self'/);
+
+  for (const [acceptEncoding, encoding, decode] of [
+    ["gzip", "gzip", gunzipSync],
+    ["gzip, deflate, br, zstd", "br", brotliDecompressSync],
+    ["br;q=0.5, gzip;q=1", "gzip", gunzipSync],
+    ["*", "br", brotliDecompressSync],
+  ]) {
+    const result = await fetchRaw("/console/agents/detail.mjs", {
+      "accept-encoding": acceptEncoding,
+    });
+    assert.equal(result.statusCode, 200, acceptEncoding);
+    assert.equal(result.headers["content-encoding"], encoding, acceptEncoding);
+    assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
+    assert.match(result.headers["content-type"], /javascript/, acceptEncoding);
+    assert.equal(Number(result.headers["content-length"]), result.rawPayload.length);
+    assert.ok(result.rawPayload.length < script.length / 3, acceptEncoding);
+    assert.deepEqual(decode(result.rawPayload), script, acceptEncoding);
+    // Compression changes neither the CSP nor the API headers that keep assets uncached.
+    assert.equal(result.headers["content-security-policy"], csp);
+    assert.equal(result.headers["cache-control"], "no-store");
+    assert.equal(result.headers["x-content-type-options"], "nosniff");
+  }
+
+  for (const acceptEncoding of ["identity", "br;q=0, gzip;q=0", "deflate", "*;q=0"]) {
+    const result = await fetchRaw("/console/console.css", { "accept-encoding": acceptEncoding });
+    assert.equal(result.headers["content-encoding"], undefined, acceptEncoding);
+    assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
+    assert.deepEqual(result.rawPayload, await consoleFile("console.css"), acceptEncoding);
+  }
+
+  // HEAD reports the GET representation. Range is unsupported: it must keep returning the whole
+  // encoded body, never a slice of it, until someone adds range support on purpose.
+  const gzipGet = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" });
+  const head = await fetchRaw("/console/console.css", { "accept-encoding": "gzip" }, "HEAD");
+  assert.equal(head.statusCode, 200);
+  assert.equal(head.headers["content-encoding"], "gzip");
+  assert.equal(head.headers["content-length"], gzipGet.headers["content-length"]);
+  assert.equal(head.rawPayload.length, 0);
+  const ranged = await fetchRaw("/console/console.css", {
+    "accept-encoding": "gzip",
+    range: "bytes=0-9",
+  });
+  assert.equal(ranged.statusCode, 200);
+  assert.deepEqual(ranged.rawPayload, gzipGet.rawPayload);
+
+  // The generated preset module is compressed like the files beside it.
+  const preset = await fetchRaw("/console/default-codex-preset.mjs", { "accept-encoding": "gzip" });
+  assert.equal(preset.headers["content-encoding"], "gzip");
+  assert.match(gunzipSync(preset.rawPayload).toString("utf8"), /^export default \{/);
+
+  // The shell also answers the sign-in route; it and binary assets are always identity.
+  for (const path of ["/console/login", "/console/", "/console/missing.css"]) {
+    const result = await fetchRaw(path, { "accept-encoding": "gzip, br" });
+    assert.equal(result.headers["content-encoding"], undefined, path);
+    assert.equal(result.headers.vary, undefined, path);
+    assert.deepEqual(result.rawPayload, await consoleFile("index.html"), path);
+  }
+  for (const path of ["/console/oce-mascot.png", "/console/fonts/instrument-sans-latin.woff2"]) {
+    const result = await fetchRaw(path, { "accept-encoding": "gzip, br" });
+    assert.equal(result.statusCode, 200, path);
+    assert.equal(result.headers["content-encoding"], undefined, path);
+  }
 });
 
 test("console auth routes reject untrusted browser origins and issue production session cookies", async (t) => {

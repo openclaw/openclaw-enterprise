@@ -17,9 +17,12 @@ import {
   newPage,
   nonAuthWriteRequests,
   pathRequests,
+  persistedDeploymentError,
+  recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  takeLayoutShifts,
 } from "./console-agents-browser-helpers.mjs";
 import {
   allowNativeProvider,
@@ -45,11 +48,8 @@ const createConsoleAppFixture = (t, options = {}) =>
 // side by side in the Console Browser 2 lane. Name sibling test files only by suffix: CI Impact
 // runs full CI for a test file that another file names.
 
-test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision outcomes", { ready: true });
-  const { page } = await newPage(t, fixture);
+// The Installation provisions dedicated Agents and the Namespace offers no repository choices.
+async function routeDedicatedProvisioning(page, fixture, namespace) {
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
     route.fulfill({
@@ -58,6 +58,14 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
     }),
   );
+}
+
+test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision outcomes", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const json = (data, status = 200) => ({
     status,
@@ -341,14 +349,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision retry refusals", { ready: true });
   const { page } = await newPage(t, fixture);
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const jobUrl = (work) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
@@ -472,14 +473,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   );
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
   const { page } = await newPage(t, fixture);
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_stopped`;
@@ -644,6 +638,90 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   assert.equal(await summary.getByText(/failed/i).count(), 0);
 });
 
+// Create rereads the provisioning job every second, and a started job goes back to queued
+// between worker retries. The status line keeps one label once the job has started and is
+// written only when that label changes (finding 1424: it flipped between "Provisioning
+// Agent…" and "Provisioning queued…" and was rewritten on every read).
+test("Dedicated Agent creation keeps one provisioning label while the job retries", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision label", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const url = `/namespaces/${namespace.id}/agents/provision/work_label`;
+  const job = (status, extra = {}) => ({
+    workId: "work_label",
+    status,
+    phase: "configuration",
+    attemptCount: 1,
+    updatedAt,
+    url,
+    ...extra,
+  });
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+    }),
+  );
+  // The worker starts the job, waits to retry it, then retries it twice before it fails.
+  const reads = [
+    job("running"),
+    job("queued"),
+    job("running"),
+    job("running"),
+    job("failed", {
+      error: {
+        code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+        message: "Agent provisioning could not complete.",
+      },
+    }),
+  ];
+  let read = 0;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_label`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+    }),
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Provision label");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  // Record every write to a status line, including writes of the text it already shows.
+  await page.evaluate(() => {
+    globalThis.provisioningWrites = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
+          // Each write replaces the line's text node; the added node holds the text written.
+          const text = [...record.addedNodes].map((node) => node.textContent).join("");
+          if (text.startsWith("Provisioning")) {
+            globalThis.provisioningWrites.push(text);
+          }
+        }
+      }
+    }).observe(globalThis.document.body, { childList: true, subtree: true });
+  });
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  assert.equal(read, reads.length);
+  assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
+    "Provisioning request accepted.",
+    "Provisioning queued…",
+    "Provisioning Agent…",
+    "Provisioning failed.",
+  ]);
+});
+
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -710,7 +788,15 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     await page.getByLabel("Authentication method", { exact: true }).inputValue(),
     "api_key",
   );
-  assert.equal(await page.getByLabel("Authentication method", { exact: true }).isDisabled(), true);
+  const authMethod = page.getByLabel("Authentication method", { exact: true });
+  assert.equal(await authMethod.isEnabled(), true);
+  assert.deepEqual(
+    await authMethod
+      .locator("option:not([disabled])")
+      .evaluateAll((options) => options.map((option) => option.value)),
+    ["api_key"],
+  );
+  await authMethod.selectOption("api_key");
   assert.equal(await apiKeySecret.inputValue(), "");
   assert.equal(await page.getByLabel("Execution mode").isDisabled(), true);
   assert.equal(await page.getByLabel("Authentication source").count(), 0);
@@ -1613,3 +1699,90 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     }
   });
 }
+
+// The Agents list painted "Reading deployment…" in each row, then each failed row's 5-7 line
+// error landed: the row grew from 93 to 208 px and the table re-flowed its columns, CLS
+// 0.040-0.074 on every load (finding 1488). A settled cell is the outcome link and one note
+// line, which fit the two lines the Agent cell gives the row: the error is on one line (its full
+// text in the title and on the Agent page), and the columns keep their widths.
+test("the Agents list does not move when failed deployments land", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Steady Agents list", { ready: true });
+  const agents = [
+    ["Alpha failed", "RUNTIME_MODEL_PROBE_FAILED", 500],
+    ["Beta completed", null, 650],
+    ["Gamma failed", "RUNTIME_AUTHENTICATION_FAILED", 800],
+    ["Delta completed", null, 950],
+    ["Epsilon failed", "CONVERGENCE_DEADLINE_EXCEEDED", 1100],
+    ["Zeta completed", null, 1250],
+  ];
+  const records = [];
+  for (const [name, code, delay] of agents) {
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const error = code ? persistedDeploymentError(code) : null;
+    records.push({
+      name,
+      error,
+      delay,
+      agentId: agent.id,
+      revisionId: revision.id,
+      url: `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
+    });
+  }
+  for (const viewport of [
+    { width: 1280, height: 800 },
+    { width: 390, height: 844 },
+  ]) {
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    // Each record settles on its own, as on a live cluster.
+    for (const record of records) {
+      await page.route(record.url, async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, record.delay));
+        await route
+          .fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              data: {
+                deploymentId: record.revisionId,
+                namespaceId: namespace.id,
+                agentId: record.agentId,
+                status: record.error ? "failed" : "succeeded",
+                error: record.error,
+                warnings: [],
+                progress: null,
+              },
+              meta: { requestId: "req_test_steady_agents_list" },
+            }),
+          })
+          .catch(() => {});
+      });
+    }
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Zeta completed" }).waitFor();
+    await page.addInitScript(recordLayoutShifts);
+    // A full load, so no recent input excuses a shift.
+    await page.reload();
+    for (const { name, error } of records) {
+      const row = page.getByRole("row").filter({ hasText: name });
+      await row
+        .getByRole("link", { name: error ? "v1 · failed" : "v1 · succeeded", exact: true })
+        .waitFor();
+    }
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    // The whole error stays readable in the row.
+    for (const { name, error } of records.filter((record) => record.error)) {
+      const note = page
+        .getByRole("row")
+        .filter({ hasText: name })
+        .getByText(error.message, { exact: true });
+      assert.equal(await note.getAttribute("title"), error.message);
+    }
+  }
+});

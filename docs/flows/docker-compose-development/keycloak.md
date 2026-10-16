@@ -103,7 +103,7 @@ Certificate renewal is not propagated to the copied Secret by this launcher.
 
 ## Debugging and Verification
 
-Run the [real launcher cases](../../testing/keycloak.md#local-launcher-coverage)
+Run the [real launcher cases](../../testing/kubernetes.md#keycloak-local-launcher-coverage)
 only with their owned disposable fixture. They cover browser login, recovery,
 realm persistence, second-pass failure and cleanup. After the OIDC upgrade, API
 probes must reach Keycloak and reject unrelated HTTPS between successful

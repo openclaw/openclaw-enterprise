@@ -71,7 +71,7 @@ access. Wait for Namespace `ready` after these grants. Namespace workload
 managers are trusted for both roles; use disjoint trusted Gateway and Harness
 node pools. For the experimental two-cluster profile, grant these storage roles
 in the separately discovered control target and worker/observer roles in the
-execution target; see [two-cluster testing](../../testing/two-cluster-local.md).
+execution target; see [two-cluster testing](../../testing/kubernetes.md#two-cluster-validation).
 
 ## Prepare each Agent
 

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import GithubSlugger from "github-slugger";
+import { Parser } from "htmlparser2";
 import { parseFrontmatter } from "./vendor/docs-markdown.mjs";
 
 /** Visible heading text as GitHub slugger sees it, not raw Markdown inline source. */
@@ -37,9 +38,28 @@ export function createGithubAnchorReader(md) {
         ids.add(slugger.slug(githubHeadingVisibleText(tokens[i + 1])));
       }
     }
-    for (const match of text.matchAll(/<[a-z][^>]*?\s(?:id|name)=(["'])([^"']+)\1/gi)) {
-      ids.add(match[2]);
-    }
+    // Only HTML tokens can create anchors. Code examples are text, and the HTML
+    // parser ignores comments instead of mistaking their contents for elements.
+    const collectHtmlAnchors = (tokens) => {
+      for (const token of tokens) {
+        if (token.type === "html_block" || token.type === "html_inline") {
+          const parser = new Parser({
+            onopentag(_name, attributes) {
+              for (const attribute of ["id", "name"]) {
+                if (attributes[attribute]) {
+                  ids.add(attributes[attribute]);
+                }
+              }
+            },
+          });
+          parser.end(token.content);
+        }
+        if (Array.isArray(token.children)) {
+          collectHtmlAnchors(token.children);
+        }
+      }
+    };
+    collectHtmlAnchors(tokens);
     documents.set(text, ids);
     return ids;
   };
