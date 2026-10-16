@@ -14,6 +14,7 @@ import {
   pathRequests,
   recordLayoutShifts,
   selectSecret,
+  setSlackSelection,
   takeLayoutShifts,
   waitForInputValue,
   secretOptionLabel,
@@ -705,7 +706,11 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
   const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
   const dialog = page.getByRole("dialog", { name: "Edit Slack" });
   await edit.click();
-  await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await dialog.getByLabel("Direct-message policy").selectOption("allowlist");
+  await setSlackSelection(
+    dialog.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+    "UCARRY123",
+  );
   await selectSecret(dialog, "Slack bot token", carriedBot);
   // Another browser turns off mentions and swaps the app token Secret.
   const current = await fixture.request("GET", configurationPath(context));
@@ -735,15 +740,16 @@ test("a Channels conflict keeps the editor's edits for Reload draft", async (t) 
   await page.getByRole("button", { name: "Reload draft" }).click();
   await dialog.waitFor();
   const note =
-    "Your edits are applied over the reloaded settings: Direct-message policy, Slack bot token. Review them, then save.";
+    "Your edits are applied over the reloaded settings: Direct-message policy, Allowed people in direct messages, Slack bot token. Review them, then save.";
   await dialog.getByRole("status").filter({ hasText: note }).waitFor();
-  assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
+  assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "allowlist");
   assert.equal(await dialog.getByLabel("Require a mention").isChecked(), false);
   await dialog.getByRole("button", { name: "Save configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;
   assert.equal(saved.generation, 3);
-  assert.equal(saved.values.channels.slack.dmPolicy, "disabled");
+  assert.equal(saved.values.channels.slack.dmPolicy, "allowlist");
+  assert.deepEqual(saved.values.channels.slack.allowFrom, ["UCARRY123"]);
   assert.equal(saved.values.channels.slack.requireMention, false);
   assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, {
     source: otherApp.ref,

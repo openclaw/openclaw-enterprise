@@ -502,7 +502,11 @@ function openDrawer(section, state, provider, retained) {
     const names = [
       ...Object.keys(carried.fields).map((id) => {
         const field = fields.find((node) => node.id === id);
-        const label = body.querySelector(`label[for="${id}"]`) ?? field?.closest("label");
+        // Directory-backed lists label their search box, not the hidden list input.
+        const label =
+          body.querySelector(`label[for="${id}"]`) ??
+          body.querySelector(`label[for="${id}-search"]`) ??
+          field?.closest("label");
         return label?.textContent.trim() || id;
       }),
       ...carried.secrets.map(
