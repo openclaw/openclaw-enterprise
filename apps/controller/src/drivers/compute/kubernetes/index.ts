@@ -1288,7 +1288,6 @@ const RUNTIME_DIAGNOSTIC_TIMESTAMP =
 const RUNTIME_STATE_VOLUME_SIZE = "1Gi";
 const GATEWAY_PRIVATE_STATE_VOLUME = "openclaw-gateway-state";
 const GATEWAY_PRIVATE_STATE_SIZE = "10Gi";
-const NODE_STATE_VOLUME = "openclaw-node-state";
 // Harness kinds that can own a workspace node. Naming refuses any other kind,
 // so Agent deletion removes every node Secret preparation can create.
 const WORKSPACE_NODE_HARNESS_IDS: readonly string[] = ["codex", "openclaw"];
@@ -1340,7 +1339,7 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["media", "/home/node/.openclaw/media"],
 ] as const);
 const HARNESS_WORKSPACE_VOLUME = "openclaw-workspace";
-const HARNESS_AUTH_VOLUME = "openclaw-harness-auth";
+const HARNESS_OAUTH_HOME_PATH = "/home/node/.codex";
 const HARNESS_WORKSPACE_SIZE = "40Gi";
 type WorkspaceRole = "agent" | "gateway";
 const HARNESS_WORKSPACE_CATEGORIES = Object.freeze([
@@ -6021,7 +6020,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             workspaceSetup,
           );
         } else {
-          this.addNativeWorker(agentDeployment, node.name, node.ca, revision);
+          this.addNativeWorker(agentDeployment, node.name, node.ca);
         }
       }
       if (
@@ -6064,6 +6063,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const requirements = this.harnessRequirementsFromDeployment(
           agentDeployment,
           harnessAuth.loginMode,
+          node !== undefined,
           attachments,
           this.sandboxWorkloadFiles(pluginRuntime),
         );
@@ -6629,7 +6629,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 workspaceSetup,
               );
             } else {
-              this.addNativeWorker(replacement, node.name, node.ca, revision);
+              this.addNativeWorker(replacement, node.name, node.ca);
             }
           }
           if (nodeSetupFile) {
@@ -6660,6 +6660,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const requirements = this.harnessRequirementsFromDeployment(
         renderAgentDeployment({}),
         harnessAuth.loginMode,
+        false,
         [],
         this.sandboxWorkloadFiles(pluginRuntime),
       );
@@ -9584,6 +9585,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private harnessRequirementsFromDeployment(
     deployment: ManagedKubernetesObject,
     loginMode: HarnessWorkloadRequirements["loginMode"],
+    nodeExpected: boolean,
     credentialAttachments: readonly CredentialSourceAttachment[] = [],
     files: readonly SandboxWorkloadFile[] = [],
   ): HarnessWorkloadRequirements {
@@ -9621,6 +9623,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       spec?.volumes,
       container?.volumeMounts,
       loginMode === "oauth",
+      nodeExpected,
     );
     const workloadIdentity = this.sandboxWorkloadIdentity(
       serviceAccountName,
@@ -10233,13 +10236,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     setupFile: boolean,
     workspaceSetup: WorkspaceSetup | undefined,
   ): void {
-    const { container, variables } = this.addNodeEnrollmentState(
-      deployment,
-      name,
-      ca,
-      revision,
-      setupFile,
-    );
+    const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, setupFile);
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
     variables.push(
       {
@@ -10274,15 +10271,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     deployment: ManagedKubernetesObject,
     name: string,
     ca: string | undefined,
-    revision: AgentRevision,
   ): void {
-    const { container, variables } = this.addNodeEnrollmentState(
-      deployment,
-      name,
-      ca,
-      revision,
-      false,
-    );
+    const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, false);
     variables.push(
       { name: "TMPDIR", value: "/tmp/openclaw-native-worker" },
       { name: "NODE_COMPILE_CACHE", value: NATIVE_WORKER_COMPILE_CACHE },
@@ -10304,7 +10294,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     deployment: ManagedKubernetesObject,
     name: string,
     ca: string | undefined,
-    revision: AgentRevision,
     setupFile: boolean,
   ): { readonly container: KubernetesRecord; readonly variables: V1EnvVar[] } {
     const pod = asRecord(asRecord(deployment.spec?.template)?.spec)!;
@@ -10343,25 +10332,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
         readOnly: true,
       });
     }
-    (pod.volumes as V1Volume[]).push({
-      name: NODE_STATE_VOLUME,
-      persistentVolumeClaim: { claimName: this.harnessWorkspaceClaimName(revision.agentId) },
-    });
     // Create the private subdirectory as the runtime user before kubelet mounts it.
     // A kubelet-created subPath is root-owned; native setup cannot tighten its mode.
     const initialization = (pod.initContainers as KubernetesRecord[])[0]!;
-    (initialization.volumeMounts as V1VolumeMount[]).push({
-      name: NODE_STATE_VOLUME,
-      mountPath: "/workspace-node-state",
-    });
-    const nodeStatePath = `/workspace-node-state/${name}`;
+    const nodeStatePath = `/harness-workspace-state/${name}`;
     (initialization.args as string[])[0] += `
 mkdirSync(${JSON.stringify(nodeStatePath)}, { recursive: true, mode: 0o700 });
 chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
-    // Reuse Harness storage outside the project directory. The Agent-scoped
-    // subpath preserves node identity across Pod and AgentRevision replacement.
+    // Reuse the existing Harness volume outside the project directory, without
+    // declaring the same claim twice. The Agent-scoped subpath preserves node
+    // identity across Pod and AgentRevision replacement.
     (container.volumeMounts as V1VolumeMount[]).push({
-      name: NODE_STATE_VOLUME,
+      name: HARNESS_WORKSPACE_VOLUME,
       mountPath: NODE_STATE_PATH,
       subPath: name,
       readOnly: false,
@@ -10609,6 +10591,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     volumes: unknown,
     volumeMounts: unknown,
     oauth: boolean,
+    nodeExpected: boolean,
   ): readonly SandboxWorkspaceMount[] {
     const observedVolumes = Array.isArray(volumes) ? volumes : [];
     const workspaceVolume = observedVolumes.find(
@@ -10620,7 +10603,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     );
     const observedMounts = Array.isArray(volumeMounts) ? volumeMounts : [];
     const workspaceMounts = observedMounts
-      .filter((item) => asRecord(item)?.name === HARNESS_WORKSPACE_VOLUME)
+      .filter(
+        (item) =>
+          asRecord(item)?.name === HARNESS_WORKSPACE_VOLUME &&
+          asRecord(item)?.mountPath !== NODE_STATE_PATH &&
+          asRecord(item)?.mountPath !== HARNESS_OAUTH_HOME_PATH,
+      )
       .map((item) => {
         const mount = asRecord(item);
         return {
@@ -10630,6 +10618,21 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           readOnly: mount?.readOnly === true,
         };
       });
+    const homeMounts = observedMounts.filter(
+      (item) => asRecord(item)?.mountPath === HARNESS_OAUTH_HOME_PATH,
+    );
+    const home = asRecord(homeMounts[0]);
+    if (
+      homeMounts.length !== (oauth ? 1 : 0) ||
+      (oauth &&
+        (home?.name !== HARNESS_WORKSPACE_VOLUME ||
+          home.subPath !== "codex-home" ||
+          (home.readOnly !== undefined && home.readOnly !== false)))
+    ) {
+      throw new ConfigurationFailure(
+        "Harness OAuth home must use its private path on the Harness claim.",
+      );
+    }
     const expected = this.harnessWorkspaceVolumeMounts(oauth);
     if (workspaceMounts.length !== expected.length) {
       throw new ConfigurationFailure("Dedicated Harness must mount every approved workspace path.");
@@ -10648,20 +10651,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
     }
-    const nodeVolume = observedVolumes.find((item) => asRecord(item)?.name === NODE_STATE_VOLUME);
-    if (nodeVolume !== undefined) {
-      const nodeClaim = required(
-        asRecord(asRecord(nodeVolume)?.persistentVolumeClaim)?.claimName,
-        "Harness node state claim",
+    const nodeMounts = observedMounts.filter(
+      (item) => asRecord(item)?.mountPath === NODE_STATE_PATH,
+    );
+    if (nodeExpected && nodeMounts.length === 0) {
+      throw new ConfigurationFailure(
+        "Harness node state must preserve its Agent node directory on the Harness claim.",
       );
-      const nodeMounts = observedMounts.filter(
-        (item) => asRecord(item)?.name === NODE_STATE_VOLUME,
-      );
+    }
+    if (nodeMounts.length !== 0) {
       const mount = asRecord(nodeMounts[0]);
       if (
-        nodeClaim !== claimName ||
+        mount?.name !== HARNESS_WORKSPACE_VOLUME ||
         nodeMounts.length !== 1 ||
-        mount?.mountPath !== NODE_STATE_PATH ||
         typeof mount.subPath !== "string" ||
         !/^workspace-node-[a-f0-9]{12}-[a-f0-9]{12}$/.test(mount.subPath) ||
         mount.readOnly !== false
@@ -10671,7 +10673,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
       workspaceMounts.push({
-        claimName: nodeClaim,
+        claimName,
         mountPath: NODE_STATE_PATH,
         subPath: mount.subPath,
         readOnly: false,
@@ -14615,13 +14617,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         // OCE cannot refresh, recover a lost bundle, or share it after handoff.
         // TODO(token-broker): Replace this handoff with broker-managed custody.
         // Token brokerage is separate work in progress, not part of this launch.
-        volumes.push({
-          name: HARNESS_AUTH_VOLUME,
-          persistentVolumeClaim: { claimName: this.harnessWorkspaceClaimName(agentId) },
-        });
         volumeMounts.push({
-          name: HARNESS_AUTH_VOLUME,
-          mountPath: "/home/node/.codex",
+          name: HARNESS_WORKSPACE_VOLUME,
+          mountPath: HARNESS_OAUTH_HOME_PATH,
           subPath: "codex-home",
         });
       }
@@ -14810,14 +14808,16 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           ...variables.filter(({ name }) => name === "OPENCLAW_CONFIG_PATH"),
         ],
         volumeMounts: [
-          ...volumeMounts.filter(({ name }) =>
-            [
-              "runtime-state",
-              "runtime-temporary",
-              GATEWAY_PRIVATE_STATE_VOLUME,
-              HARNESS_WORKSPACE_VOLUME,
-              CONFIGURATION_VOLUME,
-            ].includes(name),
+          ...volumeMounts.filter(
+            ({ name, mountPath }) =>
+              [
+                "runtime-state",
+                "runtime-temporary",
+                GATEWAY_PRIVATE_STATE_VOLUME,
+                HARNESS_WORKSPACE_VOLUME,
+                CONFIGURATION_VOLUME,
+              ].includes(name) &&
+              (name !== HARNESS_WORKSPACE_VOLUME || mountPath !== HARNESS_OAUTH_HOME_PATH),
           ),
           { name: "workspace-setup", mountPath: "/run/workspace-setup", readOnly: true },
         ],
