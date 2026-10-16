@@ -2301,6 +2301,31 @@ revisionTest(
 );
 
 revisionTest(
+  "a Sandbox gateway that refuses the Harness Pod labels fails deployment without retrying",
+  async (fixture) => {
+    // The OpenShell gateway rejects label keys missing from its allowed_pod_labels on every
+    // CreateSandbox, so retrying cannot help until an operator changes its configuration.
+    // The gateway wire test proves the client raises this error for the gateway's refusal.
+    const preparations = await runPreparationFailureCase(fixture, {
+      label: "sandbox-pod-labels",
+      failure: () =>
+        new SandboxRevisionUnsupportedError(
+          "SANDBOX_POD_LABELS_NOT_PERMITTED",
+          "OpenShell refused the Harness Pod labels app.kubernetes.io/managed-by; add them to the gateway's Kubernetes driver allowed_pod_labels.",
+        ),
+      expected: {
+        error: {
+          code: "SANDBOX_POD_LABELS_NOT_PERMITTED",
+          message:
+            "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.",
+        },
+      },
+    });
+    assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
   "credential sources that share an environment variable fail deployment without retrying",
   async (fixture) => {
     // Two bound sources would place their placeholders in one Sandbox variable. The revision's

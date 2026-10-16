@@ -206,7 +206,9 @@ loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
 Kubernetes calls. Duplicate names and reserved `workspace-node-enrollment` fail
 before Driver construction. Rename them, retaining binaries and endpoints.
 The template forwards the Harness Pod labels; the Gateway rejects a create whose
-labels its `allowed_pod_labels` does not admit.
+labels its `allowed_pod_labels` does not admit. `openshell-gateway-client.ts`
+turns that `INVALID_ARGUMENT` into `SandboxRevisionUnsupportedError`
+(`SANDBOX_POD_LABELS_NOT_PERMITTED`), so the worker fails the deployment at once.
 
 After the setup-Secret gate above, `provisionHarness` creates or adopts the
 runtime provider with the final node envelope, never a placeholder. Renewal
@@ -357,6 +359,7 @@ ClusterIP and the Agent Gateway must use `ws://*.openshell.localhost:8080/`.
 
 ## Changelog
 
+- 2026-10-16 21:20: Fail a Gateway Pod-label refusal permanently instead of retrying it as an outage. (claude-code/session_018PX7R3YQJRyz6UE99E9JQM - 68e42d51d707ad3a3fd7fdc0ed90949a668ddc2a)
 - 2026-10-16 19:30: Pin OpenShell v0.1.5-pre.4 and admit Harness template labels at the Gateway. (claude-code/session_018PX7R3YQJRyz6UE99E9JQM - 5357fbf323a28fa4ffa819b6c63655b20b87ace4)
 - 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 - 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)

@@ -32,6 +32,12 @@ export class OpenShellRequestReplayRefusedError extends Error {
 // refusals, such as the rate limit or busy admission workers, stay the raw gRPC error.
 export const ADMISSION_LIMIT_DETAILS = "caller has reached the durable mutation admission limit";
 
+// OpenShell's exact CreateSandbox refusal when the gateway's Kubernetes driver does not list
+// a template label key in allowed_pod_labels (crates/openshell-driver-kubernetes/src/driver.rs,
+// reject_disallowed_pod_metadata_keys). The rejected keys follow the colon.
+export const POD_LABELS_NOT_PERMITTED_DETAILS =
+  "pod labels not permitted by the gateway's allowed_pod_labels: ";
+
 /**
  * OpenShell refused a mutation because OCC's gateway identity holds its maximum of 1000
  * durable request admissions. Completed admissions free up 24 h after completion, so the
