@@ -17,6 +17,7 @@
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
+    "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
@@ -145,6 +146,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
     },
     {
       "path": "tests/conformance/node-enrollment-client.test.mjs"

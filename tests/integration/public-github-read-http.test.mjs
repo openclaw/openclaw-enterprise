@@ -502,7 +502,8 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   );
   await t.test(
     "idle sockets from one caller address cannot lock other callers out",
-    multipleCallers,
+    // Room for the 2 s answer bound, the 15 s close window and setup.
+    aliased ? { timeout: 30_000 } : multipleCallers,
     async (st) => {
       const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
       await once(guarded, "listening");
@@ -551,8 +552,9 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       }
       assert.equal(status, 200, "another caller is answered while one address idles");
       // The idle sockets the reader did accept close at the 6 s headers timeout,
-      // checked every second.
-      while (idle.some((socket) => !socket.closed) && Date.now() - idling < 9000) {
+      // checked every second (about 7 s). Allow 15 s for loaded runners: with
+      // Node's default 30 s check interval they would still be open.
+      while (idle.some((socket) => !socket.closed) && Date.now() - idling < 15_000) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       assert.equal(idle.filter((socket) => !socket.closed).length, 0);

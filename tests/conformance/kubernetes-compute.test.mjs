@@ -7544,7 +7544,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   assert.equal(
     worker.volumeMounts.some(
       ({ name, mountPath }) =>
-        name === "openclaw-node-state" && mountPath === "/home/node/.openclaw-node",
+        name === "openclaw-workspace" && mountPath === "/home/node/.openclaw-node",
     ),
     true,
   );
@@ -11104,7 +11104,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
   );
 
-  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
+  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key", false);
   assert.equal(requirements.loginMode, "api_key");
   // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
   for (const [key, value] of Object.entries({
@@ -11163,7 +11163,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     const altered = structuredClone(workload);
     mutate(altered.spec.template.spec);
     assert.throws(
-      () => driver.harnessRequirementsFromDeployment(altered, "api_key"),
+      () => driver.harnessRequirementsFromDeployment(altered, "api_key", false),
       /ServicePrincipal/i,
     );
   }
@@ -11184,7 +11184,8 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(withoutProjection, kubernetesNamespaceName(tenant.id), false),
   );
   assert.equal(
-    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key").workloadIdentity,
+    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key", false)
+      .workloadIdentity,
     undefined,
   );
 
@@ -11194,7 +11195,8 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     projected: { sources: [] },
   });
   assert.throws(
-    () => withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key"),
+    () =>
+      withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key", false),
     /credentials disabled must not project/i,
   );
 });
@@ -11433,7 +11435,7 @@ test("provider Harness requires its assigned network profile before readiness an
       labels["openclaw.dev/network-profile"] = profile;
     }
     assert.throws(
-      () => fixture.driver.harnessRequirementsFromDeployment(unapproved, "api_key"),
+      () => fixture.driver.harnessRequirementsFromDeployment(unapproved, "api_key", false),
       /Dedicated Harness requires the ordinary network profile/,
     );
   }
@@ -12448,7 +12450,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     const pod = workload.spec.template.spec;
     // The node-state claim keeps the Harness policy: ownership is fixed only on a root mismatch.
     assert.deepEqual(pod.securityContext, harness.spec.template.spec.securityContext);
-    return driver.sandboxWorkspaceMounts(pod.volumes, pod.containers[0].volumeMounts);
+    return driver.sandboxWorkspaceMounts(pod.volumes, pod.containers[0].volumeMounts, true);
   };
   const mounts = withNode(revision);
   const initializedHarness = structuredClone(harness);
@@ -12461,7 +12463,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
   const initialization = initializedHarness.spec.template.spec.initContainers[0].args[0];
   assert.match(initialization, /chmodSync\(path, 0o700\)/);
   assert.equal(
-    initialization.includes(`/workspace-node-state/${driver.workspaceNodeName(revision)}`),
+    initialization.includes(`/harness-workspace-state/${driver.workspaceNodeName(revision)}`),
     true,
   );
   const node = mounts.find(({ mountPath }) => mountPath === "/home/node/.openclaw-node");
@@ -15594,6 +15596,7 @@ for (const embedded of [true, false]) {
       const requirements = driver.harnessRequirementsFromDeployment(
         harness,
         "api_key",
+        false,
         [],
         [],
         setup,
@@ -15604,7 +15607,7 @@ for (const embedded of [true, false]) {
       });
       assert.equal(JSON.stringify(requirements).includes(setup.files["AGENTS.md"]), false);
       assert.throws(
-        () => driver.harnessRequirementsFromDeployment(harness, "api_key"),
+        () => driver.harnessRequirementsFromDeployment(harness, "api_key", false),
         /requires its exact private setup delivery/,
         "an initializing workload cannot silently lose its setup identity at the Sandbox boundary",
       );
@@ -17621,7 +17624,11 @@ test("SandboxDriver Harness Pods get transport ingress and only workspace-node e
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ordinaryAgent = profileNetworkWorkload(driver, revision, "agent");
-  const { labels: harness } = driver.harnessRequirementsFromDeployment(ordinaryAgent, "api_key");
+  const { labels: harness } = driver.harnessRequirementsFromDeployment(
+    ordinaryAgent,
+    "api_key",
+    false,
+  );
   assert.equal(harness[ORDINARY_PROFILE_LABEL], "provider-fenced-v1");
   const gatewayLabels = profileNetworkWorkload(driver, revision, "gateway").spec.template.metadata
     .labels;

@@ -201,8 +201,9 @@ Other Harnesses are replaced, restarting their Gateway.
 - Readiness requires `file.fetch`, `file.stat`, `file.write`, `file.create`,
   `dir.list`, `workspace.memory`, and `workspace.skills`. Gateway admits these
   commands before pairing, preserving explicit denies.
-- The Harness PVC keeps Agent-scoped identity at `/home/node/.openclaw-node`
-  (`0700`, nonroot initializer) across revisions until Agent deletion.
+- `addNodeEnrollmentState` mounts Agent-scoped identity at `/home/node/.openclaw-node`
+  from the existing Harness PVC volume (`0700`, nonroot initializer), preserving it
+  across revisions until Agent deletion.
 - `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
   Codex and the node under `tini`. It passes admitted bootstrap options, preserves
   existing edits, and stops on setup failure. Codex starts at once with the

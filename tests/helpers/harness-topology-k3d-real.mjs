@@ -3070,8 +3070,12 @@ function sharedVolumeClaimName(pod) {
 }
 
 function sharedVolumeSubPaths(pod) {
+  // Node identity shares the Harness claim under its own Agent subpath, outside task files.
   return (pod.spec.containers[0].volumeMounts ?? [])
-    .filter(({ name }) => name === sharedWorkspaceVolumeName)
+    .filter(
+      ({ name, mountPath }) =>
+        name === sharedWorkspaceVolumeName && mountPath !== "/home/node/.openclaw-node",
+    )
     .map(({ subPath }) => subPath)
     .sort();
 }
@@ -3100,10 +3104,7 @@ function assertPrivateStateInitContainer(pod) {
         { name: "runtime-temporary", mountPath: "/runtime-temporary" },
         ...(pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway"
           ? [{ name: "openclaw-gateway-state", mountPath: "/gateway-state" }]
-          : [
-              { name: "openclaw-workspace", mountPath: "/harness-workspace-state" },
-              { name: "openclaw-node-state", mountPath: "/workspace-node-state" },
-            ]),
+          : [{ name: "openclaw-workspace", mountPath: "/harness-workspace-state" }]),
       ],
       [],
       [],
