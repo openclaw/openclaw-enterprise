@@ -2247,10 +2247,10 @@ test("secret redaction preserves JSON quoting, not pieces of the quoted value", 
     redactLogLine('password="first part, still private', [], 200),
     'password="[redacted]',
   );
-  // ...but a line break does: the lines after it stay readable (finding 1556).
+  // A failure message need not be JSON. A newline inside an open password is still private.
   assert.equal(
-    redactLogLine('password="first part\nexpected status 503, got 200', [], 200),
-    'password="[redacted]\nexpected status 503, got 200',
+    redactLogLine('password="first part\nprivate tail" expected status 503', [], 200),
+    'password="[redacted]" expected status 503',
   );
 });
 
@@ -2299,8 +2299,18 @@ test("the redactor removes structured, multi-word and short secret values", asyn
       '{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}',
       '{"tokens":[redacted],"after":"keep"}',
     ],
+    [
+      JSON.stringify(
+        { credentials: { label: 'a "quote" and } private tail' }, after: "keep" },
+        null,
+        2,
+      ),
+      '{\n  "credentials": [redacted],\n  "after": "keep"\n}',
+    ],
+    ["tokens: [{value: '] private tail'}] status=503", "tokens: [redacted] status=503"],
     ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
-    ["token: {unclosed synthetic0\nnext line", "token: [redacted]\nnext line"],
+    ["token: {unclosed synthetic0\nprivate tail", "token: [redacted]"],
+    ["token: [{wrong close]private tail", "token: [redacted]"],
     // A passphrase in prose or YAML, and an Authorization header, take every word.
     ["password: synthetic words here\nnext line", "password: [redacted]\nnext line"],
     ["passphrase: synthetic words, then more", "passphrase: [redacted], then more"],
@@ -2345,7 +2355,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      '  assert.fail(`password="fixture, private-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
     ].join("\n"),

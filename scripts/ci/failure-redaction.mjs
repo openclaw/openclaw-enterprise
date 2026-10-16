@@ -60,19 +60,31 @@ const assignment = new RegExp(
   "giu",
 );
 
-// The end of a value that opened with "{" or "[" at `start`: its matching close, or the end of
-// the line when it does not close there.
+// A diagnostic can pretty-print a credential across lines and quote a literal closing bracket.
+// Resume only after the matching close. If the bounded input ends first or the delimiters do not match,
+// suppress the rest rather than publish what might still be part of the credential.
 function bracketValueEnd(text, start) {
-  let depth = 0;
+  const closes = [];
+  let quote;
   for (let index = start; index < text.length; index += 1) {
     const char = text[index];
-    if (char === "\n") {
-      return index;
-    }
-    if (char === "{" || char === "[") {
-      depth += 1;
-    } else if ((char === "}" || char === "]") && --depth === 0) {
-      return index + 1;
+    if (quote !== undefined) {
+      if (char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "{" || char === "[") {
+      closes.push(char === "{" ? "}" : "]");
+    } else if (char === "}" || char === "]") {
+      if (closes.pop() !== char) {
+        return text.length;
+      }
+      if (closes.length === 0) {
+        return index + 1;
+      }
     }
   }
   return text.length;
@@ -80,7 +92,7 @@ function bracketValueEnd(text, start) {
 
 // A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
 // been serialized, its opening delimiter tells us how many backslashes end the value. A value
-// that opens with "{" or "[" is redacted to its close on the same line (finding 1559).
+// that opens with "{" or "[" is redacted through its matching close.
 function redactSecretAssignments(text) {
   let result = "";
   let end = 0;
@@ -109,11 +121,11 @@ function redactSecretAssignments(text) {
     }
 
     // In ordinary JSON, a closing quote follows an even number of backslashes. Each
-    // serialization doubles that escape width. JSON never holds a raw newline, so an unclosed
-    // value ends with its line (finding 1556), or with the log if that ends mid-value.
+    // serialization doubles that escape width. An unclosed value stays private through the
+    // end of the input, including newlines in diagnostic text that isn't JSON.
     const escapeWidth = 2 * delimiter.length;
     let backslashes = 0;
-    while (end < text.length && text[end] !== "\n") {
+    while (end < text.length) {
       const char = text[end++];
       if (char === quote && backslashes % escapeWidth === escapes.length) {
         result += delimiter;
