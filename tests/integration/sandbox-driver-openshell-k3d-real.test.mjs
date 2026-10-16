@@ -741,30 +741,6 @@ async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId 
   };
 }
 
-// Finding 1532: a revision whose reconcile work failed permanently never activates (the
-// worker's own maintenance check reads the same row), so a wait for its activation stops at
-// once. Maintenance and credential-withdrawal rows for the revision do not decide activation.
-// Returns that work's code, attempt and result data, which for a failed model probe holds the
-// runtime's classified cause; otherwise undefined.
-async function permanentRevisionFailure(pool, { namespaceId, revisionId }) {
-  const { rows } = await diagnosticQuery(
-    pool,
-    `SELECT state, reason_code, attempt_count, result_data
-     FROM occ.controller_work
-     WHERE namespace_id = $1 AND idempotency_key = $2`,
-    [namespaceId, `agent_revision:${revisionId}:reconcile`],
-  );
-  const work = rows[0];
-  return work?.state === "failed_permanent"
-    ? {
-        state: work.state,
-        code: work.reason_code ?? undefined,
-        attempt: work.attempt_count,
-        ...(work.result_data === null ? {} : { result: work.result_data }),
-      }
-    : undefined;
-}
-
 // The reporter keeps 1,000 characters of each output line, so the persisted state comes before
 // the event list. Returns the diagnostic for callers that also put it in a failure message.
 async function writeWorkerCompletionDiagnostics(options) {
@@ -5348,8 +5324,6 @@ async function untrustedUpstreamFailureDetail(
 // keeps the start, so the events there run newest first.
 const replacementWorkerChars = 2_500;
 const replacementPodsChars = 600;
-// The failed work's result data: a classified runtime failure is well under this.
-const replacementFailureChars = 1_000;
 
 async function replacementActivationDiagnostic(topology, revision, worker) {
   const gatewayPassword = await diagnosticGatewayPassword(topology);
@@ -5925,26 +5899,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
         `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
       );
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      if (observed.data.activeRevisionId === redeployed.data.id) {
-        return observed.data;
-      }
-      // A replacement that failed for good cannot activate: fail now rather than wait out the
-      // timeout, with the worker's probe error first in the message (finding 1532). A read that
-      // fails only skips this check for one poll.
-      const failed = await permanentRevisionFailure(topology.observerPool, {
-        namespaceId: topology.namespaceId,
-        revisionId: redeployed.data.id,
-      }).catch(() => undefined);
-      if (failed !== undefined) {
-        throw new Error(
-          `replacement OpenShell revision ${redeployed.data.id} failed permanently and cannot activate: ${redactLogLine(
-            JSON.stringify(failed),
-            turnFailureSecrets(topology),
-            replacementFailureChars,
-          )}`,
-        );
-      }
-      return undefined;
+      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);
