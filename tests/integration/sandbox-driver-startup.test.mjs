@@ -238,13 +238,13 @@ function openShellDriver(gatewayClient, configuration) {
   );
 }
 
-/** A dedicated revision of `harness` on `driver`; `n` is the 12-digit tail of its ids. */
-function dedicatedRevision(driver, context, n, harness = "codex") {
+/** A dedicated Codex revision on `driver`; `n` is the 12-digit tail of its ids. */
+function dedicatedRevision(driver, context, n) {
   return {
     id: `rev_00000000-0000-4000-8000-${n}`,
     namespaceId: context.namespace.id,
     agentId: `agt_00000000-0000-4000-8000-${n}`,
-    harness: { id: harness, version: "1.0.0", mode: "dedicated" },
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     sandboxDriverId: driver.id,
   };
 }
@@ -534,7 +534,7 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
     [(c) => delete c.backend[0].drivers.credential_refresh, unpaired],
     [
       (c) => delete c.drivers.credential_gateway,
-      /credential_refresh requires drivers\.credential_gateway/,
+      /drivers\.credential_refresh requires drivers\.credential_gateway/,
     ],
     [(c) => (c.drivers.credential_refresh.configuration = { interval: 60 }), /configuration/],
   ]) {
@@ -1856,8 +1856,8 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     return gatewayClient;
   };
   const refusal = (name) => `OpenShell refused the controller gateway identity with gRPC ${name}.`;
-  const keeps = (error) => (thrown) => {
-    assert.equal(thrown, error);
+  const keeps = (error, message) => (thrown) => {
+    assert.equal(thrown, error, message);
     return true;
   };
 
@@ -1894,7 +1894,7 @@ test("OpenShell Namespace steps fail at once when OpenShell refuses the controll
     const gatewayClient = failing("createWorkspace", passedThrough);
     await assert.rejects(
       openShellDriver(gatewayClient).ensureNamespace(namespaceContext()),
-      keeps(passedThrough),
+      keeps(passedThrough, name),
     );
   }
   // A Workspace removed between Namespace cleanup's read and its provider listing answers
@@ -2009,7 +2009,10 @@ test("startup rejects OpenShell network policies without binary identities", (t)
 test("startup rejects duplicate OpenShell network policy names", async (t) => {
   for (const [name, expected] of [
     ["model-egress", /OpenShell network policy name model-egress must be unique/],
-    ["workspace-node-enrollment", /network policy name workspace-node-enrollment is reserved/],
+    [
+      "workspace-node-enrollment",
+      /OpenShell network policy name workspace-node-enrollment is reserved/,
+    ],
   ]) {
     await rejectsAtStartup(t, (c) => policiesOf(c).push({ ...policiesOf(c)[0], name }), expected);
   }
