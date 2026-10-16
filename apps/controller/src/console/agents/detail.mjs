@@ -917,8 +917,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   const currentVersionValue = element("strong");
   const currentVersionNote = element("p", { className: "muted" });
-  const latestDeploymentValue = element("strong", {}, "Loading…");
-  const latestDeploymentNote = element("p", { className: "muted" }, "Reading deployment history.");
+  // The summary's loading text follows the 250 ms rule: a read that settles sooner never shows
+  // it, and the version number shows at once (finding 1438).
+  function setDelayedText(node, prefix, loading) {
+    if (node.textContent !== prefix + loading || !node.querySelector(".delayed-status")) {
+      node.replaceChildren(prefix, element("span", { className: "delayed-status" }, loading));
+    }
+  }
+  const latestDeploymentValue = element("strong");
+  const latestDeploymentNote = element("p", { className: "muted" });
+  setDelayedText(latestDeploymentValue, "", "Loading…");
+  setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   const liveServingValue = element("strong", {}, "Not verified");
   const liveServingNote = element("p", { className: "muted" });
   const currentSummary = element(
@@ -1434,22 +1443,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!latest) {
       recovery.hidden = true;
       delete latestDeploymentValue.dataset.outcome;
-      setText(
-        latestDeploymentValue,
-        latestRevisionResult?.status === "rejected"
-          ? "Unavailable"
-          : latestRevisionResult
-            ? "None"
-            : "Loading…",
-      );
-      setText(
-        latestDeploymentNote,
-        latestRevisionResult?.status === "rejected"
-          ? "Version history could not be read."
-          : latestRevisionResult
-            ? "No readable deployments."
-            : "Reading deployment history.",
-      );
+      if (latestRevisionResult) {
+        const rejected = latestRevisionResult.status === "rejected";
+        setText(latestDeploymentValue, rejected ? "Unavailable" : "None");
+        setText(
+          latestDeploymentNote,
+          rejected ? "Version history could not be read." : "No readable deployments.",
+        );
+      } else {
+        setDelayedText(latestDeploymentValue, "", "Loading…");
+        setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
+      }
       const hidden = [selected, currentRevisionId].find(revisionHidden);
       statusLine.hidden = hidden === undefined;
       setText(
@@ -1503,11 +1507,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         latestDeploymentNote,
         `You cannot read the current version. v${latest.revision} (${latestDeploymentStatus}) is older.`,
       );
+    } else if (!latestDeploymentStatus && !latestDeploymentError) {
+      setDelayedText(latestDeploymentValue, `v${latest.revision} · `, "Loading…");
+      setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
-      setText(
-        latestDeploymentValue,
-        `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`,
-      );
+      setText(latestDeploymentValue, `v${latest.revision} · ${label ?? "Unavailable"}`);
       setText(
         latestDeploymentNote,
         neutral
@@ -1516,9 +1520,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             : `${NEUTRAL_DEPLOYMENT_NOTES.superseded}.`
           : latestDeploymentStatus
             ? ""
-            : latestDeploymentError
-              ? "Recorded deployment status could not be read."
-              : "Reading recorded deployment status.",
+            : "Recorded deployment status could not be read.",
       );
     }
     const mayBeOffline = replacementFailed || selectedFailed;
