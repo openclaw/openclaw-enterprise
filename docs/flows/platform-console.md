@@ -128,10 +128,10 @@ from the list keeps the list inert; past 250 ms a pending page shows, without Ag
 or detail actions. The Agent's heading appears with its overview, never alone.
 **Back to Agents** cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
-Refresh show loading after 250 ms. A return to a retained view or a refocus keeps the
-shown page inert, with its own navigation and header, and says **Still checking…**
-after one second. The Console retains up
-to 16 views by route, Namespace, and session owner, excluding passwords and discovery
+Refresh show loading after 250 ms. A held page keeps its own navigation and header.
+A return to a retained view or a refocus keeps the shown page inert and says
+**Still checking…** after one second. The Console retains up to 16 views by route,
+Namespace, and session owner, excluding passwords and discovery
 state. An interrupted return keeps its view; an interrupted Refresh discards it.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed

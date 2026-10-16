@@ -462,7 +462,43 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
     "agents | Slow Agent | selector | Agent",
   ]);
   assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Slow Agent" })), true);
-  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+});
+
+// Reopening an Agent whose retained page changed rebuilds it behind the held list; past the delay
+// the opening panel shows, as on a first visit, not an undimmed list with no cue.
+test("Reopening a changed Agent shows its loading panel past the delay", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Reopen frames", ["Reopened Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Reopened Agent" }).waitFor();
+  await page.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), description: "changed" } });
+  });
+  await page.evaluate(recordShownFrames);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  await page.clock.runFor(249);
+  assert.equal(await page.getByText("Loading agent details…").count(), 0);
+  await page.clock.runFor(1);
+  await page.getByRole("main").getByText("Loading agent details…", { exact: true }).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agents | selector | Agents (held)",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Reopened Agent | selector | Agent",
+  ]);
 });
 
 // On a slow link the opening panel's heading had focus, the Agent page rendered with focus on

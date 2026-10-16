@@ -457,9 +457,10 @@ let shownFeature = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
-// The lifetime of a load that opened an Agent with the pending "Loading agent details…" panel.
-// That load is itself the access check, so refocus checks wait until it finishes, Agent detail
-// included, and the panel and its way back stay (finding 1460).
+// The lifetime of a load that opened an Agent: the held list, the "Loading agent details…" panel
+// and the Agent's page rendered hidden behind them. That load is itself the access check, so
+// refocus checks wait until it finishes, Agent detail included, and the panel and its way back
+// stay (finding 1460).
 let openingAgentLoad = null;
 
 function sessionOwnerKey(value) {
@@ -1092,8 +1093,9 @@ async function loadPage({
   }
   // A return or refocus that can reuse its retained view keeps the shown page and, past
   // stillCheckingDelayMs, says it is still checking. Other loads, Refresh included, show
-  // loading after loadingDelayMs (finding 1442).
-  const recheck = held && retained && reuseView;
+  // loading after loadingDelayMs (finding 1442). Opening a retained Agent may rebuild it behind
+  // the held list, so it shows the opening panel past loadingDelayMs like a first visit.
+  const recheck = held && retained && reuseView && !openingAgent;
   let loadingTimer =
     !held && !startup
       ? null
@@ -1263,9 +1265,13 @@ async function loadPage({
     }
     if (loadingTimer === null) {
       // The loading delay passed while the session was checked (or there was none): show
-      // the pending shell now. Otherwise the startup status stays until the delay passes or
-      // the first reads settle.
-      shell ??= renderPendingNamespaceShell(current.feature);
+      // the pending shell now, or an opening Agent's panel. Otherwise the startup status stays
+      // until the delay passes or the first reads settle.
+      if (!shell && openingAgent && !startup) {
+        showOpeningPanel();
+      } else {
+        shell ??= renderPendingNamespaceShell(current.feature);
+      }
     }
     // Read the admin-only destination once per session owner. Non-administrators
     // get 403, which the API audits as a denial, so do not repeat it per navigation
@@ -1307,8 +1313,8 @@ async function loadPage({
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null) {
-      // Namespace admission is done, so the header selector is usable while the destination's
-      // first read runs. A switch resets the lifetime, discarding these reads. Without a URL
+      // Namespace admission is done, so the header selector, when the shown page has one, is
+      // usable while the destination's first read runs. A switch resets the lifetime, discarding these reads. Without a URL
       // selection the full render below picks the default. A held page keeps the scope
       // beside its rows until the destination replaces them.
       shellUI.updateNamespaces(namespaces, { preservePageScope: held });
@@ -1394,6 +1400,10 @@ async function loadPage({
         ? app.querySelector('.content [aria-live="polite"]')
         : null;
     const openingTitle = openingBody ? app.querySelector(".content h1")?.textContent : null;
+    // The panel's Back to Agents may have focus; it keeps it while the page renders hidden.
+    const openingFocus = openingBody?.contains(document.activeElement)
+      ? document.activeElement
+      : null;
     // Remember who owns focus before replacing the loading heading, on first visit or retry. The
     // held list's link lost focus to the hold; the Agent's heading takes it as it appears.
     focusAgentResult =
@@ -1581,6 +1591,9 @@ async function loadPage({
         detailView.before(openingBody);
         detailView.hidden = true;
         app.querySelector(".content h1").textContent = openingTitle;
+        if (openingFocus?.isConnected && document.activeElement === document.body) {
+          openingFocus.focus({ preventScroll: true });
+        }
         if (pendingAgentHeading && focusAgentResult && document.activeElement === document.body) {
           app.querySelector(".content h1").focus({ preventScroll: true });
         }
@@ -1597,8 +1610,15 @@ async function loadPage({
           detailView.hidden = false;
           // The held list kept its scroll position; the Agent's page starts at its top.
           window.scrollTo({ top: 0, left: 0 });
+          const heading = app.querySelector(".content h1");
+          const headingFocused = document.activeElement === heading;
           if (openingTitlePending !== null) {
             agentContext.setTitle(openingTitlePending);
+          }
+          // A heading renamed while focused is not announced; focus it again under its name.
+          if (headingFocused) {
+            heading.blur();
+            heading.focus({ preventScroll: true });
           }
           markRevealed();
         };
