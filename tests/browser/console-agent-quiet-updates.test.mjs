@@ -97,6 +97,8 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // The confirmation removes itself on its close event, a task after the request settles.
+  await page.locator(".deletion-note dialog").waitFor({ state: "detached" });
   const refresh = page.getByRole("button", { name: "Refresh deletion status" });
   await refresh.focus();
   await page.evaluate(() => {
