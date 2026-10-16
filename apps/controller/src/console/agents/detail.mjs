@@ -2430,7 +2430,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       details ??= loadDetails();
       // Polling views are rebuilt on every visit instead of being retained.
       state.reusable = false;
-      const logs = renderAgentLogs(tabContext, { agent, revisionId: selected });
+      const logs = renderAgentLogs(tabContext, {
+        agent,
+        revisionId: selected,
+        // The failed-version recovery stops offering Logs as soon as they are denied.
+        onLogsDenied: () => {
+          if (tabContext.isCurrent() && !recovery.hidden) {
+            renderLatestDeployment();
+          }
+        },
+      });
       content.append(logs.section);
       state.loading = false;
       content.style.minHeight = "";

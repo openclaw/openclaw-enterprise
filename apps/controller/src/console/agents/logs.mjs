@@ -89,7 +89,7 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
-export function renderAgentLogs(context, { agent, revisionId }) {
+export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () => {} }) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
   const deniedKey = logViewKey(context, agent.id);
   const statusKey = JSON.stringify([
@@ -649,6 +649,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         // Never re-poll after a denial; the view needs new grants.
         logsDenied = true;
         deniedLogViews.add(deniedKey);
+        onLogsDenied();
         setFollow(false);
         renderPickers();
       } else if (error.status === 501) {

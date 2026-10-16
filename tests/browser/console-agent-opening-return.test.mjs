@@ -101,7 +101,11 @@ test("Refocusing the window keeps the pending Agent panel and its way back", asy
   await page.getByRole("heading", { name: "Pending Agent" }).waitFor();
   assert.equal(session.wasRequested(), false);
 
-  // Once the Agent is shown, a refocus checks it again as before.
+  // Once the opening load has finished, a refocus checks the Agent again as before.
+  await page
+    .locator(settledView)
+    .getByRole("region", { name: "Agent state at a glance" })
+    .waitFor();
   const recheck = await holdFirstRead(t, page, "**/api/auth/session");
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await recheck.requested;
@@ -166,5 +170,24 @@ test("A chat link that cannot be resolved says so on the Agents list, once", asy
   await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.locator(settledView).getByRole("link", { name: "Listed Agent" }).waitFor();
+  assert.equal(await notice.count(), 0);
+
+  // A lookup that fails for another reason (here 503) asks to try again instead.
+  const key = "d".repeat(32);
+  await page.route(`**/native-admin/return/${key}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
+        meta: { requestId: "req_test_chat_link" },
+      }),
+    }),
+  );
+  await page.evaluate((value) => {
+    globalThis.history.pushState(null, "", `/console#native-agent=${value}`);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, key);
+  await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();
   assert.equal(await notice.count(), 0);
 });

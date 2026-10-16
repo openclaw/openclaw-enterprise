@@ -70,7 +70,7 @@ in the console root fragment. `loadPage` removes the fragment before sign-in and
 retains it across a failed session check, and resolves it only after session
 confirmation with `GET /native-admin/return/:key`.
 A valid authorized response routes to ordinary Agent detail; failed or malformed
-responses open Agents. The [native Agent host](../agent-native-admin.md) redirects
+responses open Agents, and a failed lookup says so once. The [native Agent host](../agent-native-admin.md) redirects
 a qualifying chat navigation here. Opening native chat still requires a separate user action.
 `authError=<provider>` shows a generic, one-time error; with `authError=github`, an
 `authReason` of `membership` or `membership-unavailable` explains a GitHub

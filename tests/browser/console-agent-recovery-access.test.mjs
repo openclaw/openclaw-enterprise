@@ -180,14 +180,16 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
     .getByText("Log text requires Agent read_logs (or administer) and read access.")
     .waitFor();
 
-  // Leaving Logs for another tab of the same version keeps the page; the recovery now says
-  // who can check the logs instead of steering the reader into another denied read.
+  // The denial updates the recovery at once: it says who can check the logs instead of
+  // steering the reader into another denied read.
+  const askForLogs = recovery.getByText(
+    "v2 failed its startup model check. Ask someone with log access to check the failed version’s logs before deploying a new version.",
+  );
+  await askForLogs.waitFor();
+  assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
+  // Leaving Logs for another tab of the same version keeps that.
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await recovery
-    .getByText(
-      "v2 failed its startup model check. Ask someone with log access to check the failed version’s logs before deploying a new version.",
-    )
-    .waitFor();
+  await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   const configuration = recovery.getByRole("link", { name: "Open Configuration" });
   assert.equal(await configuration.getAttribute("class"), "overview-primary");

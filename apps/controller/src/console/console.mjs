@@ -447,12 +447,10 @@ let mountedRouteKey = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
-// The lifetime of a load showing the pending "Loading agent details…" panel. That load is
-// itself the access check, so a refocus while it runs keeps the panel (finding 1460).
+// The lifetime of a load that opened an Agent with the pending "Loading agent details…" panel.
+// That load is itself the access check, so refocus checks wait until it finishes, Agent detail
+// included, and the panel and its way back stay (finding 1460).
 let openingAgentLoad = null;
-// Set when a copied Agent chat link could not be resolved; the Agents list it lands on says so
-// once (finding 1450). Any navigation clears it.
-let unopenedChatLink = false;
 
 function sessionOwnerKey(value) {
   const userId = value?.user?.id;
@@ -690,7 +688,6 @@ function clearPrivate() {
   observabilityOwner = null;
   installationAccessProbe = null;
   installationAdmin = null;
-  unopenedChatLink = false;
   clearRetainedViews();
 }
 
@@ -945,6 +942,8 @@ async function loadPage({
   reuseView = fromNavigation,
   fromRefresh = false,
   openingAgent = false,
+  // Set only by the load that follows a chat-link lookup that failed (finding 1450).
+  chatLinkFailure = null,
 } = {}) {
   if (loggingOut) {
     return;
@@ -955,9 +954,6 @@ async function loadPage({
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
     pendingIntent = null;
-  }
-  if (fromNavigation) {
-    unopenedChatLink = false;
   }
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
@@ -1025,7 +1021,8 @@ async function loadPage({
   // A second press before the first traversal lands would go back twice and can leave the
   // console, so only the first press navigates (finding 1459).
   let leaving = false;
-  const backToAgents = () => {
+  const backToAgents = (event) => {
+    event.currentTarget.setAttribute("aria-disabled", "true");
     if (!leaving) {
       leaving = true;
       history.back();
@@ -1187,6 +1184,7 @@ async function loadPage({
     }
     const destination = pendingIntent;
     if (destination?.kind === "native" && validIntent(destination)) {
+      let failure = null;
       try {
         const resolved = await request(`/native-admin/return/${destination.key}`);
         if (!lifetime.isCurrent(active)) {
@@ -1201,15 +1199,15 @@ async function loadPage({
         };
         pendingIntent = null;
         history.replaceState(null, "", intentUrl(target) ?? "/console/agents");
-      } catch {
+      } catch (error) {
         if (!lifetime.isCurrent(active)) {
           return;
         }
         pendingIntent = null;
-        unopenedChatLink = true;
+        failure = [403, 404].includes(error.status) ? "unavailable" : "interrupted";
         history.replaceState(null, "", "/console/agents");
       }
-      void loadPage();
+      void loadPage({ chatLinkFailure: failure });
       return;
     }
     if (destination || current.feature === "login") {
@@ -1531,7 +1529,7 @@ async function loadPage({
     );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items });
-      showUnopenedChatLink(shell.view);
+      showChatLinkFailure(shell.view, chatLinkFailure);
     } else {
       renderRows(shell.view, current.feature, items);
     }
@@ -1683,15 +1681,20 @@ async function loadPage({
   }
 }
 
-// Static text only: the lookup's answer never says whether the link expired or was denied.
-function showUnopenedChatLink(view) {
-  if (unopenedChatLink) {
-    unopenedChatLink = false;
+// Static text only: a refused lookup never says whether the link expired or was denied.
+const chatLinkFailures = {
+  unavailable:
+    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+  interrupted: "This Agent chat link could not be opened. Try the link again.",
+};
+
+function showChatLinkFailure(view, failure) {
+  if (Object.hasOwn(chatLinkFailures, failure ?? "")) {
     view.prepend(
       element(
         "p",
         { className: "notice unopened-chat-link", role: "status" },
-        "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+        chatLinkFailures[failure],
       ),
     );
   }
