@@ -624,6 +624,7 @@ export function installFixture(scenario, evidence) {
         (rule.path && rule.path !== path) ||
         (rule.prefix && !path.startsWith(rule.prefix)) ||
         (rule.suffix && !path.endsWith(rule.suffix)) ||
+        (rule.queryParam && !url.searchParams.has(rule.queryParam)) ||
         (rule.bodyHasIds !== undefined && rule.bodyHasIds !== Array.isArray(body.ids))
       ) {
         continue;
@@ -677,6 +678,9 @@ export function installFixture(scenario, evidence) {
       }
       if (rule.status) {
         return response(null, rule.status, rule.code, {}, rule.message, rule.details);
+      }
+      if (rule.data !== undefined) {
+        return response(rule.data);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {

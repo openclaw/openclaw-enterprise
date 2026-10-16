@@ -265,17 +265,13 @@ admitted revision** shows the frozen snapshot.
 
 ### Update
 
-**New version in progress** shows v7 deployment work while v6 stays current;
-**Current version during deployment** opens v6 details while activity follows
-v7. Compare queued, failed, activated, and unavailable activity stories.
-In **First version**, resize the preview: each preparation step keeps its row,
-with continuation lines aligned under the text.
+In **New version in progress**, v7 deploys while v6 stays current. Open v6 in
+**Current version during deployment**; compare queued, failed, activated, and unavailable
+activity. Resize **First version**: wrapped lines stay aligned under their preparation step.
 
-**New version failed** and **Failed deployment logs from draft** check
-focused v7 Logs, output or denial, and Back. In **Runtime status and logs for v7**,
-exercise source, instance, debug, fields, Follow, and filters. At 390px, check
-readable rows and visible selected tabs through direct routes and Back/Forward.
-These fixtures prove presentation, not live reads.
+From **New version failed** or **Failed deployment logs from draft**, open v7 Logs and
+go Back. At 390px, check Follow, filters, and tab visibility in **Runtime status and logs
+for v7**. Then [walk through losing and regaining log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md).
 
 Version metadata stays visible when saved settings are unreadable. Follow the
 [walkthrough](../../scripts/console-storybook/unreadable-configuration-workflow.md)

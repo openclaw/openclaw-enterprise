@@ -8,6 +8,13 @@ const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const runtimeLogsPage = {
+  group: "Pages/Agent detail",
+  path: `${candidateVersion}&tab=logs`,
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+};
+const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
@@ -3454,6 +3461,59 @@ export const scenarios = {
       "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
     steps: [
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+    ],
+  },
+  runtimeLogAccessLost: {
+    ...runtimeLogsPage,
+    name: "Log access lost after output appears",
+    rules: [{ ...refuseLogRead, skip: 1, once: true }],
+    description:
+      "The first page loads. The next log read is refused, then the fixture restores access. The Console remembers the refusal until sign-out.",
+    steps: [
+      "With log rows visible, select Follow. At the next poll the rows and their source caption disappear, Follow stops, and Download is disabled. The Pod card stays: status access did not change.",
+      "Without resetting the story, log out and sign in with invented values. Open Research assistant, then Logs: the rows return. Reset the story to try Download instead of Follow.",
+    ],
+  },
+  runtimeLogDownloadRefused: {
+    ...runtimeLogsPage,
+    name: "Download refused while an earlier log page is in flight",
+    rules: [
+      { suffix: "/runtime/logs", queryParam: "cursor", delayMs: 8000, once: true },
+      { ...refuseLogRead, queryParam: "download" },
+    ],
+    description:
+      "A follow poll starts after two seconds. The fixture holds its successful response for eight more seconds; a Download during that interval is refused immediately.",
+    steps: [
+      "With rows visible, select Follow, wait about three seconds, then select Download. No file downloads; the rows clear and the controls become unavailable.",
+      "Wait for the earlier page to arrive. The access message stays, no rows come back, and Follow does not restart. Reset the story to repeat.",
+    ],
+  },
+  runtimeStatusAccessLost: {
+    ...runtimeLogsPage,
+    name: "Pod status access lost while logs remain readable",
+    rules: [{ suffix: "/runtime", skip: 1, status: 403, code: "FORBIDDEN" }],
+    description:
+      "The first status and log reads succeed. At the next status poll, about ten seconds later, the Pod and its observation time are replaced by the status access message.",
+    steps: [
+      "Leave Follow off until the Pod disappears. The log rows stay, and the Console does not read another log page just because the status request was refused.",
+      "Select Follow. Reading logs still works without the old Pod selection; it does not restore the Pod card.",
+    ],
+  },
+  runtimeStatusAccessRestored: {
+    ...runtimeLogsPage,
+    name: "Pod status access restored on Back",
+    rules: [
+      {
+        suffix: "/permissions",
+        once: true,
+        data: { update: true, deploy: true, operate: false, delete: true },
+      },
+      { suffix: "/runtime", once: true, status: 403, code: "FORBIDDEN" },
+    ],
+    description:
+      "At first the Agent permission response says operate is not granted: logs load, but status is refused. On the next visit the permission response grants operate.",
+    steps: [
+      "Wait for both the status access message and the log rows. Open Namespaces, then use browser Back; the Console asks for status once more and shows the Pod.",
     ],
   },
   runtimeLogsReaderDownload: {
