@@ -4,6 +4,7 @@ import {
   focusSaveOutcome,
   patchChildren,
   replaceChildrenIfChanged,
+  setHidden,
   setText,
 } from "../dom.mjs";
 import {
@@ -372,6 +373,24 @@ function takeLinkedVersionView(key) {
   return linked;
 }
 
+function pendingAttempt(attempt) {
+  const none = "Not recorded yet";
+  return element(
+    "dl",
+    { className: "credential-status-list" },
+    element("dt", {}, "Last recorded result"),
+    element(
+      "dd",
+      attempt ? {} : { className: "muted" },
+      attempt ? attempt.message : "No reconciliation result is available yet.",
+    ),
+    element("dt", {}, "Reason"),
+    element("dd", attempt ? {} : { className: "muted" }, attempt ? attempt.code : none),
+    element("dt", {}, "Since"),
+    element("dd", attempt ? {} : { className: "muted" }, attempt ? displayDate(attempt.at) : none),
+  );
+}
+
 function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
   const refresh = button(
     "Refresh deployment",
@@ -549,18 +568,9 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
         ? element(
             "div",
             { className: "deployment-pending-progress" },
-            state.status.progress.lastAttempt
-              ? element(
-                  "dl",
-                  { className: "credential-status-list" },
-                  element("dt", {}, "Last recorded result"),
-                  element("dd", {}, state.status.progress.lastAttempt.message),
-                  element("dt", {}, "Reason"),
-                  element("dd", {}, state.status.progress.lastAttempt.code),
-                  element("dt", {}, "Since"),
-                  element("dd", {}, displayDate(state.status.progress.lastAttempt.at)),
-                )
-              : element("p", { className: "muted" }, "No reconciliation result is available yet."),
+            // The list keeps its rows before the first attempt is recorded, so that result
+            // fills them in place instead of pushing the cards below down (finding 1598).
+            pendingAttempt(state.status.progress.lastAttempt),
             state.status.progress.nextAttemptAt
               ? element(
                   "p",
@@ -1298,7 +1308,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function showDetail() {
     clearTimeout(revealTimer);
     const shown = () => {
-      view.classList.remove("agent-detail-pending");
+      if (view.classList.contains("agent-detail-pending")) {
+        view.classList.remove("agent-detail-pending");
+      }
       scrollOnReveal?.();
       markRevealed();
     };
@@ -1625,7 +1637,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderLatestDeployment() {
     const latest = visibleRevisions[0];
     if (!latest) {
-      recovery.hidden = true;
+      setHidden(recovery, true);
       delete latestDeploymentValue.dataset.outcome;
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
@@ -1639,7 +1651,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
       }
       const hidden = [selected, currentRevisionId].find(revisionHidden);
-      statusLine.hidden = hidden === undefined;
+      setHidden(statusLine, hidden === undefined);
       setText(
         statusLine,
         hidden
@@ -1730,7 +1742,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentValue.dataset.outcome = outcome;
     }
     const hiddenNotice = requestedHidden || newerHidden || failureBehindHidden;
-    statusLine.hidden = !hiddenNotice && !failureBehindUnknown && !successBehindUnknown;
+    setHidden(statusLine, !hiddenNotice && !failureBehindUnknown && !successBehindUnknown);
     if (!statusLine.hidden) {
       setText(
         statusLine,
@@ -1761,11 +1773,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // waits for the caller's permission answer, which decides its draft link, so it never
     // shows a draft link the answer then withdraws (finding 1478). That read starts first, so
     // it has usually settled by now.
-    recovery.hidden =
+    setHidden(
+      recovery,
       latestDeploymentStatus !== "failed" ||
-      currentHidden ||
-      currentUnknown ||
-      !callerPermissionsSettled;
+        currentHidden ||
+        currentUnknown ||
+        !callerPermissionsSettled,
+    );
     if (!recovery.hidden) {
       const version = `v${latest.revision}`;
       const code = latestDeploymentErrorCode;

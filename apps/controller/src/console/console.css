@@ -947,6 +947,13 @@ select:not([multiple])[size="1"] {
 .deployment-outcome {
   font-weight: 600;
 }
+/* A pending deploy's attempt rows keep their space as results arrive (finding 1598). At phone
+   width a reason code or date takes two lines, so each row holds two from the start. */
+@media (max-width: 520px) {
+  .deployment-pending-progress dd {
+    min-height: 2lh;
+  }
+}
 .deployment-warnings {
   padding: 12px 16px;
   background: var(--warning-subtle);

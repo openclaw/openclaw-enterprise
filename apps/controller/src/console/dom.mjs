@@ -25,6 +25,13 @@ export function setText(node, text) {
   }
 }
 
+/** Sets `hidden` only when it changes: rewriting the same value is still a DOM mutation. */
+export function setHidden(node, hidden) {
+  if (node.hidden !== hidden) {
+    node.hidden = hidden;
+  }
+}
+
 /** Replaces `parent`'s children with `children` (elements) unless they render the same markup. */
 export function replaceChildrenIfChanged(parent, children) {
   if (parent.innerHTML !== children.map((child) => child.outerHTML).join("")) {

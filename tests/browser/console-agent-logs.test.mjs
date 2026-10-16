@@ -1801,6 +1801,48 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   assert.equal(refusals, 1);
 });
 
+// One revoke of a role holding both read_logs and operate cleared the refused output at once, but
+// left the Pod cards under the log refusal until the next status poll refused, 1.4-3.8 s later
+// (finding 1597). The log refusal now asks for status once at once, on no new timer; a first
+// log read refused (log text never allowed) asks nothing more.
+test("a follow poll refused with operate revoked too clears the Pod cards at once", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "read before the revoke")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "one-revoke", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("read before the revoke").waitFor();
+  const pods = page.locator(".runtime-pod");
+  await pods.first().waitFor();
+  await page.getByRole("button", { name: "Follow" }).click();
+  const statusReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
+  const before = statusReads();
+
+  changeGrant(role, "read_logs", false);
+  changeGrant(role, "operate", false);
+  const statusRefused = page.waitForResponse(
+    (response) => response.url().endsWith("/runtime") && response.status() === 403,
+  );
+  // Only the follow poll's timer runs, well short of the 10 s status poll.
+  await page.clock.runFor(2_000);
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await statusRefused;
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await pods.count(), 0, "the Pod cards clear with the log refusal");
+  assert.equal(await pane.locator(":scope > *").count(), 0);
+  assert.equal(statusReads(), before + 1);
+  // The refusal is remembered: no status poll follows.
+  await page.clock.runFor(20_000);
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), before + 1);
+});
+
 // Losing operate hides the last status, not log text the member still has permission to read.
 test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
   const logs = await logsFixture(t);
