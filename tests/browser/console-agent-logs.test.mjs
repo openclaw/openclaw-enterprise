@@ -648,6 +648,90 @@ test("an operator without administer sees status but no log text and is never re
   assert.equal(logRequests(requests, revisionId).length, denied);
 });
 
+test("status refresh retains a dated observation, recovers, then drops status after operate is removed", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "initial output")];
+  computeDriver.state.extraPods = [{ name: "older-pod", uid: "older-pod-uid" }];
+  let role;
+  const reader = await fixture.createAccountWithPolicy("status-transition-reader", (principal) => {
+    role = grantRole(fixture.policy, principal.id, {
+      id: "role-status-transition-reader",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "operate", "read_logs"],
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
+    }).role;
+  });
+  const { page } = await newPage(t, fixture);
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
+  await login(page, fixture, url, reader.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("initial output").waitFor();
+  await waitForIdleFetches(page);
+  const cards = page.locator(".runtime-pod");
+  const picker = page.locator("#runtime-log-pod");
+  const observation = page.locator(".agent-logs [aria-live='off']");
+  const status = page.locator('.agent-logs > p > [role="status"]');
+  const initial = await observation.textContent();
+  const cardCount = await cards.count();
+  assert.match(initial, /^Observed /);
+  assert.ok(cardCount > 0);
+  assert.equal(await picker.isVisible(), true);
+  const statusPath = `/deployments/${revisionId}/runtime`;
+  async function poll() {
+    const response = page.waitForResponse((res) => res.url().endsWith(statusPath));
+    await page.clock.runFor(10_000);
+    const result = await response;
+    await waitForIdleFetches(page);
+    return result.status();
+  }
+
+  // A real Driver failure preserves the last observation, not a claim of fresh health.
+  computeDriver.state.describeError = new Error("private cluster connection details");
+  assert.equal(await poll(), 503);
+  assert.equal(await cards.count(), cardCount);
+  assert.equal(await observation.textContent(), "");
+  const stale = await status.textContent();
+  assert.ok(
+    stale.startsWith(`Showing runtime status last observed ${initial.slice("Observed ".length)}.`),
+  );
+  assert.doesNotMatch(stale, /private cluster/);
+  assert.match(stale, /Current runtime status is unavailable. Checking again shortly./);
+  computeDriver.state.describeError = undefined;
+  computeDriver.state.observedAt = "2026-09-30T12:02:00.000Z";
+  assert.equal(await poll(), 200);
+  const recovered = await observation.textContent();
+  assert.match(recovered, /^Observed /);
+  assert.notEqual(recovered, initial);
+  assert.equal(await status.textContent(), "");
+
+  // Native IAM removes only operate: a fresh log view must still pass its own authorization.
+  role.permissions = role.permissions.filter(({ action }) => action !== "operate");
+  computeDriver.state.lines = [line(2, "output after loss of operate")];
+  const before = logRequests(requests, revisionId).length;
+  assert.equal(await poll(), 403);
+  assert.equal(await cards.count(), 0);
+  assert.equal(await picker.isVisible(), false);
+  assert.equal(await observation.textContent(), "");
+  assert.match(await status.textContent(), /^Runtime status requires Agent operate/);
+  await pane.getByText("output after loss of operate").waitFor();
+  const fresh = logRequests(requests, revisionId).slice(before);
+  assert.equal(fresh.length, 1);
+  const query = new URL(fresh[0].path, fixture.origin).searchParams;
+  assert.equal(query.has("pod") || query.has("container") || query.has("cursor"), false);
+  const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
+  const denied = statusReads();
+  await page.clock.runFor(20_000);
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), denied);
+});
+
 test("a log reader without operate reads log text in the Logs tab without runtime status", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.restartCount = 1;

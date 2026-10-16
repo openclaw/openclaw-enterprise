@@ -56,7 +56,9 @@ function runtimeErrorText(error, tier, source) {
   if (error.status === 404) {
     return "This version is not available.";
   }
-  return "Runtime status or logs are unavailable. Try again shortly.";
+  return tier === "status"
+    ? "Current runtime status is unavailable. Checking again shortly."
+    : "Runtime status or logs are unavailable. Try again shortly.";
 }
 
 function withRequestId(text, error) {
@@ -370,11 +372,12 @@ export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () 
 
   // Status is denied, but log text has its own grant: offer the log reads anyway.
   function offerLogsWithoutStatus() {
-    if (description !== null) {
+    if (statusDenied) {
       return;
     }
     statusDenied = true;
     description = unobservedDescription();
+    strip.replaceChildren();
     renderPickers();
     if (!logsDenied) {
       firstLogRead = readLogs({ restart: true });
@@ -394,10 +397,11 @@ export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () 
     if (!document.hidden) {
       try {
         const first = description === null;
-        description = await read(base);
+        const observed = await read(base);
         if (!current()) {
           return;
         }
+        description = observed;
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
@@ -411,15 +415,19 @@ export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () 
           context.onExpired();
           return;
         }
-        showStripStatus(withRequestId(runtimeErrorText(error, "status"), error));
-        if (error.status === 403) {
-          offerLogsWithoutStatus();
+        const denied = error.status === 403;
+        const lastObserved = denied ? null : description?.observedAt;
+        let message = runtimeErrorText(error, "status");
+        if (lastObserved) {
+          message = `Showing runtime status last observed ${displayDate(lastObserved)}. ${message}`;
         }
-        // Authorization and support failures do not change on their own.
-        if ([403, 404, 501].includes(error.status)) {
-          if (error.status === 403) {
-            deniedStatusViews.add(statusKey);
-          }
+        showStripStatus(withRequestId(message, error));
+        if (denied) {
+          deniedStatusViews.add(statusKey);
+          offerLogsWithoutStatus();
+          return;
+        }
+        if ([404, 501].includes(error.status)) {
           return;
         }
       }

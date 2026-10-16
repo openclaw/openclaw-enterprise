@@ -3364,6 +3364,27 @@ export const scenarios = {
       "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
     ],
   },
+  runtimeLogsStatusTransition: {
+    group: "Pages/Agent detail",
+    name: "Runtime status refresh and loss of access",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [
+      { suffix: "/runtime", skip: 1, once: true, status: 503, code: "RUNTIME_LOGS_UNAVAILABLE" },
+      // The 503 returns before this rule: skip the initial and recovery reads.
+      { suffix: "/runtime", skip: 2, status: 403, code: "FORBIDDEN" },
+    ],
+    description:
+      "Runtime status starts observed, fails one refresh, recovers, then loses status access while log text remains readable.",
+    steps: [
+      "Reset the story and keep the preview visible. Note the Observed time and runtime card.",
+      "After about 10 seconds, the card remains but is labelled with its original observation time. The message says current runtime status is unavailable, not that log access failed.",
+      "After another 10 seconds, confirm the ordinary Observed label returns. After another 10 seconds, confirm the permission message replaces it and the runtime card disappears.",
+      "After denial, use Refresh logs. Log text remains readable without a Pod picker; the status permission message stays visible. Reset to replay.",
+    ],
+    gap: "Simulated UI transitions only; real IAM changes, audited reads, and backend behavior require integration verification.",
+  },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
     name: "Runtime status after a healthy first deploy",
