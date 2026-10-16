@@ -23370,6 +23370,12 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "expectedGeneration": {
+                    "description": "The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and an `/expectedGeneration` detail, and keeps its content. Omitted, the update replaces whatever generation is current.",
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
                   "secretBindings": {
                     "additionalProperties": {
                       "additionalProperties": false,

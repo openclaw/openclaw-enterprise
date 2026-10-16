@@ -952,7 +952,7 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
   );
 });
 
-test("Refresh and focus restoration retain rows until fresh data arrives", async (t) => {
+test("Refresh reloads and focus restoration retains rows until fresh data arrives", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Background reads", { ready: true });
@@ -976,7 +976,12 @@ test("Refresh and focus restoration retain rows until fresh data arrives", async
       }, trigger);
     }
     await pending.waitForRelease();
-    await expectHeldPage(page, "Existing background Agent");
+    if (trigger === "Refresh") {
+      // Refresh rebuilds the page, so a slow one shows loading after 250 ms (finding 1442).
+      await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
+    } else {
+      await expectHeldPage(page, "Existing background Agent");
+    }
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByText(`Added during ${trigger}`, { exact: true }).waitFor();
   }
@@ -1552,6 +1557,41 @@ test("known Backend denial invalidates previews across Namespace selections", as
   await expectNoText(page, /openai-primary/);
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+});
+
+// A member opening Backends was told "…access to this page in this Namespace… or choose
+// another Namespace", with the Namespace selector shown, on an Installation-wide page (finding
+// 1491). The denial now names Backends, and the selector, which cannot change it, is hidden.
+test("a Backends denial names the Installation-wide page and hides the Namespace selector", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Backend member", { ready: true });
+  fixture.policy.restrictions.push({
+    id: "deny-backend-administration",
+    resourceKind: "installation",
+    action: "administer",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/backends?namespace=${namespace.id}`);
+  const denial = page.locator(".state-panel");
+  await denial.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  await denial
+    .getByText(
+      "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
+  // Retry rebuilds the page with the selector still hidden.
+  const oldPanel = await denial.elementHandle();
+  await denial.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.waitForFunction((panel) => !panel.isConnected, oldPanel);
+  await page.locator(".state-panel").getByRole("heading", { name: "Access denied" }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Namespace", exact: true }).count(), 0);
+  // Agents keep the Namespace wording and selector.
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("combobox", { name: "Namespace", exact: true }).waitFor();
 });
 
 test("pagehide clears private content before persisted pageshow revalidates", async (t) => {

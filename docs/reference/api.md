@@ -4456,6 +4456,7 @@ Replace values and increment an exact Namespace-owned Configuration generation
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
+| `expectedGeneration` | `integer` | No | minimum: 1; maximum: 9007199254740991; The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and an `/expectedGeneration` detail, and keeps its content. Omitted, the update replaces whatever generation is current. |
 | `secretBindings` | `object<string, object>` | No | Optional Secret binding map. Keys are destination environment variable names; at most 64 bindings are accepted. Each value must contain `source.kind`, `source.namespaceId`, and `source.id`, and may contain `delivery.type: "env"`. Admission rejects reserved or process-control destinations such as `OPENCLAW_*`, `CODEX_*`, `OPENAI_*`, `ANTHROPIC_*`, `OCC_*`, `KUBERNETES_*`, `PATH`, `HOME`, and proxy variables. Model authentication belongs to Agent.harnessAuth. |
 | `values` | `object<string, SafeJsonValue>` | Yes | A native OpenClaw configuration document. |
 

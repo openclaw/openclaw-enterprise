@@ -17,6 +17,7 @@
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
+    "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
@@ -83,6 +84,7 @@
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-carry.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
@@ -108,6 +110,9 @@
     },
     {
       "path": "tests/conformance/console-api-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-carry.test.mjs"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
@@ -147,6 +152,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
     },
     {
       "path": "tests/conformance/node-enrollment-client.test.mjs"
@@ -341,6 +349,10 @@
     },
     {
       "path": "tests/integration/common-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-entry-cdpath.test.mjs",
+      "expectedTests": ["development wrappers resolve relative paths without changing CDPATH"]
     },
     {
       "path": "tests/integration/dev-up.test.mjs",

@@ -67,6 +67,29 @@ export async function retryKubectlRead(
   }
 }
 
+// A failure diagnostic must not hide the failure it explains (finding 1550): a stalled API
+// server or log stream would hold it until the test's own timeout. Its kubectl reads pass
+// diagnosticRequestTimeout, and the whole diagnostic races diagnosticDeadlineMs; past the
+// deadline the caller gets `timedOut` in place of the diagnostic and reports its failure.
+export const diagnosticRequestTimeout = "--request-timeout=20s";
+export const diagnosticDeadlineMs = 60_000;
+
+export async function withinDiagnosticDeadline(
+  diagnostic,
+  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out" } = {},
+) {
+  const deadline = new AbortController();
+  try {
+    return await Promise.race([
+      diagnostic,
+      delay(timeoutMs, undefined, { signal: deadline.signal }).then(() => timedOut),
+    ]);
+  } finally {
+    // Stops the timer once the diagnostic settles, so it does not hold the event loop.
+    deadline.abort();
+  }
+}
+
 const alreadyCreated = /^Error from server \(AlreadyExists\): /m;
 
 // A second delete of a Namespace that the dropped attempt already started removing.

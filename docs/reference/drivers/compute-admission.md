@@ -93,9 +93,10 @@ and refuses a `request.proxy.url` or model `baseUrl` with a user name or
 password.
 On Kubernetes a reference does not admit a credential header or a non-default
 `request.auth`: model credentials come only from the Agent's Harness
-authentication binding. Deployment runs `validateConfiguration` on the stored
-values before the Configuration Driver validates them, so a stored
-Configuration that predates a rule gets its save message.
+authentication binding. Deployment runs OCC's model provider settings rules
+(`baseUrl`, `api`, the `models` list, header names), then `validateConfiguration`,
+on the stored values before the Configuration Driver validates them, so a stored Configuration that predates a
+rule gets its save message.
 A credential under a header name the rule does not match, in
 `localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.

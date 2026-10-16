@@ -84,8 +84,14 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
-  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 }
 
 export function assertRevisionUrl(page, revisionId) {
@@ -328,3 +334,37 @@ export async function withholdPermissionSummary(page, fixture, namespaceId, agen
     },
   );
 }
+
+// Marks the rendered Agent page and records any loading state it shows again, so a test can
+// tell an in-place update from a page reload.
+export async function watchForReload(page) {
+  await page.evaluate(() => {
+    const doc = globalThis.document;
+    doc.querySelector(".agent-current-summary").dataset.saveMarker = "kept";
+    globalThis.reloadedText = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
+            globalThis.reloadedText.push(node.textContent);
+          }
+        }
+      }
+    }).observe(doc.body, { childList: true, subtree: true });
+  });
+  return () =>
+    page.evaluate(() => ({
+      marker: globalThis.document.querySelector(".agent-current-summary")?.dataset.saveMarker,
+      reloadedText: globalThis.reloadedText,
+    }));
+}
+
+export const focusedText = (page) =>
+  page.evaluate(() => globalThis.document.activeElement?.textContent ?? null);
+
+// The saved status a focused control is described by, so a screen reader names it.
+export const focusedDescription = (page) =>
+  page.evaluate(() => {
+    const id = globalThis.document.activeElement?.getAttribute("aria-describedby");
+    return id ? globalThis.document.getElementById(id)?.textContent : null;
+  });

@@ -382,12 +382,30 @@ func TestAgentSandboxRolloutDiagnosticsBounds(t *testing.T) {
 	}
 }
 func TestAgentSandboxRolloutDiagnosticsCancellation(t *testing.T) {
-	r, state, output, _ := agentSandboxTestRunner(t)
+	r, state, output, directory := agentSandboxTestRunner(t)
 	r.env["OCC_TEST_SANDBOX_ROLLOUT"] = "cancel"
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	// Cancel the blocked rollout itself, after prerequisite subprocesses finish.
+	// Their startup time varies by host and is not the behavior under test.
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			commands, _ := os.ReadFile(filepath.Join(directory, "commands.log"))
+			if bytes.Contains(commands, []byte("kubectl rollout status deployment/agent-sandbox-controller ")) {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 	_, err := r.prepareOpenShell(ctx, state, time.Second)
-	if err == nil || ctx.Err() != context.DeadlineExceeded {
+	if err == nil || ctx.Err() != context.Canceled {
 		t.Fatalf("rollout was not cancelled: %v", err)
 	}
 	if readAgentSandboxRecord(t, output).Deployment.Status != "ok" {

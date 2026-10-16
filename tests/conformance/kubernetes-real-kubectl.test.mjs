@@ -8,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   assertProbeDenied,
+  diagnosticRequestTimeout,
   inlineProbeCommand,
   isTransientKubectlFailure,
   namespaceAlreadyTerminating,
@@ -15,6 +16,7 @@ import {
   probeDenial,
   retryKubectlRead,
   retryKubectlWrite,
+  withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 
@@ -143,6 +145,32 @@ test(
     assert.equal(failures.length, 4);
     assert.deepEqual(sleeps, [500, 1000, 2000]);
     assert.equal(logs.length, 3);
+  },
+);
+
+test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {
+  // Never settles, like a kubectl read on a stalled API server (finding 1550).
+  const stalled = new Promise(() => {});
+  const started = Date.now();
+  assert.equal(
+    await withinDiagnosticDeadline(stalled, { timeoutMs: 50, timedOut: "\nDiagnostic timed out" }),
+    "\nDiagnostic timed out",
+  );
+  assert.ok(Date.now() - started < 2_000);
+  assert.match(diagnosticRequestTimeout, /^--request-timeout=\d+s$/);
+});
+
+test(
+  "a failure diagnostic that settles in time is returned as is",
+  { timeout: 5_000 },
+  async () => {
+    // The default 60 s deadline must not hold the test (or the caller) once the diagnostic settles.
+    assert.equal(await withinDiagnosticDeadline(Promise.resolve("\nWorker: {}")), "\nWorker: {}");
+    const failure = new Error("diagnostic read failed");
+    await assert.rejects(
+      withinDiagnosticDeadline(Promise.reject(failure)),
+      (error) => error === failure,
+    );
   },
 );
 

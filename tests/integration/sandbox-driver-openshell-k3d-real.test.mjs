@@ -2,7 +2,12 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
-import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import {
+  failureSecrets,
+  maskPrivateKeyLines,
+  newestMatchingLogLines,
+  redactLogLine,
+} from "../../scripts/ci/failure-redaction.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -31,6 +36,12 @@ import {
   openShellGatewayName,
   openshellHash as hash,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import {
+  diagnosticDeadlineMs,
+  diagnosticRequestTimeout,
+  retryKubectlRead,
+  withinDiagnosticDeadline,
+} from "../helpers/kubernetes-real.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -156,7 +167,6 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
-  codexSandbox: modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
 });
 const {
   kubectl,
@@ -374,10 +384,9 @@ function nativeCodexConfiguration(gatewayAuth) {
       trustedProxies: gatewayAuth.trustedProxies,
     };
   }
-  configuration.tools = {
-    allow: ["read", "write", "edit", "exec"],
-    fs: { workspaceOnly: true },
-  };
+  // Native Codex tools are one capability; a narrow allowlist disables that surface.
+  // OpenShell supplies the filesystem and network boundaries verified below.
+  configuration.tools = { profile: "full" };
   return configuration;
 }
 
@@ -650,16 +659,35 @@ function summarizeWorkerEvent(event) {
   );
 }
 
-function summarizeWorkerEvents(events, revisionId) {
-  return events
-    .map(summarizeWorkerEvent)
-    .filter(
-      (event) =>
-        event.revisionId === revisionId ||
-        event.event === "worker.completed" ||
-        event.event === "worker.error",
-    )
-    .slice(-40);
+// Identical events collapse into one entry with a count and their first and last receipt
+// times, ordered by last receipt: a namespace.ensure retried every poll (finding 1532) would
+// otherwise fill the list and push the persisted revision and queue state out of the message.
+function summarizeWorkerEvents(events, revisionId, limit = 40) {
+  const collapsed = new Map();
+  for (const event of events) {
+    const summary = summarizeWorkerEvent(event);
+    if (
+      summary.revisionId !== revisionId &&
+      summary.event !== "worker.completed" &&
+      summary.event !== "worker.error"
+    ) {
+      continue;
+    }
+    const key = JSON.stringify(summary);
+    const previous = collapsed.get(key);
+    collapsed.delete(key);
+    collapsed.set(key, {
+      ...summary,
+      count: (previous?.count ?? 0) + 1,
+      firstAt: previous?.firstAt ?? event.observedAt,
+      lastAt: event.observedAt,
+    });
+  }
+  return [...collapsed.values()]
+    .slice(-limit)
+    .map(({ count, firstAt, lastAt, ...summary }) =>
+      count === 1 ? { ...summary, at: lastAt } : { ...summary, count, firstAt, lastAt },
+    );
 }
 
 async function diagnosticQuery(pool, text, values) {
@@ -711,6 +739,8 @@ async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId 
   };
 }
 
+// The reporter keeps 1,000 characters of each output line, so the persisted state comes before
+// the event list. Returns the diagnostic for callers that also put it in a failure message.
 async function writeWorkerCompletionDiagnostics(options) {
   let persisted;
   try {
@@ -718,14 +748,20 @@ async function writeWorkerCompletionDiagnostics(options) {
   } catch (error) {
     persisted = { readError: error?.name ?? "Error" };
   }
+  const diagnostic = {
+    operation: "agent_revision.reconcile",
+    revisionId: options.revisionId,
+    persisted,
+    events: summarizeWorkerEvents(options.events, options.revisionId),
+  };
+  // The reporter cuts the line at 1,000 characters, so the events there run newest first.
   process.stderr.write(
     `OpenShell worker completion diagnostic: ${JSON.stringify({
-      operation: "agent_revision.reconcile",
-      revisionId: options.revisionId,
-      events: summarizeWorkerEvents(options.events, options.revisionId),
-      persisted,
+      ...diagnostic,
+      events: [...diagnostic.events].reverse(),
     })}\n`,
   );
+  return diagnostic;
 }
 
 async function assertWorkerCompleted(options) {
@@ -1703,26 +1739,24 @@ function createIntegrationSandboxDriverFactory(
       });
     }
 
+    // Preserve the real Driver's HOME so Compute and the Harness agree on hook paths.
+    // These configuration and identity methods perform no gateway I/O.
+    const configurationDriver = new OpenShellSandboxDriver(selection.configuration, {
+      id: selection.id,
+      implementation: "openshell",
+      backend: backendFor(undefined),
+    });
     return {
       id: selection.id,
       capability: "sandbox",
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
+      harnessHome: configurationDriver.harnessHome,
       configureAgent(configuration, harness) {
-        // Configuration admission performs no gateway I/O.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).configureAgent(configuration, harness);
+        return configurationDriver.configureAgent(configuration, harness);
       },
       harnessResource(context) {
-        // The bridge provisions through the real Driver, so its Sandbox identity is the same.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).harnessResource(context);
+        return configurationDriver.harnessResource(context);
       },
       async ensureNamespace(context) {
         try {
@@ -2289,7 +2323,8 @@ async function prepareProductionInstallation(
       pollIntervalMs: 50,
       leaseDurationMs: 60_000,
       maxAttempts: 40,
-      emit: (event) => events.push(event),
+      // The receipt time lets a failure diagnostic collapse repeated events into first/last.
+      emit: (event) => events.push({ ...event, observedAt: new Date().toISOString() }),
     });
     await worker.start();
   };
@@ -2499,8 +2534,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
-      "OCC must select Codex isolation from the admitted source login mode.",
+      "danger-full-access",
+      "OpenShell must own isolation for both API-key and PAT sources.",
     );
   } else {
     assert.equal(
@@ -2527,36 +2562,43 @@ async function prepareProductionInstallation(
         GATEWAY_API_KEY: workspaceGateway.apiKey,
       },
     ]);
-    for (const namespace of new Set([placement, gatewayPlacement])) {
-      try {
-        for (const pod of await resources("pods", namespace)) {
-          for (const container of pod.spec.containers) {
-            if (!["agent", "gateway", "supervisor"].includes(container.name)) {
-              continue;
-            }
-            const logs = await kubectl(
-              "logs",
-              pod.metadata.name,
-              "--namespace",
-              namespace,
-              "--container",
-              container.name,
-              "--tail=80",
-            ).catch(() => "Pod logs unavailable");
-            const lines = logs
-              .split("\n")
-              .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
-              .slice(-12);
-            for (const line of lines) {
-              process.stderr.write(
-                `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
-              );
+    const startupDiagnostic = async () => {
+      for (const namespace of new Set([placement, gatewayPlacement])) {
+        try {
+          for (const pod of await diagnosticResources("pods", namespace)) {
+            for (const container of pod.spec.containers) {
+              if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+                continue;
+              }
+              const logs = await diagnosticKubectl(
+                "logs",
+                pod.metadata.name,
+                "--namespace",
+                namespace,
+                "--container",
+                container.name,
+                "--tail=80",
+              ).catch(() => "Pod logs unavailable");
+              const lines = maskPrivateKeyLines(logs.split("\n"))
+                .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+                .slice(-12);
+              for (const line of lines) {
+                process.stderr.write(
+                  `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+                );
+              }
             }
           }
+        } catch {
+          process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
         }
-      } catch {
-        process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
       }
+      return false;
+    };
+    if (await withinDiagnosticDeadline(startupDiagnostic(), { timedOut: true })) {
+      process.stderr.write(
+        `OpenShell startup Pod diagnostics timed out after ${diagnosticDeadlineMs / 1_000} s\n`,
+      );
     }
     const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
     if (provisioningFailure !== undefined) {
@@ -3169,6 +3211,37 @@ async function registerRefreshSources(request, namespaceId, tokenEcho, keycloak,
   };
 }
 
+// Finding 1533: the client-credentials source read `failed` right after a turn that used its
+// valid token, and the assertion did not say why. OpenShell records a retryable mint failure
+// (token endpoint unreachable, HTTP 429 or 5xx, a lost state write) as `error`, which OCC
+// reports as `failed` with recovery action `retry`, and mints again 60 seconds later. Only
+// that state is waited out, for at most three minutes, and it is logged with its failure code
+// either way. Any other failure fails here with the redacted refresh state in the message.
+const refreshRetryWaitMs = 180_000;
+
+async function readyClientCredentialsRefresh(topology, readRefresh) {
+  const secrets = turnFailureSecrets(topology);
+  const shown = (refresh) => redactLogLine(JSON.stringify(refresh), secrets, 2_000);
+  const retrying = (refresh) => refresh?.state === "failed" && refresh.recoveryAction === "retry";
+  let refresh = await readRefresh();
+  if (retrying(refresh)) {
+    process.stderr.write(
+      `OpenShell integration: client-credentials refresh failed with a retry pending: ${shown(refresh)}.\n`,
+    );
+    const deadline = Date.now() + refreshRetryWaitMs;
+    while (retrying(refresh) && Date.now() < deadline) {
+      await delay(5_000);
+      refresh = await readRefresh();
+    }
+  }
+  assert.equal(
+    refresh?.state,
+    "ready",
+    `the client-credentials source must hold a minted token: ${shown(refresh)}`,
+  );
+  return refresh;
+}
+
 /**
  * The running Codex Harness calls the echo service with each OAuth2 placeholder. The echo
  * verifies Keycloak's signature on whatever token OpenShell substituted. The phase proves:
@@ -3249,8 +3322,9 @@ async function assertRefreshCredentialSources(topology) {
 
   // Without any OCC call, the gateway re-mints before expiry. The same running Harness, with
   // the same placeholder, then presents the new token.
-  const minted = await readRefresh(clientCredentials);
-  assert.equal(minted.state, "ready");
+  const minted = await readyClientCredentialsRefresh(topology, () =>
+    readRefresh(clientCredentials),
+  );
   await waitFor(
     "the gateway to re-mint the client-credentials token on its own",
     async () => {
@@ -4108,66 +4182,183 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
-async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
-  const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
-    (secret) => typeof secret === "string" && secret.length > 0,
+// Each section keeps its newest matching lines within its own budget, so the Harness and
+// OpenShell supervisor lines still fit the 16 KiB failure message after the Gateway's.
+// Workspace-node disconnects (finding 1496) need the node host's close line and the
+// supervisor's connection events, so those sources keep timestamps. Every clip runs after
+// redaction: a value cut in half could no longer be matched by the reporter.
+const turnDiagnosticLineChars = 400;
+const turnDiagnosticErrorChars = 300;
+const turnDiagnosticNoise =
+  /identity scope grant elevated connection identity=occ-workspace-files|authenticated user (?:connected|disconnected) .*user=occ-workspace-files/u;
+
+function turnDiagnosticLines(logs, pattern, budget, secrets) {
+  return newestMatchingLogLines(logs, secrets, {
+    pattern,
+    exclude: turnDiagnosticNoise,
+    budget,
+    lineChars: turnDiagnosticLineChars,
+  });
+}
+
+// Failure diagnostics read with a request timeout, so a stalled API server or log stream
+// cannot hold them (finding 1550). A read retries a dropped transport once: kubectl reports
+// its own request timeout as a transient failure, and each attempt may take the whole timeout.
+function diagnosticKubectl(...args) {
+  return retryKubectlRead(() => kubectl(diagnosticRequestTimeout, ...args), { attempts: 2 });
+}
+
+async function diagnosticResource(kind, name, namespace) {
+  return JSON.parse(
+    await diagnosticKubectl("get", kind, name, "--namespace", namespace, "-o", "json"),
   );
-  const sections = [];
-  for (const source of [
+}
+
+async function diagnosticResources(kind, namespace) {
+  return JSON.parse(await diagnosticKubectl("get", kind, "--namespace", namespace, "-o", "json"))
+    .items;
+}
+
+// The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
+// proof below. Anything other than exactly one match reads no supervisor: another Agent's
+// supervisor in the same namespace is not evidence for this Harness.
+async function openShellSupervisorPod(topology) {
+  if (topology.harnessPod === undefined) {
+    throw new Error("no Harness Pod was found");
+  }
+  const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
+  if (!boundaryPair) {
+    throw new Error("the Harness has no openshell.ai/boundary-pair label");
+  }
+  const supervisors = (await diagnosticResources("pods", topology.placement)).filter(
+    (pod) =>
+      pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
+      pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
+  );
+  if (supervisors.length !== 1) {
+    throw new Error(`${supervisors.length} supervisor Pods match the Harness boundary pair`);
+  }
+  return supervisors[0];
+}
+
+function turnFailureSecrets(topology, gatewayPassword) {
+  return failureSecrets([
+    process.env,
+    {
+      MODEL_CREDENTIAL: modelCredential,
+      GATEWAY_PASSWORD: gatewayPassword,
+      APP_SERVER_TOKEN: topology.appServerToken,
+    },
+  ]);
+}
+
+// `budgets` lets a caller that adds its own sections keep the whole message under 16 KiB.
+// Without a Harness Pod (a replacement that never started one) only the Gateway is read.
+function gatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets) {
+  return withinDiagnosticDeadline(
+    readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
+    { timedOut: `\nGateway turn diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+  );
+}
+
+async function readGatewayTurnFailureDiagnostic(
+  topology,
+  gatewayPassword,
+  { gateway = 5_000, harness = 4_000, supervisor = 4_000 } = {},
+) {
+  const secrets = turnFailureSecrets(topology, gatewayPassword);
+  const missingHarness = new Error("no Harness Pod was found");
+  const unavailable = (label, error) =>
+    `${label} diagnostics unavailable: ${redactLogLine(
+      error?.message ?? String(error),
+      secrets,
+      turnDiagnosticErrorChars,
+    )}`;
+  const sources = [
     {
       label: "Gateway",
       name: topology.gatewayPod.metadata.name,
       namespace: topology.gatewayPlacement,
-      containerArguments: [],
+      logArguments: ["--tail=2000"],
+      budget: gateway,
+      pattern:
+        /error|warn|workspace|model|openai|worker|node|inference|turn|fetch|network|policy|disconnect|close|pair|reload|skill/iu,
     },
-    {
-      label: "Harness",
-      name: topology.harnessPod.metadata.name,
+    topology.harnessPod === undefined
+      ? { label: "Harness", lookupError: missingHarness }
+      : {
+          label: "Harness",
+          name: topology.harnessPod.metadata.name,
+          namespace: topology.placement,
+          logArguments: ["--container", "agent", "--tail=2000", "--timestamps"],
+          budget: harness,
+          pattern:
+            /error|warn|workspace|model|openai|worker|node host|inference|turn|fetch|network|policy|disconnect|close|reconnect|frozen|mediation/iu,
+        },
+  ];
+  try {
+    const pod = await openShellSupervisorPod(topology);
+    sources.push({
+      label: `OpenShell supervisor ${pod.metadata.name}`,
+      name: pod.metadata.name,
       namespace: topology.placement,
-      containerArguments: ["--container", "agent"],
-    },
-  ]) {
+      logArguments: ["--container", "supervisor", "--tail=2000", "--timestamps"],
+      budget: supervisor,
+      // OCSF CONFIG: lines record policy loads and changes, and a DENIED line names the refused
+      // destination with its reason, such as a stale policy generation (finding 1496). Allowed
+      // OCSF lines also carry `[policy:...]`, so the bare word would only add noise.
+      pattern:
+        /error|warn|lost|frozen|recover|reconnect|mediation|connection|disconnect|close|terminat|kill|expire|\bCONFIG:|\bDENIED\b|generation/iu,
+    });
+  } catch (error) {
+    sources.push({ label: "OpenShell supervisor", lookupError: error });
+  }
+  const sections = [];
+  for (const source of sources) {
+    if (source.lookupError !== undefined) {
+      sections.push(unavailable(source.label, source.lookupError));
+      continue;
+    }
     try {
-      let logs = await kubectl(
+      const logs = await diagnosticKubectl(
         "logs",
         source.name,
         "--namespace",
         source.namespace,
-        ...source.containerArguments,
-        "--tail=300",
+        ...source.logArguments,
       );
-      for (const secret of redactions) {
-        logs = logs.replaceAll(secret, "[REDACTED]");
-      }
-      const relevant = logs
-        .split("\n")
-        .filter((line) =>
-          /error|warn|workspace|model|openai|worker|node host|inference|turn|fetch|network|policy/iu.test(
-            line,
-          ),
-        )
-        .slice(-80)
-        .join("\n");
-      sections.push(`${source.label} diagnostics:\n${relevant}`);
+      sections.push(
+        `${source.label} diagnostics:\n${turnDiagnosticLines(logs, source.pattern, source.budget, secrets)}`,
+      );
     } catch (error) {
-      sections.push(`${source.label} diagnostics unavailable: ${error?.message ?? String(error)}`);
+      sections.push(unavailable(source.label, error));
     }
   }
   try {
-    const pod = await resource("pod", topology.harnessPod.metadata.name, topology.placement);
+    if (topology.harnessPod === undefined) {
+      throw missingHarness;
+    }
+    const pod = await diagnosticResource(
+      "pod",
+      topology.harnessPod.metadata.name,
+      topology.placement,
+    );
     const containers = (pod.status?.containerStatuses ?? []).map((status) => ({
       name: status.name,
       state: status.state,
       restartCount: status.restartCount,
     }));
-    sections.push(`Harness Pod: ${JSON.stringify({ phase: pod.status?.phase, containers })}`);
+    // A terminated container's message can hold 4 KB; keep the other sections in the message.
+    sections.push(
+      `Harness Pod: ${redactLogLine(JSON.stringify({ phase: pod.status?.phase, containers }), secrets, 1_000)}`,
+    );
   } catch (error) {
-    sections.push(`Harness Pod status unavailable: ${error?.message ?? String(error)}`);
+    sections.push(unavailable("Harness Pod status", error));
   }
   return `\n${sections.join("\n")}`;
 }
 
-async function requestNativeOpenClawTurns(context, topology) {
+async function requestGatewayTurns(context, topology, harnessId) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -4179,8 +4370,15 @@ async function requestNativeOpenClawTurns(context, topology) {
     openShellGatewayName(topology.agent.id),
   );
   context.after(() => forwarding.stop());
+  const sessionKey = `openshell-gateway-${randomUUID()}`;
+  const nonces = [];
   const requestTurn = async () => {
-    const nonce = `OCC-OPENSHELL-NATIVE-${randomUUID()}`;
+    const nonce = `OCC-OPENSHELL-GATEWAY-${randomUUID()}`;
+    nonces.push(nonce);
+    const prompt =
+      harnessId === "codex"
+        ? `Use the shell exec tool to run exactly printf '%s' '${nonce}'. Reply with its output.`
+        : `Reply with exactly ${nonce}.`;
     let response;
     try {
       response = await fetch(`${forwarding.url}/v1/chat/completions`, {
@@ -4188,36 +4386,86 @@ async function requestNativeOpenClawTurns(context, topology) {
         headers: {
           authorization: `Bearer ${gatewayPassword}`,
           "content-type": "application/json",
-          "x-openclaw-session-key": `openshell-native-${randomUUID()}`,
+          "x-openclaw-session-key":
+            harnessId === "codex" ? sessionKey : `openshell-native-${randomUUID()}`,
         },
         body: JSON.stringify({
           model: "openclaw/default",
           stream: false,
-          messages: [{ role: "user", content: `Reply with exactly ${nonce}.` }],
+          messages: [{ role: "user", content: prompt }],
         }),
         signal: AbortSignal.timeout(180_000),
       });
     } catch (error) {
-      const diagnostic = await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
       assert.fail(
-        `Native OpenClaw turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
+        `Agent Gateway turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
       );
     }
     const body = await response.text();
     assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
-      response.status === 200
-        ? ""
-        : await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
     assert.equal(response.status, 200, `${body}${failureDiagnostic}`);
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 
-  // The first session's retained worker keeps its slot after the turn. A second session therefore
-  // proves that the same AgentRevision Sandbox admits more than one session-owned worker.
+  // Codex reuses the Gateway session to cover the bridge's next-turn policy. Native
+  // OpenClaw uses distinct sessions to exercise its multiple retained worker slots.
   await requestTurn();
   await requestTurn();
+  if (harnessId === "codex") {
+    // Inspect native, durable command records, not the model's claim that it ran printf.
+    // The HTTP requests above must pass through the regular OpenClaw bridge.
+    const claims = new Set(
+      topology.harnessPod.spec.volumes
+        .filter(({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName)
+        .map(({ name }) => name),
+    );
+    const roots = topology.harnessPod.spec.containers
+      .find(({ name }) => name === "agent")
+      .volumeMounts.filter(({ name }) => claims.has(name))
+      .map(({ mountPath }) => mountPath);
+    await waitFor(
+      "successful native shell commands for both Gateway turns",
+      async () => {
+        const rollouts = await readHarnessFiles(topology.placement, topology.harnessPod, roots);
+        // Both commands must complete in order in one native thread, not two fresh rollouts.
+        return (
+          rollouts.some(({ path, content }) => {
+            if (!path.endsWith(".jsonl")) {
+              return false;
+            }
+            let next = 0;
+            // The writer may still be flushing its last record after the HTTP response.
+            const lines = content.toString("utf8").split("\n").slice(0, -1).filter(Boolean);
+            for (const line of lines) {
+              const { type, payload } = JSON.parse(line);
+              if (type !== "event_msg" || payload.type !== "item_completed") {
+                continue;
+              }
+              const command = payload.item;
+              const nonce = nonces[next];
+              if (
+                command.type === "CommandExecution" &&
+                command.command.join(" ").includes(nonce) &&
+                command.exit_code === 0 &&
+                command.aggregated_output?.trim() === nonce
+              ) {
+                next += 1;
+                if (next === nonces.length) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          }) || undefined
+        );
+      },
+      30_000,
+    );
+  }
 }
 
 async function assertNativeOpenClawWorkspaceFiles(topology) {
@@ -4311,6 +4559,13 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     "/sandbox/enterprise",
     "the Agent Gateway must receive the OpenShell provider workspace contract.",
   );
+  assert.equal(
+    topology.gatewayPod.spec.containers
+      .flatMap(({ env = [] }) => env)
+      .find(({ name }) => name === "OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE")?.value,
+    ":danger-full-access",
+    "OpenShell must explicitly select the native Codex permission profile.",
+  );
   const providerWorkspace = providerWorkspaceVariable.value;
   const harnessWorkspaceVariable = topology.harnessPod.spec.containers
     .flatMap(({ env = [] }) => env)
@@ -4332,7 +4587,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   // references the same opaque auth file without reusing cached cloud configuration.
   const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
   const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
-  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
+  // Forced deletion requests native approval even in full-access mode. Use non-forced
+  // cleanup of this fresh probe directory so the command reaches the OpenShell boundary.
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -r -- "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -4384,6 +4641,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.ok(escapedCommand, "the real Codex Harness must attempt escaping its workspace.");
   assert.ok(approvedCommand, "the real Codex Harness must execute the approved curl command.");
   assert.ok(deniedCommand, "the real Codex Harness must execute the denied curl command.");
+  // A declined escalation alone is not evidence of an OS-level denial: require executed commands.
+  for (const command of [readonlyCommand, escapedCommand, deniedCommand]) {
+    assert.ok(Number.isSafeInteger(command.exitCode), "the denied command must have executed.");
+  }
   assert.equal(workspaceCommand.exitCode, 0, "OpenShell must allow approved workspace writes.");
   assert.equal(approvedPathCommand.exitCode, 0, "OpenShell must allow projected config reads.");
   assert.notEqual(
@@ -4399,15 +4660,34 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       deniedConfigRequest,
       "the real Codex binary must attempt the unapproved backend path.",
     );
+    assert.ok(
+      Number.isSafeInteger(deniedConfigRequest.exitCode),
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${result.items.some(
+        ({ method, params }) =>
+          method === "item/commandExecution/requestApproval" &&
+          params?.itemId === deniedConfigRequest.id,
+      )}).`,
+    );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // The network supervisor runs outside the workload Pod. Match its boundary pair
+    // so this proof reads only the audit events for the Harness that executed the probe.
+    const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
+    assert.ok(boundaryPair, "the Harness must identify its OpenShell boundary pair.");
+    const supervisors = (await resources("pods", topology.placement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
+        pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
+    );
+    assert.equal(supervisors.length, 1, "the Harness must have exactly one network supervisor.");
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
-    // must record its L7 denial of this exact native-Codex request.
+    // must record its L7 denial of this exact native-Codex request. Unmatched paths
+    // use the relay reason, not the generic HTTP policy-denial response text.
     await waitFor(
       "OpenShell denial of an unrelated Codex backend path",
       async () => {
         const logs = await kubectl(
           "logs",
-          topology.harnessPod.metadata.name,
+          supervisors[0].metadata.name,
           "--namespace",
           topology.placement,
           "--all-containers=true",
@@ -4418,7 +4698,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           .some(
             (line) =>
               line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
-              line.includes("not permitted by policy"),
+              line.includes("reason=no L7 endpoint path matched request"),
           );
       },
       30_000,
@@ -4796,7 +5076,7 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
   const agentId = topology.agent.id;
   const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(current.status, 200, JSON.stringify(current.error));
-  await waitForProviderHarnessPod(topology.placement, {
+  const harnessPod = await waitForProviderHarnessPod(topology.placement, {
     id: current.data.activeRevisionId,
     agentId,
   });
@@ -4808,15 +5088,18 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
   const eventsBefore = (await untrustedTls.events()).length;
   let rejected = false;
   let observation;
+  let rejection;
+  let gatewayPod;
   let failure;
   try {
     await setModelProviderDns(topology, untrustedTls.address);
     const nonce = `OCC-OPENSHELL-UNTRUSTED-${randomUUID()}`;
     try {
+      gatewayPod = await currentGatewayPod(topology);
       observation = JSON.stringify(
         await requestCodexTurnFromGatewayPod({
           namespace: topology.gatewayPlacement,
-          gatewayPod: await currentGatewayPod(topology),
+          gatewayPod,
           providerModel,
           prompt: `Reply with exactly ${nonce}.`,
         }),
@@ -4824,6 +5107,10 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
     } catch (error) {
       rejected = true;
       observation = error instanceof Error ? error.message : String(error);
+      // The kubectl error message starts with the whole probe script; its stderr says why.
+      if (typeof error?.stderr === "string") {
+        rejection = error.stderr.trim() || "kubectl returned no stderr; probe command omitted.";
+      }
     }
   } catch (error) {
     failure = error;
@@ -4856,9 +5143,141 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
     "a refused model route must not expose the model key",
   );
   assert.equal(rejected, true, "a model turn must not complete through an untrusted upstream.");
-  assert.ok(observed.tlsFailures > 0, "OpenShell must attempt and refuse the upstream handshake.");
-  assert.equal(observed.handshakes, 0, "no upstream handshake may complete.");
-  assert.equal(observed.requests, 0, "no model request, or key, may reach the upstream.");
+  const refused = observed.tlsFailures > 0 && observed.handshakes === 0 && observed.requests === 0;
+  const detail = refused
+    ? ""
+    : await untrustedUpstreamFailureDetail(topology, {
+        harnessPod,
+        gatewayPod,
+        observed,
+        text: rejection ?? observation,
+      });
+  assert.ok(
+    observed.tlsFailures > 0,
+    `OpenShell must attempt and refuse the upstream handshake.${detail}`,
+  );
+  assert.equal(observed.handshakes, 0, `no upstream handshake may complete.${detail}`);
+  assert.equal(observed.requests, 0, `no model request, or key, may reach the upstream.${detail}`);
+}
+
+// Finding 1507: a turn refused with no upstream event failed before OpenShell tried the
+// untrusted upstream (the DNS override unseen, or the Gateway failing first as in 1496).
+// The turn's text is redacted before it is cut, and stays small enough that the Gateway,
+// Harness and supervisor sections still fit the 16 KiB failure message.
+const untrustedTurnObservationChars = 1_000;
+
+// A failure diagnostic redacts the Gateway password when it can read it, and runs without it.
+async function diagnosticGatewayPassword(topology) {
+  const passwordSecret = await diagnosticResource(
+    "secret",
+    `gateway-password-${hash(topology.agent.id)}`,
+    topology.gatewayPlacement,
+  ).catch(() => undefined);
+  const encodedPassword = passwordSecret?.data?.["gateway-password"];
+  return encodedPassword === undefined
+    ? undefined
+    : Buffer.from(encodedPassword, "base64").toString();
+}
+
+async function untrustedUpstreamFailureDetail(
+  topology,
+  { harnessPod, gatewayPod, observed, text },
+) {
+  const gatewayPassword = await diagnosticGatewayPassword(topology);
+  const secrets = turnFailureSecrets(topology, gatewayPassword);
+  const shown = redactLogLine(String(text), secrets, untrustedTurnObservationChars);
+  const detail = `\nTurn observation: ${shown}`;
+  if (observed.tlsFailures !== 0 || observed.handshakes !== 0 || observed.requests !== 0) {
+    return detail;
+  }
+  if (gatewayPod === undefined) {
+    // The turn never ran: finding no running Gateway Pod counted as the refusal.
+    return `${detail}\nNo running Agent Gateway Pod was found for the turn.`;
+  }
+  // The diagnostic reads the replacement's Harness and the Gateway Pod that ran the turn.
+  const diagnostic = await gatewayTurnFailureDiagnostic(
+    { ...topology, harnessPod, gatewayPod: { metadata: { name: gatewayPod } } },
+    gatewayPassword,
+  );
+  return `${detail}${diagnostic}`;
+}
+
+// Finding 1532: the replacement never became active and the worker diagnostic alone could not
+// say why. The message carries the persisted revision and queue state with the collapsed
+// worker events, which Harness and Gateway Pods the replacement has, and the turn diagnostic's
+// Gateway, Harness and supervisor sections for them. Budgets keep it under 16 KiB. The clip
+// keeps the start, so the events there run newest first.
+const replacementWorkerChars = 2_500;
+const replacementPodsChars = 600;
+
+async function replacementActivationDiagnostic(topology, revision, worker) {
+  const gatewayPassword = await diagnosticGatewayPassword(topology);
+  const secrets = turnFailureSecrets(topology, gatewayPassword);
+  const sections = [
+    `Worker: ${redactLogLine(
+      JSON.stringify({ ...worker, events: [...(worker?.events ?? [])].reverse() }),
+      secrets,
+      replacementWorkerChars,
+    )}`,
+  ];
+  // Prefer the newest Pod that is not terminating; a rolling Gateway may have only that one.
+  const newest = (pods) => {
+    const byAge = [...pods].sort((a, b) =>
+      String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
+    );
+    return byAge.find(({ metadata }) => metadata.deletionTimestamp === undefined) ?? byAge[0];
+  };
+  const describe = (pod) => ({
+    name: pod.metadata.name,
+    phase: pod.status?.phase,
+    deleting: pod.metadata.deletionTimestamp !== undefined,
+    ready: pod.status?.conditions?.find(({ type }) => type === "Ready")?.status,
+  });
+  let harnessPod;
+  let gatewayPod;
+  try {
+    const agentPods = (await diagnosticResources("pods", topology.placement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === revision.agentId &&
+        pod.metadata.labels?.["openclaw.dev/revision"] === revision.id,
+    );
+    const gatewayPods = (await diagnosticResources("pods", topology.gatewayPlacement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === revision.agentId,
+    );
+    harnessPod = newest(agentPods);
+    gatewayPod = newest(gatewayPods);
+    sections.push(
+      `Replacement Pods: ${redactLogLine(
+        JSON.stringify({
+          harness: agentPods.map(describe),
+          gateway: gatewayPods.map(describe),
+        }),
+        secrets,
+        replacementPodsChars,
+      )}`,
+    );
+  } catch (error) {
+    sections.push(
+      `Replacement Pods unavailable: ${redactLogLine(
+        error?.message ?? String(error),
+        secrets,
+        turnDiagnosticErrorChars,
+      )}`,
+    );
+  }
+  if (gatewayPod === undefined) {
+    sections.push("No Agent Gateway Pod was found for the replacement.");
+    return `\n${sections.join("\n")}`;
+  }
+  const diagnostic = await gatewayTurnFailureDiagnostic(
+    { ...topology, harnessPod, gatewayPod },
+    gatewayPassword,
+    { gateway: 4_000, harness: 3_000, supervisor: 4_000 },
+  );
+  return `\n${sections.join("\n")}${diagnostic}`;
 }
 
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {
@@ -4908,8 +5327,21 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
       return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
     });
   } catch (error) {
-    await topology.diagnoseRevision(redeployed.data.id);
-    throw error;
+    const worker = await topology.diagnoseRevision(redeployed.data.id);
+    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
+    const detail = await withinDiagnosticDeadline(
+      replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
+        (diagnosticError) =>
+          `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+      ),
+      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+    );
+    // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
+    if (error instanceof Error) {
+      error.message = `${error.message}${detail}`;
+      throw error;
+    }
+    assert.fail(`${String(error)}${detail}`);
   }
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
@@ -5096,7 +5528,7 @@ test(
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );
-          await requestNativeOpenClawTurns(context, topology);
+          await requestGatewayTurns(context, topology, "openclaw");
           await assertEmbeddedOpenShellFailsClosed(topology);
         }
         return;
@@ -5137,19 +5569,11 @@ test(
         );
       }
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting authenticated real in-Sandbox model turn.\n",
+        "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
       );
-      const nonce = `OCC-OPENSHELL-${randomUUID()}`;
-      const modelTurn = await requestCodexTurnFromGatewayPod({
-        namespace: topology.gatewayPlacement,
-        gatewayPod: topology.gatewayPod.metadata.name,
-        providerModel,
-        prompt: `Reply with exactly ${nonce}.`,
-      });
-      assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(modelCredential), false);
+      await requestGatewayTurns(context, topology, "codex");
       process.stderr.write(
-        "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
+        "OpenShell integration: regular Gateway shell turns passed; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
       process.stderr.write(

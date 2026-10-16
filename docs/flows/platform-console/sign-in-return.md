@@ -39,8 +39,10 @@ graph TD
 
 `apps/controller/src/console/console.mjs:showLogin`, `loadPage`
 
-On a cold visit, `loadPage` leaves an empty status region while checking the
-session. It announces “Checking session…” only if still pending after 300 ms.
+On a cold visit, the shell's static “Loading OpenClaw Enterprise…” status paints
+before any script runs; CSS shows it only after 400 ms, so a fast load never
+flashes it. `loadPage` takes that status over in place while checking the session
+and announces “Checking session…” only if still pending after 400 ms.
 The result can render immediately: sign-in for a missing session, the console
 for a confirmed session, or a retry if the check failed.
 
@@ -68,7 +70,7 @@ in the console root fragment. `loadPage` removes the fragment before sign-in and
 retains it across a failed session check, and resolves it only after session
 confirmation with `GET /native-admin/return/:key`.
 A valid authorized response routes to ordinary Agent detail; failed or malformed
-responses open Agents. The [native Agent host](../agent-native-admin.md) redirects
+responses open Agents, and a failed lookup says so once. The [native Agent host](../agent-native-admin.md) redirects
 a qualifying chat navigation here. Opening native chat still requires a separate user action.
 `authError=<provider>` shows a generic, one-time error; with `authError=github`, an
 `authReason` of `membership` or `membership-unavailable` explains a GitHub

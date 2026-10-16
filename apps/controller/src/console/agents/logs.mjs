@@ -6,10 +6,20 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The longest the Logs view keeps its strip and output back for their first reads.
+const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this page session instead of re-asking every poll
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();
 const deniedStatusViews = new Set();
+// Denials are per signed-in operator: another user signing in on this tab asks again.
+const logViewKey = (context, agentId) =>
+  JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
+
+/** Whether this page session already saw the Agent's log text read denied. */
+export function logTextDenied(context, agentId) {
+  return deniedLogViews.has(logViewKey(context, agentId));
+}
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
 function runtimeErrorText(error, tier, source) {
@@ -79,23 +89,58 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
-export function renderAgentLogs(context, { agent, revisionId }) {
+export function renderAgentLogs(
+  context,
+  { agent, revisionId, shown = Promise.resolve(), onLogsDenied = () => {} },
+) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
-  // Denials are per signed-in operator: another user signing in on this tab asks again.
-  const deniedKey = JSON.stringify([context.operatorId ?? null, context.namespaceId, agent.id]);
+  const deniedKey = logViewKey(context, agent.id);
   const statusKey = JSON.stringify([
     context.operatorId ?? null,
     context.namespaceId,
     agent.id,
     revisionId,
   ]);
-  const section = element("section", { className: "agent-logs" });
+  // The status strip fills from the first status read and can be taller than a phone screen.
+  // Until that read and the first log page settle (at most FIRST_VIEW_WAIT_MS), the strip and
+  // log viewer stay back, so the view appears in one step instead of the strip pushing the
+  // output down after the page scrolled to it (finding 1413).
+  const section = element("section", { className: "agent-logs agent-logs-pending" });
+  let firstLogRead = null;
+  let markFirstView;
+  const firstView = new Promise((resolve) => {
+    markFirstView = resolve;
+  });
+  function showFirstView() {
+    clearTimeout(firstViewTimer);
+    if (section.classList.contains("agent-logs-pending")) {
+      section.classList.remove("agent-logs-pending");
+      // A hidden pane cannot scroll; open at the newest output as a shown one would. The page
+      // holding the view can still be hidden (an Agent page waits for its overview), so scroll
+      // once it shows. Scrolled to the top, the pane would read as scrolled up and Follow would
+      // stay paused (finding 1536).
+      void shown.then(() => {
+        if (current()) {
+          pane.scrollTop = pane.scrollHeight;
+        }
+      });
+    }
+    markFirstView();
+  }
+  const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
-  const stripStatus = element(
-    "p",
-    { className: "muted", role: "status" },
-    "Loading runtime status…",
-  );
+  // One line: a status region for loading and errors, and the observed time beside it. The
+  // time changes on every 10 s poll, so it sits outside the status region, and aria-live=off
+  // keeps the page view's live region from announcing it; only loading and errors are
+  // announced (finding 1425). The status region stays in the tree, empty when there is
+  // nothing to say, so a later error is announced.
+  const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
+  const stripObserved = element("span", { "aria-live": "off" });
+  const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  function showStripStatus(text) {
+    setText(stripObserved, "");
+    stripStatus.textContent = text;
+  }
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
   const podSelect = element("select", { id: "runtime-log-pod", hidden: true });
   const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod / container");
@@ -239,7 +284,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!description) {
       return;
     }
-    setText(stripStatus, `Observed ${displayDate(description.observedAt)}`);
+    setText(stripStatus, "");
+    setText(stripObserved, `Observed ${displayDate(description.observedAt)}`);
     // The strip is a live region and status polls every 10 s, so rebuild it only on a change.
     replaceChildrenIfChanged(
       strip,
@@ -341,7 +387,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     description = unobservedDescription();
     renderPickers();
     if (!logsDenied) {
-      void readLogs({ restart: true });
+      firstLogRead = readLogs({ restart: true });
     }
   }
 
@@ -351,7 +397,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       return;
     }
     if (deniedStatusViews.has(statusKey)) {
-      stripStatus.textContent = runtimeErrorText({ status: 403 }, "status");
+      showStripStatus(runtimeErrorText({ status: 403 }, "status"));
       offerLogsWithoutStatus();
       return;
     }
@@ -365,7 +411,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
-          void readLogs({ restart: true });
+          firstLogRead = readLogs({ restart: true });
         }
       } catch (error) {
         if (!current()) {
@@ -375,7 +421,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
           context.onExpired();
           return;
         }
-        stripStatus.textContent = withRequestId(runtimeErrorText(error, "status"), error);
+        showStripStatus(withRequestId(runtimeErrorText(error, "status"), error));
         if (error.status === 403) {
           offerLogsWithoutStatus();
         }
@@ -613,6 +659,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         // Never re-poll after a denial; the view needs new grants.
         logsDenied = true;
         deniedLogViews.add(deniedKey);
+        onLogsDenied();
         setFollow(false);
         renderPickers();
       } else if (error.status === 501) {
@@ -654,7 +701,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   section.append(
     element("h3", {}, "Runtime"),
-    stripStatus,
+    stripLine,
     strip,
     element(
       "div",
@@ -729,6 +776,9 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     }
   });
   applyFilters();
-  void loadStatus();
-  return section;
+  void loadStatus()
+    .then(() => firstLogRead)
+    .catch(() => {})
+    .finally(showFirstView);
+  return { section, firstView };
 }

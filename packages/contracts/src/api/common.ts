@@ -607,7 +607,18 @@ export const CreateConfigurationBody = Type.Object(
 );
 
 export const UpdateConfigurationBody = Type.Object(
-  { values: ConfigurationValues, secretBindings: Type.Optional(SecretBindings) },
+  {
+    values: ConfigurationValues,
+    secretBindings: Type.Optional(SecretBindings),
+    expectedGeneration: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description:
+          "The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and an `/expectedGeneration` detail, and keeps its content. Omitted, the update replaces whatever generation is current.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 
