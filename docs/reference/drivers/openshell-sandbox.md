@@ -5,7 +5,7 @@ OpenClaw Harnesses and [Kubernetes Compute](kubernetes-compute.md). OCC owns
 Agents, revisions, Namespaces, routing, credentials, and authorization.
 
 Development supplies plugin-free dedicated Codex with
-[`0.1.4-dev.47+g6a6401b9c`](https://github.com/NVIDIA/OpenShell/tree/6a6401b9c359b66a3202f584a715fc24c13429d6). The paired
+[`v0.1.4`](https://github.com/NVIDIA/OpenShell/tree/v0.1.4). The paired
 [OpenShell Credential Gateway](openshell-credential-gateway.md) delivers the
 model key; a revision-owned provider supplies Codex files and the workspace-node
 credential. Embedded execution is unsupported. These APIs are experimental and
@@ -50,7 +50,7 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy; the pinned release ignores its run-as user and group.               |
+| `process`    | OpenShell process policy; v0.1.4 ignores its run-as user and group.                           |
 
 The Driver sends `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -125,26 +125,26 @@ Do not add a policy for the model endpoint. The credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
 the same host conflicts with it.
 
-Each network policy needs a unique name and a nonempty executable
+Each v0.1.4 network policy needs a unique name and a nonempty executable
 path. `workspace-node-enrollment` is reserved. Optional
 values are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`. The Driver rejects the old `passthrough`
 spelling; use `skip` for uninspected TLS relay.
-`gatewayConfigured` is the only ServiceAccount mode for this Driver; the
+`gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
 and does not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
 Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
 positive `timeoutMs`. Development sets `startupDelayMs` to
-30 seconds because OpenShell exposes its service before the process listens.
+30 seconds because v0.1.4 exposes its service before the process listens.
 
 Install the OpenShell gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator` and a namespace selector
 matching `operatorNamespaceLabels`. In this mode the OpenShell Workspace name
 must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
-`oce-` name with a 15-character digest to stay within OpenShell's
+`oce-` name with a 15-character digest to stay within OpenShell v0.1.4's
 19-character Workspace limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)

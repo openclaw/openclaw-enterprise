@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -11,11 +11,11 @@ last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
 Kubernetes Compute delegates dedicated Harnesses to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
 Agent Secret permission. Codex authenticates Gateway requests through revision-owned
-provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
+files and OpenShell's bearer-passthrough endpoint, replacing the
 Harness Service.
 
-Workspace-node setup exposes a scoped bootstrap token through a revision-owned
-provider file; it remains development-only.
+Development workspace-node setup exposes a scoped bootstrap token through a
+revision-owned provider file.
 
 ## Entry Points
 
@@ -96,8 +96,7 @@ Kubernetes-only. Before state creation, Kubernetes-only rejects API-port
 collisions and records engine, cluster, namespace, port and key destination.
 Both verify the pinned archive, package charts and import digest-pinned
 Gateway/Sandbox/supervisor images.
-`internal/occdev/openshell_assets.go:openShellCharts` normalizes `+` to `_`
-only in Helm `appVersion` labels; chart versions and image digests stay pinned. Kubernetes-only builds or selects controller/runtime images, imports them
+Kubernetes-only builds or selects controller/runtime images, imports them
 with PostgreSQL and resolves in-cluster digests.
 
 Both profiles import OCE images before OpenShell images and workloads, preventing
@@ -194,9 +193,9 @@ selects a named provider and HTTPS Responses transport.
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
 Only dedicated Codex or OpenClaw revisions pinned to this Driver are accepted.
-Kubernetes, filesystem, process and binary-scoped network policy use v0.1
-messages checked against the independent `v0.1.3-pre.2` fixture. `environment`
-preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
+Kubernetes, filesystem, process and binary-scoped network policy use the
+`v0.1.4` wire contract. `environment` preserves opaque
+`OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
 launch. Readiness `timeoutMs` must be a positive safe integer. The Installation
 loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
@@ -356,6 +355,7 @@ ClusterIP and the Agent Gateway must use `ws://*.openshell.localhost:8080/`.
 
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 - 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)

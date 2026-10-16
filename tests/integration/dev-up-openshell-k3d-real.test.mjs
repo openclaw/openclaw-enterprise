@@ -292,7 +292,7 @@ test(
     );
     assert.match(
       releases.find(({ name }) => name === "openshell-gateway")?.chart ?? "",
-      /-0\.1\.4-dev\.47\+g6a6401b9c$/,
+      /-0\.1\.4$/,
       "the default development profile must install the documented OpenShell chart",
     );
     const namespaceList = JSON.parse(

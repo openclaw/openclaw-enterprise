@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	openShellRevision          = "6a6401b9c359b66a3202f584a715fc24c13429d6"
-	openShellVersion           = "0.1.4-dev.47+g6a6401b9c"
-	openShellSourceSHA256      = "e75496cad832538be22f067613d89ef75e4516af99818173f2cfa7f9ea72b688"
+	openShellVersion           = "0.1.4"
+	openShellSourceSHA256      = "e7b80d636456eac7fea05494894f018b170d4c7b3bf89aa769e3f909554013e9"
 	agentSandboxManifestSHA256 = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
-	openShellSourceArchiveURL  = "https://codeload.github.com/NVIDIA/OpenShell/tar.gz/" + openShellRevision
+	openShellSourceArchiveURL  = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL    = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"
 )
 
@@ -57,7 +56,7 @@ func (r *runner) openShellCharts(ctx context.Context, root string) (string, stri
 	if err := os.Mkdir(sourceRoot, 0700); err != nil {
 		return "", "", err
 	}
-	prefix := "OpenShell-" + openShellRevision + "/deploy/helm"
+	prefix := "OpenShell-" + openShellVersion + "/deploy/helm"
 	if err := extractArchiveSubtree(sourceArchive, sourceRoot, prefix); err != nil {
 		return "", "", err
 	}
@@ -65,12 +64,10 @@ func (r *runner) openShellCharts(ctx context.Context, root string) (string, stri
 	if err := os.Mkdir(packageDirectory, 0700); err != nil {
 		return "", "", err
 	}
-	// Upstream charts copy appVersion into Kubernetes labels.
-	appVersion := strings.ReplaceAll(openShellVersion, "+", "_")
 	charts := make([]string, 0, 2)
 	for _, name := range []string{"openshell", "openshell-workspace"} {
 		chartDirectory := filepath.Join(sourceRoot, filepath.FromSlash(prefix), name)
-		output, err := r.output(ctx, "helm", "package", chartDirectory, "--version", openShellVersion, "--app-version", appVersion, "--destination", packageDirectory)
+		output, err := r.output(ctx, "helm", "package", chartDirectory, "--version", openShellVersion, "--app-version", openShellVersion, "--destination", packageDirectory)
 		if err != nil {
 			return "", "", err
 		}

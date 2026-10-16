@@ -1,4 +1,4 @@
-// Minimal OpenShell v0.1.3-pre.2 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.4 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only

@@ -1,16 +1,16 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-15
-last_updated_session: authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63
+updated: 2026-10-16
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Credential source lifecycle Flow
 
 ## Overview
 
-The gateway holds credential values; OCC authorizes their lifecycle and stores
-metadata/references. Admission freezes identity; the worker passes the live
-source to Compute. See [refresh](credential-source-refresh.md) and
+OCC authorizes sources and stores metadata/references; OpenShell holds values.
+Admission freezes identity; workers pass live sources to Compute.
+See [refresh](credential-source-refresh.md) and
 [Sandbox provisioning](openshell-sandbox-provisioning.md).
 
 ## Entry Points
@@ -115,7 +115,7 @@ possible. If concurrent DELETE won, OCC repeats remote cleanup and returns `409`
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
 Device authorization registers an empty source; paired Refresh fences the private
-session. Gateway `withSourceToken` may refresh for an authorized callback. The
+session. `withSourceToken` may refresh during authorized callbacks. The
 [refresh flow](credential-source-refresh.md#device-authorization-and-configuration)
 traces exchange and cancellation.
 
@@ -280,7 +280,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   and endpoint lifecycle. Gateway storage and Compute placement are doubles,
   not runtime proof.
 - `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
-  provider, profile, update, detach, and recheck RPCs against the independent `v0.1.3-pre.2`
+  provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.4`
   wire fixture.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
@@ -315,6 +315,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 ## Changelog
 
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
