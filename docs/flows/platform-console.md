@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-15
-last_updated_session: authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3
+updated: "2026-10-16"
+last_updated_session: "authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b"
 ---
 
 # Platform console request flow
@@ -132,18 +132,9 @@ shown page inert and says **Still checking…** after one second. The Console re
 to 16 views by route, Namespace, and session owner, excluding passwords and discovery
 state. An interrupted return keeps its view; an interrupted Refresh discards it.
 
-`apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
-abort signal through JSON and text body consumption. After headers arrive,
-cancellation retains the signal's reason and socket failures reach the caller's
-interrupted-read recovery. Only JSON syntax failures become invalid-response
-errors; a failed body never causes an automatic replay.
+`apps/controller/src/console/api-client.mjs:createApiClient` keeps its abort signal through JSON/text body reads. Cancellation preserves its reason; socket failures reach interrupted-read recovery. Only JSON syntax failures become invalid-response errors. Failed bodies are never replayed.
 
-Completed views retain DOM, handlers, and draft callbacks. On return, `loadPage`
-checks GET dependencies and user identity. A match remounts the view with expanded
-debug details. Changed data or the first readable Namespace for a view without a
-selection rebuilds it; Refresh always rebuilds.
-Pending or failed reads, password input, and mutations prevent reuse; read-only
-catalog and diagnostic POSTs do not.
+Views retain DOM, handlers and drafts. Return revalidates GET outcomes and user identity. `readSuccess` stores data/pagination signatures; `readFailure` stores HTTP status/code; both omit request IDs. Matching outcomes reactivate; recovery, changed failures or a newly readable Namespace rebuild. Cached tab-local `403` avoids repeated audits until Retry. Admission precedes reuse. Pending/transport/malformed reads, expiry, passwords and mutations prevent reuse. `revalidate: false` skips replay; read-only catalog/diagnostic POSTs preserve views. Refresh rebuilds. Debug disclosures stay expanded.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -154,9 +145,9 @@ discovery, one-use session binding, and requested destination recovery.
 before sign-in/out, even for SDK calls bypassing Better Auth middleware; headerless
 CLI requests remain supported. The browser stores no credentials.
 
-After authentication, `loadPage` reads `GET /namespaces`, preserving URL
-selection or choosing the first ready/readable Namespace. Unreadable IDs stay
-unavailable; selection never becomes an API query selector.
+Authenticated `loadPage` reads `GET /namespaces`, retaining URL selection or the
+first ready/readable Namespace. Unreadable IDs stay unavailable; selection never
+selects API query scope.
 
 `shell.mjs:namespaceSelector` disables and hides choices through session and
 Namespace checks, naming a known selection; retained-view reads do not extend this.
@@ -367,10 +358,14 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 13:04: Combine held-page navigation and first reads with completed read-outcome revalidation. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)
+
 - 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
 - 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
+- 2026-10-15 13:36: Retain pagination metadata and failed-read outcomes together during view revalidation. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
+
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 
@@ -381,5 +376,7 @@ refresh and inspection.
 - 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
 - 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
 - 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
+
+- 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

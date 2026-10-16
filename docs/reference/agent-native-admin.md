@@ -1,12 +1,16 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent gateway; it does not create an OCE-managed configuration editor.
+Assigned people open Gateways with configured OpenClaw permissions. OCE selects assignments; OpenClaw enforces permissions. Files, plugins and provider accounts remain shared.
 
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. The **OpenClaw** card opens the Agent host with the OCE session cookie. OCC resolves the Agent and proxies native HTTP and WebSockets. Installation administrators without access see a Sharing hint and **Refresh access**.
 
 ## Who can open it
 
-Native admin UI is the only Agent chat surface in the console, and it is for exact Agent `administer` holders with a human session (see [Authorization and availability](#authorization-and-availability)). Other people message the Agent through a channel its Configuration sets up, such as [Slack](../guides/integrations/slack.md), or ask someone who can edit that Configuration to let them in. An operator with cluster access can check a real response with [model verification](../guides/operate/model-verification.md) or the [OpenClaw TUI](../guides/deploy/production-tui.md).
+Opening OpenClaw requires a human session, Agent `use` permission and an explicit runtime assignment. OCE `administer` permission controls Agent management separately.
+
+Existing human administrators receive explicit `platform-administrator` assignments when runtime roles are introduced, including effective Installation, Namespace-group and exact-Agent grants. Denied administrators and service identities are excluded. These assignments can be downgraded or removed independently of OCE administration; removal does not restore access through the old administrator grant. Group-derived assignments become individual assignments managed through Sharing.
+
+Kubernetes always offers reserved `platform-administrator` with full native access. Without `gateway.roles`, it retains the shared administrator transport/profile on running Gateways. Configured roles use the person's profile and Driver-owned administrator policy. Other roles need definitions and qualified human transport. The reserved policy cannot be overridden.
 
 Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup rejects enablement (`<Provider> sign-in does not support native administration.`). That profile issues a host-only `__Host-openclaw_occ.session_token` session cookie on HTTPS, which cannot carry the `Domain` attribute that lets Agent hosts read the [shared session](authentication.md#native-admin-shared-sessions).
 
@@ -19,8 +23,9 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 - `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
-- The Agent must be running with an active revision owned by the selected Compute Driver: both Driver ID and implementation must match the revision. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
-- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy admin device auto-approval. The support check rejects token auth, disabled device auth, and host-header origin fallback.
+- The Agent must be running, have an active revision owned by the selected Compute Driver (matching both ID and implementation), and provide the Compute Driver's human-access descriptor for the selected role and active revision.
+- Configured roles require the [verified proxy-role bridge](../../deploy/runtime/README.md); unpatched runtimes reject them. Save `gateway.roles` with a default and named definitions before assignment, then deploy before opening OpenClaw. The built-in administrator needs no bridge without `gateway.roles`. Definitions require canonical native agent IDs and de-duplicated scope/agent arrays; normalization mismatches fail the policy digest check.
+- The native Agent configuration must keep the trusted-proxy `occ-workspace-files` identity with `operator.admin`, enable native `controlUi`, allow the derived Agent origin, and enable trusted-proxy device auto-approval with every scope used by the selected role. The support check rejects token auth, disabled device auth, and host-header origin fallback.
 
 The local Compose-control-plane profile enables this capability only when both
 Kubernetes Compute and OpenShell are selected. Its development proxy terminates
@@ -31,7 +36,7 @@ configuration. Other Compose profiles do not expose this browser endpoint.
 
 ## Authorization and availability
 
-`GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It is a protected OCC API route with a human session, exact Agent `administer` authorization, and exact Agent existence. OCC verifies that authorization boundary before returning any feature status, including `disabled`; Agent `read`, Agent `operate`, native device credentials, native tokens, service keys for unrelated principals, and possession of a derived Agent host do not grant this API route.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` is the console-facing availability check. It requires a human session and exact Agent existence. When the feature is disabled, exact Agent `administer` permission is sufficient; no runtime assignment is required. When enabled, the route requires exact Agent `use` permission and one explicit runtime assignment. Agent `read`, Agent `operate`, native device credentials, native tokens, service API keys, and possession of a derived Agent host do not grant this API route.
 
 The response reports:
 
@@ -45,29 +50,17 @@ The response reports:
 
 A stopped Agent with no active revision returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its active revision. A stopped Agent with a selectable active revision still includes its target fields. If a desired-running Agent has no active revision, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
 
-Changing the selected Compute Driver does not migrate existing revisions. After
-lifecycle and native-configuration checks, OCC compares the selected Driver's ID
-and implementation with the active revision's recorded owner. A mismatch returns
-`503 DEPENDENCY_UNAVAILABLE` from the availability API before endpoint resolution,
-private gateway-key lookup or transport. Agent-host HTTP retains its existing
-`403` refusal. WebSocket admission destroys the client socket without an HTTP
-response, before gateway-key lookup or connection; a mismatch during a WebSocket
-lease closes the connection through the existing failed-lease path. Matching ownership retains
-normal access. Earlier stopped, replacing and unsupported-configuration outcomes
-keep their precedence.
+Changing Compute selection does not migrate revisions. After lifecycle and native-configuration checks, OCC requires the selected Driver ID and implementation to match the active revision. A mismatch returns status `503 DEPENDENCY_UNAVAILABLE` before endpoint, key or transport lookup. Agent-host HTTP returns `403`; WebSocket admission destroys the socket without an HTTP response, and an existing socket closes on its next lease check. Earlier stopped, replacing and unsupported outcomes retain precedence.
 
-The mismatch is not transient, so refreshing does not clear it. Each API process
-logs one `native_admin.compute_owner_mismatch` warning per revision and selected
-Driver, naming both Driver IDs and implementations. To restore access, select the
-revision's Compute Driver again, with the same ID and implementation.
+Refreshing cannot resolve a mismatch. Each API process logs one `native_admin.compute_owner_mismatch` warning per revision and selected Driver, naming both owners. Restore the revision's Driver ID and implementation.
 
-When someone opens a copied `/chat/main` Agent link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+A user-activated top-level HTML navigation to `/chat/main` or `/chat/main/<32-lowercase-hex>` without a valid session gets a `302` to the configured console. Only the opaque Agent host key travels, in a fragment; the chat segment and query are dropped. The response sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer` without checking existence.
 
-The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
+After sign-in, `GET /native-admin/return/<key>` requires exact Agent `use` and a runtime assignment. It returns Namespace and Agent IDs even while stopped; unknown and unauthorized keys both return `404`. Recovery opens Agent detail; launching chat remains separate. Previews, API/WebSocket requests and actual authorization denials retain their refusal behavior.
 
 ## Agent host identity
 
-OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.
+OCC derives an opaque browser host from the Installation, Namespace and Agent IDs and `agentNativeAdmin.domain`. Each Agent has a separate browser origin; never reuse its hostname for another identity.
 
 An Agent URL uses the derived host directly:
 
@@ -75,30 +68,39 @@ An Agent URL uses the derived host directly:
 https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 ```
 
-The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
+Admission resolves the opaque host through platform state. Unknown hosts, wrong suffixes, deleted Agents and ambiguous matches fail closed; no separate registry or cache is needed.
 
-The private upstream base remains the Compute Driver's existing gateway endpoint:
+The Kubernetes human route uses a separate `/people` path:
 
 ```text
-wss://<private-host>/namespaces/<namespaceId>/agents/<agentId>
+wss://<private-host>/people/namespaces/<namespaceId>/agents/<agentId>
 ```
 
 For browser proxying, OCC maps that value to the same authority and Agent path over `https:`. Workspace-file access continues to use the original `wss:` endpoint. Native admin HTTP requests and WebSocket upgrades both pass through the OCC API process before reaching the private gateway. The HTTP proxy blocks native service-worker script requests and appends `worker-src 'none'` to proxied Content Security Policy so Agent content cannot register a browser service worker on the isolated Agent origin.
 
 ## Shared session boundary
 
-The console and Agent hosts share the ordinary OCE session cookie through the configured cookie parent domain. That expands the cookie trust boundary: every host under the console and Agent subdomains that can receive the cookie must be a trusted OCE ingress endpoint. Public Agent hosts route to OCC, not Envoy or tenant gateway Services. OCC strips browser cookies, `Authorization`, API keys, forwarded identity, scope headers, and native `Set-Cookie` before forwarding upstream, so the native gateway never receives the OCE session cookie.
+Every host receiving the shared OCE session cookie must be a trusted OCE ingress endpoint. Public Agent hosts route to OCC, not Envoy or tenant gateway Services. OCC strips browser cookies, `Authorization`, API keys, forwarded identity, scope headers, and native `Set-Cookie` before forwarding upstream, so the native gateway never receives the OCE session cookie.
 
-Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal, pilot disablement, Agent unavailability, or a revision change closes active WebSockets during the authorization lease. Reconnecting uses the same stable Agent host and the current active revision when the shared OCE session, exact Agent permission, and native configuration remain valid.
+Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal, role changes, pilot disablement, Agent unavailability, or a revision change closes active WebSockets during the authorization lease. Reconnecting uses the same stable Agent host and the current active revision when the shared OCE session, exact Agent permission, and native configuration remain valid.
 
 ## Native authority and drift
 
-The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes availability, proxy admission, and socket closure checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
+With configured roles, the native Gateway sees `oce:<Principal ID>`, a stable account identifier verified against the OCE session, and the server-selected role. It finds or creates that native profile and commits the named role before admitting its connection. The proxy also supplies a SHA-256 digest of the role definition; missing roles or changed native definitions reject admission. Browser-supplied identity, role, policy-digest and scope headers are discarded.
 
-Native admin changes affect gateway-local state outside OCE Configurations and
-immutable AgentRevisions. Manage durable configuration through OCE. In the
-Kubernetes pilot, native configuration edits affect a Pod-local copy that resets
-from the managed snapshot when the Pod is recreated or the Agent is redeployed.
+For native authenticated HTTP, creating a profile or changing its role retires the authority captured before acquisition. That request returns `401` before the handler runs; a separate request uses the committed role. OCC never automatically replays an HTTP write. WebSocket admission acquires authority after role publication.
+
+Saved `gateway.roles` defines assignable roles; the active revision defines deployed policy. Compute owns the built-in administrator policy. The exact human/Agent AccessBinding stores `runtimeRole`. Native edits cannot change that assignment: the next admission reapplies it. Profiles linked to multiple OCE people cannot admit them as one person.
+
+`GET /namespaces/:namespaceId/agents/:agentId/runtime-roles` returns Configuration ID/generation, role names and permission summaries, desired runtime state and optional active-revision summaries, including before deployment and while stopped. An Installation administrator creates or changes an assignment using `runtimeRole` and the catalog's `configuration` as `runtimeRoleConfiguration`. Changes use `PATCH /namespaces/:namespaceId/iam/access-bindings/:bindingId/runtime-role`; deletion revokes entry. A stale Configuration ID/generation returns `409`; unknown roles return `400`. Definitions require deployment; roles absent from the active catalog deny entry. Only one assignment per person/Agent is allowed. Groups, services, broad bindings and Installation administration select no native role.
+
+Kubernetes configures `gateway.auth.trustedProxy.managedIdentityPrefixes: ["oce:"]` and `managedIdentities: ["occ-workspace-files"]`. The bridge refuses undeclared identities and profiles with multiple managed identities. Selectors must be nonempty, trimmed lowercase values; role headers require at least one prefix or exact identity. Compute rejects conflicts.
+
+Kubernetes retains the separate `occ-workspace-files` identity with the reserved `oce-service` role for server operations. The role catalog excludes that reserved role. OCE core consumes opaque role names and Compute descriptors; native profile details stay in the runtime and Driver.
+
+The bridge computes its policy digest as SHA-256 of the UTF-8 JSON role definition. It recursively sorts object keys with English locale comparison and preserves array order. The Driver and runtime use the same rules; the digest checks agreement with native policy, while verified proxy authentication establishes authority.
+
+Manage durable configuration through OCE. Native edits change a Pod-local copy outside AgentRevisions; Pod recreation or redeployment restores the managed snapshot.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
 for the opt-in predicate, mounts, and copy lifecycle.
 
@@ -120,8 +122,8 @@ device state, plugins, or other persistent gateway data.
 - Helm rendering fails when `agentNativeAdmin.enabled` is true without `gatewayRouting.enabled`, or with an `auth.baseUrl` that is not HTTPS or whose host is outside `agentNativeAdmin.sharedCookieDomain`.
 - Better Auth setup runs before the native admin checks below and reports its own codes instead: `AUTH_BASE_URL_INVALID` for a malformed or public-suffix shared cookie domain, one that does not contain the public origin's host, or a non-HTTPS public origin with that cookie domain set, and `AUTH_SECRET_INVALID` for an auth secret under 32 characters. A missing `OCC_GATEWAY_API_KEY_PATH` reports `GATEWAY_API_KEY_UNAVAILABLE`.
 - Startup fails with `AGENT_NATIVE_ADMIN_INVALID` when enablement, Agent domain, shared cookie domain, public origin, Better Auth cookie scope, or cookie-secret requirements are invalid.
-- Availability returns `stopped` for a stopped Agent with no active revision; `unavailable` means a desired-running Agent has no active revision yet or a newer revision is replacing it. Dependency outages return `503`. Gateway routing, unsupported native configuration, or a selected Compute Driver without a clean endpoint returns `unsupported` after OCC has an active revision and derived Agent origin.
-- The console hides the panel for disabled and denied states, shows operator-readable stopped, unsupported, or unavailable messages, and opens the returned `url` in a new tab when available.
+- Availability returns `stopped` for a stopped Agent with no active revision; `unavailable` means a desired-running Agent has no active revision yet or a newer revision is replacing it. Dependency outages return `503`. Gateway routing, unsupported native configuration, or a selected Compute Driver without a qualified human-access descriptor or clean endpoint returns `unsupported` after OCC has an active revision and derived Agent origin. Its `reason` distinguishes `ui_configuration`, `role_unavailable`, `device_approval_required` and `transport_unsupported`; these are configuration or Driver limits, not authorization grants.
+- The console hides the panel when disabled or denied to an ordinary user. An Installation administrator denied access sees a Sharing hint and **Refresh access**. Explicit refresh retries the status read; automatic reloads retain the remembered denial. Stopped, unsupported and unavailable states show feedback; available access opens the returned `url` in a new tab.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.
 - Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.
 

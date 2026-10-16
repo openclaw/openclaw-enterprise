@@ -2,11 +2,10 @@
 
 Open **Agents**, then select an Agent. For setup, see
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
-Saved settings don’t establish Agent or Slack connection health.
+Saved settings don’t establish connection health.
 
-The Console can explain why Deploy, Stop, or Delete is unavailable. Reload if your access changes.
-The API checks every request, even when the Console can’t check ahead. Opening a version draft
-doesn’t require Agent update permission; saving and deploying have separate access checks.
+The Console explains unavailable Deploy, Stop, or Delete actions. Reload after access changes.
+The API checks every request. Opening a version draft needs no update permission; saving and deploying have separate checks.
 
 ## Navigation and Agent identity
 
@@ -16,19 +15,17 @@ doesn’t require Agent update permission; saving and deploying have separate ac
 | **Agents** / **← Agents**     | Opens the Agents list in the selected Namespace.                                                                                                                                                                                                                    |
 | **Namespaces**                | Lists the Namespaces you can read.                                                                                                                                                                                                                                  |
 | **Observability**             | Opens the Installation's configured observability dashboard in a new tab. Shown only to Installation administrators, and only when one is configured.                                                                                                               |
-| Agent name                    | Human-readable name of this Agent.                                                                                                                                                                                                                                  |
+| Agent name                    | Agent name.                                                                                                                                                                                                                                                         |
 | **Namespace · name**          | Namespace containing the Agent.                                                                                                                                                                                                                                     |
 | **Refresh**                   | Reloads the Agent page. It does not retry or restart deployment.                                                                                                                                                                                                    |
 | **Selected version**          | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version.                                                                                                                                                                         |
 | **Latest visible deployment** | Newest readable version and its recorded deployment status. **Newer version hidden** means the current version is one you cannot read; ask for read access to new versions.                                                                                         |
 | **Live serving**              | Unverified by this page. **May be offline** means a newer dedicated deployment failed, and the current version was probably stopped for it, or the selected version's own deployment failed (an embedded redeploy selects its version before its gateway is ready). |
 | **Deployment activity**       | Most recent visible version and its persisted deployment status.                                                                                                                                                                                                    |
-| `agt_…`                       | Stable Agent identifier for API calls and support.                                                                                                                                                                                                                  |
+| `agt_…`                       | Agent identifier for API calls and support.                                                                                                                                                                                                                         |
 
 The **Namespace** selector at the top of the page changes your scope; from Agent
-detail it returns to the new Namespace's Agents list. The bottom **OpenClaw
-Enterprise** menu contains **Settings** and **Logout**. Settings displays your
-account; it does not offer configurable settings. Logout ends your console session.
+detail it returns to the new Namespace's Agents list. **OpenClaw Enterprise** offers **Settings** (account details) and **Logout** (ends the session).
 
 ## Follow deployment activity
 
@@ -131,6 +128,7 @@ only on the new version draft; Logs only on a version.
 [repository access](../../reference/console/create-and-deploy.md#create-an-agent).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.
+Returning rechecks reads and refreshes recovered panels.
 
 ### Unreadable saved settings
 
@@ -246,18 +244,23 @@ The console has no chat panel. To give an Agent a task:
 - Message it in a channel its Configuration sets up, such as Slack. The
   [channel settings](channels-and-credentials.md#slack-editor), not OCE grants,
   decide who may mention it.
-- With Agent `administer`, use the [native admin panel](#conditional-native-admin-panel)
+- With Agent `use` and an assigned role, use the [OpenClaw panel](#conditional-native-admin-panel)
   when the Installation enables it. It is unavailable under GitHub, Google, or
   OIDC sign-in.
 - Otherwise ask someone who can edit the Agent's Configuration to let you into
   its channel. An operator with cluster access can check a real response with
   [model verification](../operate/model-verification.md).
 
-## Conditional native admin panel
+<a id="conditional-native-admin-panel"></a>
 
-When enabled by the Installation and permitted for your account, **Gateway
-administration** near the top provides **Refresh access** and **Open admin console**. The latter opens
+## Conditional OpenClaw panel
+
+When enabled by the Installation and permitted for your account, **OpenClaw** near the top
+provides **Refresh access** and **Open OpenClaw**. The latter opens
 the active gateway in a new tab, even while you view a draft or older revision.
+
+Installation administrators without access see a hint: assign your Principal ID
+a role in **Share Agent**, save, then **Refresh access**.
 
 The native UI can change the gateway outside OCE's revision tracking. Use OCE for
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)

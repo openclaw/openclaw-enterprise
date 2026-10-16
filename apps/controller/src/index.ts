@@ -208,6 +208,7 @@ interface RequiredPermission {
     | "directory_lookup"
     | "selected_secret"
     | "iam_binding_target"
+    | "runtime_assignment_target"
     | "provisioning_work"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
@@ -759,6 +760,24 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   }
 
   if (
+    operation.operationId === "updateIAMRuntimeRole" ||
+    operation.operationId === "listAgentRuntimeRoles"
+  ) {
+    return [
+      { action: "administer", resourceKind: "installation", scope: "requested" },
+      { action: "read", resourceKind: "namespace", scope: "requested" },
+      {
+        action: "read",
+        resourceKind: "agent",
+        scope: "requested",
+        ...(operation.operationId === "updateIAMRuntimeRole"
+          ? { condition: "runtime_assignment_target" as const }
+          : {}),
+      },
+    ];
+  }
+
+  if (
     operation.operationId === "listIAMRoles" ||
     operation.operationId === "createIAMRole" ||
     operation.operationId === "getIAMRole" ||
@@ -1060,6 +1079,9 @@ function permissionDescription(
       }
       if (condition === "iam_binding_target") {
         return `Requires ${action} permission on the request body ${name} when the AccessBinding targets that resource kind.`;
+      }
+      if (condition === "runtime_assignment_target") {
+        return `Requires ${action} permission on the ${name} targeted by the AccessBinding.`;
       }
       switch (scope) {
         case "installation":
@@ -2397,6 +2419,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
         mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,

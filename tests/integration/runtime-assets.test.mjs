@@ -140,6 +140,12 @@ packages:
   );
   const provenance = JSON.parse(await readFile(join(output, "provenance.json"), "utf8"));
   assert.equal(
+    provenance.openclawTrustedProxyRolePatchSha256,
+    createHash("sha256")
+      .update(await readFile("deploy/runtime/openclaw-trusted-proxy-role.patch"))
+      .digest("hex"),
+  );
+  assert.equal(
     provenance.runtimeContentsSha256,
     createHash("sha256").update(contents).digest("hex"),
   );

@@ -19801,7 +19801,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
+        "description": "Requires a human session. When native admin UI is disabled, requires exact Agent administer permission without a runtime assignment; when enabled, requires exact Agent use permission and one explicit runtime assignment. Service API keys cannot launch or inspect OpenClaw access.",
         "operationId": "getAgentNativeAdmin",
         "parameters": [
           {
@@ -19831,6 +19831,15 @@
                         "activeRevisionId": { "type": "string" },
                         "host": { "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "reason": {
+                          "enum": [
+                            "ui_configuration",
+                            "role_unavailable",
+                            "device_approval_required",
+                            "transport_unsupported"
+                          ],
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "available",
@@ -19886,10 +19895,10 @@
           }
         },
         "security": [{ "sessionCookie": [] }],
-        "summary": "Resolve native admin UI launch availability for one Agent",
+        "summary": "Resolve OpenClaw launch availability with an assigned runtime role",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "use", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -21857,6 +21866,159 @@
         "summary": "Read observed images and source commits for an Agent's active runtime",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/runtime-roles": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the requested Agent.",
+        "operationId": "listAgentRuntimeRoles",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "activeRevision": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "roles": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "id": { "type": "string" },
+                                  "permissions": { "additionalProperties": {}, "type": "object" }
+                                },
+                                "required": ["id", "permissions"],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            }
+                          },
+                          "required": ["id", "roles"],
+                          "type": "object"
+                        },
+                        "configuration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "generation": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "id": {
+                              "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["id", "generation"],
+                          "type": "object"
+                        },
+                        "desiredRuntimeState": {
+                          "anyOf": [
+                            { "const": "running", "type": "string" },
+                            { "const": "stopped", "type": "string" }
+                          ]
+                        },
+                        "roles": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "type": "string" },
+                              "permissions": { "additionalProperties": {}, "type": "object" }
+                            },
+                            "required": ["id", "permissions"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["configuration", "roles", "desiredRuntimeState"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List configured runtime roles and deployed permission summaries for an Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
           { "action": "read", "resourceKind": "agent", "scope": "requested" }
         ]
       }
@@ -24398,6 +24560,7 @@
                                 ]
                               },
                               "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                              "runtimeRole": { "maxLength": 128, "minLength": 1, "type": "string" },
                               "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                               "subjectKind": {
                                 "anyOf": [
@@ -24518,6 +24681,28 @@
                     ]
                   },
                   "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "runtimeRole": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^\\S(?:.*\\S)?$",
+                    "type": "string"
+                  },
+                  "runtimeRoleConfiguration": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "generation": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "generation"],
+                    "type": "object"
+                  },
                   "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                   "subjectKind": { "const": "identity", "type": "string" }
                 },
@@ -24580,6 +24765,7 @@
                               ]
                             },
                             "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "runtimeRole": { "maxLength": 128, "minLength": 1, "type": "string" },
                             "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                             "subjectKind": {
                               "anyOf": [
@@ -24876,6 +25062,7 @@
                               ]
                             },
                             "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "runtimeRole": { "maxLength": 128, "minLength": 1, "type": "string" },
                             "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
                             "subjectKind": {
                               "anyOf": [
@@ -24961,6 +25148,225 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/iam/access-bindings/{bindingId}/runtime-role": {
+      "patch": {
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the Agent targeted by the AccessBinding.",
+        "operationId": "updateIAMRuntimeRole",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bindingId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "runtimeRole": {
+                    "maxLength": 128,
+                    "minLength": 1,
+                    "pattern": "^\\S(?:.*\\S)?$",
+                    "type": "string"
+                  },
+                  "runtimeRoleConfiguration": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "generation": {
+                        "maximum": 9007199254740991,
+                        "minimum": 1,
+                        "type": "integer"
+                      },
+                      "id": {
+                        "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "type": "string"
+                      }
+                    },
+                    "required": ["id", "generation"],
+                    "type": "object"
+                  }
+                },
+                "required": ["runtimeRole", "runtimeRoleConfiguration"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "subjectKind": {
+                              "anyOf": [
+                                { "const": "identity", "type": "string" },
+                                { "const": "group", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["id", "namespaceId", "subjectKind", "subjectId", "roleId"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "resourceId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "resourceKind": {
+                              "anyOf": [
+                                { "const": "installation", "type": "string" },
+                                { "const": "namespace", "type": "string" },
+                                { "const": "configuration", "type": "string" },
+                                { "const": "preset", "type": "string" },
+                                { "const": "service_account", "type": "string" },
+                                { "const": "secret", "type": "string" },
+                                { "const": "agent", "type": "string" },
+                                { "const": "agent_revision", "type": "string" },
+                                { "const": "credential_source", "type": "string" }
+                              ]
+                            },
+                            "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "runtimeRole": { "maxLength": 128, "minLength": 1, "type": "string" },
+                            "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                            "subjectKind": {
+                              "anyOf": [
+                                { "const": "identity", "type": "string" },
+                                { "const": "group", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "namespaceId",
+                            "subjectKind",
+                            "subjectId",
+                            "roleId",
+                            "resourceKind",
+                            "resourceId"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Change the runtime role on an exact human Agent access grant",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" },
+          { "action": "read", "resourceKind": "namespace", "scope": "requested" },
+          {
+            "action": "read",
+            "condition": "runtime_assignment_target",
+            "resourceKind": "agent",
+            "scope": "requested"
+          }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/iam/roles": {
       "get": {
         "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace.",
@@ -25011,7 +25417,8 @@
                                     { "const": "deploy", "type": "string" },
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
-                                    { "const": "read_logs", "type": "string" }
+                                    { "const": "read_logs", "type": "string" },
+                                    { "const": "use", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -25143,7 +25550,8 @@
                             { "const": "deploy", "type": "string" },
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
-                            { "const": "read_logs", "type": "string" }
+                            { "const": "read_logs", "type": "string" },
+                            { "const": "use", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -25208,7 +25616,8 @@
                                   { "const": "deploy", "type": "string" },
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
-                                  { "const": "read_logs", "type": "string" }
+                                  { "const": "read_logs", "type": "string" },
+                                  { "const": "use", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -25445,7 +25854,8 @@
                                   { "const": "deploy", "type": "string" },
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
-                                  { "const": "read_logs", "type": "string" }
+                                  { "const": "read_logs", "type": "string" },
+                                  { "const": "use", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -28547,7 +28957,7 @@
     },
     "/native-admin/return/{agentKey}": {
       "get": {
-        "description": "Requires a human session with administer permission on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
+        "description": "Requires a human session with use permission and an assigned runtime role on the exact Agent. Unknown and inaccessible Agents both return 404. This lookup does not launch or start the Agent.",
         "operationId": "resolveAgentNativeAdminReturn",
         "parameters": [
           {
@@ -28628,7 +29038,7 @@
         "summary": "Resolve an authorized Agent from a copied native chat link",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
-          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+          { "action": "use", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },

@@ -138,6 +138,7 @@ async function relayToHeldBrowser(t, reply, relayOptions = {}) {
       gatewayBase: `https://localhost:${port}/`,
       agentOrigin,
       apiKey: "relay-test-key",
+      runtimeHeaders: {},
     },
     connectionId: "relay-test",
     lease: async () => undefined,

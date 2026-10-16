@@ -108,11 +108,16 @@ identity headers, or membership in another Namespace do not grant access.
 
 A Permission allows one action on one resource kind. Supported permission
 actions are `create`, `read`, `update`, `delete`, `deploy`, `operate`,
-`administer`, and `read_logs`; not every action has a corresponding public
+`administer`, `read_logs`, and `use`; not every action has a corresponding public
 endpoint yet. `read_logs` on an Agent delegates reading its runtime log text
 without `administer`; fresh bootstrap does not grant it. A scoped Role and
 AccessBinding can grant any action to a human Principal or an Agent-owned
 ServicePrincipal.
+
+Agent runtime entry requires `agent:use` plus one exact direct person/Agent
+runtime assignment. Installation administration and management grants do not
+imply native permissions. See
+[Agent OpenClaw access](agent-native-admin.md#native-authority-and-drift).
 
 Resource kinds currently include `installation`, `namespace`, `configuration`,
 `preset`, `agent`, `agent_revision`, `secret`, `credential_source`, and
@@ -177,6 +182,16 @@ Namespace-scoped binding applies only to its exact Namespace. An exact-resource
 binding additionally identifies the resource kind and ID.
 
 ## Manage Namespace policy
+
+Namespace policy writes require an IAM Driver that declares
+`namespacePolicyTransaction: "platform-unit-of-work"`. Otherwise OCC rejects the
+write before calling the Driver, so a later denial cannot leave an external grant.
+
+Human-session policy mutations retain the assigning session through the transaction.
+Completed revocation prevents a pending write. PostgreSQL validates session expiry
+during COMMIT and rolls back policy and its success audit if the session expired.
+A protected write may finish before logout completes.
+See the [Namespace IAM flow](../flows/namespace-iam-policy.md) for the implementation.
 
 Use `/namespaces/:namespaceId/iam/roles`,
 `/namespaces/:namespaceId/iam/access-bindings`, and

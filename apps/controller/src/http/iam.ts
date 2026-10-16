@@ -1,5 +1,6 @@
 import type {
   AccessBinding,
+  AgentRuntimeRoleCatalog,
   ResourceKind,
   ResourceRef,
   Role,
@@ -18,6 +19,7 @@ function bindingAuditDetails(binding: Readonly<AccessBinding>): Record<string, u
     subjectKind: binding.subjectKind,
     subjectId: binding.subjectId,
     roleId: binding.roleId,
+    ...(binding.runtimeRole === undefined ? {} : { runtimeRole: binding.runtimeRole }),
   };
 }
 
@@ -44,6 +46,7 @@ function clientIAMAccessBinding(binding: Readonly<AccessBinding>): Record<string
     subjectKind: binding.subjectKind,
     subjectId: binding.subjectId,
     roleId: binding.roleId,
+    ...(binding.runtimeRole === undefined ? {} : { runtimeRole: binding.runtimeRole }),
     ...(binding.resourceKind === undefined ? {} : { resourceKind: binding.resourceKind }),
     ...(binding.resourceId === undefined ? {} : { resourceId: binding.resourceId }),
   };
@@ -60,8 +63,17 @@ export const iamHandlers = {
     const roles = await controller.listIAMRoles(context.actorId, namespaceId);
     reply.send({ data: roles.map(clientIAMRole), meta: { requestId: request.id } });
   },
-  async createIAMRole({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-    const role = await controller.transact(async (unit) => {
+  async createIAMRole({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const role = await transactIAM(async (unit) => {
       const created = await controller.createIAMRole(context.actorId, {
         namespaceId,
         ...(body?.name === undefined ? {} : { name: body.name as string }),
@@ -81,8 +93,16 @@ export const iamHandlers = {
     const role = await controller.getIAMRole(context.actorId, namespaceId, params.roleId as string);
     reply.send({ data: clientIAMRole(role), meta: { requestId: request.id } });
   },
-  async deleteIAMRole({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMRole({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMRole(
         context.actorId,
         namespaceId,
@@ -112,13 +132,21 @@ export const iamHandlers = {
     body,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const binding = await controller.transact(async (unit) => {
+    const binding = await transactIAM(async (unit) => {
       const created = await controller.createIAMAccessBinding(context.actorId, {
         namespaceId,
         subjectKind: body?.subjectKind as "identity",
         subjectId: body?.subjectId as string,
         roleId: body?.roleId as string,
+        ...(body?.runtimeRole === undefined ? {} : { runtimeRole: body.runtimeRole as string }),
+        ...(body?.runtimeRoleConfiguration === undefined
+          ? {}
+          : {
+              runtimeRoleConfiguration:
+                body.runtimeRoleConfiguration as AgentRuntimeRoleCatalog["configuration"],
+            }),
         resourceKind: body?.resourceKind as ResourceKind,
         resourceId: body?.resourceId as string,
       });
@@ -128,6 +156,40 @@ export const iamHandlers = {
       return clientIAMAccessBinding(created);
     });
     reply.status(201).send({ data: binding, meta: { requestId: request.id } });
+  },
+  async listAgentRuntimeRoles({ controller, context, request, reply, params, namespaceId }) {
+    const roles = await controller.listAgentRuntimeRoles(
+      context.actorId,
+      namespaceId,
+      params.agentId as string,
+    );
+    reply.send({ data: roles, meta: { requestId: request.id } });
+  },
+  async updateIAMRuntimeRole({
+    controller,
+    context,
+    request,
+    reply,
+    params,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const binding = await transactIAM(async (unit) => {
+      const updated = await controller.updateIAMRuntimeRole(
+        context.actorId,
+        namespaceId,
+        params.bindingId as string,
+        body?.runtimeRole as string,
+        body?.runtimeRoleConfiguration as AgentRuntimeRoleCatalog["configuration"],
+      );
+      await unit.audit.append(
+        mutationEvent(bindingAuditResource(updated, namespaceId), bindingAuditDetails(updated)),
+      );
+      return clientIAMAccessBinding(updated);
+    });
+    reply.send({ data: binding, meta: { requestId: request.id } });
   },
   async getIAMAccessBinding({ controller, context, request, reply, params, namespaceId }) {
     const binding = await controller.getIAMAccessBinding(
@@ -140,8 +202,16 @@ export const iamHandlers = {
       meta: { requestId: request.id },
     });
   },
-  async deleteIAMAccessBinding({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMAccessBinding({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMAccessBinding(
         context.actorId,
         namespaceId,
@@ -167,8 +237,9 @@ export const iamHandlers = {
     reply,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const created = await controller.transact(async (unit) => {
+    const created = await transactIAM(async (unit) => {
       const servicePrincipal = await controller.createIAMServicePrincipal(
         context.actorId,
         namespaceId,

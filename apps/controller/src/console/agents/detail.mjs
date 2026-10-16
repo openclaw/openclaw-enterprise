@@ -5,7 +5,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
-import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { renderRuntimeAccess } from "./runtime-access.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { pluginWarningText, renderAgentPlugins } from "./plugins.mjs";
@@ -1108,7 +1108,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     tabs.append(control);
   }
   detailPane.append(detailHeading, versionEvidence, tabs, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path);
+  const runtimeAccess = renderRuntimeAccess(context, path);
   const recoveryTitle = element("h2");
   const recoveryMessage = element("p");
   const recoveryActions = element("div", { className: "deployment-recovery-actions" });
@@ -1124,7 +1124,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   view.replaceChildren(
     header,
     recovery,
-    nativeAdmin.section,
+    runtimeAccess.section,
     element(
       "div",
       { className: "agent-overview-status" },
@@ -1440,7 +1440,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         }
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
-      nativeAdmin.refresh();
+      runtimeAccess.refresh();
     }
     if (revisionResult) {
       renderOverview(revisionResult, snapshot);
@@ -1757,7 +1757,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
+        void Promise.all([runtimeAccess.ready, failed ? callerPermissionsRead : null]).then(
           revealDetail,
         );
       };

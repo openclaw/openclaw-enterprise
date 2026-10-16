@@ -942,9 +942,10 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   // Leave before the reveal and let its timer pass while the page is away.
   await page.clock.runFor(300);
   await page.goBack();
+  // Back also revalidates the list’s failed deployment read; do not hold that new request.
+  firstRecord.release();
   await page.locator(settledView).getByRole("link", { name: "Revealed Agent" }).waitFor();
   await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS);
-  firstRecord.release();
 
   // Forward rebuilds the page, held again on its record read; it reveals at the bound as on a
   // first visit.

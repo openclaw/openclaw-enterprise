@@ -13,6 +13,7 @@ export function bindPlatformUnitOfWork(
       "getInstallation",
       "createInstallation",
       "holdPrincipalAccount",
+      "holdAuthenticationSession",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",
@@ -121,6 +122,7 @@ export function bindPlatformUnitOfWork(
       "getAccessBinding",
       "listRestrictionsTargeting",
       "createAccessBinding",
+      "updateRuntimeRole",
       "deleteAccessBinding",
       "listServicePrincipals",
       "getServicePrincipal",
