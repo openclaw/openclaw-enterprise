@@ -5119,6 +5119,7 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
 }
 
 async function assertActualPublicGithubRead(topology) {
+  topology.gatewayUrl = await topology.refreshGatewayUrl();
   // Compute admission is private; the public revision response intentionally omits it.
   const { rows } = await topology.observerPool.query(
     `SELECT admitted_spec->'compute'->>'admission' AS admission
