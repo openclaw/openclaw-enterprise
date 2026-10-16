@@ -603,7 +603,7 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     mode: "dedicated",
   });
   assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
-    sandbox: "workspace-write",
+    sandbox: "danger-full-access",
     approvalsReviewer: "user",
   });
   assert.throws(
@@ -617,43 +617,40 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
   );
 });
 
-test("OpenShell selects Codex isolation from the admitted credential source", () => {
+test("OpenShell pins the Codex sandbox and approval reviewer while preserving other app-server settings", () => {
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",
     implementation: "openshell",
     backend: backendFor(workspaceGatewayClient()),
   });
   const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  // API keys preserve outer-only isolation; PAT and unresolved sources retain native policy.
-  for (const loginMode of [undefined, "codex_pat", "api_key"]) {
-    for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
-      const appServer = {
-        mode: "guardian",
-        approvalPolicy: "on-request",
-        sandbox: "read-only",
-        transport: "websocket",
-        url: "${APP_SERVER_URL}",
-        authToken: "${APP_SERVER_TOKEN}",
-        ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
-      };
-      const configuration = {
-        plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
-      };
-      const configured = driver.configureAgent(configuration, harness, loginMode);
-      assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
-        mode: "guardian",
-        approvalPolicy: "on-request",
-        sandbox: loginMode === "api_key" ? "danger-full-access" : "workspace-write",
-        transport: "websocket",
-        url: "${APP_SERVER_URL}",
-        authToken: "${APP_SERVER_TOKEN}",
-        approvalsReviewer: "user",
-      });
-      assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
-      assert.equal(appServer.sandbox, "read-only");
-      // Status reads rerun the hook on stored work, so the pin must be idempotent.
-      assert.deepEqual(driver.configureAgent(configured, harness, loginMode), configured);
-    }
+  for (const approvalsReviewer of [undefined, "auto_review", "guardian_subagent", "user"]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "read-only",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      ...(approvalsReviewer === undefined ? {} : { approvalsReviewer }),
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      transport: "websocket",
+      url: "${APP_SERVER_URL}",
+      authToken: "${APP_SERVER_TOKEN}",
+      approvalsReviewer: "user",
+    });
+    assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
+    assert.equal(appServer.sandbox, "read-only");
+    // Status reads rerun the hook on stored work, so the pin must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
   }
 });
 
@@ -1486,6 +1483,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(await driver.harnessEndpoint({ ...context, revision, requirements }), {
     url: "ws://codex.example.test:8080/",
     workspaceRoot: "/sandbox/custom-workspace",
+    codexPermissionProfile: ":danger-full-access",
   });
 
   assert.equal(requests.length, 1);

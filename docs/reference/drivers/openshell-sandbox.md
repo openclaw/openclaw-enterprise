@@ -176,7 +176,7 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For PAT-backed dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
+For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
 configuration before OCC validates and freezes the revision:
 
 ```json
@@ -187,7 +187,7 @@ configuration before OCC validates and freezes the revision:
         "enabled": true,
         "config": {
           "appServer": {
-            "sandbox": "workspace-write",
+            "sandbox": "danger-full-access",
             "approvalsReviewer": "user"
           }
         }
@@ -197,10 +197,10 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
-API-key sources use `danger-full-access`, with OpenShell providing isolation.
-PAT, OAuth and unresolved sources retain `workspace-write` and native managed policy.
-Both use explicit `user` review. Nested shell execution remains unverified: Codex requires
-bubblewrap user namespaces, which OpenShell blocks.
+OpenShell supplies isolation independently of credential login mode. The bridge
+requests `:danger-full-access` with `user` review, subject to native account policy.
+The Gateway refuses constrained threads before starting a turn. Restricted
+profiles require nested bubblewrap user namespaces, which OpenShell blocks.
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,

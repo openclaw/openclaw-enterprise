@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-14
-last_updated_session: authoring-run/62007ef0-44a1-467c-b24d-a61d42878897
+updated: 2026-10-16
+last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
 ---
 
 # Harness Authentication Binding Flow
@@ -31,7 +31,7 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
-  DA["Refresh Driver completes device login<br/>External implementation required"] -.-> B
+  DA["Refresh Driver completes device login"] -.-> B
   G -->|external ChatGPT| OA["Sandbox supplies placeholder<br/>and account metadata"]
   OA --> J
   R["Operator provisions protected host env"] --> B
@@ -290,6 +290,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 
 - 2026-10-14 21:28: Hold missing externally managed Codex authentication after a Sandbox restart in the accompanying fix. (authoring-run/62007ef0-44a1-467c-b24d-a61d42878897 - d4f744719e6e0b3bcb25f33bc13acf4aa81088ad)
 

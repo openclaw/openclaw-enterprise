@@ -14102,13 +14102,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ? `ws://agent-${suffix}.${required(configuration?.harnessNamespace?.name, "Harness namespace")}.svc:${AGENT_TRANSPORT_PORT}`
                   : `wss://${this.options.executionCluster.harnessRouting.hostname}${this.harnessRoutePath(ownership)}`,
           });
-          if (providerEndpoint !== undefined) {
-            if (providerEndpoint.workspaceRoot !== undefined) {
-              variables.push({
-                name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
-                value: providerEndpoint.workspaceRoot,
-              });
-            }
+          if (providerEndpoint?.codexPermissionProfile !== undefined) {
+            variables.push({
+              name: "OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE",
+              value: providerEndpoint.codexPermissionProfile,
+            });
+          }
+          if (providerEndpoint?.workspaceRoot !== undefined) {
+            variables.push({
+              name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
+              value: providerEndpoint.workspaceRoot,
+            });
           }
         }
         if (configuration?.usesGatewayPasswordEnv === true) {

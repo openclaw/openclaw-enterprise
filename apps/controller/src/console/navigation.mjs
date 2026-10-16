@@ -113,16 +113,19 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     if (isLoggingOut()) {
       return;
     }
-    const current = route().feature;
-    if (feature === "settings" && ["agents", "backends", "namespaces"].includes(current)) {
-      previousCollection = current;
+    const current = route();
+    if (feature === "settings" && ["agents", "backends", "namespaces"].includes(current.feature)) {
+      previousCollection = current.feature;
     }
     history[replace ? "replaceState" : "pushState"](
       { previousCollection },
       "",
       pageUrl(feature, selection),
     );
-    void loadPage({ fromNavigation: true });
+    // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
+    const openingAgent =
+      !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
+    void loadPage({ fromNavigation: true, openingAgent });
   }
 
   return {

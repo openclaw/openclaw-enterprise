@@ -43,16 +43,14 @@ hidden; Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses light appearance and OCC-served fonts. Navigation focuses
-the destination heading when the previous control disappears.
-**Open navigation** opens a mobile drawer; desktop closes it
-and releases page controls.
+The Console uses light appearance and OCC-served fonts. Navigation focuses the
+destination heading; **Open navigation** opens the mobile drawer.
 
-Navigation keeps the shown page inert until session, Namespace access, and the
-destination's first reads pass; only matching returns reappear, showing
-**Still checking…** after 1 s. Refresh always rebuilds. Agent-detail refocus revalidates access without rebuilding, preserving editors, form input, open Slack searches, and the enabled
-header selector. Retained views are scoped to account, session, route, and
-Namespace; sign-out, session changes, exit, or Backend denial clear them.
+Opening an Agent shows its details page immediately. While it loads, **Back to
+Agents** returns to your place. A slow return to a retained page says **Still
+checking…** after one second. Refresh rebuilds; refocusing preserves edits, Slack
+searches, and the Namespace selector. Views belong to one account, session, route,
+and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 The header's **Namespace** selector switches readable scopes on desktop and
 mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers

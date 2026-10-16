@@ -123,11 +123,13 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` starts a request generation with `GET /api/auth/session`. Loads keep the
-shown page inert until admission and reads settle; navigation stays available. Returns
-to retained views and refocus checks show **Still checking…** after 1 s; other loads show loading after
-250 ms. Up to 16 views, keyed by route, Namespace, and session owner, are retained,
-excluding passwords and discovery state; an abandoned return keeps its view.
+`loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
+from the list shows its destination immediately, without Agent data or detail actions.
+**Back to Agents** cancels the read and returns to the list. Other first visits and
+Refresh show loading after 250 ms. A return to a retained view or a refocus keeps the
+shown page inert and says **Still checking…** after one second. The Console retains up
+to 16 views by route, Namespace, and session owner, excluding passwords and discovery
+state. An interrupted return keeps its view; an interrupted Refresh discards it.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
 abort signal through JSON and text body consumption. After headers arrive,

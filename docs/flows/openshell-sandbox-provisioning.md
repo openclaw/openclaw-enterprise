@@ -1,15 +1,14 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-15
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-16
+last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex and native OpenClaw Harnesses to
-OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
+Kubernetes Compute delegates dedicated Harnesses to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
 Agent Secret permission. Codex authenticates Gateway requests through revision-owned
 provider files and OpenShell's bearer-passthrough endpoint, replacing the direct
@@ -101,8 +100,8 @@ Gateway/Sandbox/supervisor images.
 only in Helm `appVersion` labels; chart versions and image digests stay pinned. Kubernetes-only builds or selects controller/runtime images, imports them
 with PostgreSQL and resolves in-cluster digests.
 
-Both import OCE images before OpenShell Sandbox/supervisor images, then install
-workloads, preventing k3s from collecting idle OpenShell images during imports.
+Both profiles import OCE images before OpenShell images and workloads, preventing
+k3s garbage collection from removing idle OpenShell images during imports.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -145,11 +144,11 @@ Development uses the central Gateway.
 endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
 origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
 
-The Driver uses Compute's physical namespace name for the Workspace. It reads
-it, creates it if missing, or rereads after concurrent `ALREADY_EXISTS`.
-Adoption requires its expected name, OCC Namespace ID label, managed-by label
-and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
-15-character digest fits OpenShell's 19-character limit.
+The Workspace uses Compute's physical namespace name (`oce-` plus a 15-character
+digest, within OpenShell's 19-character limit). The Driver reads it, creates it
+if missing, or rereads after concurrent `ALREADY_EXISTS`. Adoption requires the
+expected name, OCC Namespace ID label, managed-by label and active phase;
+conflicts fail Namespace preparation.
 
 ### 2. Derive the provider-owned Harness request
 
@@ -170,10 +169,12 @@ static `CODEX_ACCESS_TOKEN`, retaining account metadata. Codex receives only `AP
 Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
 `config.toml` workload files, removing their ConfigMap environment paths.
 
-OCC supplies admitted login metadata to `OpenShellSandboxDriver.configureAgent`.
-Only API-key sources select `danger-full-access`; PAT, OAuth and unresolved
-sources retain `workspace-write`. All use explicit user review. OpenShell blocks
-nested bubblewrap user namespaces; model readiness does not prove shell execution.
+`OpenShellSandboxDriver.configureAgent` sets full access and user review for all
+login modes. `deploy/runtime/openclaw-codex-full-access-profile.patch` sends the
+endpoint's `:danger-full-access` profile for threads and turns; constrained
+threads fail before a turn. First Agent accepts recorded PAT revisions' frozen
+`workspace-write`; new deployments freeze the current policy.
+OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 PAT bootstrap (`prepareHarnessAuth`;
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
@@ -263,7 +264,7 @@ For Codex, `GetService` must also return the unnamed bearer-passthrough endpoint
 on the admitted port. Workspace `sandbox:write` is the trust boundary because a
 holder can replace the Sandbox.
 
-The Backend reuses endpoint clients and retries failed setup. Cancellation is
+The Backend reuses clients and retries setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads
 remain unbounded. After dispatch, cancellation stops local gRPC; remote mutations
 may continue and require recovery.
@@ -279,7 +280,7 @@ authenticated WebSocket handshake before reading a held-failure document.
 destroys HTTP refusal responses immediately, so unfinished bodies cannot retain
 connections after the probe returns.
 
-Provider files use their reported absolute paths; Gateway failure prevents
+Provider files use reported absolute paths; Gateway failure prevents
 readiness. Revision providers survive uncertain creates; cleanup deletes their
 Sandbox first.
 
@@ -293,18 +294,18 @@ process-group signaling returns `EPERM`.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute verifies revision ownership. With `harnessEndpoint`, it replaces the
-initial fail-closed target with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
-and the owned k3d profile's exact host alias.
-`gatewayConfigurationDocument` sets the dedicated Codex Gateway workspace to
-`/home/node/workspace`. Codex maps that path through `remoteWorkspaceRoot` to the
-admitted Sandbox workspace; the Gateway does not mount Harness storage.
-`apps/controller/src/drivers/compute/kubernetes/index.ts:gatewayNativeHookRelayConfiguration`
-derives private storage from Sandbox `harnessHome`; Compute owns relay URL/auth.
-Egress permits only the provider peer/port; the direct Agent Service stays
-inactive without a Harness route. Preparation preserves the serving predecessor;
-activation resolves the candidate again. Without `harnessEndpoint`, Compute keeps
-its Service/private route and `/home/node/workspace`.
+Compute verifies revision ownership, resolves `harnessEndpoint` and projects
+`APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT` and
+`OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE` into the fail-closed Gateway target.
+The owned k3d profile pins the provider host alias.
+`gatewayConfigurationDocument` keeps Gateway workspace `/home/node/workspace`;
+the bridge maps it to the Sandbox root without mounting Harness storage.
+`gatewayNativeHookRelayConfiguration` derives private storage from
+`harnessHome`; Compute owns relay URL/auth. Egress permits only the provider
+peer/port. The direct Agent Service stays inactive; Compute omits its Harness
+route. Preparation preserves the serving predecessor; activation resolves the
+candidate again. Without `harnessEndpoint`, Compute keeps its Service/private
+route and `/home/node/workspace`.
 
 Compute then waits for the provider-owned Harness Pod and exact workspace node.
 Missing enrollment keeps the revision inactive. The dedicated Harness wrapper
@@ -330,12 +331,9 @@ namespace only after this cleanup succeeds.
 
 ## Debugging and verification
 
-See [OpenShell tests](../testing/openshell.md) for commands and prerequisites.
+See [OpenShell tests](../testing/openshell.md) for prerequisites and proof coverage.
 In Compose, `network.providerHarness.address` must match the `openshell-gateway`
-ClusterIP, the Agent Gateway must use `ws://*.openshell.localhost:8080/`, and its
-direct Service stays inactive. Protected k3d must prove provider files,
-verifier-only authorization, enrollment, model turns, cleanup, containment and
-networking. Native OpenClaw remains verification-only.
+ClusterIP and the Agent Gateway must use `ws://*.openshell.localhost:8080/`.
 
 ## Related docs
 
@@ -351,9 +349,13 @@ networking. Native OpenClaw remains verification-only.
 
 ## Changelog
 
+- 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
+
 - 2026-10-15 23:19: Normalize Helm `appVersion` labels. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 5e5473f0631a4eb17c4497795a4dd850d244de4c)
 
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+
+- 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
 

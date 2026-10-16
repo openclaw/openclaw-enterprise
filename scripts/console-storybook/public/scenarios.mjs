@@ -626,7 +626,7 @@ export const scenarios = {
     name: "Checking session",
     rules: [{ path: "/api/auth/session", hold: true }],
     description:
-      "A cold visit with the session check held. Only the delayed status appears; reload the story to replay it.",
+      "Reload with the entry script throttled: “Loading OpenClaw Enterprise…” appears before it runs, then becomes “Checking session…” in the same place.",
     steps: [
       "Check that neither console navigation nor a sign-in form appears while the session is unknown.",
       "Wait for Session unavailable, then choose Retry to repeat the check.",
@@ -660,10 +660,10 @@ export const scenarios = {
       { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
     ],
     description:
-      "Opening a page that was not loaded before keeps the shown page, inactive, until access and the destination's first reads pass, then swaps once. Loading appears only after 250 ms. Simulated API; no backend proof.",
+      "Open an Agent from the list. The URL and page change together; details appear when access and the Agent read are confirmed. Read times are simulated.",
     steps: [
-      "Wait for Agents, then open Research assistant. Its read takes 150 ms: the list stays shown, inactive, then Agent detail replaces it with no loading panel.",
-      "Return to Agents, then open Documentation assistant. Its read takes 1200 ms: the list stays shown for 250 ms, then Loading appears until Agent detail replaces it.",
+      "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
+      "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
   },
@@ -2715,7 +2715,12 @@ export const scenarios = {
     path: draft,
     actions: [click("Edit Configuration")],
     description:
-      "Edit native JSON on the current draft. Save Configuration persists values; deployment remains a separate action.",
+      "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
+    steps: [
+      "Change a draft setting, then choose Save Configuration.",
+      "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
+      "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
+    ],
   },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
@@ -3278,6 +3283,19 @@ export const scenarios = {
       "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
     ],
     gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
+  },
+  runtimeLogsSlowFirstStatus: {
+    group: "Pages/Agent detail",
+    name: "Open Logs on a phone while runtime status is loading",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    mobile: true,
+    // Let the Console place the reader; a fixture scroll would conceal a jump on entry.
+    scrollToTabs: false,
+    rules: [{ suffix: "/runtime", delayMs: 700, once: true }],
+    description:
+      "Open the direct Logs link at 390 px. The first runtime status takes 700 ms; status and log output appear together instead of moving the output after it appears.",
   },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
@@ -4177,7 +4195,7 @@ export const scenarios = {
       "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
     steps: [
       "Click Save authentication source.",
-      "The refreshed form retains Service Accounts; the request log shows the Agent PATCH followed by exact Secret access creation.",
+      "Look for “Authentication source saved.” Focus stays at Save authentication source; the request log shows the Agent PATCH followed by access for that Secret.",
     ],
   },
   authSecretGrantDenied: {

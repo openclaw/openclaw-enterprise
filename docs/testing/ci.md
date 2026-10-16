@@ -8,21 +8,22 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 
 ## Tests
 
-| Check                             | When it runs               | Blocks merge               | GitHub Actions                                                                                                     |
-| --------------------------------- | -------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                   | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#special-cases) | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [Every PR](#special-cases) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
-| Full Integration                  | Manual                     | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#special-cases) | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                     | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Check                             | When it runs                              | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | ----------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                                  | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases)                | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [PRs; main for OpenShell](#special-cases) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                                    | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#special-cases)                | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                                    | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
 ### Special Cases
 
 - **First Agent Smoke:** skips docs-only and recognized test-only PRs.
-- **QA Matrix Advisory:** skips fork and Dependabot PRs.
+- **QA Matrix Advisory:** skips fork and Dependabot PRs. The complete OpenShell
+  lane also runs on every push to `main`.
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
 Docs-only PRs run static checks in CI; recognized test-only PRs select affected
@@ -57,7 +58,7 @@ Create only environments needed by selected jobs. Full Integration preflight
 requires no required reviewers. Its environments allow protected branches or a
 custom policy containing `main`; `integration-provider-account` instead requires
 exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environment
-must permit trusted PR jobs; Full Integration preflight does not govern it.
+must permit trusted PR jobs and `main` pushes; Full Integration preflight does not govern it.
 
 Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
 dispatch. For the first two, temporarily add the exact reviewed branch to the
@@ -175,7 +176,9 @@ is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
 PR jobs `QA advisory (compose)` and `QA advisory (kubernetes)` run the marked
 scenarios with Codex in both installation modes, subject to [Special Cases](#special-cases).
-New pushes cancel superseded advisory runs. Full Integration's
+New PR pushes cancel superseded advisory runs. Every `main` push starts the complete
+OpenShell lane in its own concurrency group, so later pushes do not cancel it.
+OpenShell remains advisory and does not block merge or publication. Full Integration's
 `Shipped Installation QA Matrix` runs every selected combination.
 
 ```sh
