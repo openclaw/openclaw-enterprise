@@ -77,6 +77,8 @@ Stories reach error states through real controls after loading fixture data.
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
 
+[Gateway people](../../scripts/console-storybook/gateway-people.md).
+
 ## Return navigation
 
 **Return while deployments load** shows the rechecked Agents list first. Watch

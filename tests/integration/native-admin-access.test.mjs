@@ -1276,3 +1276,53 @@ for (const changedField of [undefined, "id", "implementation"]) {
     assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
   });
 }
+
+test("Gateway people HTTP reads require exact Agent administration and omit adapter internals", async (t) => {
+  // The adapter is injected here to isolate HTTP authorization and serialization.
+  // Installed Gateway profile/role behavior is covered by the real-runtime proof.
+  let calls = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["gateway-reader"],
+    gatewayPeopleAccess: {
+      async list() {
+        calls++;
+        return [
+          {
+            id: "profile-alice",
+            displayName: "Alice Team",
+            role: "member",
+            hasAvatar: false,
+            privateIdentity: "must-not-leak",
+          },
+        ];
+      },
+      async avatar() {
+        calls++;
+        return undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Gateway people", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const denied = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  assert.equal((await fixture.request("GET", path, { session: denied })).status, 403);
+  assert.equal(
+    (await fixture.request("GET", path + "/profile-alice/avatar", { session: denied })).status,
+    403,
+  );
+  assert.equal(calls, 0, "unauthorized callers must not contact the Gateway");
+  const people = await fixture.request("GET", path);
+  assert.equal(people.status, 200, JSON.stringify(people.body));
+  assert.deepEqual(people.data.people, [
+    { id: "profile-alice", displayName: "Alice Team", role: "member", hasAvatar: false },
+  ]);
+  assert.equal(people.headers.get("cache-control"), "no-store");
+  assert.equal((await fixture.request("GET", path + "/profile-alice/avatar")).status, 404);
+});

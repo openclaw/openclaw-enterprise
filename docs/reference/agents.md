@@ -53,6 +53,8 @@ affected `field`. Authorization and strict mutation/runtime validation are uncha
 query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
+[Gateway people](agents/gateway-people.md).
+
 ## Deployment status
 
 The `deploymentId` is the admitted AgentRevision ID returned by

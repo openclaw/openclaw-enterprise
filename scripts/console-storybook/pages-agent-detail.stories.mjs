@@ -122,3 +122,11 @@ export const SharingUnknown = { ...story("agentSharingUnknown") };
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
+
+export const GatewayPeople = story("gatewayPeople");
+export const GatewayPeopleEmpty = story("gatewayPeopleEmpty");
+export const GatewayPeopleLoading = story("gatewayPeopleLoading");
+export const GatewayPeopleError = story("gatewayPeopleError");
+export const GatewayPeopleDenied = story("gatewayPeopleDenied");
+export const GatewayPeopleStopped = story("gatewayPeopleStopped");
+export const GatewayPeopleAvatar = story("gatewayPeopleAvatar");

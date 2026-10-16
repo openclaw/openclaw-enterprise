@@ -3454,3 +3454,58 @@ async function holdNextStatusResponse(page, url) {
   );
   return { status: held.promise, release: release.resolve };
 }
+
+test("Gateway people show native roles and recover from a failed refresh", async (t) => {
+  let fail = false;
+  let people = [
+    { id: "profile-alice", displayName: "Alice Team", role: "member", hasAvatar: true },
+    { id: "profile-bob", displayName: "Bob Team", role: "maintainer", hasAvatar: true },
+  ];
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        if (fail) {
+          throw new Error("Gateway unavailable");
+        }
+        return people;
+      },
+      async avatar({ profileId }) {
+        return profileId === "profile-alice"
+          ? {
+              mime: "image/png",
+              bytes: Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMc0AAAAASUVORK5CYII=",
+                "base64",
+              ),
+            }
+          : undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("People roster", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const card = page.getByRole("region", { name: "People" });
+  await card.getByText("Alice Team", { exact: true }).waitFor();
+  assert.equal(await card.getByText("member", { exact: true }).count(), 1);
+  assert.equal(await card.getByText("maintainer", { exact: true }).count(), 1);
+  await page.waitForFunction(() => document.querySelector(".gateway-people img")?.naturalWidth > 0);
+  await card.getByText("BT", { exact: true }).waitFor();
+  // A failed read removes stale results and leaves a working, explicit retry.
+  fail = true;
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card
+    .getByRole("alert")
+    .getByText("Couldn’t load people from the Gateway. Try refreshing.")
+    .waitFor();
+  assert.equal(await card.getByText("Alice Team", { exact: true }).count(), 0);
+  fail = false;
+  people = [];
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card
+    .getByText("No people yet. Profiles appear after someone connects to the Gateway.")
+    .waitFor();
+});

@@ -236,6 +236,8 @@
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
+              "reference/agents/gateway-people",
+              "guides/console/agent-people",
               "reference/agent-plugins",
               "reference/presets"
             ]
@@ -974,6 +976,7 @@
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",
+              "flows/agent-gateway-people",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",
               "flows/production-tui/native-client",

@@ -1286,6 +1286,18 @@ export function installFixture(scenario, evidence) {
           }
           return response(saved, 202);
         }
+        if (suffix === "/gateway/people" && method === "GET") {
+          return response({ people: scenario.gatewayPeople ?? [] });
+        }
+        if (/^\/gateway\/people\/[^/]+\/avatar$/.test(suffix) && method === "GET") {
+          const bytes = Uint8Array.from(
+            atob(
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMc0AAAAASUVORK5CYII=",
+            ),
+            (c) => c.charCodeAt(0),
+          );
+          return new Response(bytes, { headers: { "content-type": "image/png" } });
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",

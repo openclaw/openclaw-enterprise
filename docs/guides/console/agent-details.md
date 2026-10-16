@@ -8,6 +8,8 @@ The Console can explain why Deploy, Stop, or Delete is unavailable. Reload if yo
 The API checks every request, even when the Console can’t check ahead. Opening a version draft
 doesn’t require Agent update permission; saving and deploying have separate access checks.
 
+See [Gateway people](agent-people.md).
+
 ## Navigation and Agent identity
 
 | Component                     | What it does                                                                                                                                                                                                                                                        |

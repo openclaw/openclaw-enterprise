@@ -2871,3 +2871,65 @@ summary:focus-visible {
     grid-column: 1 / -1;
   }
 }
+
+.gateway-people-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.gateway-people-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.gateway-people-count {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+.gateway-people-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 8px 24px;
+}
+.gateway-people-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 0;
+}
+.gateway-person-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 0.75rem;
+  object-fit: cover;
+}
+.gateway-person-name {
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+.gateway-person-role {
+  margin-left: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.gateway-people [role="status"]:empty,
+.gateway-people [role="alert"]:empty {
+  display: none;
+}
