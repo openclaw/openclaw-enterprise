@@ -79,9 +79,11 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
 version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
-health. Completion folds routine details. Pending work, read errors, warnings,
-and cleanup stay visible; a failed deployment links its own Logs and the relevant
-draft settings, even if an older version remains selected. Viewed versions show their own results. Pending activity is reread every
+health. Routine completion folds; pending work, read errors, warnings, and cleanup
+stay visible. Failed deployments link Logs unless denied in this tab, and draft
+settings when `update` is allowed, even with an older selected version. Unreadable
+current versions hide recovery. Viewed versions show their own results.
+Pending activity is reread every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection. **Current observations** requests timestamped

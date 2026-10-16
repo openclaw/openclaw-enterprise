@@ -949,7 +949,19 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await activity.getByText(`${c.failure.code}: ${c.failure.message}`).waitFor();
     assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
     assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 0);
-    await page.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+    if (c.newerHidden) {
+      // The current version is hidden and may be newer, so the failure raises no recovery
+      // (finding 1458).
+      await statusLine
+        .getByText(/cannot tell whether the failed v1 deployment affects it\./)
+        .waitFor();
+      assert.equal(
+        await page.getByRole("region", { name: "Deployment needs attention" }).isVisible(),
+        false,
+      );
+    } else {
+      await page.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+    }
 
     if (c.alsoNeutral) {
       errors.set(c.agent, { ...c.error, code: c.alsoNeutral });

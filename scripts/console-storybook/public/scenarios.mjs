@@ -664,6 +664,7 @@ export const scenarios = {
     steps: [
       "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
       "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
+      "Open Documentation assistant again and switch to another window and back during its read: Loading agent details and Back to Agents stay. Double-click Back to Agents: the list opens once and the console stays.",
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
   },
@@ -3133,7 +3134,7 @@ export const scenarios = {
       "The draft has no Logs tab, but failed v7 activity links directly to v7 Logs. Simulated log access is denied and the visible panel explains the required permission.",
     steps: [
       "Select Open v7 Logs in Deployment activity. Confirm v7 is viewed, the Logs tab is selected and focused, and its panel scrolls into view.",
-      "Check that the log permission error is visible instead of output; use Back to restore the draft.",
+      "Check that the log permission error is visible instead of output. The recovery at the top drops Open v7 Logs and asks someone with log access to check them; use Back to restore the draft.",
     ],
     gap: "The failure and permission denial are simulated UI evidence; they do not establish backend authorization or live log availability.",
   },
@@ -3150,6 +3151,21 @@ export const scenarios = {
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying.",
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
+  },
+  deploymentModelProbeFailedReadOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer cannot edit",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    readOnlyPermissionSummary: true,
+    description:
+      "The same failed model check for a viewer whose permission answer denies Agent update. Recovery offers Open v7 Logs only, not the draft Configuration.",
+    steps: [
+      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",

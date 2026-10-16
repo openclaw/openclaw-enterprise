@@ -125,7 +125,8 @@ stops reads. Missing provenance stays explicit.
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
 from the list shows its destination immediately, without Agent data or detail actions.
-**Back to Agents** cancels the read and returns to the list. Other first visits and
+**Back to Agents** cancels the read and returns to the list; a second press does
+nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A return to a retained view or a refocus keeps the
 shown page inert and says **Still checking…** after one second. The Console retains up
 to 16 views by route, Namespace, and session owner, excluding passwords and discovery

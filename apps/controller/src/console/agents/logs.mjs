@@ -12,6 +12,14 @@ const FIRST_VIEW_WAIT_MS = 2_000;
 // or every time the Logs tab reopens.
 const deniedLogViews = new Set();
 const deniedStatusViews = new Set();
+// Denials are per signed-in operator: another user signing in on this tab asks again.
+const logViewKey = (context, agentId) =>
+  JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
+
+/** Whether this page session already saw the Agent's log text read denied. */
+export function logTextDenied(context, agentId) {
+  return deniedLogViews.has(logViewKey(context, agentId));
+}
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
 function runtimeErrorText(error, tier, source) {
@@ -81,10 +89,9 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
-export function renderAgentLogs(context, { agent, revisionId }) {
+export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () => {} }) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
-  // Denials are per signed-in operator: another user signing in on this tab asks again.
-  const deniedKey = JSON.stringify([context.operatorId ?? null, context.namespaceId, agent.id]);
+  const deniedKey = logViewKey(context, agent.id);
   const statusKey = JSON.stringify([
     context.operatorId ?? null,
     context.namespaceId,
@@ -642,6 +649,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
         // Never re-poll after a denial; the view needs new grants.
         logsDenied = true;
         deniedLogViews.add(deniedKey);
+        onLogsDenied();
         setFollow(false);
         renderPickers();
       } else if (error.status === 501) {
