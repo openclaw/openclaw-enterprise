@@ -4130,23 +4130,24 @@ function turnDiagnosticLines(logs, pattern, budget) {
   return kept.reverse().join("\n");
 }
 
+// The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
+// proof below. Without one, the newest supervisor is named as unmatched.
 async function openShellSupervisorPod(topology) {
-  const sandboxIds = new Set(
-    [
-      topology.harnessPod.metadata.labels?.["openshell.ai/sandbox-id"],
-      topology.sandbox?.metadata?.labels?.["openshell.ai/sandbox-id"],
-    ].filter((id) => typeof id === "string" && id.length > 0),
+  const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
+  const supervisors = (await resources("pods", topology.placement))
+    .filter((pod) => pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor")
+    .sort((a, b) =>
+      String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
+    );
+  const matching = supervisors.find(
+    (pod) =>
+      boundaryPair !== undefined &&
+      pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
   );
-  const supervisors = (await resources("pods", topology.placement)).filter(
-    (pod) => pod.metadata.labels?.["openshell.ai/component"] === "supervisor",
-  );
-  const matching = supervisors.filter((pod) =>
-    sandboxIds.has(pod.metadata.labels?.["openshell.ai/sandbox-id"]),
-  );
-  // Without a matching label, the newest supervisor is the one serving this Harness.
-  return (matching.length > 0 ? matching : supervisors).sort((a, b) =>
-    String(b.metadata.creationTimestamp).localeCompare(String(a.metadata.creationTimestamp)),
-  )[0];
+  if (matching !== undefined) {
+    return { pod: matching, matched: true };
+  }
+  return supervisors[0] === undefined ? undefined : { pod: supervisors[0], matched: false };
 }
 
 async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
@@ -4174,12 +4175,13 @@ async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
     },
   ];
   try {
-    const pod = await openShellSupervisorPod(topology);
-    if (pod === undefined) {
+    const supervisor = await openShellSupervisorPod(topology);
+    if (supervisor === undefined) {
       sources.push({ label: "OpenShell supervisor", unavailable: new Error("no supervisor Pod") });
     } else {
+      const { pod, matched } = supervisor;
       sources.push({
-        label: `OpenShell supervisor ${pod.metadata.name}`,
+        label: `OpenShell supervisor ${pod.metadata.name}${matched ? "" : " (unmatched, newest)"}`,
         name: pod.metadata.name,
         namespace: topology.placement,
         logArguments: ["--container", "supervisor", "--tail=2000", "--timestamps"],
@@ -4224,7 +4226,10 @@ async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
       state: status.state,
       restartCount: status.restartCount,
     }));
-    sections.push(`Harness Pod: ${JSON.stringify({ phase: pod.status?.phase, containers })}`);
+    // A terminated container's message can hold 4 KB; keep the other sections in the message.
+    sections.push(
+      `Harness Pod: ${JSON.stringify({ phase: pod.status?.phase, containers }).slice(0, 1_000)}`,
+    );
   } catch (error) {
     sections.push(`Harness Pod status unavailable: ${error?.message ?? String(error)}`);
   }
