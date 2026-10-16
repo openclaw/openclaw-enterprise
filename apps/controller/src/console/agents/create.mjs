@@ -1346,6 +1346,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       drawerContext: {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
+        operatorId: context.operatorId,
         namespaceId,
         request,
         agentName: () => name.value,

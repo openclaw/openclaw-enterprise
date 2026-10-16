@@ -1,4 +1,4 @@
-import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
+import { button, element, focusSaveOutcome, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import {
   configuredHarnessId,
   createHarnessAuthFields,
@@ -1496,6 +1496,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // older: the page cannot say whether that failure still matters (finding 1458).
     const failureBehindHidden = latestDeploymentStatus === "failed" && currentHidden;
     const failureBehindUnknown = latestDeploymentStatus === "failed" && currentUnknown;
+    // Likewise a succeeded deployment behind an unlisted current version may be older than a
+    // hidden newer one (finding 1485).
+    const successBehindUnknown = latestDeploymentStatus === "succeeded" && currentUnknown;
     const requestedHidden = selected !== currentRevisionId && revisionHidden(selected);
     // Deploying a dedicated Agent stops the previous version's workload before the new
     // one starts, so a failed newer deployment usually leaves nothing serving.
@@ -1549,7 +1552,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentValue.dataset.outcome = outcome;
     }
     const hiddenNotice = requestedHidden || newerHidden || failureBehindHidden;
-    statusLine.hidden = !hiddenNotice && !failureBehindUnknown;
+    statusLine.hidden = !hiddenNotice && !failureBehindUnknown && !successBehindUnknown;
     if (!statusLine.hidden) {
       setText(
         statusLine,
@@ -1565,6 +1568,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             : null,
           failureBehindUnknown
             ? `The current version, ${shortId(currentRevisionId)}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Show older versions to check." : ""}`
+            : null,
+          successBehindUnknown
+            ? `The current version, ${shortId(currentRevisionId)}, is not among the versions listed, so this page cannot tell whether it is newer than v${latest.revision}.${olderCursor ? " Show older versions to check." : ""}`
             : null,
           hiddenNotice ? readAccessHint : null,
         ]
@@ -1609,6 +1615,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
       } else if (selectedFailed) {
         impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.`;
+      }
+      if ((replacementFailed || selectedFailed) && !logsAllowed) {
+        // Without the Logs link this is the reader's only next step (finding 1484).
+        impact += " Ask someone with log access to check the failed version’s logs.";
       }
       setText(recoveryMessage, `${failure} ${impact}`);
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
@@ -2467,7 +2477,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       });
       content.append(logs.section);
       state.loading = false;
-      content.style.minHeight = "";
+      // The pending view is nearly empty: dropping the reserved height here moved Stop and
+      // Delete up under it, and the strip and output pushed them down again 0.6-1.7 s later
+      // (finding 1479). Keep the height until the view shows, in the same frame.
+      void logs.firstView.then(() => {
+        if (mountedTab === state) {
+          content.style.minHeight = "";
+        }
+      });
       // Finish the overview layout and the Logs view's first reads before bringing this
       // version's output into view, so nothing above it grows afterwards (finding 1413).
       await Promise.all([details, revealed, logs.firstView]);
@@ -2550,6 +2567,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         drawerContext: {
           drafts: context.drafts,
           baseline: JSON.stringify([snapshot.id, snapshot.generation]),
+          operatorId: context.operatorId,
           namespaceId,
           request,
           agentName: agent.name,
@@ -2580,8 +2598,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               freshAgent.configurationId !== snapshot.id ||
               freshConfig.generation !== snapshot.generation
             ) {
-              throw new Error(
-                "The saved Configuration changed while you were editing. Close this editor and refresh before saving.",
+              // The section offers Reload draft; reopening the editor kept failing against
+              // the page's old generation until a browser reload (finding 1480).
+              throw Object.assign(
+                new Error(
+                  "The saved Configuration changed while you were editing. Reload this draft before saving.",
+                ),
+                { reloadRequired: true },
               );
             }
             mutationStarted = true;
@@ -2639,9 +2662,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             throw error;
           }
         },
-        onStateChange: ({ pending, outcomeUnknown }) => {
+        onStateChange: ({ pending, outcomeUnknown, reloadRequired = false }) => {
           if (context.isCurrent()) {
-            data.setDraftEditorState({ dirty: false, saving: pending, outcomeUnknown });
+            data.setDraftEditorState({
+              dirty: false,
+              saving: pending,
+              outcomeUnknown,
+              reloadRequired,
+            });
           }
         },
         savedNotice,
@@ -3269,6 +3297,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           pending = false;
           updateState();
           render();
+          if (container.isConnected) {
+            // A conflict or failure leaves Reload draft (or Save again) as the next step.
+            focusSaveOutcome(container, [reload, save], feedback);
+          }
         }
       }
     }

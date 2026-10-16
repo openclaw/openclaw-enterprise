@@ -1,4 +1,4 @@
-import { element, button, dismissOnBackdrop } from "../dom.mjs";
+import { element, button, dismissOnBackdrop, focusSaveOutcome } from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 
 const clone = (value) => (value === undefined ? undefined : structuredClone(value));
@@ -136,12 +136,14 @@ function renderCard(section, state, provider) {
   const canOpen =
     !state.readOnly &&
     !state.outcomeUnknown &&
+    !state.reloadRequired &&
     !disabledByMode &&
     !blockReason &&
     support.supported;
   const canDisable =
     !state.readOnly &&
     !state.outcomeUnknown &&
+    !state.reloadRequired &&
     status.enabled &&
     isRecord(providerConfig(state.values, provider.id));
   const action =
@@ -232,7 +234,7 @@ async function disableProvider(state, provider) {
 }
 
 async function save(state, values, dialog, targetError, secretBindingUpdate, provider) {
-  if (state.pending || state.outcomeUnknown) {
+  if (state.pending || state.outcomeUnknown || state.reloadRequired) {
     return;
   }
   state.pending = true;
@@ -263,16 +265,28 @@ async function save(state, values, dialog, targetError, secretBindingUpdate, pro
     dialog?.remove();
   } catch (error) {
     state.outcomeUnknown = Boolean(error.outcomeUnknown);
-    (state.outcomeUnknown ? state.error : errorNode).replaceChildren(
+    // Another save moved the Configuration: every later save from this page fails the same
+    // way, so the section offers Reload draft instead of the editor (finding 1480).
+    state.reloadRequired = !state.outcomeUnknown && Boolean(error.reloadRequired && state.onReload);
+    const sectionError = state.outcomeUnknown || state.reloadRequired;
+    (sectionError ? state.error : errorNode).replaceChildren(
       element("p", { className: "error", role: "alert" }, errorText(error)),
     );
-    if (state.outcomeUnknown) {
+    if (sectionError) {
+      if (state.reloadRequired) {
+        // Reload draft rebuilds the editor from the saved state; the stale draft goes with it.
+        state.drawerContext.drafts?.forget("channels");
+      }
       dialog?.close();
       dialog?.remove();
     }
   } finally {
     state.pending = false;
-    state.onStateChange({ pending: false, outcomeUnknown: state.outcomeUnknown });
+    state.onStateChange({
+      pending: false,
+      outcomeUnknown: state.outcomeUnknown,
+      reloadRequired: state.reloadRequired,
+    });
     if (succeeded && state.onSaved) {
       // The owner rebuilds the section from the saved state and focuses this provider's
       // action; until then the section shows the state before the save, so keep it disabled.
@@ -280,12 +294,25 @@ async function save(state, values, dialog, targetError, secretBindingUpdate, pro
         node.disabled = true;
       }
       void state.onSaved(provider ? `Edit ${provider.name}` : null);
-    } else if (succeeded || !dialog || state.outcomeUnknown) {
+    } else if (succeeded || !dialog || state.outcomeUnknown || state.reloadRequired) {
       state.rerender();
+      if (!succeeded) {
+        focusSaveOutcome(
+          state.section,
+          [state.section.querySelector(".channel-reload")],
+          state.error.firstElementChild,
+        );
+      }
     } else {
       for (const { node, disabled } of controls) {
         node.disabled = disabled;
       }
+      // Disabling the pressed button while saving dropped focus out of the dialog.
+      focusSaveOutcome(
+        dialog,
+        [dialog.querySelector('button[type="submit"]')],
+        errorNode.firstElementChild,
+      );
     }
   }
 }
@@ -295,7 +322,7 @@ export function input(id, value, attrs = {}) {
 }
 
 function openDrawer(section, state, provider, retained) {
-  if (state.pending || state.outcomeUnknown) {
+  if (state.pending || state.outcomeUnknown || state.reloadRequired) {
     return;
   }
   const support = provider.support(state.values);
@@ -480,6 +507,7 @@ export function renderChannelSection(
     drawerContext,
     pending: false,
     outcomeUnknown: false,
+    reloadRequired: false,
     error: element("div", { "aria-live": "polite" }),
     rerender: () => render(),
   };
@@ -507,17 +535,21 @@ export function renderChannelSection(
         ? [element("p", { className: "hint", role: "status" }, state.savedNotice)]
         : []),
       state.error,
-      ...(state.outcomeUnknown && state.onReload
+      ...((state.outcomeUnknown || state.reloadRequired) && state.onReload
         ? [element("div", { className: "form-actions" }, reloadButton())]
         : []),
       ...providers.map((provider) => renderCard(section, state, provider)),
     );
   }
   function reloadButton() {
-    const reload = button("Reload draft", () => {
-      reload.disabled = true;
-      void state.onReload();
-    });
+    const reload = button(
+      "Reload draft",
+      () => {
+        reload.disabled = true;
+        void state.onReload();
+      },
+      { className: "channel-reload" },
+    );
     return reload;
   }
   render();

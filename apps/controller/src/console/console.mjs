@@ -1466,7 +1466,19 @@ async function loadPage({
         }
       },
       setTitle: (title) => {
-        app.querySelector("h1").textContent = title;
+        const heading = app.querySelector("h1");
+        heading.textContent = title;
+        // The opening panel's heading had focus and the shell replaced it. Focus the Agent's
+        // heading as it appears, not once its tab's reads settle: on a slow link that left
+        // focus on body for 0.5-0.9 s (finding 1483).
+        if (
+          focusAgentResult &&
+          document.activeElement === document.body &&
+          lifetime.isCurrent(active)
+        ) {
+          heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
       },
       url: current.url,
       setTabNavigation(handler) {

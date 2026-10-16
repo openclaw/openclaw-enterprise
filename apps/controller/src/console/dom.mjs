@@ -62,3 +62,28 @@ export function dismissOnBackdrop(dialog) {
     }
   });
 }
+
+let describedFocusIds = 0;
+
+/**
+ * After a save the pressed button is disabled or rebuilt, so focus falls to body. Unless the
+ * reader has moved on (focus left `root`), put it on the first enabled `controls` entry,
+ * described by `message`, or on `message` itself (findings 1446, 1481).
+ */
+export function focusSaveOutcome(root, controls, message) {
+  const active = document.activeElement;
+  if (active && active !== document.body && !root.contains(active)) {
+    return;
+  }
+  const control = controls.find((node) => node?.isConnected && !node.disabled);
+  if (message?.isConnected && message.textContent) {
+    if (!control) {
+      message.tabIndex = -1;
+      message.focus();
+      return;
+    }
+    message.id ||= `save-outcome-${++describedFocusIds}`;
+    control.setAttribute("aria-describedby", message.id);
+  }
+  control?.focus();
+}

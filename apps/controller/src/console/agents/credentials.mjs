@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, focusSaveOutcome } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
@@ -439,6 +439,9 @@ export function createChannelSecretsPanel({
           updateControls();
           render();
           onChange();
+          // The rebuilt section replaced the pressed button: focus the next step, described
+          // by the outcome, or the outcome itself (finding 1481).
+          focusSaveOutcome(section, [shown.reload, shown.save], shown.outcome);
         }
       }
     });
@@ -464,12 +467,47 @@ export function createChannelSecretsPanel({
     return null;
   }
 
+  // The last render's save outcome and next-step controls, for focus after a save.
+  const shown = {};
+
   function render() {
     const error = element(
       "p",
       { className: "error", role: "alert" },
       state.saveError ? saveErrorText() : state.saveGrantWarning,
     );
+    const reloadMessage = state.reloadRequired
+      ? element(
+          "p",
+          { className: "error", role: "status" },
+          "Configuration changed. Reload this draft before saving channel Secrets.",
+        )
+      : null;
+    const unknownMessage =
+      state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
+        ? element(
+            "p",
+            { className: "error", role: "status" },
+            "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
+          )
+        : null;
+    const reload =
+      state.outcomeUnknown || state.reloadRequired
+        ? button("Reload draft", (event) => {
+            // The page rebuilds this section from the reread draft.
+            event.currentTarget.disabled = true;
+            void onReload();
+          })
+        : null;
+    const form = renderChannelForm(error);
+    shown.reload = reload;
+    shown.save = form?.querySelector('button[type="submit"]') ?? null;
+    shown.outcome = state.saveError
+      ? error
+      : (reloadMessage ??
+        unknownMessage ??
+        form?.querySelector('[role="status"]:not(:empty)') ??
+        null);
     section.replaceChildren(
       ...[
         element("h2", {}, "Channel Secrets"),
@@ -480,33 +518,11 @@ export function createChannelSecretsPanel({
         ),
         renderSlackBindings(state),
         error,
-        state.reloadRequired
-          ? element(
-              "p",
-              { className: "error", role: "status" },
-              "Configuration changed. Reload this draft before saving channel Secrets.",
-            )
-          : null,
-        state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
-          ? element(
-              "p",
-              { className: "error", role: "status" },
-              "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
-            )
-          : null,
-        state.outcomeUnknown || state.reloadRequired
-          ? element(
-              "div",
-              { className: "form-actions credential-actions" },
-              button("Reload draft", (event) => {
-                // The page rebuilds this section from the reread draft.
-                event.currentTarget.disabled = true;
-                void onReload();
-              }),
-            )
-          : null,
+        reloadMessage,
+        unknownMessage,
+        reload ? element("div", { className: "form-actions credential-actions" }, reload) : null,
         renderUnavailableReason(),
-        renderChannelForm(error),
+        form,
       ].filter(Boolean),
     );
   }
