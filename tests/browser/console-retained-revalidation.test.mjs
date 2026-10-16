@@ -456,6 +456,8 @@ for (const [outcome, failsAgain, leaveFocus] of [
       name: failsAgain ? "Could not load agent details" : "Retry Agent",
     });
     await result.waitFor();
+    // Focus moves to the result once the load settles, after the heading has rendered.
+    await page.locator(settledView).waitFor();
     assert.equal(await isFocused(leaveFocus ? sidebar : result), true);
     assert.equal(
       await page.evaluate(() => globalThis.history.length),

@@ -128,8 +128,10 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  // Polls run only when the test advances the clock.
-  await page.clock.pauseAt(new Date("2026-10-16T12:00:01Z"));
+  // Polls run only when the test advances the clock. Pause 1 s ahead of the page's own time,
+  // short of the first poll: a fixed time fails once sign-in and delete outlast it.
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(new Date(now + 1000));
   // The confirmation removes itself on its close event, a task after the request settles.
   await page.locator(".deletion-note dialog").waitFor({ state: "detached" });
   const refresh = page.getByRole("button", { name: "Refresh deletion status" });
