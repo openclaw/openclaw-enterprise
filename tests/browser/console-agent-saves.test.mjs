@@ -1106,7 +1106,8 @@ for (const c of reservedSaveCases) {
 
 // Reload draft after a Configuration conflict dropped the JSON editor's edits (finding 1512).
 // They are now merged over the reread document key by key: the other browser's change stays,
-// and a value both changed keeps the reader's and names the saved one.
+// and a value both changed keeps the reader's and names the saved one. An object where each
+// browser changed other keys is named too, since those keys may belong together (finding 1524).
 test("a Configuration conflict merges the JSON edits over the reread document", async (t) => {
   const context = await slackAgent(t, "Carried JSON");
   const { fixture, namespace, agent } = context;
@@ -1141,7 +1142,7 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
     .getByRole("status")
     .filter({
       hasText:
-        'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Review them, then save.',
+        'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Both browsers changed different keys in /plugins/entries/knowledge/config; check they still fit together. Review them, then save.',
     })
     .waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
@@ -1192,6 +1193,150 @@ test("a channel Secrets conflict carries the chosen Secret over the reread bindi
         "Your Secret choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
     })
     .waitFor();
+  await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
+  await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+    .waitFor();
+  const saved = (await fixture.request("GET", configurationPath(context))).data;
+  assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, {
+    source: secondBot.ref,
+    delivery: { type: "env" },
+  });
+  assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, {
+    source: otherApp.ref,
+    delivery: { type: "env" },
+  });
+});
+
+// Carried channel Secret choices vanished without notice when the reread showed no Slack token
+// form (finding 1525). The Channel Secrets section now says they were not reapplied.
+const notReappliedCases = [
+  {
+    name: "Slack is off",
+    other: (values) => ({
+      ...values,
+      channels: { slack: { ...values.channels.slack, enabled: false } },
+    }),
+    note: "Your channel Secret choices were not reapplied: Slack is off in the reloaded Configuration.",
+  },
+  {
+    name: "Slack uses named accounts",
+    other: (values) => ({
+      ...values,
+      channels: {
+        slack: {
+          ...values.channels.slack,
+          accounts: {
+            ops: {
+              appToken: { source: "env", provider: "default", id: "SLACK_OPS_APP_TOKEN" },
+              botToken: { source: "env", provider: "default", id: "SLACK_OPS_BOT_TOKEN" },
+            },
+          },
+        },
+      },
+    }),
+    note: "Your channel Secret choices were not reapplied: the reloaded Configuration uses named Slack accounts.",
+  },
+  {
+    name: "the Agent uses operator-managed credentials",
+    other: (values) => values,
+    // Another browser switched the Agent's authentication; the page's reread shows it.
+    runtimeAuth: true,
+    note: "Your channel Secret choices were not reapplied: this Agent now uses operator-managed credentials.",
+  },
+];
+
+for (const c of notReappliedCases) {
+  test(`carried channel Secret choices are named as not reapplied when ${c.name}`, async (t) => {
+    const context = await slackAgent(t, "Unapplied Secrets");
+    const { fixture, namespace, agent } = context;
+    const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+    let runtimeAuth = false;
+    const page = await openTab(t, fixture, namespace, agent, "credentials", {
+      beforeLogin: (routed) =>
+        routed.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+          if (!runtimeAuth || route.request().method() !== "GET") {
+            await route.continue().catch(() => {});
+            return;
+          }
+          const response = await route.fetch();
+          const json = await response.json();
+          json.data = { ...json.data, harnessAuth: { method: "runtime" } };
+          await route.fulfill({ response, json });
+        }),
+    });
+    await page.getByRole("heading", { name: "Unapplied Secrets" }).waitFor();
+    await selectSecret(page, "Slack bot token", secondBot);
+    const current = (await fixture.request("GET", configurationPath(context))).data;
+    const changed = await fixture.request("PATCH", configurationPath(context), {
+      body: { values: c.other(current.values) },
+    });
+    assert.equal(changed.status, 200, JSON.stringify(changed.body));
+    await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    await page
+      .getByText("Configuration changed. Reload this draft before saving channel Secrets.")
+      .waitFor();
+    runtimeAuth = Boolean(c.runtimeAuth);
+    await page.getByRole("button", { name: "Reload draft" }).click();
+    const section = page.locator("section.channel-secrets");
+    await section.getByRole("status").filter({ hasText: c.note }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).count(), 0);
+    assert.equal(await page.getByLabel("Slack bot token").count(), 0);
+    const saved = (await fixture.request("GET", configurationPath(context))).data;
+    assert.notEqual(saved.secretBindings.SLACK_BOT_TOKEN.source.id, secondBot.id);
+  });
+}
+
+// The carried choices lived in a page variable, so the page load that follows a failed Reload
+// draft reread dropped them (finding 1525). The draft store now keeps them for that page.
+test("carried channel Secret choices survive the page load after a failed reread", async (t) => {
+  const context = await slackAgent(t, "Reloaded Secrets");
+  const { fixture, namespace, agent } = context;
+  const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+  const otherApp = await fixture.createSecret(namespace.id, "Other app token", "xapp-other");
+  let failAgentRead = false;
+  let failedReads = 0;
+  const page = await openTab(t, fixture, namespace, agent, "credentials", {
+    beforeLogin: (routed) =>
+      routed.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+        if (!failAgentRead || route.request().method() !== "GET") {
+          await route.continue().catch(() => {});
+          return;
+        }
+        failAgentRead = false;
+        failedReads += 1;
+        await route.abort("failed");
+      }),
+  });
+  await page.getByRole("heading", { name: "Reloaded Secrets" }).waitFor();
+  await selectSecret(page, "Slack bot token", secondBot);
+  const current = (await fixture.request("GET", configurationPath(context))).data;
+  const changed = await fixture.request("PATCH", configurationPath(context), {
+    body: {
+      values: current.values,
+      secretBindings: {
+        ...current.secretBindings,
+        SLACK_APP_TOKEN: { source: otherApp.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(changed.status, 200);
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page
+    .getByText("Configuration changed. Reload this draft before saving channel Secrets.")
+    .waitFor();
+  failAgentRead = true;
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await page
+    .getByRole("status")
+    .filter({
+      hasText:
+        "Your Secret choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
+    })
+    .waitFor();
+  assert.equal(failedReads, 1);
   await waitForInputValue(page.getByLabel("Slack bot token"), "Second bot token");
   await waitForInputValue(page.getByLabel("Slack app token"), "Other app token");
   await page.getByRole("button", { name: "Save channel Secrets" }).click();

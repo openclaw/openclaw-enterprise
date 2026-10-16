@@ -48,21 +48,36 @@ export function carryValue(base, mine, current) {
 
 // A JSON document merges key by key: keys the reader did not change keep the reread value, and
 // a value both browsers changed differently keeps the reader's, listed with the saved value.
-// Arrays are single values: merging their items could reorder or duplicate entries.
+// Arrays are single values: merging their items could reorder or duplicate entries. `mixed`
+// names each object below the top level where the reader changed some keys and the other
+// browser others, since such keys may belong together (`auth.mode` and `auth.token`): the
+// merge keeps both, and the reader is asked to review the object (finding 1524).
 export function carryDocument(base, mine, current, path = "") {
   if (sameValue(mine, base)) {
-    return { value: current, conflicts: [] };
+    return { value: current, conflicts: [], mixed: [] };
   }
   if (sameValue(current, base) || sameValue(current, mine)) {
-    return { value: mine, conflicts: [] };
+    return { value: mine, conflicts: [], mixed: [] };
   }
   if (!isRecord(base) || !isRecord(mine) || !isRecord(current)) {
-    return { value: mine, conflicts: [{ path: path || "/", saved: current }] };
+    return { value: mine, conflicts: [{ path: path || "/", saved: current }], mixed: [] };
   }
   const entries = [];
   const conflicts = [];
+  const mixed = [];
   const keys = new Set([...Object.keys(current), ...Object.keys(mine), ...Object.keys(base)]);
   const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
+  // Keys each browser changed that the other side does not already hold.
+  const changedBy = (side, other) =>
+    [...keys].filter(
+      (key) =>
+        !sameValue(own(side, key), own(base, key)) && !sameValue(own(side, key), own(other, key)),
+    );
+  const mineKeys = changedBy(mine, current);
+  const theirKeys = changedBy(current, mine);
+  if (path && mineKeys.some((key) => theirKeys.some((other) => other !== key))) {
+    mixed.push(path);
+  }
   for (const key of keys) {
     const merged = carryDocument(
       own(base, key),
@@ -74,7 +89,8 @@ export function carryDocument(base, mine, current, path = "") {
       entries.push([key, merged.value]);
     }
     conflicts.push(...merged.conflicts);
+    mixed.push(...merged.mixed);
   }
   // fromEntries defines own keys, so a "__proto__" key in the document stays a key.
-  return { value: Object.fromEntries(entries), conflicts };
+  return { value: Object.fromEntries(entries), conflicts, mixed };
 }

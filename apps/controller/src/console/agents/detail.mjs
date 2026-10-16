@@ -904,7 +904,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let deployInFlight = false;
   let authenticationSaveState = "idle";
   let activeCredentials = null;
-  // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512).
+  // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512). The
+  // draft store keeps them too, for the page a failed reread reloads (finding 1525).
   let carriedChannelSecrets = null;
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
@@ -1956,6 +1957,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       reloadRequired: retainedPlugins?.reloadRequired ?? false,
     };
     const runtimeAuth = agent.harnessAuth?.method === "runtime";
+    // The carried choices apply once, to the panel built from the reread.
+    const carriedSecrets = carriedChannelSecrets ?? context.drafts.get("channelSecrets") ?? null;
+    carriedChannelSecrets = null;
+    context.drafts.forget("channelSecrets");
     const credentials =
       draft && !runtimeAuth
         ? createChannelSecretsPanel({
@@ -1965,7 +1970,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             configuration: snapshot,
             values,
             revisionsLoaded: revisionResult.status === "fulfilled",
-            carried: carriedChannelSecrets,
+            carried: carriedSecrets,
             onChange() {
               updateNavigationControls();
               updateDeployControls();
@@ -1978,6 +1983,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             },
             onReload: (carried = null) => {
               carriedChannelSecrets = carried;
+              if (carried) {
+                context.drafts.track("channelSecrets", () => carried);
+              } else {
+                context.drafts.forget("channelSecrets");
+              }
               return reloadDraftInPlace(context, {
                 saved: "Draft reloaded.",
                 focus: "Save channel Secrets",
@@ -1985,8 +1995,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             },
           })
         : null;
-    // The carried choices apply once, to the panel built from the reread.
-    carriedChannelSecrets = null;
+    // Operator-managed credentials build no channel Secrets panel to say so (finding 1525).
+    const channelSecretsNote =
+      draft && runtimeAuth && carriedSecrets
+        ? "Your channel Secret choices were not reapplied: this Agent now uses operator-managed credentials."
+        : "";
     activeCredentials = credentials;
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -2254,6 +2267,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       draft,
       executionMode,
       credentials,
+      channelSecretsNote,
       setAuthenticationPending(pending) {
         authenticationPending = pending;
         updateDeployControls();
@@ -2585,7 +2599,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   function renderConfigurationTab(context, selectedTab, data) {
-    const { snapshot, values, draft, executionMode, credentials } = data;
+    const { snapshot, values, draft, executionMode, credentials, channelSecretsNote } = data;
     content.append(
       element(
         "p",
@@ -2932,6 +2946,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       content.append(form);
       if (credentials?.section) {
         content.append(credentials.section);
+      } else if (channelSecretsNote) {
+        content.append(
+          element(
+            "section",
+            { className: "agent-card channel-secrets" },
+            element("h2", {}, "Channel Secrets"),
+            element("p", { className: "hint", role: "status" }, channelSecretsNote),
+          ),
+        );
       }
     } else {
       const repositoryBindings = draft
@@ -3151,6 +3174,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       .slice(0, 5)
       .map(({ path, saved }) => `${path} (saved: ${shown(saved)})`);
     const more = merged.conflicts.length > 5 ? ` and ${merged.conflicts.length - 5} more` : "";
+    // Objects where each browser changed other keys are merged, not conflicts, but their keys
+    // may belong together, so the note names them (finding 1524).
+    const mixed = merged.mixed.slice(0, 5).join(", ");
+    const moreMixed = merged.mixed.length > 5 ? ` and ${merged.mixed.length - 5} more` : "";
     return {
       retained: {
         text,
@@ -3162,6 +3189,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       note: `Your edits are applied over the reloaded Configuration.${
         conflicts.length
           ? ` Another browser also changed ${conflicts.join(", ")}${more}; yours are shown.`
+          : ""
+      }${
+        mixed
+          ? ` Both browsers changed different keys in ${mixed}${moreMixed}; check they still fit together.`
           : ""
       } Review them, then save.`,
     };

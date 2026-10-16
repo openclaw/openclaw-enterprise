@@ -128,7 +128,7 @@ excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage
 or URLs. Configuration, authentication, and channel baselines prevent stale saves;
 channel snapshots include controls and staged Secret metadata. Reload draft reapplies
-only the reader's edits, naming values both browsers changed. Save and Cancel
+only the reader's edits, naming overlaps and skipped choices. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
 `dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
