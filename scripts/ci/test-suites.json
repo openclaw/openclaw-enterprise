@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "fileDurations": "./test-suites/file-durations.json",
   "lanes": {
     "checks-baseline-1": "./test-suites/checks-baseline-1.json",
     "checks-baseline-2": "./test-suites/checks-baseline-2.json",
