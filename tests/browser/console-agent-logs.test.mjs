@@ -718,6 +718,13 @@ test("an operator without administer sees status but no log text and is never re
   assert.equal(await page.getByRole("button", { name: "Refresh logs" }).isDisabled(), true);
   const denied = logRequests(requests, revisionId).length;
   assert.equal(denied, 1);
+  // Log text was never allowed, so the refusal revokes nothing: status is not asked again at
+  // once (finding 1597's re-ask is for a revocation).
+  await settlePageRequests(page);
+  assert.equal(
+    requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length,
+    1,
+  );
   // Status keeps polling every 10 s; the denied log view is not requested again.
   await waitForCondition(
     () =>

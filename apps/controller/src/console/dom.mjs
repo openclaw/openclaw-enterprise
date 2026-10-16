@@ -39,6 +39,15 @@ export function replaceChildrenIfChanged(parent, children) {
   }
 }
 
+// A live region or alert announces reliably when it is inserted, not when an existing node takes
+// its role, so a node whose role (or the kind of a role node) changes is replaced instead.
+function sameRole(shown, child) {
+  const role = child.getAttribute("role");
+  return (
+    shown.getAttribute("role") === role && (role === null || shown.className === child.className)
+  );
+}
+
 /**
  * Makes `parent`'s children match `children` (nodes; null and undefined skipped), changing only
  * what differs: an unchanged render touches no node, and a changed one rewrites only the changed
@@ -54,7 +63,11 @@ export function patchChildren(parent, children) {
     if (!shown) {
       parent.append(child);
       changed = true;
-    } else if (shown.nodeType !== child.nodeType || shown.nodeName !== child.nodeName) {
+    } else if (
+      shown.nodeType !== child.nodeType ||
+      shown.nodeName !== child.nodeName ||
+      (child.nodeType === Node.ELEMENT_NODE && !sameRole(shown, child))
+    ) {
       shown.replaceWith(child);
       changed = true;
     } else if (shown.nodeType !== Node.ELEMENT_NODE) {

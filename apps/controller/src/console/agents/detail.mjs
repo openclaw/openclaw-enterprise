@@ -354,11 +354,21 @@ const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
 // switched in place, rebuilt or restored for Back, brings that tab into view and focuses it.
-// Keyed by Namespace and target, so only the page the link names takes it.
+// Keyed by Namespace and target, so only the page the link names takes it, and by console load,
+// so a load the link did not start (Back before it landed, a later visit) never takes it.
 let linkedVersionView = null;
+let consoleLoads = 0;
+
+/** The console starts a page load (navigation, Back, refocus): earlier link requests lapse. */
+export function noteConsoleLoad() {
+  consoleLoads += 1;
+  if (linkedVersionView?.load !== consoleLoads) {
+    linkedVersionView = null;
+  }
+}
 
 function takeLinkedVersionView(key) {
-  const linked = linkedVersionView === key;
+  const linked = linkedVersionView?.key === key;
   if (linked) {
     linkedVersionView = null;
   }
@@ -412,7 +422,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
     // A 5 s poll reads quietly: Refresh stays as it is unless pressed (finding 1598).
     polling: false,
     refreshQueued: false,
-    // Set by Refresh until its read lands.
+    // Set by Refresh until its own read (not a poll it waited for) lands.
     readerRefresh: false,
     status: null,
     error: null,
@@ -505,7 +515,10 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       if (context.isCurrent()) {
         state.loading = false;
         render();
-        state.readerRefresh = false;
+        // A Refresh pressed during a poll is answered by the read queued after it.
+        if (!poll) {
+          state.readerRefresh = false;
+        }
         onStatusChange(
           state.status ? deploymentOutcome(state.status) : null,
           state.error !== null,
@@ -648,7 +661,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       PENDING_DEPLOYMENT_STATUSES.has(state.status?.cleanup?.status);
     if (pending) {
       reservedHeight ??= 0;
-    } else if (state.readerRefresh && reservedHeight !== null) {
+    } else if (state.readerRefresh && !state.polling && reservedHeight !== null) {
       reservedHeight = null;
       content.style.removeProperty("min-height");
       return;
@@ -1014,12 +1027,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         return;
       }
       event.preventDefault();
-      if (revision === selected && tab === selectedTab && !deleting) {
+      if (revision === selected && tab === selectedTab) {
         // Already open below: rebuilding it would only discard the reader's edits.
         openVersionDetail({ animate: true });
         return;
       }
-      linkedVersionView = linkedKey(revision, tab);
+      // The load this navigation starts is the next one.
+      linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1 };
       context.navigate(target(revision, tab));
     });
     return node;
@@ -1279,10 +1293,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     scrollToVersionDetail(options);
   }
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
-  // first and scrolls itself. Any page built since the click ends the link's request.
-  const linkedEntry = takeLinkedVersionView(linkedKey());
-  linkedVersionView = null;
-  if (linkedEntry && selectedTab !== "logs") {
+  // first and scrolls itself.
+  if (takeLinkedVersionView(linkedKey()) && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
       if (context.isCurrent() && !deleting) {
@@ -3813,13 +3825,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return false;
     }
     if (draftEditorBlocksNavigation()) {
-      linkedVersionView = null;
       history.replaceState(
         history.state,
         "",
         context.pageUrl(target(selected, selectedTab), namespaceId),
       );
       showDraftEditorNavigationBlock();
+      // A recovery link refused here would look dead again: its refusal shows with the editor.
+      if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
+        openVersionDetail({ animate: true });
+      }
       return true;
     }
     if (nextRevision !== selected) {

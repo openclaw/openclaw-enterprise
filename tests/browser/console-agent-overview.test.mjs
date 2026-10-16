@@ -907,8 +907,11 @@ for (const viewport of [
       new globalThis.MutationObserver((records) => {
         for (const change of records) {
           const where = change.target.nodeType === 1 ? change.target : change.target.parentNode;
+          const region = where.closest(
+            ".version-diagnostics, .version-deployment-record, .deployment-evidence, .agent-overview-status",
+          );
           globalThis.pollChanges.push(
-            `${change.type} ${where.className || where.nodeName}: ${change.attributeName ?? ""}`,
+            `${change.type} ${region?.className ?? "page"} > ${where.className || where.nodeName}: ${change.attributeName ?? ""}`,
           );
         }
       }).observe(globalThis.document, {
@@ -951,9 +954,10 @@ for (const viewport of [
     await page.getByText("Waiting for the runtime to become ready.").waitFor();
     const changed = await page.evaluate(() => globalThis.pollChanges.splice(0));
     assert.ok(changed.length > 0);
+    // Only the activity's details changed: the version's record and diagnostics read the same.
     assert.ok(
-      changed.every((entry) => !/version-diagnostics|deployment-heading/.test(entry)),
-      `only the changed record was written: ${changed.join(" | ")}`,
+      changed.every((entry) => entry.includes("deployment-evidence")),
+      `only the changed details were written: ${changed.join(" | ")}`,
     );
     const attemptTop = await shareTop();
 
@@ -968,3 +972,93 @@ for (const viewport of [
     assert.ok(Math.abs(settledTop - firstTop) <= 1, `moved ${settledTop - firstTop} px`);
   });
 }
+
+// A recovery link that opened another version, abandoned (Back) before that page was built, left
+// its request for a later visit to the same tab, which would scroll and steal focus unasked.
+test("A recovery link left before its page opens does not scroll a later visit", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Recovery left", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Left Agent", nativeValues("v1"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
+  const open = page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Open Configuration" });
+  await open.waitFor();
+  await settled.waitFor();
+  const agentRead = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    { once: true },
+  );
+  await open.click();
+  await agentRead.requested;
+  await page.goBack();
+  await page.waitForURL((url) => url.searchParams.get("revision") === active.revision.id);
+  agentRead.release();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await settled.waitFor();
+
+  await page
+    .locator(".agent-toolbar-actions")
+    .getByRole("button", { name: "Create new version" })
+    .click();
+  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
+  await settled.waitFor();
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+  assert.equal(await focusedTab(page), null);
+});
+
+// A recovery link whose draft page is restored for Back mounts it at its old scroll position,
+// at the top: the restored page brings the tab into view too.
+test("A recovery link to a draft restored for Back brings it into view", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Recovery restored", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Restored Agent", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const failed = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await routeFailedRecord(page, fixture, namespace, agent, failed);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const settled = page.locator('.content [aria-live="polite"][aria-busy="false"]');
+  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
+  await settled.waitFor();
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  await page.evaluate(() => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.restoreTag = "draft";
+  });
+  await page.locator('.revision-selector [aria-label^="View version v1"]').click();
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await settled.waitFor();
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Open Configuration" })
+    .click();
+  await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
+  await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
+  await page.waitForFunction(versionDetailInView);
+  assert.equal(await focusedTab(page), "Configuration");
+  // The restored page, not a rebuilt one.
+  assert.equal(
+    await page.evaluate(
+      () => globalThis.document.querySelector('.content [aria-live="polite"]').dataset.restoreTag,
+    ),
+    "draft",
+  );
+});

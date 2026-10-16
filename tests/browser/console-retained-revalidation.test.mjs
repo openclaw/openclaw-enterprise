@@ -627,7 +627,9 @@ for (const { elapsed, held } of [
     record.release();
     if (held) {
       await settled;
-      // The overview's reads have settled; give its reveal steps time to run.
+      // The overview's first read has landed: its activity panel replaced the placeholder, and
+      // the reveal is asked for in the same turn. Give it time to run.
+      await page.locator(".content .deployment-evidence").waitFor({ state: "attached" });
       await new Promise((resolve) => setTimeout(resolve, 300));
       assert.equal(await page.locator(activeView).getByText("Reading this Agent.").count(), 1);
       await page.clock.runFor(held - 1);

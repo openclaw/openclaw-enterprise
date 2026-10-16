@@ -1,6 +1,7 @@
 import { element, button } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
+  noteConsoleLoad,
   renderAgentList,
   renderCreateAgent,
   renderAgentDetail,
@@ -986,6 +987,7 @@ async function loadPage({
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
 } = {}) {
+  noteConsoleLoad();
   if (loggingOut) {
     return;
   }
@@ -1698,7 +1700,15 @@ async function loadPage({
       if (standIn) {
         const detailView = shell.view;
         shownStandIn = standIn;
-        lifetime.signal.addEventListener("abort", () => markRevealed(), { once: true });
+        let revealWait = null;
+        lifetime.signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(revealWait);
+            markRevealed();
+          },
+          { once: true },
+        );
         // Runs once the Agent's page is on screen: the page's own reveal steps (scroll, focus).
         const afterReveal = [];
         const runAfterReveal = () => {
@@ -1706,7 +1716,6 @@ async function loadPage({
             then();
           }
         };
-        let revealWait = null;
         // The overview's first reads settled, or its bounded wait ran out: replace the stand-in
         // with the Agent's shell, heading, toolbar and overview in one frame, then run `then`.
         agentContext.revealed = (then) => {
