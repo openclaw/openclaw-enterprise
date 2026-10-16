@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 
 import { chromium } from "playwright";
 
@@ -62,9 +63,22 @@ async function launchBrowser(options = {}) {
   return browser;
 }
 
+// One Chromium for every test in a file, launched on first use and closed after the file's
+// last test. Pass the result as newPage's `browser` option. Each test still gets its own
+// context (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test.
+export function fileBrowser() {
+  let launched;
+  after(async () => {
+    await (await launched?.catch(() => null))?.close();
+  });
+  return () => (launched ??= launchBrowser());
+}
+
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const browser = await launchBrowser(options);
+  const shared = options.browser !== undefined;
+  assert.ok(!shared || options.args === undefined, "a shared browser takes no launch arguments");
+  const browser = shared ? await options.browser() : await launchBrowser(options);
   let context;
   let diagnostics;
   fixture.registerCleanupBeforeAppClose(async () => {
@@ -76,7 +90,9 @@ export async function newPage(t, fixture, options = {}) {
       cleanupError ??= error;
     } finally {
       try {
-        await browser.close();
+        if (!shared) {
+          await browser.close();
+        }
       } catch (error) {
         cleanupError ??= error;
       }
