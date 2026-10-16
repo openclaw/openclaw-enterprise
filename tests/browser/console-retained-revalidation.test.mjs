@@ -603,12 +603,23 @@ test("Create new version keeps the Agent page until the draft's overview reveals
 // A fresh load of an Agent URL (reload, new tab, shared link, sign-in landing) whose reads beat
 // the loading delay had no page to hold, so the Agent's heading and toolbar painted over an
 // empty overview for up to 2 s (finding 1537). The startup status now stands in until the
-// overview reveals, and gives way to loading if the delay passes first.
-for (const pastDelay of [false, true]) {
-  test(`A fresh load of an Agent page keeps a stand-in until the overview reveals${pastDelay ? " past the loading delay" : ""}`, async (t) => {
+// overview reveals, and gives way to loading if the delay passes first. Reads that straddled the
+// 250 ms delay painted the loading page for 1-2 frames before the Agent (finding 1554): the blank
+// startup status now stands in until its own text would show, at 400 ms.
+for (const { elapsed, pastDelay } of [
+  { elapsed: 0, pastDelay: false },
+  { elapsed: 250, pastDelay: false },
+  { elapsed: 400, pastDelay: true },
+]) {
+  const when = pastDelay
+    ? " past the loading delay"
+    : elapsed
+      ? ` ${elapsed} ms in, before the startup text shows`
+      : "";
+  test(`A fresh load of an Agent page keeps a stand-in until the overview reveals${when}`, async (t) => {
     const { fixture, namespace, agent, page } = await openList(
       t,
-      pastDelay ? "Fresh slow reveal" : "Fresh reveal",
+      `Fresh reveal ${elapsed}`,
       ["Fresh Agent"],
       { deploy: true },
     );
@@ -627,9 +638,11 @@ for (const pastDelay of [false, true]) {
     await record.requested;
     // The Agent page has rendered, waiting for its overview.
     await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
+    await page.clock.runFor(elapsed);
     if (pastDelay) {
-      await page.clock.runFor(250);
       await page.locator(activeView).getByText("Reading this Agent.").waitFor();
+    } else {
+      assert.equal(await page.locator("#app > .startup").count(), 1);
     }
     record.release();
     await page.locator(settledView).getByRole("region", SUMMARY).waitFor();

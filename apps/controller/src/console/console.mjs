@@ -59,6 +59,16 @@ function readSignature(result, includeMeta = false) {
   );
 }
 
+// A read the view shows as refused or missing (a member's native administration status, say) is
+// that read's settled answer. A return compares it like data, so a view a member can read only in
+// part is still reused, and a read refused since replaces its section (finding 1553).
+function refusedRead(status) {
+  // Never a JSON body's signature.
+  return `\u0000refused ${status}`;
+}
+
+const settledRefusal = (error) => error.status === 403 || error.status === 404;
+
 function providerIcon(provider) {
   if (provider !== "github" && provider !== "google") {
     return null;
@@ -449,6 +459,9 @@ const request = createApiClient({
 const retainedViews = new Map();
 // Other first visits that settle sooner swap pages without showing loading (finding 1407).
 const loadingDelayMs = 250;
+// The startup status stays blank this long (console.css). A fresh load keeps it, not the loading
+// page, until then, so reads that settle between the two delays never flash loading (finding 1554).
+const startupStatusDelayMs = 400;
 // A return or refocus keeps its page until the recheck settles; past this delay it says so.
 const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
@@ -938,7 +951,7 @@ function showLogin(message = "", destination = null) {
     });
 }
 
-function showCheckingSession() {
+function showCheckingSession(checking = () => true) {
   const shown = app.firstElementChild?.classList.contains("startup") ? app.firstElementChild : null;
   // Destination recovery can continue in another loadPage without restarting this status.
   if (shown?.dataset.session !== undefined) {
@@ -952,12 +965,12 @@ function showCheckingSession() {
     app.replaceChildren(status);
   }
   // Delay the announcement, never the session check or the view that replaces it. It waits
-  // until the status is visible (400 ms, console.css), so screen readers announce the change.
+  // until the status is visible, so screen readers announce the change.
   setTimeout(() => {
-    if (status.isConnected) {
+    if (status.isConnected && checking()) {
       status.textContent = "Checking session…";
     }
-  }, 400);
+  }, startupStatusDelayMs);
 }
 
 async function loadPage({
@@ -1039,10 +1052,10 @@ async function loadPage({
   }
   // A load without a shown private page shows the startup status (no signed-in navigation
   // before the session check) and keeps it, as a held page stays, until the load outlasts
-  // loadingDelayMs, so a fast one never flashes loading. A load that continues from the startup
-  // status (a sign-in destination) keeps it too. A return's held page stays until it
-  // revalidates (finding 1415). A signed-in load with no page to hold (an error panel, say)
-  // shows the pending shell at once.
+  // startupStatusDelayMs (a held page loadingDelayMs), so a fast one never flashes loading. A
+  // load that continues from the startup status (a sign-in destination) keeps it too. A return's
+  // held page stays until it revalidates (finding 1415). A signed-in load with no page to hold
+  // (an error panel, say) shows the pending shell at once.
   const startup =
     !held && (!knownPrivateState || app.firstElementChild?.classList.contains("startup") === true);
   // Only a link from the open list sets openingAgent, so Back returns to that history entry.
@@ -1081,7 +1094,9 @@ async function loadPage({
       for (const stale of app.querySelectorAll(":scope > .startup ~ *")) {
         stale.remove();
       }
-      showCheckingSession();
+      // Its text names the session check only while that check runs: a resolved load switches
+      // to loading at the same delay instead (finding 1554).
+      showCheckingSession(() => !sessionResolved);
     } else {
       shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
     }
@@ -1090,6 +1105,7 @@ async function loadPage({
   // stillCheckingDelayMs, says it is still checking. Other loads, Refresh included, show
   // loading after loadingDelayMs (finding 1442).
   const recheck = held && retained && reuseView;
+  const loadingDelay = startup ? startupStatusDelayMs : loadingDelayMs;
   let loadingTimer =
     !held && !startup
       ? null
@@ -1130,7 +1146,7 @@ async function loadPage({
               shell.view.after(behind);
               shell = { ...shell, view: behind, diagnostics: null };
             }
-          }, loadingDelayMs);
+          }, loadingDelay);
   const stopLoadingTimer = () => {
     clearTimeout(loadingTimer);
     loadingTimer = null;
@@ -1376,16 +1392,34 @@ async function loadPage({
       if (firstPermissions !== null) {
         fresh.set(permissionsPath, firstPermissions);
       }
-      const validations = await Promise.allSettled(
-        [...retainedState.reads.keys()].map(async (path) => {
-          if (!fresh.has(path)) {
+      const refused = new Map();
+      const deniedReads = deniedReadsFor(owner);
+      const validations = await Promise.allSettled([
+        ...[...retainedState.reads].map(async ([path, answer]) => {
+          if (fresh.has(path)) {
+            return;
+          }
+          // A denial this tab remembers is audited, so it is not asked again; a rebuild would
+          // show the same refusal without asking.
+          if (answer === refusedRead(403) && deniedReads.has(path)) {
+            refused.set(path, 403);
+            return;
+          }
+          try {
             fresh.set(
               path,
               await request(path, { includeMeta: retainedState.metaReads.has(path) }),
             );
+          } catch (error) {
+            if (!settledRefusal(error)) {
+              throw error;
+            }
+            refused.set(path, error.status);
           }
         }),
-      );
+        // Live sections check that what they show is still readable (finding 1553).
+        ...[...retainedState.revalidators].map((check) => check()),
+      ]);
       if (!lifetime.isCurrent(active)) {
         return;
       }
@@ -1397,7 +1431,9 @@ async function loadPage({
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
           ([path, value]) =>
-            readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
+            (refused.has(path)
+              ? refusedRead(refused.get(path))
+              : readSignature(fresh.get(path), retainedState.metaReads.has(path))) === value,
         );
     }
     // Resolve the old link in the admitted list, even if its row reads were unfinished and we
@@ -1476,6 +1512,7 @@ async function loadPage({
       reads: new Map(),
       metaReads: new Set(),
       resumeHandlers: new Set(),
+      revalidators: new Set(),
       user: session.user,
       // The view this load renders, retained by its own node (finding 1542).
       view: shell.view,
@@ -1500,7 +1537,20 @@ async function loadPage({
         }
         return result;
       } catch (error) {
-        viewState.reusable = false;
+        // A refused or missing read the view shows as its answer keeps the view reusable; live
+        // reads leave theirs to their section's own return check (finding 1553).
+        if ((options.method ?? "GET") === "GET" && settledRefusal(error)) {
+          // Content a later poll was refused may still be on screen: a return rebuilds it.
+          const prior = viewState.reads.get(path);
+          if (prior !== undefined && prior !== refusedRead(error.status)) {
+            viewState.reusable = false;
+          }
+          if (options.revalidate !== false) {
+            viewState.reads.set(path, refusedRead(error.status));
+          }
+        } else {
+          viewState.reusable = false;
+        }
         throw error;
       } finally {
         viewState.pending -= 1;
@@ -1565,6 +1615,10 @@ async function loadPage({
       pageUrl,
       isCurrent: () => lifetime.isCurrent(viewState.active),
       onResume: (handler) => viewState.resumeHandlers.add(handler),
+      onRevalidate: (check) => {
+        viewState.revalidators.add(check);
+        return () => viewState.revalidators.delete(check);
+      },
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.");

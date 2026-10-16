@@ -239,7 +239,16 @@ export function renderAgentLogs(
   const current = () => context.isCurrent();
   // Runtime reads are live and audited: a view restored by Back resumes them instead of
   // having the console replay every one of them to revalidate the cached view.
-  const read = (path, options = {}) => context.request(path, { ...options, revalidate: false });
+  // Answers Back's check already read, taken once by the resumed view's first reads.
+  const checked = new Map();
+  const read = (path, options = {}) => {
+    if (checked.has(path)) {
+      const answer = checked.get(path);
+      checked.delete(path);
+      return Promise.resolve(answer);
+    }
+    return context.request(path, { ...options, revalidate: false });
+  };
 
   function selectedSource() {
     return description?.sources.find(({ id }) => id === sourceSelect.value);
@@ -765,15 +774,61 @@ export function renderAgentLogs(
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));
   }
+  // Back reuses this view only while what it shows is still readable: the check reads on from
+  // where the view stopped, as its polls would, and a refusal rebuilds the page instead
+  // (finding 1553). The resumed view takes those answers rather than asking again.
+  const logsPath = `${base}/logs?`;
+  const forgetCheck = context.onRevalidate?.(async () => {
+    checked.clear();
+    // A Logs view left for another tab is no longer part of the page.
+    if (!context.view?.contains(section)) {
+      forgetCheck?.();
+      return;
+    }
+    const reads = [];
+    if (description !== null && !statusDenied) {
+      reads.push(base);
+    }
+    if (cursor && !logsDenied && readableSelection()) {
+      const query = logQuery(selectedSource(), selectedPod());
+      query.set("cursor", cursor);
+      reads.push(`${logsPath}${query}`);
+    }
+    // Output that cannot be read on from (no cursor, no readable source, or denied since it
+    // showed) is not shown again from the cache.
+    if (rows > 0 && !reads.some((path) => path.startsWith(logsPath))) {
+      throw new Error("The shown output cannot be checked.");
+    }
+    const answers = await Promise.all(
+      reads.map((path) =>
+        context.request(path, { revalidate: false }).catch((error) => {
+          // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
+          if (error.status === 403) {
+            if (path === base) {
+              deniedStatusViews.add(statusKey);
+            } else {
+              deniedLogViews.add(deniedKey);
+            }
+          }
+          throw error;
+        }),
+      ),
+    );
+    reads.forEach((path, index) => checked.set(path, answers[index]));
+  });
   // Timers that fired while Back's cache held this view stopped; pick both polls up again.
   context.onResume?.(() => {
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
-      if (following) {
+      if (following && [...checked.keys()].some((path) => path.startsWith(logsPath))) {
+        void readLogs({ restart: false });
+      } else if (following) {
         scheduleFollow(0);
       }
     }
+    // An unfollowed view drops the page Back read; its cursor still starts there.
+    checked.clear();
   });
   applyFilters();
   void loadStatus()
