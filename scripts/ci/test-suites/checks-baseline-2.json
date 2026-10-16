@@ -1,6 +1,7 @@
 {
   "env": {
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "OCC_TEST_GATEWAY_OUTBOUND_PUBLIC": "1"
   },
   "fileConcurrency": 8,
   "parallelFiles": [

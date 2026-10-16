@@ -35,6 +35,9 @@ established-tunnel shutdown. A selected public lane fails on unavailable network
 it does not silently skip. This variable selects contributor proof and is not an
 operator setting.
 
+Ordinary CI selects the public case in `checks-baseline-2`; its runner needs
+outbound DNS and certificate-verified HTTPS access to `example.com`.
+
 The suite does not prove native Gateway behavior, cluster NetworkPolicies, Slack
 Socket Mode, arbitrary plugin transports, or deterministic mixed-address DNS and
 rebinding scenarios. Address vetting and one-resolution literal connection are

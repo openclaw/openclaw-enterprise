@@ -336,13 +336,14 @@ test(
     assert.equal(activeAgent.activeRevisionId, revision.id);
 
     // Activation is visible before post-commit effects complete the worker claim.
-    // Wait for durable completion before asserting the admitted work's ownership.
+    // Wait for its exact deployment work; active maintenance has separate work rows.
     const revisionWork = await pollUntil(
       `admitted revision ${revision.id} work to succeed`,
       async () => {
         const current = await pool.query(
           `SELECT namespace_id, agent_id, revision_id, actor_id, state
-           FROM occ.controller_work WHERE revision_id = $1`,
+           FROM occ.controller_work WHERE revision_id = $1
+             AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'`,
           [revision.id],
         );
         assert.equal(current.rowCount, 1);
@@ -499,7 +500,8 @@ test(
     const admittedWork = await pool.query(
       `SELECT idempotency_key, state, attempt_count, claim_token,
               lease_expires_at, completed_at
-       FROM occ.controller_work WHERE revision_id = $1`,
+       FROM occ.controller_work WHERE revision_id = $1
+         AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'`,
       [revision.id],
     );
     assert.equal(admittedWork.rowCount, 1);
@@ -838,7 +840,7 @@ test(
     assert.equal(primaryIdentity.id, persistedRevisions.rows[0].service_principal_id);
 
     // Activation becomes visible before post-commit effects finish and the worker
-    // completes its claim, so wait for the durable work state asserted below.
+    // completes its claim. Select deployment work separately from active maintenance.
     const expectedRevisionIds = [
       firstRevision.id,
       secondRevision.id,
@@ -851,6 +853,7 @@ test(
         const current = await pool.query(
           `SELECT namespace_id, agent_id, revision_id, idempotency_key, state
            FROM occ.controller_work WHERE agent_id = ANY($1::text[])
+             AND idempotency_key = 'agent_revision:' || revision_id || ':reconcile'
            ORDER BY agent_id, idempotency_key`,
           [[primary.id, sibling.id, foreign.id]],
         );

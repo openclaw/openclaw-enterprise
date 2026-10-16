@@ -1942,7 +1942,12 @@ test(
       [malformedRevisionId, JSON.stringify(malformedPlugins), revision.id],
     );
     const readError = { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" };
-    const { plugins: _plugins, harnessAuth: _harnessAuth, ...agentMetadata } = agent;
+    const {
+      plugins: _plugins,
+      harnessAuth: _harnessAuth,
+      gatewayOutbound: _gatewayOutbound,
+      ...agentMetadata
+    } = agent;
     const degradedAgent = { ...agentMetadata, configurationReadError: readError };
     const degradedRevision = {
       id: malformedRevisionId,
