@@ -1156,11 +1156,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const revealed = new Promise((resolve) => {
     markRevealed = resolve;
   });
+  // A Logs entry that scrolls to its output also waits for that output (within the same bound)
+  // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
+  let revealHold = null;
+  let scrollOnReveal = null;
   function revealDetail() {
     clearTimeout(revealTimer);
     view.classList.remove("agent-detail-pending");
     // An Agent opened from the list shows this page in place of the list only now (finding 1516).
     context.revealed?.();
+    scrollOnReveal?.();
     markRevealed();
   }
   revealTimer = setTimeout(revealDetail, FIRST_ACTIVITY_WAIT_MS);
@@ -1769,9 +1774,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
-          revealDetail,
-        );
+        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null])
+          .then(() => revealHold)
+          .then(revealDetail);
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
@@ -2566,6 +2571,26 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           view.classList.remove("agent-logs-opening");
         }
       });
+      // An address, reload or sign-in landing reveals the page already at the output once it is
+      // ready, rather than at the top and then jumping to it (finding 1552).
+      let scrolledOnReveal = false;
+      if (!activated && view.classList.contains("agent-detail-pending")) {
+        revealHold = Promise.all([details, logs.firstView]).then(
+          () => {
+            if (!view.classList.contains("agent-detail-pending")) {
+              return;
+            }
+            scrollOnReveal = () => {
+              scrollOnReveal = null;
+              if (tabContext.isCurrent() && !deleting) {
+                detailPane.scrollIntoView({ block: "start" });
+                scrolledOnReveal = true;
+              }
+            };
+          },
+          () => {},
+        );
+      }
       // Finish the overview layout and the Logs view's first reads before bringing this
       // version's output into view, so nothing above it grows afterwards (finding 1413).
       await Promise.all([details, revealed, logs.firstView]);
@@ -2580,7 +2605,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activated &&
           tabs.getBoundingClientRect().top >= 0 &&
           content.getBoundingClientRect().top < innerHeight - Math.min(200, innerHeight / 3);
-        if (!stripKept) {
+        if (!stripKept && !scrolledOnReveal) {
           detailPane.scrollIntoView({ block: "start" });
         }
       }
