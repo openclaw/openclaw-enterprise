@@ -40,7 +40,7 @@ if (args.includes("login")) {
   process.stderr.write("probe-output-must-remain-private\n");
   if (scenario === "timeout" || (scenario === "recover" && prior === 1)) {
     setInterval(() => {}, 1000);
-  } else if (scenario === "killed") {
+  } else if (scenario === "killed" || (scenario === "killed-once" && prior === 1)) {
     process.kill(process.pid, "SIGKILL");
   } else if (scenario === "rejected") {
     process.stdout.write(JSON.stringify({ type: "error", message: "probe-output-must-remain-private" }) + "\n");
@@ -242,7 +242,16 @@ test(
       { name: "timeout then success", input: "recover", attempts: 2, ready: true },
       { name: "two timeouts", input: "timeout", attempts: 2, code: "MODEL_PROBE_TIMEOUT" },
       { name: "credential rejection", input: "rejected", attempts: 1, code: "MODEL_PROBE_FAILED" },
-      { name: "external SIGKILL", input: "killed", attempts: 1, code: "MODEL_PROBE_FAILED" },
+      // An outside kill is transient: it gets the one retry and, when that fails too,
+      // holds the second attempt's cause marked as retried (finding 1576).
+      { name: "external SIGKILL then success", input: "killed-once", attempts: 2, ready: true },
+      {
+        name: "external SIGKILL",
+        input: "killed",
+        attempts: 2,
+        code: "MODEL_PROBE_FAILED",
+        cause: { kind: "PROCESS_EXIT", detail: "signal-SIGKILL-attempt2" },
+      },
       { name: "malformed output", input: "malformed", attempts: 1, code: "MODEL_PROBE_FAILED" },
       { name: "tool event", input: "tool", attempts: 1, code: "MODEL_PROBE_FAILED" },
     ];
@@ -270,6 +279,9 @@ test(
             scenario.ready ? 1 : 0,
           );
           assert.equal(snapshot.status.runtimeFailure?.code, scenario.code);
+          if (scenario.cause !== undefined) {
+            assert.deepEqual(snapshot.status.runtimeFailure.cause, scenario.cause);
+          }
           assert.deepEqual(snapshot.probeDirectories, []);
           assert.doesNotMatch(
             launcher.output() + launcher.errors() + JSON.stringify(snapshot.status),
