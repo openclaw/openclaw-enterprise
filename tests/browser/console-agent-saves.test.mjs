@@ -239,6 +239,9 @@ const inPlaceCases = [
     // The reader's edits are carried over the reread document (finding 1512), so Save
     // Configuration is the next step and deployment waits for it.
     focus: "Save Configuration",
+    described: true,
+    description:
+      'Draft reloaded. Your edits are applied over the reloaded Configuration. Another browser also changed /plugins/entries/knowledge/config/marker (saved: "theirs"); yours are shown. Review them, then save.',
     deployable: false,
   },
 ];
@@ -260,7 +263,7 @@ for (const c of inPlaceCases) {
     await place.check();
     assert.equal(await focusedText(page), c.focus);
     if (c.described) {
-      assert.equal(await focusedDescription(page), c.saved);
+      assert.equal(await focusedDescription(page), c.description ?? c.saved);
     }
     assert.equal(
       await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
@@ -932,6 +935,34 @@ test("a carried DM policy keeps another browser's DM users and names its saved p
   assert.deepEqual(saved.values.channels.slack.allowFrom, ["U0000DDD", "U0000EEE"]);
 });
 
+// A DM user the reader added is ignored by the save once another browser opened DMs to anyone,
+// so the note says it was not applied instead of listing it as applied (finding 1509).
+test("a carried DM user is named as not applied when another browser opened DMs", async (t) => {
+  const { context, page, dialog } = await carrySlackEdit(
+    t,
+    "Carried Off",
+    { dmPolicy: "allowlist", allowFrom: ["U0000AAA"] },
+    (opened) =>
+      setSlackSelection(
+        opened.getByRole("combobox", { name: "Allowed people in direct messages", exact: true }),
+        "U0000AAA, U0000BBB",
+      ),
+    (c) => saveSlackElsewhere(c, { dmPolicy: "open", allowFrom: ["*"] }),
+  );
+  await dialog
+    .getByRole("status")
+    .filter({
+      hasText:
+        "Your edits are applied over the reloaded settings: Allowed people in direct messages (not applied: the reloaded settings turn it off). Review them, then save.",
+    })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
+  const saved = (await context.fixture.request("GET", configurationPath(context))).data;
+  assert.equal(saved.values.channels.slack.dmPolicy, "open");
+  assert.deepEqual(saved.values.channels.slack.allowFrom, ["*"]);
+});
+
 // Carried edits reopened over whatever Reload draft found: after another browser moved the
 // Agent to a Configuration other Agents may share, saving wrote them there; and a carried draft
 // the editor could not reopen stayed for a later visit (finding 1510).
@@ -1114,6 +1145,7 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
     })
     .waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
+  assert.match(await focusedDescription(page), /^Draft reloaded\. Your edits are applied/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;

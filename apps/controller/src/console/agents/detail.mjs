@@ -2397,8 +2397,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (anchorBelow && shrunk < 0) {
       globalThis.scrollBy({ top: shrunk, behavior: "instant" });
     }
+    // `focus` may list fallbacks; the first enabled match in the tab takes focus.
     const named = [...content.querySelectorAll("button")].find(
-      (candidate) => candidate.textContent === focus && !candidate.disabled,
+      (candidate) => [focus].flat().includes(candidate.textContent) && !candidate.disabled,
     );
     const status = saved
       ? [...content.querySelectorAll('[role="status"]')].find((node) => node.textContent === saved)
@@ -3116,6 +3117,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       values,
     );
     const text = JSON.stringify(merged.value, null, 2);
+    if (text === initialText) {
+      // Nothing left to apply: a plain reload of the saved Configuration.
+      context.drafts.forget("configuration");
+      return { retained: undefined, note: "" };
+    }
     const shown = (value) => {
       const json = value === undefined ? "removed" : JSON.stringify(value);
       return json.length > 60 ? `${json.slice(0, 59)}…` : json;
@@ -3132,14 +3138,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         outcomeUnknown: false,
         reloadRequired: false,
       },
-      note:
-        text === initialText
-          ? "The reloaded Configuration already includes your edits."
-          : `Your edits are applied over the reloaded Configuration.${
-              conflicts.length
-                ? ` Another browser also changed ${conflicts.join(", ")}${more}; yours are shown.`
-                : ""
-            } Review them, then save.`,
+      note: `Your edits are applied over the reloaded Configuration.${
+        conflicts.length
+          ? ` Another browser also changed ${conflicts.join(", ")}${more}; yours are shown.`
+          : ""
+      } Review them, then save.`,
     };
   }
 
@@ -3176,7 +3179,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     const feedback = element(
       "p",
-      { className: "hint", role: "status" },
+      { className: "hint", role: "status", id: "configuration-editor-feedback" },
       [savedNotice, carriedNote].filter(Boolean).join(" "),
     );
     // The carried-edits note stays until the reader edits again.
@@ -3218,6 +3221,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       className: "primary",
+      // Reload draft focuses Save after carrying edits; the note says what was applied.
+      ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
     const cancel = button("Cancel", () => {
       baseline = { id: snapshot.id, generation: snapshot.generation };
@@ -3251,7 +3256,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       reload.disabled = true;
       void reloadDraftInPlace(context, {
         saved: "Draft reloaded.",
-        focus: carry ? "Save Configuration" : "Edit Configuration",
+        focus: carry ? ["Save Configuration", "Edit Configuration"] : "Edit Configuration",
       });
     });
 

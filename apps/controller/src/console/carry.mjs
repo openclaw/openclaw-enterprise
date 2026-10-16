@@ -28,14 +28,12 @@ export function sameValue(left, right) {
 }
 
 // A list carries the entries the reader added and removed, not the whole list: entries another
-// browser added stay, and ones it removed are not put back.
+// browser added stay, and ones it removed are not put back. `added` and `removed` name only the
+// entries that change the reread list.
 export function carryList(base, mine, current) {
-  const removed = base.filter((item) => !mine.includes(item));
-  const added = mine.filter((item) => !base.includes(item));
-  const value = [
-    ...current.filter((item) => !removed.includes(item)),
-    ...added.filter((item) => !current.includes(item)),
-  ];
+  const removed = base.filter((item) => !mine.includes(item) && current.includes(item));
+  const added = mine.filter((item) => !base.includes(item) && !current.includes(item));
+  const value = [...current.filter((item) => !removed.includes(item)), ...added];
   return { value, added, removed };
 }
 
@@ -61,20 +59,22 @@ export function carryDocument(base, mine, current, path = "") {
   if (!isRecord(base) || !isRecord(mine) || !isRecord(current)) {
     return { value: mine, conflicts: [{ path: path || "/", saved: current }] };
   }
-  const value = {};
+  const entries = [];
   const conflicts = [];
   const keys = new Set([...Object.keys(current), ...Object.keys(mine), ...Object.keys(base)]);
+  const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
   for (const key of keys) {
     const merged = carryDocument(
-      base[key],
-      mine[key],
-      current[key],
+      own(base, key),
+      own(mine, key),
+      own(current, key),
       `${path}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`,
     );
     if (merged.value !== undefined) {
-      value[key] = merged.value;
+      entries.push([key, merged.value]);
     }
     conflicts.push(...merged.conflicts);
   }
-  return { value, conflicts };
+  // fromEntries defines own keys, so a "__proto__" key in the document stays a key.
+  return { value: Object.fromEntries(entries), conflicts };
 }

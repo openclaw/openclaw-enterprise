@@ -423,6 +423,7 @@ export function createChannelSecretsPanel({
       state.saveError = null;
       state.saveErrorBeforeWrite = false;
       state.saveMessage = "";
+      state.carriedNote = "";
       state.saveGrantWarning = "";
       status.textContent = "Saving channel Secret bindings...";
       error.textContent = "";

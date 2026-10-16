@@ -128,8 +128,7 @@ excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage
 or URLs. Configuration, authentication, and channel baselines prevent stale saves;
 channel snapshots include controls and staged Secret metadata. Reload draft reapplies
-the reader's edits (JSON keys, list entries, Secrets), naming values both browsers
-changed. Save and Cancel
+only the reader's edits, naming values both browsers changed. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
 `dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
@@ -176,7 +175,7 @@ Cancel discards it. Creation remains available.
 an editable Agent-prefixed Name, password input, and optional fixed Slack key.
 POST stores the Secret immediately and stages returned metadata; cancellation
 never deletes it. Conflicts retain inputs without overwriting Secrets.
-Success, cancellation, and uncertain outcomes clear passwords;
+Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear passwords;
 uncertain outcomes block retries until refresh. The
 [Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
 recovery. Metadata and Credentials links open new tabs, preserving edits.

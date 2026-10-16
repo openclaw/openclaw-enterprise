@@ -416,6 +416,12 @@ function applyCarriedFields(provider, fields, carried, initial) {
     }
     const current = { value: field.value, checked: field.checked };
     let detail = "";
+    if (field.disabled) {
+      // The reloaded settings turn this field off (an Open DM policy, or Everyone in these
+      // channels), so a save would ignore it: named, not applied.
+      applied.push({ id: field.id, detail: "not applied: the reloaded settings turn it off" });
+      continue;
+    }
     if (provider.listFields?.includes(field.id)) {
       const list = carryList(
         listValues(base.value),
@@ -568,8 +574,10 @@ function openDrawer(section, state, provider, retained) {
   let applied = [];
   if (carried) {
     applied = applyCarriedFields(provider, fields, carried, retained.initial);
-    for (const { id } of applied) {
-      edited.add(id);
+    for (const { id, detail } of applied) {
+      if (!detail.startsWith("not applied")) {
+        edited.add(id);
+      }
     }
   } else {
     for (const field of fields) {
