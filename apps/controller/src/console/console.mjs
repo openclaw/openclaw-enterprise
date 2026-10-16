@@ -1204,7 +1204,7 @@ async function loadPage({
           return;
         }
         pendingIntent = null;
-        failure = [403, 404].includes(error.status) ? "unavailable" : "interrupted";
+        failure = [400, 403, 404].includes(error.status) ? "unavailable" : "interrupted";
         history.replaceState(null, "", "/console/agents");
       }
       void loadPage({ chatLinkFailure: failure });
