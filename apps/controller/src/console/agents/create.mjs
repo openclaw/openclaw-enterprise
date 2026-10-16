@@ -1739,11 +1739,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = rejectionMessage(error, mutationStarted);
       }
       const feedbackText = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-      // The progress line spoke for the request that just ended (finding 1490).
-      if (savedSecret || savedConfiguration || savedAgent) {
-        showSavedStatus();
-      } else {
-        savedStatus.textContent = "";
+      // A job that ended keeps its final status; any other progress line spoke for the request
+      // that just ended (finding 1490).
+      if (!error.provisioningTerminal) {
+        if (savedSecret || savedConfiguration || savedAgent) {
+          showSavedStatus();
+        } else {
+          savedStatus.textContent = "";
+        }
       }
       if (error.provisioningStopped) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
