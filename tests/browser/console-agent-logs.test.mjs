@@ -1800,6 +1800,45 @@ test("Back rebuilds a Logs view whose status read alone is refused since", async
   assert.equal(refusals, 2);
 });
 
+// Losing operate hides the last status, not log text the member still has permission to read.
+test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "before losing operate")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "lose-operate", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("before losing operate").waitFor();
+  const pods = page.locator(".runtime-pod");
+  await pods.first().waitFor();
+  const reads = () => logRequests(requests, logs.revisionId);
+  const initialReads = reads().length;
+
+  changeGrant(role, "operate", false);
+  const denied = page.waitForResponse(
+    (response) => response.url().endsWith("/runtime") && response.status() === 403,
+  );
+  await page.clock.runFor(10_000);
+  await denied;
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await pods.count(), 0, "do not keep showing the last authorized Pod status");
+  assert.equal(await page.locator("#runtime-log-pod option").count(), 0);
+  assert.equal(reads().length, initialReads, "a status denial must not spend a log read");
+
+  logs.computeDriver.state.lines.push(line(2, "after losing operate"));
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await pane.getByText("after losing operate").waitFor();
+  assert.equal(await pane.getByText("before losing operate").count(), 1, "keep the log cursor");
+  const next = new URL(reads().at(-1).path, logs.fixture.origin).searchParams;
+  assert.equal(next.has("pod"), false, "read logs without the old status-only Pod choice");
+  assert.ok(next.get("cursor"));
+});
+
 // Back compares a read the view shows as refused or missing like data (finding 1553): an
 // unchanged 404 keeps the view, a 403 granted since and a shown read refused since rebuild it
 // (finding 1562). The Configuration tab keeps rate-limited runtime reads out of it.

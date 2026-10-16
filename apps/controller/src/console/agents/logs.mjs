@@ -427,15 +427,17 @@ export function renderAgentLogs(
     followButton.disabled = !readable || previous.checked;
   }
 
-  // Status is denied, but log text has its own grant: offer the log reads anyway.
+  // A later status denial clears the Pod details, not an independently authorized log cursor.
   function offerLogsWithoutStatus() {
-    if (description !== null) {
+    if (statusDenied) {
       return;
     }
+    const first = description === null;
     statusDenied = true;
     description = unobservedDescription();
+    strip.replaceChildren();
     renderPickers();
-    if (!logsDenied) {
+    if (first && !logsDenied) {
       firstLogRead = readLogs({ restart: true });
     }
   }
