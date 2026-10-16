@@ -6,8 +6,8 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.4`, source revision
-`5a7728c304b5528e954e9ae900cf21f84e1a12b1`, for the gateway, supervisor, and
+Select official OpenShell `v0.1.5-pre.4`, source revision
+`a4c848adbddd0b4732fd70ddcf8a563a5b1e9317`, for the gateway, supervisor, and
 static sandbox launcher. Use immutable image digests and gateway/Workspace Helm
 charts from that revision. This release includes operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
@@ -15,9 +15,9 @@ resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 | Component               | Immutable image                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070`    |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:c7cf028241fbeeb9ee273efb2724776eb86107d00d06ed5ca437e6378078e389`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:6bf16794603d7338bbad8a3caecaeec99d0e7b460d69bac260b8f55c21220b20` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:52d345c567a881fc1fc0d17b960a7be68ce92ba510f721831a917f77870c4435`    |
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -30,11 +30,11 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.4`. The release update does not establish a fix for the
+neither qualifies `v0.1.5-pre.4`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `0.1.4-dev.47+g6a6401b9c`, source revision
-`6a6401b9c359b66a3202f584a715fc24c13429d6`.
+The previous selection was `v0.1.4`, source revision
+`5a7728c304b5528e954e9ae900cf21f84e1a12b1`.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
 with its selected `credential_refresh` member, ordinary bearer authentication,

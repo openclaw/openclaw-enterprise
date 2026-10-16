@@ -544,9 +544,9 @@ if (command === engine) {
       ["openclaw-enterprise-runtime:kubernetes-quickstart", "a".repeat(64)],
       ["openclaw-enterprise-controller:kubernetes-quickstart", "b".repeat(64)],
       ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
-      ["openclaw-development/openshell-gateway:occ-dev-owned", "bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"],
-      ["openclaw-development/openshell-sandbox:occ-dev-owned", "ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070"],
-      ["openclaw-development/openshell-supervisor:occ-dev-owned", "aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290"],
+      ["openclaw-development/openshell-gateway:occ-dev-owned", "c7cf028241fbeeb9ee273efb2724776eb86107d00d06ed5ca437e6378078e389"],
+      ["openclaw-development/openshell-sandbox:occ-dev-owned", "52d345c567a881fc1fc0d17b960a7be68ce92ba510f721831a917f77870c4435"],
+      ["openclaw-development/openshell-supervisor:occ-dev-owned", "6bf16794603d7338bbad8a3caecaeec99d0e7b460d69bac260b8f55c21220b20"],
     ].map(([name, digest]) => importedTag(name) + " application/vnd.oci.image.manifest.v1+json sha256:" + digest).join("\\n"));
   } else if (args[0] === "cp") {
     fs.writeFileSync(args.at(-1), JSON.stringify({ data: { id: "key_fixture", key: ${JSON.stringify(serviceKey)} }, meta: { installationId: ${JSON.stringify(matchingInstallationId)} } }));

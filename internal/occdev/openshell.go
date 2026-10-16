@@ -31,10 +31,11 @@ const (
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:a4c848adbddd0b4732fd70ddcf8a563a5b1e9317@sha256:c7cf028241fbeeb9ee273efb2724776eb86107d00d06ed5ca437e6378078e389"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:a4c848adbddd0b4732fd70ddcf8a563a5b1e9317@sha256:52d345c567a881fc1fc0d17b960a7be68ce92ba510f721831a917f77870c4435"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:a4c848adbddd0b4732fd70ddcf8a563a5b1e9317@sha256:6bf16794603d7338bbad8a3caecaeec99d0e7b460d69bac260b8f55c21220b20"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
+	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -298,6 +299,9 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		"--set-string=sandboxServiceAccount.name=openshell-sandbox",
 		"--set=workspaceResources.enabled=false",
 		"--set=server.drivers.kubernetes.allowDriverConfig=true",
+		// The gateway rejects every Sandbox template label it does not allow.
+		// Harness Pods carry OCE selector labels for NetworkPolicies and Services.
+		openShellAllowedPodLabelsValue,
 		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,
