@@ -696,8 +696,8 @@ export const scenarios = {
       "Every session check after the first load takes 2.5 s. Returns and refocus keep the shown page and say Still checking after 1 s; Refresh shows loading after 250 ms. Simulated API; no backend proof.",
     steps: [
       "Wait for Agents, then select Refresh. The list stays shown, inactive, for 250 ms, then Loading replaces it. When the list returns, focus is on Refresh.",
-      "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 1 s, Still checking… appears beside Refresh until the unchanged Agents list returns.",
-      "Switch to another window and back: the list stays shown and says Still checking… after 1 s.",
+      "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 300 ms it dims with a progress cursor, without moving, and after 1 s Still checking… appears beside Refresh until the unchanged Agents list returns.",
+      "Switch to another window and back: the list stays shown, undimmed, and says Still checking… after 1 s.",
     ],
   },
   navigationAgentReturn: {
@@ -2779,7 +2779,7 @@ export const scenarios = {
       "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
       "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
-      "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
+      "Select Save plugin selections. The tab updates in place: the page keeps its scroll and focus moves to Plugin selections saved. Then select Deploy new version and compare the new version with the earlier immutable plugin snapshot.",
     ],
     gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
   },
@@ -4423,6 +4423,7 @@ export const scenarios = {
     steps: [
       "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
       "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
+      "Leave the page open: the 3 s status polls do not change Refresh to Checking or rewrite the deletion notice.",
     ],
     description:
       "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
