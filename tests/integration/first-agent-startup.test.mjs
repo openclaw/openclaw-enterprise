@@ -173,6 +173,24 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
     false,
     "reviewer drift",
   );
+  assert.equal(
+    firstAgentRevisionValuesMatch(
+      prior,
+      configured,
+      { ...record, authMethod: "api_key" },
+      "rev_saved",
+      "rev_saved",
+    ),
+    false,
+    "the historical exception is exclusive to PAT revisions",
+  );
+  assert.equal(
+    matches({ ...prior, tools: { allow: ["*"] } }, "rev_saved"),
+    false,
+    "the historical exception must retain unrelated configuration drift checks",
+  );
+  assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
+  assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
 });
 
 test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {

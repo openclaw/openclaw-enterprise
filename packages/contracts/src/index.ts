@@ -1484,8 +1484,6 @@ export interface SandboxDriver extends Driver {
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
-    /** Admitted catalog metadata; unavailable during pre-admission configuration checks. */
-    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;

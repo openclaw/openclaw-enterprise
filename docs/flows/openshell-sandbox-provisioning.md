@@ -98,9 +98,8 @@ Both verify the pinned archive, package charts and import digest-pinned
 Gateway/Sandbox/supervisor images. Kubernetes-only builds or selects controller/runtime images, imports them
 with PostgreSQL and resolves in-cluster digests.
 
-Both profiles import larger OCE images before pinned OpenShell Sandbox and
-supervisor images, then install OpenShell workloads. This prevents k3s image
-garbage collection during platform-image imports from removing idle OpenShell images.
+Both profiles import OCE images before OpenShell images and workloads, preventing
+k3s garbage collection from removing idle OpenShell images during imports.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -145,11 +144,11 @@ readiness comes first. Development uses the central Gateway endpoint.
 endpoints, including bracketed IPv6, unchanged to the gRPC client. HTTP
 origins keep port 80 explicit; HTTPS and nondefault ports retain their behavior.
 
-The Driver uses Compute's physical namespace name for the Workspace. It reads
-it, creates it if missing, or rereads after concurrent `ALREADY_EXISTS`.
-Adoption requires its expected name, OCC Namespace ID label, managed-by label
-and active phase; conflicts fail Namespace preparation. Compute's `oce-` plus
-15-character digest fits OpenShell's 19-character limit.
+The Workspace uses Compute's physical namespace name (`oce-` plus a 15-character
+digest, within OpenShell's 19-character limit). The Driver reads it, creates it
+if missing, or rereads after concurrent `ALREADY_EXISTS`. Adoption requires the
+expected name, OCC Namespace ID label, managed-by label and active phase;
+conflicts fail Namespace preparation.
 
 ### 2. Derive the provider-owned Harness request
 
@@ -288,8 +287,7 @@ connections after the probe returns.
 The revision provider survives an uncertain create; revision cleanup deletes
 the Sandbox first.
 
-The runtime opens provider files through their reported absolute paths. Any
-Gateway failure prevents readiness.
+The runtime opens provider files at their reported absolute paths.
 
 OpenShell's supervisor opens the node connection. Kubernetes-only uses the
 in-cluster WSS route; Compose uses the Agent Gateway Service URL. In both cases,
@@ -301,12 +299,11 @@ process-group signaling returns `EPERM`.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-After creation, Compute verifies revision ownership. With `harnessEndpoint`, it
-resolves the provider endpoint and replaces the first Gateway’s fail-closed
-template. The resulting Deployment receives that exact
-origin as `APP_SERVER_URL`, the provider-local root as
-`OPENCLAW_REMOTE_WORKSPACE_ROOT`, and, in the owned k3d profile, an exact host
-alias to the provider address. Compute grants Gateway egress only to the
+Compute verifies revision ownership, resolves `harnessEndpoint`, and replaces
+the Gateway’s fail-closed template. It projects the endpoint as `APP_SERVER_URL`,
+the root as `OPENCLAW_REMOTE_WORKSPACE_ROOT`, and `codexPermissionProfile` as
+`OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`. The owned k3d profile also gets an
+exact host alias to the provider address. Compute grants Gateway egress only to the
 configured provider peer and port, leaves the direct Agent Service on its
 inactive selector, and omits the Compute-owned Harness route. A serving
 predecessor is not rewritten during successor preparation; activation resolves
@@ -341,12 +338,9 @@ namespace only after this cleanup succeeds.
 
 ## Debugging and verification
 
-See [OpenShell tests](../testing/openshell.md) for commands and prerequisites.
+See [OpenShell tests](../testing/openshell.md) for prerequisites and proof coverage.
 In Compose, `network.providerHarness.address` must match the `openshell-gateway`
-ClusterIP, the Agent Gateway must use `ws://*.openshell.localhost:8080/`, and its
-direct Service stays inactive. Protected k3d must prove provider files,
-verifier-only authorization, enrollment, model turns, cleanup, containment and
-networking. Native OpenClaw remains verification-only.
+ClusterIP and the Agent Gateway must use `ws://*.openshell.localhost:8080/`.
 
 ## Related docs
 
