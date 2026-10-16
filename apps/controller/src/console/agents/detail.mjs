@@ -2543,6 +2543,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const logs = renderAgentLogs(tabContext, {
         agent,
         revisionId: selected,
+        shown: revealed,
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
           if (tabContext.isCurrent() && !recovery.hidden) {

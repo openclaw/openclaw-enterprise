@@ -89,7 +89,10 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 }
 
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
-export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () => {} }) {
+export function renderAgentLogs(
+  context,
+  { agent, revisionId, shown = Promise.resolve(), onLogsDenied = () => {} },
+) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
   const deniedKey = logViewKey(context, agent.id);
   const statusKey = JSON.stringify([
@@ -112,8 +115,15 @@ export function renderAgentLogs(context, { agent, revisionId, onLogsDenied = () 
     clearTimeout(firstViewTimer);
     if (section.classList.contains("agent-logs-pending")) {
       section.classList.remove("agent-logs-pending");
-      // A hidden pane cannot scroll; open at the newest output as a shown one would.
-      pane.scrollTop = pane.scrollHeight;
+      // A hidden pane cannot scroll; open at the newest output as a shown one would. The page
+      // holding the view can still be hidden (an Agent page waits for its overview), so scroll
+      // once it shows. Scrolled to the top, the pane would read as scrolled up and Follow would
+      // stay paused (finding 1536).
+      void shown.then(() => {
+        if (current()) {
+          pane.scrollTop = pane.scrollHeight;
+        }
+      });
     }
     markFirstView();
   }
