@@ -86,12 +86,10 @@ Changes to a Driver contract require an RFC submitted for human review before
 implementation. This includes adding, removing, or changing interface members,
 configuration contracts, or required behavior, even when signatures stay the same.
 
-If no submitted RFC covers the proposed contract change, stop implementation and
-tell the human to stop and submit an RFC first. Link the
-[RFC process](docs/contributing/rfcs.md) in that message. Reuse or update an
-existing RFC when it owns the decision, and submit the proposed contract change
-for review before writing the code. After submission, implementation may proceed
-alongside RFC review, subject to existing decision and review holds.
+If no submitted RFC covers the change, stop coding. Ask the human to pause
+implementation and [submit the proposal for review](docs/contributing/rfcs.md),
+updating the existing RFC if it owns this decision. Once submitted, code and
+RFC review can proceed in parallel unless a specific decision or hold says to wait.
 
 ### Require integration tests; reject low-value tests
 
