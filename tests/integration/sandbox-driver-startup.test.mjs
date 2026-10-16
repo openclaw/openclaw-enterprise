@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -108,6 +108,13 @@ function workspaceGatewayClient(seed = [], events = []) {
   const profiles = new Map();
   const providers = new Map();
   const calls = [];
+  const storeProfile = (profile, resourceVersion) =>
+    profiles.set(profile.id, {
+      id: profile.id,
+      resourceVersion,
+      annotations: structuredClone(profile.annotations),
+      profile: structuredClone(profile),
+    });
   return {
     calls,
     profiles,
@@ -148,20 +155,10 @@ function workspaceGatewayClient(seed = [], events = []) {
       return profiles.get(id);
     },
     async importProviderProfile(_workspace, profile) {
-      profiles.set(profile.id, {
-        id: profile.id,
-        resourceVersion: "1",
-        annotations: structuredClone(profile.annotations),
-        profile: structuredClone(profile),
-      });
+      storeProfile(profile, "1");
     },
     async updateProviderProfile(_workspace, profile) {
-      profiles.set(profile.id, {
-        id: profile.id,
-        resourceVersion: "2",
-        annotations: structuredClone(profile.annotations),
-        profile: structuredClone(profile),
-      });
+      storeProfile(profile, "2");
     },
     async deleteProviderProfile(_workspace, id) {
       profiles.delete(id);
@@ -471,12 +468,7 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   t.after(async () => pool.end());
   assert.doesNotThrow(() =>
-    createControllerWorker({
-      pool,
-      mode: "production",
-      drivers: createdDriver,
-      emit: () => {},
-    }),
+    createControllerWorker({ pool, mode: "production", drivers: createdDriver, emit: () => {} }),
   );
 });
 
@@ -602,35 +594,20 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
 
 test("OpenShell configures only the selected dedicated Harness runtime", () => {
   const driver = openShellDriver(workspaceGatewayClient());
-  const configuration = {
-    agents: { defaults: { model: "openai/gpt-5" } },
-  };
-  assert.deepEqual(
-    driver.configureAgent(configuration, {
-      id: "openclaw",
-      version: "1.0.0",
-      mode: "dedicated",
-    }),
-    { agents: { defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" } } },
-  );
+  const configuration = { agents: { defaults: { model: "openai/gpt-5" } } };
+  const harness = (id, mode = "dedicated") => ({ id, version: "1.0.0", mode });
+  assert.deepEqual(driver.configureAgent(configuration, harness("openclaw")), {
+    agents: { defaults: { model: "openai/gpt-5", workspace: "/sandbox/enterprise" } },
+  });
   assert.deepEqual(configuration, { agents: { defaults: { model: "openai/gpt-5" } } });
 
-  const codex = driver.configureAgent(configuration, {
-    id: "codex",
-    version: "1.0.0",
-    mode: "dedicated",
-  });
+  const codex = driver.configureAgent(configuration, harness("codex"));
   assert.deepEqual(codex.plugins.entries.codex.config.appServer, {
     sandbox: "danger-full-access",
     approvalsReviewer: "user",
   });
   assert.throws(
-    () =>
-      driver.configureAgent(configuration, {
-        id: "openclaw",
-        version: "1.0.0",
-        mode: "embedded",
-      }),
+    () => driver.configureAgent(configuration, harness("openclaw", "embedded")),
     /supports only dedicated Harness revisions/,
   );
 });
@@ -1072,11 +1049,7 @@ test("OpenShell moves a revision's create to a fresh request_id after the gatewa
   const context = namespaceContext();
   const revision = dedicatedRevision(driver, context, "000000000004");
   const provision = (target = driver) =>
-    target.provisionHarness({
-      ...context,
-      revision,
-      requirements: codexRequirements(revision),
-    });
+    target.provisionHarness({ ...context, revision, requirements: codexRequirements(revision) });
   const trace = () => {
     const seen = calls.map(([call, id]) => (id === undefined ? call : `${call}:${id}`));
     calls.length = 0;
@@ -1288,10 +1261,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
       },
       serviceUrls: {},
     };
-    return {
-      ...storedSandbox,
-      serviceUrls: { "": "http://codex.example.test" },
-    };
+    return { ...storedSandbox, serviceUrls: { "": "http://codex.example.test" } };
   };
   gatewayClient.getSandbox = async () => storedSandbox;
   gatewayClient.getService = async () => {
@@ -1802,11 +1772,7 @@ test("OpenShell operator mode owns workspace chart resources around the Workspac
   const events = [];
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.gateway.operatorWorkspaceResources = [
-    {
-      apiVersion: "v1",
-      kind: "ServiceAccount",
-      metadata: { name: "openshell-sandbox" },
-    },
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "openshell-sandbox" } },
   ];
   const gatewayClient = workspaceGatewayClient([], events);
   const driver = openShellDriver(gatewayClient, configuration);
@@ -1837,11 +1803,7 @@ test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", a
   const configuration = sandboxInstallation().drivers.sandbox.configuration;
   configuration.gateway.workspaceMode = "managed";
   configuration.gateway.operatorWorkspaceResources = [
-    {
-      apiVersion: "v1",
-      kind: "ServiceAccount",
-      metadata: { name: "must-not-be-applied" },
-    },
+    { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "must-not-be-applied" } },
   ];
   const gatewayClient = workspaceGatewayClient();
   const driver = openShellDriver(gatewayClient, configuration);
@@ -2016,97 +1978,70 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
   assert.equal(invokedFactory, true);
 });
 
-// Each test changes one setting of a valid installation; startup refuses every change.
-{
-  const sandbox = (c) => c.drivers.sandbox.configuration;
-  const policies = (c) => sandbox(c).policy.networkPolicies;
-  const endpoint = (c) => policies(c)[0].endpoints[0];
-  const tlsMode = /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/;
-  const landlock = /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/;
-  const readiness = {
-    serviceName: "openshell-gateway",
-    podSelector: { "app.kubernetes.io/name": "openshell" },
-  };
-  const wait = /OpenShell gateway readiness timeout must be a positive safe integer/;
-  for (const [title, cases] of [
-    [
-      "startup rejects OpenShell network values outside the v0.1 protocol enums",
-      [[(c) => (endpoint(c).tls = "inspect"), tlsMode]],
-    ],
-    [
-      "startup refuses OpenShell filesystem modes that can weaken containment",
-      [
-        [(c) => (sandbox(c).policy.landlockCompatibility = "best_effort"), landlock],
-        [(c) => (sandbox(c).policy.landlockCompatibility = "hard-requirement"), landlock],
-      ],
-    ],
-    [
-      "startup rejects OpenShell network policies without binary identities",
-      [
-        [
-          (c) => (policies(c)[0].binaries = []),
-          /OpenShell network policy model-egress requires at least one binary path/,
-        ],
-      ],
-    ],
-    [
-      "startup rejects duplicate OpenShell network policy names",
-      [
-        [
-          (c) => policies(c).push({ ...policies(c)[0], name: "model-egress" }),
-          /OpenShell network policy name model-egress must be unique/,
-        ],
-        [
-          (c) => policies(c).push({ ...policies(c)[0], name: "workspace-node-enrollment" }),
-          /OpenShell network policy name workspace-node-enrollment is reserved/,
-        ],
-      ],
-    ],
-    [
-      "startup rejects inherited OpenShell network enum property names",
-      [
-        [(c) => (endpoint(c).tls = "toString"), /TLS mode must be one of: skip, terminate/],
-        [
-          (c) => (endpoint(c).enforcement = "constructor"),
-          /enforcement mode must be one of: enforce, audit/,
-        ],
-        [
-          (c) => (endpoint(c).access = "__proto__"),
-          /access preset must be one of: read_only, read_write, full/,
-        ],
-      ],
-    ],
-    [
-      "startup rejects the deprecated OpenShell passthrough spelling",
-      [[(c) => (endpoint(c).tls = "passthrough"), tlsMode]],
-    ],
-    [
-      "startup rejects the removed per-Sandbox OpenShell ServiceAccount mode",
-      [
-        [
-          (c) => (sandbox(c).kubernetes.serviceAccount.mode = "driverConfig"),
-          /OpenShell serviceAccount mode must be gatewayConfigured/,
-        ],
-      ],
-    ],
-    [
-      "startup rejects an invalid OpenShell gateway readiness wait",
-      [
-        [(c) => (sandbox(c).gateway.readiness = { ...readiness, timeoutMs: 0 }), wait],
-        [(c) => (sandbox(c).gateway.readiness = { ...readiness }), wait],
-      ],
-    ],
-  ]) {
-    test(title, async (t) => {
-      for (const [change, expected] of cases) {
-        await rejectsAtStartup(t, change, expected);
-      }
-    });
+// Each test below changes settings of a valid installation, and startup refuses each change.
+const TLS_MODE = /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/;
+const LANDLOCK = /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/;
+const READINESS = /OpenShell gateway readiness timeout must be a positive safe integer/;
+const sandboxOf = (c) => c.drivers.sandbox.configuration;
+const policiesOf = (c) => sandboxOf(c).policy.networkPolicies;
+const endpointOf = (c) => policiesOf(c)[0].endpoints[0];
+const readinessWait = {
+  serviceName: "openshell-gateway",
+  podSelector: { "app.kubernetes.io/name": "openshell" },
+};
+
+test("startup rejects OpenShell network values outside the v0.1 protocol enums", (t) =>
+  rejectsAtStartup(t, (c) => (endpointOf(c).tls = "inspect"), TLS_MODE));
+
+test("startup refuses OpenShell filesystem modes that can weaken containment", async (t) => {
+  for (const mode of ["best_effort", "hard-requirement"]) {
+    await rejectsAtStartup(t, (c) => (sandboxOf(c).policy.landlockCompatibility = mode), LANDLOCK);
   }
-}
+});
+
+test("startup rejects OpenShell network policies without binary identities", (t) =>
+  rejectsAtStartup(
+    t,
+    (c) => (policiesOf(c)[0].binaries = []),
+    /OpenShell network policy model-egress requires at least one binary path/,
+  ));
+
+test("startup rejects duplicate OpenShell network policy names", async (t) => {
+  for (const [name, expected] of [
+    ["model-egress", /OpenShell network policy name model-egress must be unique/],
+    ["workspace-node-enrollment", /network policy name workspace-node-enrollment is reserved/],
+  ]) {
+    await rejectsAtStartup(t, (c) => policiesOf(c).push({ ...policiesOf(c)[0], name }), expected);
+  }
+});
+
+test("startup rejects inherited OpenShell network enum property names", async (t) => {
+  for (const [field, value, expected] of [
+    ["tls", "toString", /TLS mode must be one of: skip, terminate/],
+    ["enforcement", "constructor", /enforcement mode must be one of: enforce, audit/],
+    ["access", "__proto__", /access preset must be one of: read_only, read_write, full/],
+  ]) {
+    await rejectsAtStartup(t, (c) => (endpointOf(c)[field] = value), expected);
+  }
+});
+
+test("startup rejects the deprecated OpenShell passthrough spelling", (t) =>
+  rejectsAtStartup(t, (c) => (endpointOf(c).tls = "passthrough"), TLS_MODE));
+
+test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", (t) =>
+  rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).kubernetes.serviceAccount.mode = "driverConfig"),
+    /OpenShell serviceAccount mode must be gatewayConfigured/,
+  ));
+
+test("startup rejects an invalid OpenShell gateway readiness wait", async (t) => {
+  for (const readiness of [{ ...readinessWait, timeoutMs: 0 }, { ...readinessWait }]) {
+    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), READINESS);
+  }
+});
 
 test("shipped startup names a rejected OpenShell policy without logging its name", async (t) => {
-  const { execFile } = await import("node:child_process");
   const directory = await mkdtemp(join(tmpdir(), "occ-policy-name-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const template = sandboxInstallation().drivers.sandbox.configuration.policy.networkPolicies[0];
@@ -2663,11 +2598,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
 
   // Two sources on one revision cannot share a placeholder variable.
   await driver.registerSource(context(second), tokenInput(endpoint));
-  const bearer = (id) => ({
-    ...context(id).source,
-    type: "bearer-token",
-    config: endpoint,
-  });
+  const bearer = (id) => ({ ...context(id).source, type: "bearer-token", config: endpoint });
   const { namespace, signal } = context(first);
   const revision = { harness: { id: "codex", mode: "dedicated" } };
   await assert.rejects(
@@ -2932,10 +2863,7 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   };
   document = { status: 200, json: { runtimeFailure } };
   observed.length = 0;
-  assert.deepEqual(await driver.harnessStatus(statusContext), {
-    state: "failed",
-    runtimeFailure,
-  });
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "failed", runtimeFailure });
   assert.equal(observed.length, 3);
   // Only a 200 status document with a runtime failure counts; anything else is starting.
   for (const other of [
