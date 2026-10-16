@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
-import { createServer as createTcpServer } from "node:net";
+import { connect as connectTcp, createServer as createTcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -498,6 +498,64 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         assert.ok(Number(parked.headers["retry-after"]) > 590, parked.headers["retry-after"]);
       }
       assert.equal(requests, before + 1);
+    },
+  );
+  await t.test(
+    "idle sockets from one caller address cannot lock other callers out",
+    multipleCallers,
+    async (st) => {
+      const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
+      await once(guarded, "listening");
+      st.after(() => {
+        guarded.closeAllConnections();
+        guarded.close();
+      });
+      const port = guarded.address().port;
+      const [idler, other] = aliases;
+      // One address opens the reader's whole 48-connection budget and never
+      // finishes its request headers.
+      const idle = [];
+      st.after(() => {
+        for (const socket of idle) {
+          socket.destroy();
+        }
+      });
+      for (let open = 0; open < 48; open++) {
+        const socket = connectTcp({ port, host: "127.0.0.1", localAddress: idler });
+        socket.on("error", () => {}).resume();
+        idle.push(socket);
+        await once(socket, "connect");
+        socket.write("GET /healthz HTTP/1.1\r\nHost: reader\r\n");
+      }
+      const idling = Date.now();
+      const healthz = () =>
+        new Promise((resolve) => {
+          http
+            .get(
+              "http://127.0.0.1:" + port + "/healthz",
+              { agent: false, localAddress: other },
+              (res) => {
+                res.resume();
+                resolve(res.statusCode);
+              },
+            )
+            .once("error", (error) => resolve(error.code));
+        });
+      // Without a per-address cap every other caller is reset until the idle
+      // sockets reach the 6 s headers timeout (about 30 s with Node's default
+      // check interval), so allow well under 6 s.
+      let status = await healthz();
+      while (status !== 200 && Date.now() - idling < 2000) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        status = await healthz();
+      }
+      assert.equal(status, 200, "another caller is answered while one address idles");
+      // The idle sockets the reader did accept close at the 6 s headers timeout,
+      // checked every second.
+      while (idle.some((socket) => !socket.closed) && Date.now() - idling < 9000) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assert.equal(idle.filter((socket) => !socket.closed).length, 0);
     },
   );
 });

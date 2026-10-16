@@ -660,10 +660,10 @@ export const scenarios = {
       { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
     ],
     description:
-      "Opening a page that was not loaded before keeps the shown page, inactive, until access and the destination's first reads pass, then swaps once. Loading appears only after 250 ms. Simulated API; no backend proof.",
+      "Open an Agent from the list. The URL and page change together; details appear when access and the Agent read are confirmed. Read times are simulated.",
     steps: [
-      "Wait for Agents, then open Research assistant. Its read takes 150 ms: the list stays shown, inactive, then Agent detail replaces it with no loading panel.",
-      "Return to Agents, then open Documentation assistant. Its read takes 1200 ms: the list stays shown for 250 ms, then Loading appears until Agent detail replaces it.",
+      "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
+      "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
   },

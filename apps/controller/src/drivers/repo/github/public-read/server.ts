@@ -4,6 +4,10 @@ import { URL, URLSearchParams } from "node:url";
 
 const origin = "https://api.github.com";
 const maxConcurrent = 3;
+// One caller address needs one connection for its read in flight and a few for
+// requests answered 429 or sockets still closing. More would let it hold the
+// server-wide connection limit with idle sockets until the headers timeout.
+const maxConnectionsPerAddress = 4;
 const maxResponseBytes = 12 * 1024 * 1024;
 const pageNumber = /^(?:[1-9]\d{0,2}|1000)$/;
 const paging = { page: pageNumber, per_page: /^(?:[1-9]\d?|100)$/ };
@@ -196,6 +200,8 @@ function retryAfter(milliseconds: number) {
  * address is the caller's Pod IP, not a shared proxy or node address. One read
  * in flight per caller keeps one slow caller from holding every slot; GitHub's
  * own quota, shared at the egress address, is the only request-volume limit.
+ * Connections are also capped per address, and the headers timeout is checked
+ * every second, so idle sockets from one caller cannot hold every connection.
  */
 export function createPublicGithubReadServer() {
   const agent = new Agent({ keepAlive: true, maxSockets: maxConcurrent });
@@ -295,7 +301,13 @@ export function createPublicGithubReadServer() {
   }
 
   const server = createServer(
-    { headersTimeout: 6000, requestTimeout: 8000, maxHeaderSize: 8192 },
+    {
+      headersTimeout: 6000,
+      requestTimeout: 8000,
+      // Node checks both timeouts on this interval (default 30 s).
+      connectionsCheckingInterval: 1000,
+      maxHeaderSize: 8192,
+    },
     async (req, res) => {
       let result: Result;
       const target = req.url ?? "";
@@ -357,6 +369,25 @@ export function createPublicGithubReadServer() {
     },
   );
   server.maxConnections = 48;
+  const connections = new Map<string, number>();
+  server.on("connection", (socket) => {
+    const address = socket.remoteAddress;
+    const open = address === undefined ? 0 : (connections.get(address) ?? 0);
+    if (address === undefined || open >= maxConnectionsPerAddress) {
+      // Closed unanswered, as Node closes connections over maxConnections.
+      socket.destroy();
+      return;
+    }
+    connections.set(address, open + 1);
+    socket.once("close", () => {
+      const left = (connections.get(address) ?? 1) - 1;
+      if (left > 0) {
+        connections.set(address, left);
+      } else {
+        connections.delete(address);
+      }
+    });
+  });
   server.maxRequestsPerSocket = 16;
   server.keepAliveTimeout = 4000;
   server.setTimeout(30_000);

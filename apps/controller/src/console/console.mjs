@@ -439,7 +439,7 @@ const request = createApiClient({
   sessionKey: () => pinnedSessionKey,
 });
 const retainedViews = new Map();
-// A load that settles sooner swaps pages without showing loading (finding 1407).
+// Other first visits that settle sooner swap pages without showing loading (finding 1407).
 const loadingDelayMs = 250;
 // A return or refocus keeps its page until the recheck settles; past this delay it says so.
 const stillCheckingDelayMs = 1000;
@@ -524,7 +524,7 @@ function clearPasswordInputs() {
   });
 }
 
-function retainMountedView() {
+function retainMountedView(returnLink) {
   const owner = sessionOwnerKey(session);
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!owner || mountedRouteKey === null || !view) {
@@ -538,6 +538,8 @@ function retainMountedView() {
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY: window.scrollY,
+    returnHref:
+      returnLink instanceof HTMLAnchorElement && view.contains(returnLink) ? returnLink.href : null,
   });
   while (retainedViews.size > 16) {
     retainedViews.delete(retainedViews.keys().next().value);
@@ -636,7 +638,7 @@ function markMountedRoute(current) {
   mountedRouteKey = routeKey(current);
 }
 
-function resetReads({ retainView = false } = {}) {
+function resetReads({ retainView = false, returnLink = null } = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.resumeDrafts = resumeDrafts;
@@ -647,7 +649,7 @@ function resetReads({ retainView = false } = {}) {
   clearPasswordInputs();
   shellUI.reset();
   if (retainView) {
-    retainMountedView();
+    retainMountedView(returnLink);
   } else {
     mountedRouteKey = null;
   }
@@ -932,6 +934,7 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
+  openingAgent = false,
 } = {}) {
   if (loggingOut) {
     return;
@@ -960,7 +963,10 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
-  const active = resetReads({ retainView: knownPrivateState });
+  const active = resetReads({
+    retainView: knownPrivateState,
+    returnLink: openingAgent ? document.activeElement : null,
+  });
   if (abandonedCreation) {
     const creationDrafts = drafts.scope(discardCreationOnExit.namespaceId, "create");
     creationDrafts.forget("create");
@@ -975,10 +981,13 @@ async function loadPage({
   }
   const retainedView = taken?.retained ?? null;
   let retained = retainedView !== null;
-  // Every load keeps the shown page, inert, and swaps once: a return when its retained view
-  // revalidates, any other load when admission and the destination's first read settle.
-  let shell = knownPrivateState ? holdShownView(current) : null;
+  // An Agent link opens its destination immediately. Other visits keep the shown page inert
+  // until a retained view revalidates or admission and the destination's first read settle.
+  let shell = knownPrivateState && !openingAgent ? holdShownView(current) : null;
   let held = shell !== null;
+  let agentReturnHref = null;
+  let pendingAgentHeading = null;
+  let focusAgentResult = false;
   let sessionResolved = false;
   let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -995,7 +1004,24 @@ async function loadPage({
   // shows the pending shell at once.
   const startup =
     !held && (!knownPrivateState || app.firstElementChild?.classList.contains("startup") === true);
-  if (!held) {
+  // Only a link from the open list sets openingAgent, so Back returns to that history entry.
+  // No Agent name, fields or controls are shown until the ordinary access checks and read pass.
+  const backToAgents = () => history.back();
+  if (openingAgent && !startup) {
+    shell = renderShell(current.feature, true);
+    pendingAgentHeading = app.querySelector(".content h1");
+    pendingAgentHeading.textContent = "Agent details";
+    shell.view.replaceChildren(
+      element(
+        "section",
+        { className: "state-panel" },
+        element("p", { role: "status" }, "Loading agent details…"),
+        button("Back to Agents", backToAgents),
+      ),
+    );
+    shell.view.setAttribute("aria-busy", "false");
+    pendingAgentHeading.focus();
+  } else if (!held) {
     if (startup) {
       showCheckingSession();
     } else {
@@ -1242,6 +1268,7 @@ async function loadPage({
       }
     }
     const retainedState = retainedView?.state;
+    let unchanged = false;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
@@ -1272,7 +1299,7 @@ async function loadPage({
       }
       // A shell restored without a URL selection has none; once a Namespace is readable,
       // the full render below picks the default instead.
-      const unchanged =
+      unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
@@ -1280,22 +1307,34 @@ async function loadPage({
           ([path, value]) =>
             readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
-      if (unchanged) {
-        stopLoadingTimer();
-        forgetRetainedView(taken);
-        shell = mountRetainedView(current, retainedView);
-        mountedViewState = retainedState;
-        retainedState.active = active;
-        retainedState.resumeDrafts?.();
-        // Timers that fired while the view was detached stopped; let them re-arm.
-        for (const resume of retainedState.resumeHandlers) {
-          resume();
-        }
-        navigateAgentTab = retainedState.tabNavigation;
-        mountedAgent = retainedState.agent;
-        markMountedRoute(current);
-        return;
+    }
+    // Resolve the old link in the admitted list, even if its row reads were unfinished and we
+    // must rebuild it. Capture focus before replacing the shell, not after it falls back to body.
+    if (
+      retained &&
+      reuseView &&
+      !agentsNamespaceUnavailable &&
+      document.activeElement === document.body
+    ) {
+      agentReturnHref = retainedView.returnHref;
+    }
+    // Remember who owns focus before replacing the loading heading, on first visit or retry.
+    focusAgentResult = document.activeElement === pendingAgentHeading;
+    if (unchanged) {
+      stopLoadingTimer();
+      forgetRetainedView(taken);
+      shell = mountRetainedView(current, retainedView);
+      mountedViewState = retainedState;
+      retainedState.active = active;
+      retainedState.resumeDrafts?.();
+      // Timers that fired while the view was detached stopped; let them re-arm.
+      for (const resume of retainedState.resumeHandlers) {
+        resume();
       }
+      navigateAgentTab = retainedState.tabNavigation;
+      mountedAgent = retainedState.agent;
+      markMountedRoute(current);
+      return;
     }
     stopLoadingTimer();
     // The destination rebuilds: a retained view that did not match is stale from here on.
@@ -1502,6 +1541,7 @@ async function loadPage({
         clearRetainedViewsForNamespace(selection);
       }
     }
+    focusAgentResult = document.activeElement === pendingAgentHeading;
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
@@ -1551,6 +1591,18 @@ async function loadPage({
               : current.feature === "backends"
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
+    if (openingAgent && ![400, 403, 404].includes(error.status)) {
+      panel(
+        shell.view,
+        "Could not load agent details",
+        "Try again to check access and load this Agent.",
+        "Try again",
+        () => void loadPage({ openingAgent: true }),
+        error.requestId,
+      );
+      shell.view.querySelector(".state-panel").append(button("Back to Agents", backToAgents));
+      return;
+    }
     const agentDenied = current.agentId && error.status === 403;
     panel(
       shell.view,
@@ -1569,12 +1621,23 @@ async function loadPage({
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
-      if (
+      if (focusAgentResult && document.activeElement === document.body) {
+        const heading =
+          shell.view.querySelector(":scope > .state-panel > h2") ??
+          app.querySelector(".content h1");
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      } else if (
         fromNavigation &&
         previousMountedRouteKey !== routeKey(current) &&
         document.activeElement === document.body
       ) {
-        app.querySelector(".content h1")?.focus({ preventScroll: true });
+        const link =
+          agentReturnHref &&
+          Array.from(shell.view.querySelectorAll("a[href]")).find(
+            (item) => item.href === agentReturnHref,
+          );
+        (link || app.querySelector(".content h1"))?.focus({ preventScroll: true });
       }
       if (fromRefresh && document.activeElement === document.body) {
         // The held page's shell, and the Refresh button pressed in it, were replaced.
