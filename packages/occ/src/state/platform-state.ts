@@ -377,13 +377,23 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
   ): Promise<Readonly<CredentialSource> | undefined>;
   createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
   /**
-   * Points each existing Secret input field at a replacement same-Namespace Secret. The field
-   * set is fixed by the source type; only the referenced Secret IDs change.
+   * Points each existing Secret input field at a replacement same-Namespace Secret and clears
+   * every field's pending Secret: the gateway now holds exactly these. The field set is fixed by
+   * the source type; only the referenced Secret IDs change.
    */
   replaceCredentialSourceSecrets(
     namespaceId: string,
     credentialSourceId: string,
     secrets: Readonly<Record<string, SecretReference>>,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  /**
+   * Sets, or with `null` clears, the pending Secret of each named field of a ready source.
+   * Returns `undefined` when the source is missing or not `ready`.
+   */
+  setCredentialSourcePendingSecrets(
+    namespaceId: string,
+    credentialSourceId: string,
+    pending: Readonly<Record<string, SecretReference | null>>,
   ): Promise<Readonly<CredentialSource> | undefined>;
   /** Moves a registering source to `ready` once the gateway confirms its copy. */
   markCredentialSourceReady(
@@ -1701,7 +1711,9 @@ function repositories(
       for (const source of snapshot.credentialSources.values()) {
         if (
           source.namespaceId === namespaceId &&
-          Object.values(source.secrets).some((reference) => reference.id === secretId)
+          [...Object.values(source.secrets), ...Object.values(source.pendingSecrets ?? {})].some(
+            (reference) => reference.id === secretId,
+          )
         ) {
           add("credential_source", source.id);
         }
@@ -1967,7 +1979,41 @@ function repositories(
           throw new ScopeViolationError("The credential source references an unavailable Secret.");
         }
       }
-      const saved = immutableCopy({ ...current, secrets: { ...secrets } });
+      const { pendingSecrets: _cleared, ...settled } = current;
+      const saved = immutableCopy({ ...settled, secrets: { ...secrets } });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return immutableCopy(saved);
+    },
+    setCredentialSourcePendingSecrets: async (namespaceId, credentialSourceId, pending) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state !== "ready") {
+        return undefined;
+      }
+      const marks: Record<string, SecretReference> = { ...current.pendingSecrets };
+      for (const [field, reference] of Object.entries(pending)) {
+        if (current.secrets[field] === undefined) {
+          throw new ScopeViolationError(
+            "Credential source Secret inputs must reference exact Secrets.",
+          );
+        }
+        if (reference === null) {
+          delete marks[field];
+          continue;
+        }
+        // Mirrors the pending Secret foreign key.
+        if (
+          reference.kind !== "secret" ||
+          reference.namespaceId !== namespaceId ||
+          !snapshot.secrets.has(agentKey(namespaceId, reference.id))
+        ) {
+          throw new ScopeViolationError("The credential source references an unavailable Secret.");
+        }
+        marks[field] = { ...reference };
+      }
+      const { pendingSecrets: _previous, ...rest } = current;
+      const saved = immutableCopy(
+        Object.keys(marks).length === 0 ? rest : { ...rest, pendingSecrets: marks },
+      );
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return immutableCopy(saved);
     },

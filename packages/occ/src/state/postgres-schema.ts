@@ -543,6 +543,8 @@ export const credentialSourceSecrets = occSchema.table(
     credentialSourceId: text("credential_source_id").notNull(),
     field: collatedText("field").notNull(),
     secretId: text("secret_id").notNull(),
+    // The Secret an update is sending to the gateway, committed before the gateway write.
+    pendingSecretId: text("pending_secret_id"),
   },
   (table): PgTableExtraConfigValue[] => [
     primaryKey({
@@ -563,8 +565,19 @@ export const credentialSourceSecrets = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("restrict"),
+    foreignKey({
+      name: "credential_source_secrets_pending_secret_owner",
+      columns: [table.namespaceId, table.pendingSecretId],
+      foreignColumns: [secrets.namespaceId, secrets.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
     check("credential_source_secrets_field_format", sql`${table.field} ~ '^[a-z][a-z0-9_]{0,63}$'`),
     index("credential_source_secrets_secret_idx").on(table.namespaceId, table.secretId),
+    index("credential_source_secrets_pending_secret_idx").on(
+      table.namespaceId,
+      table.pendingSecretId,
+    ),
   ],
 );
 

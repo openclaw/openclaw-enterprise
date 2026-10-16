@@ -1,6 +1,6 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-14
+updated: 2026-10-15
 last_updated_session: authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f
 ---
 
@@ -51,7 +51,7 @@ graph TD
 
 ## Execution Trace
 
-Registration and deletion reject an active or stale inherited transaction from the same controller
+Registration, update and deletion reject an active or stale inherited transaction from the same controller
 instance with `ResourceConflictError` before effects. OCC commits the
 intermediate State record before calling `registerSource` or `removeSource`.
 
@@ -84,8 +84,7 @@ OpenShell-safe form; status and deletion do not guess ownership from an invalid 
 `packages/occ/src/index.ts:createCredentialSource`
 
 OCC first rejects any Secret reference to another Namespace with
-`SecretBindingValidationError` (`400 INVALID_REQUEST`, "Credential source
-Secrets cannot cross Namespaces."). For each Secret reference, it then authorizes
+`SecretBindingValidationError` (`400 INVALID_REQUEST`). For each Secret reference, it then authorizes
 `secret:operate`, locks the Secret (a Secret the Namespace does not hold is
 `404`), and calls the owning Driver's optional
 `withValue`. The Kubernetes Secret Driver verifies the stored object's ownership
@@ -201,16 +200,16 @@ audit failure leaves `deleting` for retry. Namespace deletion returns
 `packages/occ/src/index.ts:updateCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:updateSource`
 
-OCC authorizes `credential_source:update`, reads the Namespace and locks only the
-source. It requires `ready` and an offered type (`409` otherwise), validates
-replacement references against catalog Secret fields, authorizes `secret:operate`,
-and reads values with `withValue`. Under the source lock, `updateSource` uses
-Compute placement; OpenShell requires the owned provider and calls `UpdateProvider`.
-References and success audit commit together. Failure after the gateway call rolls
-back references, leaves newer gateway values for a repeated request to converge,
-and records a `failure` audit. `absent` or `failed` returns `503`. OpenShell rejects
-empty values because `UpdateProvider` merges them; only subsequently started
-processes receive updates.
+OCC authorizes `credential_source:update` and `secret:operate`, locks only the
+source, requires `ready` and an offered type (`409` otherwise) and validates
+replacement references against catalog fields. One transaction reads values, then
+commits each replacement as its field's `pending_secret_id`, a Secret consumer
+refresh types cannot resend. Another relocks, reads values again and calls
+`updateSource` (OpenShell `UpdateProvider`), then commits references, cleared
+pending ids and success audit. Later failure keeps pending ids and newer gateway
+values for a repeated request and records a `failure` audit. `absent` or `failed`
+returns `503`. OpenShell rejects empty values because `UpdateProvider` merges
+them; only new processes receive updates.
 
 ### 9. Withdraw a source from an Agent
 

@@ -370,6 +370,12 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  /**
+   * Per field, the Secret an unfinished update sent, or was about to send, to the gateway. It
+   * counts as a consumer of that Secret until an update commits or the source is deleted.
+   * Absent when no field has one; never returned by the API.
+   */
+  readonly pendingSecrets?: Readonly<Record<string, SecretReference>>;
   readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;

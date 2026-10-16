@@ -142,12 +142,13 @@ Mirrors each Agent draft's `credential_sources` through a trigger, so the databa
 
 ### `credential_source_secrets`
 
-Links each credential source secret field to the Namespace Secret that supplied it.
+Links each credential source secret field to the Namespace Secret that supplied it, and to the Secret an unfinished update sent to the gateway.
 
 - `namespace_id`
 - `credential_source_id`
 - `field`
 - `secret_id`
+- `pending_secret_id`
 
 ### `credential_withdrawals`
 

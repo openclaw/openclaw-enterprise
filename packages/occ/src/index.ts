@@ -4747,52 +4747,80 @@ export class OpenClawController {
   }
 
   /**
-   * Pushes current, or replacement, Secret values to the gateway copy. The gateway calls run
-   * under the source lock, which orders them against rotation, deletion, and Agent admission of
-   * this source; they do not hold the Namespace lock, because a refresh type's calls wait on the
-   * token issuer. A failed commit leaves the gateway newer, and repeating the same request
-   * converges. Running Harness processes keep the previous value. `failureAudit` builds the event
-   * committed on its own when the request fails after a gateway write began.
+   * Pushes current, or replacement, Secret values to the gateway copy, in two transactions. The
+   * first validates the request, makes the reads that can fail before a gateway write (Secret
+   * values, placement and, for a refresh type, the gateway status), then records each
+   * replacement Secret as its field's pending Secret and commits. From then until an update
+   * commits or the source is deleted, the gateway may hold that Secret's value, so it stays a
+   * consumer of the Secret and a refresh type refuses to resend it (finding 1398); nothing else
+   * removes the mark. The second runs the gateway calls under the source lock, which orders them
+   * against rotation, deletion, and Agent admission of this source; it does not hold the
+   * Namespace lock, because a refresh type's calls wait on the token issuer. It commits the
+   * references, clears every pending Secret and appends `audit` together. A failed commit leaves
+   * the gateway newer, and repeating the same request converges. Running Harness processes keep
+   * the previous value. `failureAudit` builds the event committed on its own when the request
+   * fails after a gateway write began.
    */
   async updateCredentialSource(
     principalId: string,
     input: UpdateCredentialSourceInput,
+    audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     failureAudit?: (reasonCode: string) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
+    this.assertCredentialSourceTransactionBoundary();
     this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
-        kind: "credential_source",
-        id: input.credentialSourceId,
-        namespaceId: input.namespaceId,
-      });
-      const namespace = await this.exactNamespace(state, input.namespaceId);
-      // An Installation property, so it is reported before any Namespace or source state.
-      this.assertCredentialGatewaySelected();
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
+    await this.mutate(async (state) => {
+      const { namespace, source, gateway, type, secretRefs } =
+        await this.lockCredentialSourceForUpdate(state, principalId, input);
+      const pending = source.pendingSecrets ?? {};
+      if (type.rotation === "refresh") {
+        // An unfinished update may already have sent this Secret's value to the issuer.
+        refuseIssuerRotatedResend(type, pending, secretRefs);
       }
-      // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
-      // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
-      // this source, PostgreSQL ends the cycle by failing one request.
-      const source = await state.credentialSources.lockCredentialSource(
-        namespace.id,
-        input.credentialSourceId,
-      );
-      if (!source) {
-        throw new ScopeViolationError(
-          "The credential source does not belong to the exact Namespace.",
+      // The gateway step repeats these reads; making them first means a transient failure
+      // refuses the request before it leaves a mark that only a later update can clear.
+      await this.readCredentialSourceSecrets(state, principalId, namespace, secretRefs);
+      const placed = await this.credentialNamespace(namespace);
+      if (type.rotation === "refresh") {
+        assertCredentialGatewayHoldsSource(
+          await this.credentialGatewayOperation(() =>
+            gateway.sourceStatus({
+              namespace: placed,
+              source,
+              signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            }),
+          ),
         );
       }
-      if (source.state !== "ready") {
-        throw new ResourceStateConflictError("Only a ready credential source can be updated.");
+      const marks: Record<string, SecretReference> = {};
+      for (const [field, reference] of Object.entries(secretRefs)) {
+        if (reference.id !== source.secrets[field]?.id && reference.id !== pending[field]?.id) {
+          marks[field] = reference;
+        }
       }
-      const gateway = this.ownedCredentialGatewayDriver(source.driverId);
-      const type = await this.credentialSourceType(gateway, source.type);
-      const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
-      credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
-      if (type.rotation === "refresh") {
-        refuseIssuerRotatedResend(type, source.secrets, secretRefs);
+      if (
+        Object.keys(marks).length > 0 &&
+        (await state.credentialSources.setCredentialSourcePendingSecrets(
+          namespace.id,
+          source.id,
+          marks,
+        )) === undefined
+      ) {
+        throw new ResourceStateConflictError("The credential source changed during the update.");
+      }
+    });
+    return this.mutate(async (state) => {
+      const { namespace, source, gateway, type, secretRefs } =
+        await this.lockCredentialSourceForUpdate(state, principalId, input);
+      // Every replaced field must still carry its pending Secret; an update that committed or
+      // marked the field since then wins, and this one stops before any gateway write.
+      for (const [field, reference] of Object.entries(secretRefs)) {
+        if (
+          reference.id !== source.secrets[field]?.id &&
+          reference.id !== source.pendingSecrets?.[field]?.id
+        ) {
+          throw new ResourceStateConflictError("The credential source changed during the update.");
+        }
       }
       const values = await this.readCredentialSourceSecrets(
         state,
@@ -4838,19 +4866,72 @@ export class OpenClawController {
         );
         assertCredentialGatewayHoldsSource(status);
       }
-      const updated =
-        input.secrets === undefined
-          ? source
-          : await state.credentialSources.replaceCredentialSourceSecrets(
-              namespace.id,
-              source.id,
-              secretRefs,
-            );
+      // The gateway now holds exactly these Secrets, so this also clears every pending one,
+      // including one left by an earlier failed update.
+      const updated = await state.credentialSources.replaceCredentialSourceSecrets(
+        namespace.id,
+        source.id,
+        secretRefs,
+      );
       if (updated === undefined) {
         throw new ResourceStateConflictError("The credential source changed during the update.");
       }
+      if (audit !== undefined) {
+        await state.audit.append(audit(this.credentialSourceMetadata(updated)));
+      }
       return this.credentialSourceMetadata(updated, status);
     });
+  }
+
+  /**
+   * Authorizes and locks a ready source for an update, and validates the Secret references the
+   * update sends: the request's, or the recorded ones when it names none.
+   */
+  private async lockCredentialSourceForUpdate(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    input: UpdateCredentialSourceInput,
+  ): Promise<{
+    readonly namespace: Readonly<Namespace>;
+    readonly source: Readonly<CredentialSource>;
+    readonly gateway: CredentialGatewayDriver;
+    readonly type: Readonly<CredentialSourceType>;
+    readonly secretRefs: Readonly<Record<string, SecretReference>>;
+  }> {
+    await this.authorize(principalId, "update", {
+      kind: "credential_source",
+      id: input.credentialSourceId,
+      namespaceId: input.namespaceId,
+    });
+    const namespace = await this.exactNamespace(state, input.namespaceId);
+    // An Installation property, so it is reported before any Namespace or source state.
+    this.assertCredentialGatewaySelected();
+    if (namespace.status !== "ready") {
+      throw new NamespaceNotReadyError();
+    }
+    // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
+    // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
+    // this source, PostgreSQL ends the cycle by failing one request.
+    const source = await state.credentialSources.lockCredentialSource(
+      namespace.id,
+      input.credentialSourceId,
+    );
+    if (!source) {
+      throw new ScopeViolationError(
+        "The credential source does not belong to the exact Namespace.",
+      );
+    }
+    if (source.state !== "ready") {
+      throw new ResourceStateConflictError("Only a ready credential source can be updated.");
+    }
+    const gateway = this.ownedCredentialGatewayDriver(source.driverId);
+    const type = await this.credentialSourceType(gateway, source.type);
+    const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
+    credentialSourceFieldsMatch("secrets", type.secrets, secretRefs);
+    if (type.rotation === "refresh") {
+      refuseIssuerRotatedResend(type, source.secrets, secretRefs);
+    }
+    return { namespace, source, gateway, type, secretRefs };
   }
 
   /**
@@ -11141,7 +11222,7 @@ export class OpenClawController {
     // Async descendants can retain the borrowed unit after its transaction has ended.
     if (this.transactionContext.getStore() !== undefined) {
       throw new ResourceConflictError(
-        "Credential source registration and deletion cannot run in a controller transaction.",
+        "Credential source registration, update and deletion cannot run in a controller transaction.",
       );
     }
   }

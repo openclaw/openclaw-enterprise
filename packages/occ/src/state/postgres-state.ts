@@ -540,7 +540,12 @@ const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
     WHERE css.credential_source_id = cs.id
-  ), '{}'::jsonb) AS secret_ids`;
+  ), '{}'::jsonb) AS secret_ids,
+  COALESCE((
+    SELECT jsonb_object_agg(css.field, css.pending_secret_id)
+    FROM occ.credential_source_secrets AS css
+    WHERE css.credential_source_id = cs.id AND css.pending_secret_id IS NOT NULL
+  ), '{}'::jsonb) AS pending_secret_ids`;
 
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
   state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
@@ -576,24 +581,29 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const pendingIds = jsonObject(row.pending_secret_ids);
   if (
     Object.values(config).some((value) => typeof value !== "string") ||
-    Object.values(secretIds).some((value) => typeof value !== "string")
+    Object.values(secretIds).some((value) => typeof value !== "string") ||
+    Object.values(pendingIds).some((value) => typeof value !== "string")
   ) {
     throw new DependencyUnavailableError("Persisted credential source metadata is invalid.");
   }
+  const references = (ids: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(ids as Record<string, string>).map(([field, id]) => [
+        field,
+        { kind: "secret" as const, namespaceId, id },
+      ]),
+    );
   return immutableCopy({
     id: text(row, "id"),
     namespaceId,
     name: text(row, "name"),
     type: text(row, "type"),
     config: config as Record<string, string>,
-    secrets: Object.fromEntries(
-      Object.entries(secretIds as Record<string, string>).map(([field, id]) => [
-        field,
-        { kind: "secret" as const, namespaceId, id },
-      ]),
-    ),
+    secrets: references(secretIds),
+    ...(Object.keys(pendingIds).length === 0 ? {} : { pendingSecrets: references(pendingIds) }),
     driverId: text(row, "driver_id"),
     state,
     createdAt: timestamp(row, "created_at"),
@@ -2445,6 +2455,11 @@ export class PostgresPlatformState implements PlatformStateStore {
                  FROM occ.credential_source_secrets
                  WHERE namespace_id = $1 AND secret_id = $2
                  UNION
+                 -- An unfinished update may have sent this Secret to the gateway.
+                 SELECT 'credential_source', credential_source_id
+                 FROM occ.credential_source_secrets
+                 WHERE namespace_id = $1 AND pending_secret_id = $2
+                 UNION
                  SELECT 'configuration', c.id
                  FROM occ.configurations AS c,
                       jsonb_each(COALESCE(c.secret_bindings, '{}'::jsonb)) AS binding(env, value)
@@ -2801,9 +2816,11 @@ export class PostgresPlatformState implements PlatformStateStore {
             "Credential source Secret inputs must reference exact Secrets.",
           );
         }
-        // The Secret foreign key rejects a missing or foreign Secret.
+        // The Secret foreign key rejects a missing or foreign Secret. The gateway now holds
+        // exactly these Secrets, so no field keeps a pending one.
         const updated = await client.query(
-          `UPDATE occ.credential_source_secrets AS css SET secret_id = input.secret_id
+          `UPDATE occ.credential_source_secrets AS css
+           SET secret_id = input.secret_id, pending_secret_id = NULL
            FROM unnest($3::text[], $4::text[]) AS input(field, secret_id)
            WHERE css.namespace_id = $1 AND css.credential_source_id = $2
              AND css.field = input.field`,
@@ -2812,6 +2829,47 @@ export class PostgresPlatformState implements PlatformStateStore {
             credentialSourceId,
             inputs.map(([field]) => field),
             inputs.map(([, reference]) => reference.id),
+          ],
+        );
+        if (updated.rowCount !== inputs.length) {
+          throw new DependencyUnavailableError(
+            "Persisted credential source Secret fields are invalid.",
+          );
+        }
+        return findCredentialSource(namespaceId, credentialSourceId);
+      },
+      setCredentialSourcePendingSecrets: async (namespaceId, credentialSourceId, pending) => {
+        const current = await findCredentialSource(namespaceId, credentialSourceId);
+        if (current === undefined || current.state !== "ready") {
+          return undefined;
+        }
+        const inputs = Object.entries(pending);
+        if (
+          inputs.some(
+            ([field, reference]) =>
+              current.secrets[field] === undefined ||
+              (reference !== null &&
+                (reference.kind !== "secret" || reference.namespaceId !== namespaceId)),
+          )
+        ) {
+          throw new ScopeViolationError(
+            "Credential source Secret inputs must reference exact Secrets.",
+          );
+        }
+        if (inputs.length === 0) {
+          return current;
+        }
+        // The pending Secret foreign key rejects a missing or foreign Secret.
+        const updated = await client.query(
+          `UPDATE occ.credential_source_secrets AS css SET pending_secret_id = input.secret_id
+           FROM unnest($3::text[], $4::text[]) AS input(field, secret_id)
+           WHERE css.namespace_id = $1 AND css.credential_source_id = $2
+             AND css.field = input.field`,
+          [
+            namespaceId,
+            credentialSourceId,
+            inputs.map(([field]) => field),
+            inputs.map(([, reference]) => reference?.id ?? null),
           ],
         );
         if (updated.rowCount !== inputs.length) {
