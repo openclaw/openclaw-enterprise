@@ -835,14 +835,22 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
 // The case above trusts holdRequests() to send a held write exactly once. A loopback origin
 // counts each POST and drops the first answer on /lost.
 test("holdRequests sends a held write once, and fails it when its answer is lost", async (t) => {
-  const posts = { "/lost": 0, "/after": 0, "/before": 0 };
+  const posts = new Map([
+    ["/lost", 0],
+    ["/after", 0],
+    ["/before", 0],
+  ]);
   const server = createServer((request, response) => {
     if (request.method !== "POST") {
       response.end("<!doctype html><title>holds</title>");
       return;
     }
-    posts[request.url] += 1;
-    if (request.url === "/lost" && posts["/lost"] === 1) {
+    if (!posts.has(request.url)) {
+      response.writeHead(404).end();
+      return;
+    }
+    posts.set(request.url, posts.get(request.url) + 1);
+    if (request.url === "/lost" && posts.get("/lost") === 1) {
       request.socket.destroy();
       return;
     }
@@ -869,7 +877,7 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
   // The hold caught the POST: the waiter gets the lost answer, not the no-request deadline.
   await assert.rejects(lost.requested, (error) => !/was held/.test(error.message));
   assert.equal(await lostAnswer, "failed");
-  assert.equal(posts["/lost"], 1);
+  assert.equal(posts.get("/lost"), 1);
 
   for (const [path, options] of [
     ["/after", { afterServer: true }],
@@ -878,10 +886,10 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
     const hold = await holdRequests(t, page, `${origin}${path}`, { once: true, ...options });
     const answer = post(path);
     await hold.requested;
-    assert.equal(posts[path], options.afterServer ? 1 : 0);
+    assert.equal(posts.get(path), options.afterServer ? 1 : 0);
     hold.release();
     assert.equal(await answer, "202 applied");
-    assert.equal(posts[path], 1);
+    assert.equal(posts.get(path), 1);
   }
 });
 
