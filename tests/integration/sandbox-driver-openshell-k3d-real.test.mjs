@@ -43,6 +43,7 @@ import {
   retryKubectlRead,
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
+import { codexTurnTrace } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -738,6 +739,30 @@ async function readWorkerRevisionState(pool, { namespaceId, agentId, revisionId 
       completed: row.completed,
     })),
   };
+}
+
+// Finding 1532: a revision whose lifecycle work failed permanently never activates, so a wait
+// for its activation stops at once. Returns that work's code, attempt and result data, which
+// for a failed model probe holds the runtime's classified cause; otherwise undefined.
+async function permanentRevisionFailure(pool, { namespaceId, revisionId }) {
+  const { rows } = await diagnosticQuery(
+    pool,
+    `SELECT state, reason_code, attempt_count, result_data
+     FROM occ.controller_work
+     WHERE namespace_id = $1 AND revision_id = $2 AND work_kind = 'lifecycle'
+     ORDER BY updated_at DESC, created_at DESC
+     LIMIT 1`,
+    [namespaceId, revisionId],
+  );
+  const work = rows[0];
+  return work?.state === "failed_permanent"
+    ? {
+        state: work.state,
+        code: work.reason_code ?? undefined,
+        attempt: work.attempt_count,
+        ...(work.result_data === null ? {} : { result: work.result_data }),
+      }
+    : undefined;
 }
 
 // The reporter keeps 1,000 characters of each output line, so the persisted state comes before
@@ -4769,6 +4794,12 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
   let result;
   let run;
   let completed = [];
+  // Finding 1575: each turn's steps, so a skipped probe shows what the turn did instead.
+  const traces = [];
+  const traceSecrets = failureSecrets([
+    process.env,
+    Object.fromEntries(secrets.map((value, index) => [`PROBE_CREDENTIAL_${index}`, value])),
+  ]);
   for (let attempt = 1; attempt <= 3 && run === undefined; attempt += 1) {
     if (attempt > 1) {
       await delay(20_000);
@@ -4794,8 +4825,14 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     run = completed.find(
       (item) => item?.type === "commandExecution" && String(item.command).includes(nonce),
     );
+    if (run === undefined) {
+      traces.push(`attempt ${attempt}: ${codexTurnTrace(result.items, traceSecrets, 1_500)}`);
+    }
   }
   if (run === undefined) {
+    process.stderr.write(
+      `OpenShell integration: turns that skipped the probe:\n${traces.join("\n")}\n`,
+    );
     // Codex logs why a tool call did not run, such as a dropped model stream. Lines that could
     // carry a credential or placeholder are dropped.
     const logs = await kubectl(
@@ -4825,7 +4862,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
       completed
         .filter((item) => item?.type === "agentMessage")
         .map((item) => String(item.text ?? "").slice(0, 400)),
-    )}`,
+    )}; turns:\n${traces.join("\n")}`,
   );
   assert.match(result.assistant, new RegExp(nonce));
   const output = String(run.aggregatedOutput ?? "");
@@ -5306,6 +5343,8 @@ async function untrustedUpstreamFailureDetail(
 // keeps the start, so the events there run newest first.
 const replacementWorkerChars = 2_500;
 const replacementPodsChars = 600;
+// The failed work's result data: a classified runtime failure is well under this.
+const replacementFailureChars = 1_000;
 
 async function replacementActivationDiagnostic(topology, revision, worker) {
   const gatewayPassword = await diagnosticGatewayPassword(topology);
@@ -5881,7 +5920,26 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
         `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
       );
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // A replacement that failed for good cannot activate: fail now rather than wait out the
+      // timeout, with the worker's probe error first in the message (finding 1532). A read that
+      // fails only skips this check for one poll.
+      const failed = await permanentRevisionFailure(topology.observerPool, {
+        namespaceId: topology.namespaceId,
+        revisionId: redeployed.data.id,
+      }).catch(() => undefined);
+      if (failed !== undefined) {
+        throw new Error(
+          `replacement OpenShell revision ${redeployed.data.id} failed permanently and cannot activate: ${redactLogLine(
+            JSON.stringify(failed),
+            turnFailureSecrets(topology),
+            replacementFailureChars,
+          )}`,
+        );
+      }
+      return undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);
