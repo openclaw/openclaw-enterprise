@@ -1439,9 +1439,7 @@ async function loadPage({
     // delay passes and the loading page takes its place (finding 1537).
     const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
     const startupStandIn =
-      agentEntry && !shell && loadingTimer !== null
-        ? app.querySelector(":scope > .startup")
-        : null;
+      agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
       agentEntry && shell?.view.isConnected
         ? shell
