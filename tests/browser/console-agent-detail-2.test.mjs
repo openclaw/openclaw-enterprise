@@ -1999,7 +1999,9 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   // Retry asks again, so a real denial after a grant change is never hidden.
   await page.getByRole("button", { name: "Retry" }).click();
   await unavailable.waitFor();
-  await waitForCondition(() => reads(configurationPath) === 2, "saved settings reread");
+  // Fetch tracking restarted at the last reload; the request log still spans both reads.
+  await waitForSettledFetches(page, configurationPath, 1);
+  assert.equal(reads(configurationPath), 2);
   assert.equal(denials("openclaw.configurations.read"), 2);
 });
 

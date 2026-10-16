@@ -127,13 +127,17 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
+- A dedicated Codex model check cause whose detail ends `-attempt2`, such as
+  `turn-failed-attempt2`, means the check was retried once, after a timeout or
+  a transient failure, and the second attempt failed that way.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
   A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
   exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
-  `RUNTIME_MODEL_PROBE_FAILED`. The
+  `RUNTIME_MODEL_PROBE_FAILED`. While it holds a failure, the Harness answers
+  the Agent Gateway's connection with `503` naming the held code. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
   decisions; an operator can read the
   [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).

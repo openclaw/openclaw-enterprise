@@ -163,10 +163,10 @@ allow the WebSocket upgrade. Compatible endpoints use HTTPS Responses streaming,
 Secret-backed Codex uses [Compute configuration](drivers/kubernetes-compute.md#configuration);
 OpenShell sources supply their own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
 subprocess timeout once after one second. Each attempt has a 30-second cap within
-one 61-second budget, including the delay. Authentication rejection, malformed
-output, tool events, and external signals without timeout evidence do not retry.
-Wrappers run under `tini`, so termination during a probe, its delay, or a held
-failure exits at once without another probe. Exhausted or nonretryable failure
+one 61-second budget, including the delay. A transient failure (provider 5xx or
+overload, dropped stream or connection, external kill) shares that one retry;
+other failures do not retry. Under `tini`, termination during a probe, delay or
+held failure exits at once. Exhausted or nonretryable failure
 holds the process unready until restart or Pod stop; readiness polling never
 starts another model call.
 

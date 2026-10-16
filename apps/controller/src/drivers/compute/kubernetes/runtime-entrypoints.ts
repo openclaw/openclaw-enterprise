@@ -330,6 +330,7 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       ...(cause === undefined ? {} : { cause }),
     },
   });
+  const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
   const server = pluginCreateServer((request, response) => {
     const authorization = typeof request.headers.authorization === "string"
       ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
@@ -343,9 +344,11 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
       return;
     }
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    // Anything else, such as the Agent Gateway's app-server upgrade, is told the
+    // Harness is unavailable and why, by code only, not that the route is missing.
     if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
-      response.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ error: "not_found" }));
+      response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(unavailable);
       return;
     }
     response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
@@ -3435,8 +3438,23 @@ function codexRateLimited(message) {
   return typeof message === "string" &&
     /too many requests|\bstatus:? 429\b|rate[ _-]?limit|usage[ _-]?limit|spend cap|insufficient_quota|exceeded your current quota|(?<!disk )quota exceeded/i.test(message);
 }
+// A provider 5xx, overload or server error, or a dropped stream or connection can
+// pass on its own, so the startup probe tries such a failure once more. A rate limit,
+// a credential marker or a Reconnecting notice the recovered-stream rule refused is
+// never transient: the provider account or the event shape failed, not the transport.
+function codexTransientFailure(message, summary) {
+  if (typeof message !== "string" || codexRateLimited(message) ||
+    /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b|Reconnecting\.\.\./i.test(message)) return false;
+  return summary.providerStatus >= 500 ||
+    /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
+}
 function codexProbeStatusFailure(message, detail) {
-  return { ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail), ...providerErrorSummary(message) };
+  const summary = providerErrorSummary(message);
+  return {
+    ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail),
+    ...summary,
+    ...(codexTransientFailure(message, summary) ? { transient: true } : {}),
+  };
 }
 
 function probeCodexAuthentication(timeout) {
@@ -3520,8 +3538,18 @@ function probeCodexAuthentication(timeout) {
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
+    // A transient failure is only a retry candidate: a later deterministic failure in
+    // the same attempt (a tool event, a rate limit) still holds at once. A transient
+    // message is never a Reconnecting notice, so no recovered stream error lands here.
+    let transientFailure;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
+      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
+        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
+      if (failure?.transient === true) {
+        transientFailure ??= failure;
+        continue;
+      }
       if (event.type === "error") {
         if (!turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
@@ -3534,9 +3562,14 @@ function probeCodexAuthentication(timeout) {
       }
       if (event.type === "turn.completed") turnCompleted = true;
     }
+    if (transientFailure !== undefined) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
-    if (result.status !== 0 || result.error) return finish(probeExitFailure(result));
+    // A probe killed from outside (not by its own timeout) may pass on a second try.
+    if (result.status !== 0 || result.error) {
+      const exit = probeExitFailure(result);
+      return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
+    }
     return finish(events.filter((event) => event.type === "turn.completed").length === 1 &&
       events.filter((event) => event.type === "turn.started").length === 1 &&
       events.at(-1)?.type === "turn.completed" &&
@@ -3578,9 +3611,18 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
     return;
   }
+  // A transient failure gets the same single retry; every other failure is
+  // deterministic and held at once.
+  if (result.transient === true && attempt === 1 && performance.now() + 1000 < deadline) {
+    setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
+    return;
+  }
   if (result.code !== undefined) {
     logStartupPhase("model-probe", modelProbeStartedAt, "failed");
-    holdFailedAuthentication("model-probe", result.code, result.cause);
+    // The held cause is the last attempt's, and its detail says the check was retried.
+    holdFailedAuthentication("model-probe", result.code, attempt > 1 && result.cause?.detail !== undefined
+      ? { ...result.cause, detail: result.cause.detail + "-attempt" + attempt }
+      : result.cause);
     return;
   }
   logStartupPhase("model-probe", modelProbeStartedAt);

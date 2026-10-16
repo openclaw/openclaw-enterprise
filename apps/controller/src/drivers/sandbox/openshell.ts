@@ -2482,8 +2482,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     const { client, service } = await this.exactHarnessService(context, "observe a Harness");
     // Handshake first, so a serving app-server never receives a plain request. A
-    // Harness wrapper holding a startup failure refuses the upgrade and serves the
-    // failure instead.
+    // Harness wrapper holding a startup failure answers the upgrade 503 with the held
+    // code and serves the failure itself on the status path.
     if (
       await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
     ) {

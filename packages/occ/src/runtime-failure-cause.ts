@@ -13,6 +13,10 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
   WRAPPER_ERROR: undefined,
 });
 
+// The startup probe retries a transient failure once; when the second attempt
+// fails too, its detail token carries this suffix.
+const RETRIED_DETAIL_SUFFIX = "-attempt2";
+
 /** Returns the cause when it is in the closed vocabulary, otherwise undefined. */
 export function runtimeFailureCause(value: unknown): RuntimeFailureCause | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -30,7 +34,15 @@ export function runtimeFailureCause(value: unknown): RuntimeFailureCause | undef
   if (detail === undefined) {
     return Object.freeze({ kind: kind as RuntimeFailureCause["kind"] });
   }
-  if (details === undefined || typeof detail !== "string" || !details.test(detail)) {
+  if (
+    details === undefined ||
+    typeof detail !== "string" ||
+    !details.test(
+      detail.endsWith(RETRIED_DETAIL_SUFFIX)
+        ? detail.slice(0, -RETRIED_DETAIL_SUFFIX.length)
+        : detail,
+    )
+  ) {
     return undefined;
   }
   return Object.freeze({ kind: kind as RuntimeFailureCause["kind"], detail });

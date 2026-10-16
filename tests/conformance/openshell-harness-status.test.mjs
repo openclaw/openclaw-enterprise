@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -216,6 +216,8 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         assert.deepEqual(refused.body, { error: "unauthorized" });
       }
       // The token is checked first: without it every other path and method is the same 401.
+      // With it, anything but the status read (such as the Agent Gateway's app-server
+      // upgrade on /) is told the Harness is unavailable and the held code, nothing more.
       for (const request of [
         { url: "/" },
         { url: "/openclaw/runtime/diagnostics" },
@@ -225,9 +227,10 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         const refused = call(handler, request);
         assert.equal(refused.status, 401, JSON.stringify(request));
         assert.deepEqual(refused.body, { error: "unauthorized" });
-        const missing = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
-        assert.equal(missing.status, 404);
-        assert.deepEqual(missing.body, { error: "not_found" });
+        const unavailable = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
+        assert.equal(unavailable.status, 503, JSON.stringify(request));
+        assert.equal(unavailable.headers["cache-control"], "no-store");
+        assert.deepEqual(unavailable.body, { error: "runtime_failure_held", code: expected.code });
       }
     });
   }
@@ -314,6 +317,39 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
   );
   // The held wrapper is not a Codex app-server: no WebSocket handshake completes.
   assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), false);
+  // The Agent Gateway's own upgrade gets 503 naming the held code, not a missing route.
+  const upgrade = await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: freePort,
+      path: "/",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
+      },
+      signal,
+    });
+    request.on("upgrade", (_response, socket) => {
+      socket.destroy();
+      reject(new Error("the held wrapper must not upgrade"));
+    });
+    request.on("response", (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () =>
+        resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
+      );
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  assert.deepEqual(upgrade, {
+    status: 503,
+    body: JSON.stringify({ error: "runtime_failure_held", code: "MODEL_PROBE_FAILED" }),
+  });
 });
 
 test("the OpenShell client reaches a bearer-passthrough service through the gateway listener", async (t) => {
