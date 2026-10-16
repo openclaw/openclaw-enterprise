@@ -5936,14 +5936,32 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   try {
     await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request(
-        "GET",
-        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
-      );
+      const observed = await topology.request("GET", agentPath);
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
+      // good on its first attempt. Stop then: the error names the probe's classified cause, and
+      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
+      const deployment = await topology.request("GET", deploymentPath);
+      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
+      // original activation deadline; only the Agent naming this revision can satisfy the wait.
+      const { status } = deployment;
+      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
+        return undefined;
+      }
+      assert.equal(status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(
+        deployment.data.status,
+        "failed",
+        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
+      );
+      return undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);

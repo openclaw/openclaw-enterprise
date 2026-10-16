@@ -105,7 +105,8 @@ export function renderAgentLogs(
     agent,
     revisionId,
     shown = Promise.resolve(),
-    permissions = Promise.resolve(null),
+    // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
+    permissions = () => Promise.resolve(null),
     onLogsDenied = () => {},
   },
 ) {
@@ -252,6 +253,9 @@ export function renderAgentLogs(
   let logsDenied = deniedLogViews.has(deniedKey);
   // Set when runtime status is denied; the last page's stream stands in for the Pod list.
   let statusDenied = false;
+  // Set once this view compared a status denial with a fresh permission answer, or had no
+  // reason to; Back's check revalidates the page's answer after that.
+  let permissionsAsked = false;
   let lastStream = null;
 
   const current = () => context.isCurrent();
@@ -450,7 +454,12 @@ export function renderAgentLogs(
       return;
     }
     if (deniedStatusViews.has(statusKey)) {
-      const operate = (await permissions)?.operate === true;
+      // A rebuilt view compares the denial with a fresh answer, so an operate grant since
+      // shows on the next visit to Logs (finding 1579). Back's check already compared a
+      // retained view's answer; its resumed loads take the newest one.
+      const fresh = !permissionsAsked;
+      permissionsAsked = true;
+      const operate = (await permissions({ fresh }))?.operate === true;
       // Another status load may have taken the denial while this one waited.
       if (!current() || !deniedStatusViews.has(statusKey)) {
         return;
@@ -494,11 +503,19 @@ export function renderAgentLogs(
         if ([403, 404, 501].includes(error.status)) {
           if (error.status === 403) {
             deniedStatusViews.set(statusKey, null);
-            void permissions.then((answer) => {
-              if (deniedStatusViews.get(statusKey) === null) {
-                deniedStatusViews.set(statusKey, answer?.operate === true);
-              }
-            });
+            // An answer that allows operate may predate a revocation: once per view, compare
+            // the refusal with a fresh one, so a later grant is not taken as unchanged.
+            const fresh = !permissionsAsked;
+            permissionsAsked = true;
+            void permissions()
+              .then((answer) =>
+                answer?.operate === true && fresh ? permissions({ fresh }) : answer,
+              )
+              .then((answer) => {
+                if (deniedStatusViews.get(statusKey) === null) {
+                  deniedStatusViews.set(statusKey, answer?.operate === true);
+                }
+              });
           }
           return;
         }
