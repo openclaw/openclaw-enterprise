@@ -5874,14 +5874,29 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   try {
     await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request(
-        "GET",
-        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
-      );
+      const observed = await topology.request("GET", agentPath);
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // Finding 1532: a Harness that holds a failed startup model probe fails the deployment for
+      // good on its first attempt. Stop waiting then: the deployment's error names the probe's
+      // classified cause, and the diagnostic below is read next to the failure instead of after
+      // minutes of the Gateway's reconnect attempts.
+      const deployment = await topology.request(
+        "GET",
+        `${agentPath}/deployments/${redeployed.data.id}`,
+      );
+      assert.equal(deployment.status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(
+        deployment.data.status,
+        "failed",
+        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
+      );
+      return undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);
