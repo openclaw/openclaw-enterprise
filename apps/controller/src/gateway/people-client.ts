@@ -17,7 +17,7 @@ const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 export function createNativeGatewayPeopleAccess(
   resolveTarget: ResolveTarget,
 ): ControllerGatewayPeopleAccess {
-  return {
+  const access: ControllerGatewayPeopleAccess = {
     async list(request) {
       const target = await resolveTarget(request);
       if (target === undefined) {
@@ -86,6 +86,10 @@ export function createNativeGatewayPeopleAccess(
       }
     },
     async avatar(request) {
+      const people = await access.list(request);
+      if (!people?.some((person) => person.id === request.profileId)) {
+        return undefined;
+      }
       const target = await resolveTarget(request);
       if (target === undefined) {
         throw new Error("Gateway avatar is unavailable.");
@@ -130,6 +134,7 @@ export function createNativeGatewayPeopleAccess(
       return { mime, bytes: Buffer.concat(chunks) };
     },
   };
+  return access;
 }
 
 function requestSignal(request: ControllerGatewayPeopleRequest): AbortSignal {

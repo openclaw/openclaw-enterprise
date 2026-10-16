@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import { createNativeGatewayPeopleAccess } from "../../apps/controller/src/gateway/people-client.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -21,7 +23,7 @@ import {
   OpenClawController,
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -92,7 +94,7 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   };
 }
 
-async function startNativeHttpsUpstream(t) {
+async function startNativeHttpsUpstream(t, { profiles } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-upstream-"));
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const keyPath = join(directory, "tls.key");
@@ -133,6 +135,11 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (profiles && request.url?.includes("/api/users/")) {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(Buffer.from([137, 80, 78, 71]));
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -169,6 +176,51 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  if (profiles) {
+    const controllerRequire = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    );
+    const socketRequire = createRequire(controllerRequire.resolve("@kubernetes/client-node"));
+    const { WebSocketServer } = socketRequire("ws");
+    const sockets = new WebSocketServer({ server });
+    t.after(() => sockets.close());
+    sockets.on("connection", (socket) => {
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "people-fixture", ts: Date.now() },
+        }),
+      );
+      socket.on("message", (raw) => {
+        const request = JSON.parse(raw.toString());
+        assert.ok(["connect", "users.list"].includes(request.method));
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: request.id,
+            ok: true,
+            payload:
+              request.method === "users.list"
+                ? { profiles }
+                : {
+                    type: "hello-ok",
+                    protocol: 4,
+                    server: { version: "fixture", connId: "people-fixture" },
+                    features: { methods: ["users.list"], events: [] },
+                    snapshot: {},
+                    auth: { role: "operator", scopes: ["operator.admin"] },
+                    policy: {
+                      maxPayload: 1048576,
+                      maxBufferedBytes: 1048576,
+                      tickIntervalMs: 30000,
+                    },
+                  },
+          }),
+        );
+      });
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
@@ -1344,4 +1396,52 @@ test("Gateway people HTTP reads require exact Agent administration and omit adap
   ]);
   assert.equal(people.headers.get("cache-control"), "no-store");
   assert.equal((await fixture.request("GET", path + "/profile-alice/avatar")).status, 404);
+});
+
+test("Gateway avatars exclude service profiles and merged aliases before image fetch", async (t) => {
+  // Exercise the production adapter over TLS and WebSocket. The peer supplies
+  // profiles, while the adapter must decide which avatars OCC may expose.
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: [
+      { id: "gateway-owner", hasAvatar: true },
+      { id: "workspace-profile", emails: ["occ-workspace-files"], hasAvatar: true },
+      { id: "merged-profile", mergedInto: "profile-alice", hasAvatar: true },
+      { id: "profile-alice", displayName: "Alice", hasAvatar: true },
+    ],
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  const access = createNativeGatewayPeopleAccess(async () => ({
+    url: `wss://localhost:${upstream.port}/`,
+    apiKey: nativeGatewayApiKey,
+  }));
+  const fixture = await createConsoleAppFixture(t, { gatewayPeopleAccess: access });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Filtered avatars", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const headers = authenticatedHeaders(await fixture.signIn());
+  const avatarUrl = (profileId) =>
+    `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people/${profileId}/avatar`;
+  for (const profileId of [
+    "gateway-owner",
+    "workspace-profile",
+    "merged-profile",
+    "unknown-profile",
+  ]) {
+    const result = await fixture.rawRequest("GET", avatarUrl(profileId), { headers });
+    assert.equal(result.response.status, 404, profileId);
+  }
+  assert.equal(upstream.requests.length, 0, "excluded profiles never reach the avatar endpoint");
+  const avatar = await fixture.rawRequest("GET", avatarUrl("profile-alice"), { headers });
+  assert.equal(avatar.response.status, 200);
+  assert.equal(avatar.response.headers.get("content-type"), "image/png");
+  assert.equal(avatar.text.slice(1), "PNG");
+  assert.equal(upstream.requests.length, 1);
+  assert.equal(upstream.requests[0].url, "/api/users/profile-alice/avatar");
 });

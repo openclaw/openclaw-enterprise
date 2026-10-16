@@ -10,6 +10,8 @@ the runtime adapter returns `people: null` after authorization; the Console hide
 the card. Its avatar operation returns `501`.
 
 The roster omits merged aliases and the shared workspace/loopback owner profiles.
+Avatar reads require membership in that filtered roster; excluded or unknown
+profile IDs return `404` without fetching an image.
 It exposes no linked identity aliases, emails or GitHub metadata. It lists profiles
 already known to OpenClaw, not current connections or identity-provider grants;
 profiles can remain after access is removed. This creates no OCC accounts, grants

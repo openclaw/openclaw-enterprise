@@ -1,7 +1,7 @@
 ---
 created: "2026-10-16"
 updated: "2026-10-16"
-last_updated_session: authoring-run/review-2596
+last_updated_session: authoring-run/avatar-exclusions-2596
 ---
 
 # Gateway people flow
@@ -57,7 +57,9 @@ Merged aliases, the shared workspace profile and the loopback owner profile are
 excluded. Only profile IDs, display names, roles and avatar availability reach
 OCC clients; linked identities, email addresses and GitHub metadata do not.
 
-Avatar reads use a fixed native profile-avatar path at that same Gateway,
+Avatar reads first load the filtered roster and return `404` for excluded or
+unknown profile IDs without fetching an image. Included profiles use a fixed
+native profile-avatar path at that same Gateway,
 validate raster image types, bound the body to 2 MiB, and follow no redirects.
 The public avatar operation repeats exact Agent authorization. Missing images
 return `404`; roster and avatar responses use `no-store`.
@@ -107,6 +109,8 @@ without turning normal unavailability into a failed Console read.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 18:54: Apply filtered-roster membership to avatar reads. (authoring-run/avatar-exclusions-2596 - 630a02a5b039ab2972d40af57498e22b2fc3d1fe)
 
 - 2026-10-16 11:07: Gate initial roster visibility with the Agent overview. (authoring-run/review-2596 - 0c0ed82a373e0608de3e59414f0bd18fb2eedbdb)
 
