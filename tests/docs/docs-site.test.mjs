@@ -155,6 +155,11 @@ test("docs validation rejects broken links, anchors and navigation through the C
     [
       "# Contributing",
       '<a id="real-id"></a> and <a name="real-name"></a>',
+      '<div id="real-div-id">An explicit ID works on a non-anchor element.</div>',
+      '<A NAME="real-upper-name"></A>',
+      '<div name="div-name">A name on a div is not a fragment target.</div>',
+      '<span name="span-name">A name on a span is not a fragment target.</span>',
+      '<p name="p-name">A name on a paragraph is not a fragment target.</p>',
       '```html\n<a id="fenced-example"></a>\n```',
       '    <a id="indented-example"></a>',
       '`<a id="inline-example"></a>`',
@@ -162,7 +167,7 @@ test("docs validation rejects broken links, anchors and navigation through the C
       'Before <!-- <a id="inline-comment-example"></a> --> after',
     ].join("\n\n"),
   );
-  for (const fragment of ["real-id", "real-name"]) {
+  for (const fragment of ["real-id", "real-name", "real-div-id", "real-upper-name"]) {
     await writeFile(
       join(fixture, "docs/README.md"),
       `# Home\n\n[Valid](../CONTRIBUTING.md#${fragment})\n`,
@@ -171,6 +176,9 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.equal(result.status, 0, result.stderr || result.stdout);
   }
   for (const fragment of [
+    "div-name",
+    "span-name",
+    "p-name",
     "fenced-example",
     "indented-example",
     "inline-example",

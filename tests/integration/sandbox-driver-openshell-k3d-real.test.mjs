@@ -38,6 +38,7 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   diagnosticDeadlineMs,
+  diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   retryKubectlRead,
   withinDiagnosticDeadline,
@@ -2601,6 +2602,9 @@ async function prepareProductionInstallation(
                 .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
                 .slice(-12);
               for (const line of lines) {
+                if (diagnosticDeadlinePassed()) {
+                  return false;
+                }
                 process.stderr.write(
                   `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
                 );
@@ -2608,12 +2612,15 @@ async function prepareProductionInstallation(
             }
           }
         } catch {
+          if (diagnosticDeadlinePassed()) {
+            return false;
+          }
           process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
         }
       }
       return false;
     };
-    if (await withinDiagnosticDeadline(startupDiagnostic(), { timedOut: true })) {
+    if (await withinDiagnosticDeadline(startupDiagnostic, { timedOut: true })) {
       process.stderr.write(
         `OpenShell startup Pod diagnostics timed out after ${diagnosticDeadlineMs / 1_000} s\n`,
       );
@@ -4284,7 +4291,7 @@ function turnFailureSecrets(topology, gatewayPassword) {
 // Without a Harness Pod (a replacement that never started one) only the Gateway is read.
 function gatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets) {
   return withinDiagnosticDeadline(
-    readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
+    () => readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
     { timedOut: `\nGateway turn diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
   );
 }
@@ -5925,10 +5932,11 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
     const worker = await topology.diagnoseRevision(redeployed.data.id);
     // A diagnostic that fails or stalls itself must not replace the timeout it explains.
     const detail = await withinDiagnosticDeadline(
-      replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
-        (diagnosticError) =>
-          `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-      ),
+      () =>
+        replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
+          (diagnosticError) =>
+            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+        ),
       { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
     );
     // Keep the timeout's own stack, which names this wait, and add the evidence to its message.

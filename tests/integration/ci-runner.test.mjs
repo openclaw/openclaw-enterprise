@@ -2247,6 +2247,128 @@ test("secret redaction preserves JSON quoting, not pieces of the quoted value", 
     redactLogLine('password="first part, still private', [], 200),
     'password="[redacted]',
   );
+  // A failure message need not be JSON. A newline inside an open password is still private.
+  assert.equal(
+    redactLogLine('password="first part\nprivate tail" expected status 503', [], 200),
+    'password="[redacted]" expected status 503',
+  );
+});
+
+test("a quoted auth header keeps the failure text after it", async () => {
+  const { failureSecrets, redactFailure, redactLogLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  const assertion = "\nexpected status 503, got 200\ndecisive: gateway refused the turn";
+  // Synthetic values. The auth-scheme value used to take the closing quote, so the quoted
+  // value then ran to the end of the text and took the assertion with it (finding 1556).
+  for (const [header, expected] of [
+    ['{"authorization":"Bearer syntheticBearer0123"}', '{"authorization":"[redacted]"}'],
+    [
+      "headers: { authorization: 'Bearer syntheticBearer0123' }",
+      "headers: { authorization: '[redacted]' }",
+    ],
+    ['{"token":"Token syntheticToken0123"}', '{"token":"[redacted]"}'],
+    [
+      String.raw`{\"authorization\":\"Basic c3ludGhldGljOnZhbHVl\"}`,
+      String.raw`{\"authorization\":\"[redacted]\"}`,
+    ],
+    ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
+    // A sibling field after the closing quote is not part of the value.
+    [
+      '{"authorization":"Bearer syntheticBearer0123","status":503}',
+      '{"authorization":"[redacted]","status":503}',
+    ],
+    [
+      "headers: { authorization: 'Bearer syntheticBearer0123', status: 503 }",
+      "headers: { authorization: '[redacted]', status: 503 }",
+    ],
+    // Logs can escape or repeat delimiters inside the value. Keep only the actual closing ones.
+    [String.raw`got Bearer synthetic0\"private-tail`, "got [redacted]"],
+    ["map[Authorization:[Basic synthetic0))private-tail]]", "map[Authorization:[redacted]]"],
+    // A quote that opens the value is kept with it.
+    [`curl -H "Authorization: Bearer 'synthetic0'"`, `curl -H "Authorization: '[redacted]'"`],
+    ['Authorization: Bearer "synthetic0"', 'Authorization: "[redacted]"'],
+    [String.raw`Basic c3ludGhldGlj\/dmFsdWU=`, "[redacted]"],
+  ]) {
+    assert.equal(
+      redactLogLine(`request ${header}${assertion}`, secrets, 1_000),
+      `request ${expected}${assertion}`,
+    );
+    assert.equal(
+      redactFailure({ message: `request ${header}${assertion}` }, secrets, "/repo").message,
+      `request ${expected}${assertion}`,
+    );
+  }
+});
+
+test("the redactor removes structured, multi-word and short secret values", async () => {
+  const { failureSecrets, redactLogLine } = await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  // Synthetic values only (finding 1559).
+  for (const [line, expected] of [
+    // An object or array after a credential key, to its close on the same line.
+    [
+      '{"credentials":{"key":"syntheticNested0"},"after":"keep"}',
+      '{"credentials":[redacted],"after":"keep"}',
+    ],
+    [
+      '{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}',
+      '{"tokens":[redacted],"after":"keep"}',
+    ],
+    [
+      JSON.stringify(
+        { credentials: { label: 'a "quote" and } private tail' }, after: "keep" },
+        null,
+        2,
+      ),
+      '{\n  "credentials": [redacted],\n  "after": "keep"\n}',
+    ],
+    ["tokens: [{value: '] private tail'}] status=503", "tokens: [redacted] status=503"],
+    ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
+    ["token: {unclosed synthetic0\nprivate tail", "token: [redacted]"],
+    ["token: [{wrong close]private tail", "token: [redacted]"],
+    // A bracket inside a string does not close the value, and text glued to the close
+    // belongs to it.
+    ['{"credentials":{"password":"ab}synthetic0"}}', '{"credentials":[redacted]}'],
+    ['{"token":{"inner":"a]synthetic0"},"after":1}', '{"token":[redacted],"after":1}'],
+    ["token: [a]synthetic0 tail", "token: [redacted] tail"],
+    // A passphrase in prose or YAML, and an Authorization header, take every word.
+    ["password: synthetic words here\nnext line", "password: [redacted]\nnext line"],
+    ["passphrase: synthetic words, then more", "passphrase: [redacted], then more"],
+    ['{"error":"bad password: synthetic words"}', '{"error":"bad password: [redacted]"}'],
+    ["Authorization: Bearer syn", "Authorization: [redacted]"],
+    // "=" stays one word, as in logfmt and query strings.
+    ["password=synthetic0 next=keep", "password=[redacted] next=keep"],
+    // A key inside the phrase starts its own assignment, so its quoted value is redacted.
+    [
+      'password: synthetic0 token="synthetic1" tail',
+      'password: [redacted] token="[redacted]" tail',
+    ],
+    [
+      "Authorization: Bearer s api_key='synthetic1'",
+      "Authorization: [redacted] api_key='[redacted]'",
+    ],
+    // Short scheme values with a digit, and keys the list did not have.
+    ["sent Bearer s0 upstream", "sent [redacted] upstream"],
+    ["sent Basic ab)synthetic0] upstream", "sent [redacted]] upstream"],
+    [
+      "https://blob.example/x?sv=1&sig=syntheticSig0&se=2",
+      "https://blob.example/x?sv=1&sig=[redacted]&se=2",
+    ],
+    ["pwd=synthetic0", "pwd=[redacted]"],
+    ["passphrase=synthetic0", "passphrase=[redacted]"],
+    ["accessKey=synthetic0", "accessKey=[redacted]"],
+    ["signature: synthetic0", "signature: [redacted]"],
+    // Ordinary diagnostics that name a keyword without a value stay readable.
+    ["Bearer token expired", null],
+    ["token expired", null],
+    ["secretName: occ-gateway-password", null],
+    ["tokenCount: 3", null],
+    ["design=compact", null],
+    ["SyntaxError: Unexpected token '}'", null],
+  ]) {
+    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
+  }
 });
 
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
@@ -2264,7 +2386,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      '  assert.fail(`password="fixture, private-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
     ].join("\n"),
