@@ -61,17 +61,21 @@ both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
 pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
 expires and delay the successor; a longer grace period does not make it a clean shutdown.
 
-Only the gateway Pod receives this claim. Its complete writable directories
-include database files and their WAL/SHM siblings:
+Only the Gateway Pod mounts these writable directories, including SQLite
+databases and their WAL/SHM siblings:
 
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
 | `state`                     | `/home/node/.openclaw/state`                |
 | `agent`                     | `/home/node/.openclaw/agents/main/agent`    |
 | `media`                     | `/home/node/.openclaw/media`                |
+| `worktrees`                 | `/home/node/.openclaw/worktrees`            |
+| `worktree-sources`          | `/home/node/.openclaw/worktree-sources`     |
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
-Embedded gateways also mount the same private claim's `workspace` subpath at
+Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+
+Embedded Gateways also mount its `workspace` subpath at
 `/home/node/.openclaw/workspace`, the default workspace under the configured
 `OPENCLAW_STATE_DIR`, retaining the workspace files attested by gateway
 SQLite so a continued turn after Pod replacement does not fail with
@@ -80,11 +84,10 @@ path are outside this persistence contract. In dedicated mode,
 `/home/node/workspace` is a logical Gateway workspace key served by the paired
 node; Gateway does not mount the Harness workspace.
 
-A nonroot init container prepares these directories using the gateway image,
-without credentials or additional privileges. The nested
+A nonroot init container prepares directories without credentials or extra privileges. The nested
 `agents/main/agent/codex-home` is overmounted from Pod-local `emptyDir` so
 Codex credentials remain ephemeral; the rest of the private runtime home is
-also ephemeral.
+ephemeral.
 The same init container creates a node-owned mode-`0700` subdirectory on the
 Pod-local temporary `emptyDir` and mounts it at `/tmp`, preserving private
 temp-workspace ancestry for Gateway and Harness processes; the fsGroup-writable

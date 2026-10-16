@@ -1190,6 +1190,9 @@ const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["state", "/home/node/.openclaw/state"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
+  // Session records retain linked worktree paths and their shared Git metadata.
+  ["worktrees", "/home/node/.openclaw/worktrees"],
+  ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
 ] as const);
 const HARNESS_WORKSPACE_VOLUME = "openclaw-workspace";
 const HARNESS_AUTH_VOLUME = "openclaw-harness-auth";

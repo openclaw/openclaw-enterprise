@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-10-14
+updated: 2026-10-16
 last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 ---
 
@@ -225,12 +225,12 @@ the Harness, which stays available for active work. Idle shutdown, or one before
 OpenClaw starts (wrappers run under `tini`), completes promptly. Forced
 termination can delay the successor until the persistent owner lease expires.
 
-Both Gateway modes persist SQLite/media; embedded Gateways also persist their
-attested default workspace. Dedicated Harnesses receive only their workspace
-claim, preserving node identity across replacements. Compute creates both claims
-before Pods and uses workload readiness, avoiding a `Bound` wait that deadlocks
-`WaitForFirstConsumer`. [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
-owns the nested ephemeral Codex home and private-directory/`/tmp` initialization.
+Both Gateway modes persist SQLite, media, linked worktrees and common Git
+metadata on their private claim, preserving session paths across replacement.
+Embedded Gateways retain their default workspace; dedicated Harness claims
+retain node identity. Claims precede Pods for `WaitForFirstConsumer`;
+[Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
+defines initialization and mounts.
 
 Workspace-file access uses the enrolled Harness node; Gateway and Harness share
 no workspace, session, skill, or image mounts. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
@@ -297,6 +297,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
