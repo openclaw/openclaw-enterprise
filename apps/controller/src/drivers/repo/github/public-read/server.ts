@@ -398,7 +398,7 @@ export function createPublicGithubReadServer() {
     refusing++;
     // Closing with the request unread would reset the connection before the client reads the
     // answer, so drop what it sends and close when it does, or after one second.
-    const timer = setTimeout(() => socket.destroy(), 1000);
+    const timer = setTimeout(() => socket.destroy(), 1000).unref();
     socket.once("close", () => {
       clearTimeout(timer);
       refusing--;
@@ -409,8 +409,12 @@ export function createPublicGithubReadServer() {
     socket.end(refusedReply);
   }
   // The HTTP server's own connection handling runs only for accepted connections, so a
-  // refused one is never parsed and cannot start a read.
+  // refused one is never parsed and cannot start a read. Node sets up HTTP on this event;
+  // without its listener every connection would go unanswered, so refuse to start.
   const serveConnection = server.listeners("connection") as ((socket: Socket) => void)[];
+  if (serveConnection.length === 0) {
+    throw new Error("The HTTP server has no connection listener to wrap.");
+  }
   server.removeAllListeners("connection");
   server.on("connection", (socket: Socket) => {
     const address = socket.remoteAddress;
