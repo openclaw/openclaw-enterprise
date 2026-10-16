@@ -8,6 +8,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   apiRequests,
+  fileBrowser,
   holdRequests,
   login,
   newPage,
@@ -18,6 +19,9 @@ import {
   createModelCredentialSecret,
   openAdvancedSettings,
 } from "./console-agents-test-support.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
 
 // The production Kubernetes Drivers, built without a cluster client. The Compute Driver
 // advertises dedicated provisioning through the real /installation route. Provisioning
@@ -93,7 +97,7 @@ async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
 }
 
 async function openModelSourceForm(t, fixture, namespace, harness = "codex") {
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Harness", { exact: true }).selectOption(harness);
@@ -113,7 +117,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision inline credential", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -175,7 +179,7 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pinned native deployment", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -479,7 +483,7 @@ test("Agent Credentials saves its existing model source without replacing the bi
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(
     page,
     fixture,
@@ -508,7 +512,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision refusal focus", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provisioned refusal focus");
@@ -573,7 +577,7 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision not ready", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provisioned before ready");
@@ -616,7 +620,7 @@ test("Agent name counts characters, as the API does, not UTF-16 code units", asy
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent name length", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();

@@ -8,17 +8,21 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  fileBrowser,
   login,
-  setSlackSelection,
-  slackSelectionValue,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   revealNativeConfiguration,
   secretOptionLabel,
   selectSecret,
+  setSlackSelection,
+  slackSelectionValue,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
 
 // A bootstrapped Console with one ready Namespace.
 async function readyNamespace(t, name) {
@@ -132,7 +136,7 @@ test("Channel drawer saves channel edits without exposing Secret values or dropp
     }),
     { executionMode: "dedicated", secretBindings },
   );
-  const { page, artifacts } = await newPage(t, fixture);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
 
   await openDraft(page, fixture, agent, "Channel Agent");
   await page.getByRole("button", { name: "Channels" }).click();
@@ -290,7 +294,7 @@ for (const [name, channels, reason] of [
       slug: `unsupported-slack-${name}`,
       slack: { channels },
     });
-    const { page } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
 
     await openDraft(page, fixture, agent, `Unsupported Slack ${name}`);
@@ -322,7 +326,7 @@ test("Channel drawer binds existing Slack Secrets without dropping unsaved chann
     slug: "unbound-slack",
     slack: { channels: { CUNBOUND123: { requireMention: true } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
 
   await openDraft(page, fixture, agent, "Unbound Slack Agent");
@@ -433,7 +437,7 @@ test("Channel drawer grants only the final selected Slack Secret", async (t) => 
     slug: "final-slack-grant",
     slack: { channels: { CFINAL123: { requireMention: true } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const grantStarted = Promise.withResolvers();
   const releaseGrant = Promise.withResolvers();
@@ -503,7 +507,7 @@ test("Channel drawer does not grant when Slack Secret selection returns to origi
     slack: { channels: { CORIG123: { requireMention: true } } },
     secretBindings,
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
 
   await openDraft(page, fixture, agent, "Original Slack Grant Agent");
@@ -536,7 +540,7 @@ test("Channel drawer does not grant Slack Secret access when Configuration save 
     slack: { channels: { CREJECT123: { requireMention: true } } },
   });
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await failMethod(page, `**${configurationPath}`, "PATCH", {
     status: 403,
@@ -580,7 +584,7 @@ test("Channel drawer round trips existing Slack everyone channel access", async 
       channels: { CEVERY123: { requireMention: true, users: ["*"], allowBots: "mentions" } },
     },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
 
   await openDraft(page, fixture, agent, "Slack Everyone Agent");
   await page.getByRole("button", { name: "Edit Slack" }).click();
@@ -644,7 +648,7 @@ test("Channel drawer reports partial save when post-PATCH Secret grant is reject
     slug: "partial-slack-grant",
     slack: { channels: { CPARTIAL123: { requireMention: true } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
     status: 403,
@@ -723,7 +727,7 @@ test("Agent credentials retry outstanding Slack Secret grants after changing one
     slack: { channels: { CRETRYGRANT123: { requireMention: true } } },
     harnessAuth: { method: "api_key", source: modelSecret.ref },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   let denyGrant = true;
   let rejectNextConfigurationPatch = false;
@@ -839,7 +843,7 @@ for (const grantStatus of [403, 429, 503]) {
       slack: { channels: { CRUNTIMEFAIL123: { requireMention: true } } },
       secretBindings,
     });
-    const { page } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
     await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
       status: grantStatus,

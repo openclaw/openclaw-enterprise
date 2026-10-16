@@ -11,6 +11,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   detailUrl,
+  fileBrowser,
   login,
   nativeValues,
   newPage,
@@ -19,6 +20,9 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
 
 test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
   const preset = JSON.parse(
@@ -31,7 +35,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver search", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  const { page, artifacts } = await newPage(t, fixture);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const lookups = [];
   const lookupStarted = Promise.withResolvers();
@@ -146,7 +150,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const lookups = [];
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
@@ -219,7 +223,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     configurationId: agent.configurationId,
     plugins: { [pluginId]: { enabled: true, tools: { [toolId]: { enabled: true } } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const directoryBodies = [];
   let directoryAvailable = true;
@@ -492,7 +496,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
     nativeValues("approver-draft"),
     { executionMode: "embedded", harnessAuth: { method: "runtime" } },
   );
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
@@ -532,7 +536,7 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
     configurationId: agent.configurationId,
     plugins: { [pluginId]: { enabled: true, tools: { [toolId]: { enabled: true } } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   // Codex approval requests carry no plugin or tool identity, so the API refuses those
