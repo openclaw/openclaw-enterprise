@@ -3302,7 +3302,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           updateState();
           render();
           if (container.isConnected) {
-            // A conflict or failure leaves Reload draft (or Save again) as the next step.
+            // A conflict or failure leaves Reload draft (or Save again) as the next step
+            // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);
           }
         }

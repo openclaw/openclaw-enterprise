@@ -83,7 +83,10 @@ export function focusSaveOutcome(root, controls, message) {
       return;
     }
     message.id ||= `save-outcome-${++describedFocusIds}`;
-    control.setAttribute("aria-describedby", message.id);
+    const described = control.getAttribute("aria-describedby")?.split(/\s+/) ?? [];
+    if (!described.includes(message.id)) {
+      control.setAttribute("aria-describedby", [...described, message.id].join(" ").trim());
+    }
   }
   control?.focus();
 }

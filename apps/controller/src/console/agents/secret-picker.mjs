@@ -53,6 +53,10 @@ export function isSecretMetadata(secret, namespaceId) {
 // name it had while the reread runs, instead of the raw ID and "Loading metadata…" for a moment,
 // which wrapped and moved the cards below (finding 1482).
 const resolvedSecretNames = new Map();
+/** Forgets the resolved names, as sign-out forgets other private state. */
+export function clearResolvedSecretNames() {
+  resolvedSecretNames.clear();
+}
 const secretNameKey = (context, secretId) =>
   context.operatorId ? JSON.stringify([context.operatorId, context.namespaceId, secretId]) : null;
 

@@ -307,7 +307,7 @@ async function save(state, values, dialog, targetError, secretBindingUpdate, pro
       for (const { node, disabled } of controls) {
         node.disabled = disabled;
       }
-      // Disabling the pressed button while saving dropped focus out of the dialog.
+      // Disabling the pressed button while saving dropped focus out of the dialog (finding 1481).
       focusSaveOutcome(
         dialog,
         [dialog.querySelector('button[type="submit"]')],
