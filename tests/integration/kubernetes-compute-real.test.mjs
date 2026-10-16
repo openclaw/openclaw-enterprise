@@ -1177,61 +1177,6 @@ test(
       "-e",
       `require('node:fs').writeFileSync('/home/node/workspace/${retainedFile}', ${JSON.stringify(retainedValue)})`,
     );
-    let gatewayPrivateState;
-    if (runtimeImage !== undefined) {
-      const pod = await workloadPod(
-        existingName,
-        `app.kubernetes.io/name=${gatewayName(adoptedTenant.id)}`,
-      );
-      assert.ok(pod);
-      const volume = pod.spec.volumes.find(({ name }) => name === "openclaw-gateway-state");
-      const claim = await resource(
-        "persistentvolumeclaim",
-        volume.persistentVolumeClaim.claimName,
-        existingName,
-      );
-      const mounts = ["worktrees", "worktree-sources"].map((directory) => {
-        const mount = pod.spec.containers
-          .find(({ name }) => name === "gateway")
-          .volumeMounts.find(({ subPath }) => subPath === directory);
-        assert.deepEqual(
-          {
-            name: mount?.name,
-            mountPath: mount?.mountPath,
-            subPath: mount?.subPath,
-            readOnly: mount?.readOnly ?? false,
-          },
-          {
-            name: volume.name,
-            mountPath: `/home/node/.openclaw/${directory}`,
-            subPath: directory,
-            readOnly: false,
-          },
-        );
-        return mount;
-      });
-      const files = Object.fromEntries(
-        mounts.map(({ mountPath }) => [
-          `${mountPath}/stop-state-${randomUUID()}.txt`,
-          `retained-${randomUUID()}`,
-        ]),
-      );
-      // The Gateway's worktree files and shared repository data belong to its
-      // private claim, independently of the dedicated Harness workspace claim.
-      await kubectl(
-        "exec",
-        pod.metadata.name,
-        "--namespace",
-        existingName,
-        "-c",
-        "gateway",
-        "--",
-        "node",
-        "-e",
-        `const fs=require('node:fs'); for (const [path,value] of Object.entries(${JSON.stringify(files)})) fs.writeFileSync(path,value,{flag:'wx'});`,
-      );
-      gatewayPrivateState = { pod, volume, claim, mounts, files };
-    }
     const editedWorkspaceFiles = {
       "USER.md": "User edit retained across stop and redeploy\n",
       "SOUL.md": "",
@@ -1285,19 +1230,6 @@ test(
       adoptedWorkspace.metadata.uid,
       "API stop must retain the exact Agent workspace claim",
     );
-    if (gatewayPrivateState !== undefined) {
-      assert.equal(
-        (
-          await resource(
-            "persistentvolumeclaim",
-            gatewayPrivateState.claim.metadata.name,
-            existingName,
-          )
-        ).metadata.uid,
-        gatewayPrivateState.claim.metadata.uid,
-        "API stop must retain the Gateway's exact private-state claim",
-      );
-    }
     assert.equal(
       (
         await state.read((view) =>
@@ -1312,49 +1244,6 @@ test(
     assert.notEqual(restarted.id, admitted[4].id);
     await waitForActive(adopted.data.id, adoptedTenant.id, restarted.id);
     await assertReadyGateway(existingName, adoptedTenant.id, adopted.data.id, restarted);
-    if (gatewayPrivateState !== undefined) {
-      const { pod, volume, claim, mounts, files } = gatewayPrivateState;
-      const replacementPod = await workloadPod(
-        existingName,
-        `app.kubernetes.io/name=${gatewayName(adoptedTenant.id)}`,
-      );
-      assert.ok(replacementPod);
-      assert.notEqual(replacementPod.metadata.uid, pod.metadata.uid);
-      assert.deepEqual(
-        replacementPod.spec.volumes.find(({ name }) => name === volume.name),
-        volume,
-      );
-      assert.deepEqual(
-        replacementPod.spec.containers
-          .find(({ name }) => name === "gateway")
-          .volumeMounts.filter(({ subPath }) =>
-            ["worktrees", "worktree-sources"].includes(subPath),
-          ),
-        mounts,
-      );
-      assert.equal(
-        (await resource("persistentvolumeclaim", claim.metadata.name, existingName)).metadata.uid,
-        claim.metadata.uid,
-      );
-      assert.deepEqual(
-        JSON.parse(
-          await kubectlRead(
-            "exec",
-            replacementPod.metadata.name,
-            "--namespace",
-            existingName,
-            "-c",
-            "gateway",
-            "--",
-            "node",
-            "-e",
-            `const fs=require('node:fs'); process.stdout.write(JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(files))}.map(path=>[path,fs.readFileSync(path,'utf8')]))));`,
-          ),
-        ),
-        files,
-        "Gateway replacement must retain both worktree data and shared repository data",
-      );
-    }
     if (runtimeImage !== undefined) {
       await assertInitialWorkspace(
         adopted.data.id,

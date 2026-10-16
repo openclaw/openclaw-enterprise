@@ -9,7 +9,14 @@ export const nativeFirstAgentProofTimeout = 10 * 60_000;
 
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
-async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile }) {
+async function nativeWorkerProof({
+  namespaceId,
+  agentId,
+  timeout,
+  workspaceFile,
+  session: existingSession,
+  sessionFile: retainedSessionFile,
+}) {
   const assert = (await import("node:assert/strict")).default;
   const { createHash, randomUUID } = await import("node:crypto");
   const { readFile } = await import("node:fs/promises");
@@ -69,37 +76,60 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
     assert.ok(required?.id && required.providerId);
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
-    const key = `agent:main:first-agent-native-${randomUUID()}`;
-    stage = "create";
-    const session = await call("sessions.create", {
-      key,
-      agentId: "main",
-      message: "",
-      displayName: "First Agent native worker proof",
-      worktree: true,
-      worktreeSource: "empty",
-    });
-    assert.equal(session.key, key);
-    stage = "required-placement";
-    let placement;
-    while (!signal.aborted) {
-      const described = await call("sessions.describe", { key, agentId: "main" });
-      placement = described.session?.placement;
-      if (placement?.state === "active") {
-        break;
+    let session = existingSession;
+    if (session === undefined) {
+      stage = "create";
+      const key = `agent:main:first-agent-native-${randomUUID()}`;
+      const created = await call("sessions.create", {
+        key,
+        agentId: "main",
+        message: "",
+        displayName: "First Agent native worker proof",
+        worktree: true,
+        worktreeSource: "empty",
+      });
+      assert.equal(created.key, key);
+      session = { key, sessionId: created.sessionId };
+      stage = "required-placement";
+      while (!signal.aborted) {
+        const described = await call("sessions.describe", { key, agentId: "main" });
+        if (described.session?.placement?.state === "active") {
+          break;
+        }
+        assert.ok(!["failed", "reclaimed", "local"].includes(described.session?.placement?.state));
+        await delay(500, undefined, { signal });
       }
-      assert.ok(!["failed", "reclaimed", "local"].includes(placement?.state));
-      await delay(500, undefined, { signal });
+      signal.throwIfAborted();
     }
-    signal.throwIfAborted();
-    assert.equal(placement.profileId, required.id);
-    assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
+    assert.ok(session.key && session.sessionId);
+    const { key } = session;
+    stage = "session-identity";
+    const described = await call("sessions.describe", { key, agentId: "main" });
+    assert.equal(described.session?.sessionId, session.sessionId);
+    // A retained placement may recover when the next turn is sent. Check its
+    // current directory after that turn, rather than trusting the old owner.
+    const sessionFileContent = `FIRST_AGENT_SESSION_${randomUUID()}\n`;
+    const sessionFile =
+      existingSession === undefined
+        ? {
+            path: `.first-agent-native-${randomUUID()}.txt`,
+            sha256: createHash("sha256").update(sessionFileContent).digest("hex"),
+          }
+        : retainedSessionFile;
+    assert.match(sessionFile?.path ?? "", /^\.first-agent-native-[a-z0-9-]+\.txt$/);
+    assert.match(sessionFile.sha256, /^[a-f0-9]{64}$/);
     const marker = `FIRST_AGENT_NATIVE_${randomUUID()}`;
     const toolPrefix = "FIRST_AGENT_NATIVE_TOOL ";
     const program = [
+      ...(existingSession === undefined
+        ? [
+            `require("node:fs").writeFileSync(${JSON.stringify(sessionFile.path)},${JSON.stringify(sessionFileContent)},{flag:"wx"});`,
+          ]
+        : []),
       `process.stdout.write(${JSON.stringify(toolPrefix)} + JSON.stringify({`,
       'hostname:require("node:os").hostname(),',
       'cwd:process.cwd(),modelCredentialPresent:Object.hasOwn(process.env,"OPENAI_API_KEY"),',
+      `sessionFileSha256:require("node:crypto").createHash("sha256").update(require("node:fs").readFileSync(${JSON.stringify(sessionFile.path)})).digest("hex"),`,
       ...(workspaceFile === undefined
         ? []
         : [
@@ -118,6 +148,15 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
     assert.ok(sent.runId);
     assert.ok(!["error", "timeout"].includes(sent.status));
     stage = "model-and-exec";
+    let outcome;
+    while (!signal.aborted) {
+      outcome = await call("agent.wait", { runId: sent.runId, timeoutMs: 3_000 });
+      if (["ok", "error"].includes(outcome.status) || outcome.endedAt !== undefined) {
+        break;
+      }
+    }
+    signal.throwIfAborted();
+    assert.equal(outcome.status, "ok");
     const text = (content) =>
       typeof content === "string"
         ? content
@@ -127,7 +166,9 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
             .join("\n");
     while (!signal.aborted) {
       const history = await call("chat.history", { sessionKey: key, limit: 30 });
-      const messages = history.messages ?? [];
+      const messages = (history.messages ?? []).filter(
+        (message) => message.__openclaw?.runId === sent.runId,
+      );
       const tool = messages.find(
         (message) =>
           message.role === "toolResult" &&
@@ -159,8 +200,18 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
         assert.ok(typeof proof.hostname === "string" && proof.hostname.length > 0);
+        stage = "current-placement";
+        const current = await call("sessions.describe", { key, agentId: "main" });
+        assert.equal(current.session?.sessionId, session.sessionId);
+        const placement = current.session?.placement;
+        assert.equal(placement?.state, "active");
+        assert.equal(placement.profileId, required.id);
+        assert.equal(placement.providerId, required.providerId);
+        assert.equal(placement.inference, "worker");
+        assert.ok(placement.environmentId && placement.remoteWorkspaceDir);
         assert.equal(proof.cwd, placement.remoteWorkspaceDir);
         assert.equal(proof.modelCredentialPresent, false);
+        assert.equal(proof.sessionFileSha256, sessionFile.sha256);
         if (workspaceFile !== undefined) {
           assert.equal(
             proof.workspaceFileSha256,
@@ -173,6 +224,8 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
           providerId: required.providerId,
           environmentId: placement.environmentId,
           hostname: proof.hostname,
+          session,
+          sessionFile,
         });
         return;
       }
@@ -196,7 +249,7 @@ async function nativeWorkerProof({ namespaceId, agentId, timeout, workspaceFile 
 
 export async function assertNativeWorkerProofInController(
   context,
-  { stateDirectory, state, environment, namespaceId, agentId, workspaceFile },
+  { stateDirectory, state, environment, namespaceId, agentId, workspaceFile, session, sessionFile },
 ) {
   context.signal.throwIfAborted();
   const safeEnvironment = {
@@ -206,7 +259,7 @@ export async function assertNativeWorkerProofInController(
   };
   delete safeEnvironment.OPENAI_API_KEY;
   delete safeEnvironment.OPENAI_API_KEY_FILE;
-  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile })});`;
+  const input = `await (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
@@ -283,5 +336,7 @@ export async function assertNativeWorkerProofInController(
   assert.equal(result.proof?.verified, true);
   assert.ok(result.proof.profileId && result.proof.providerId && result.proof.environmentId);
   assert.ok(typeof result.proof.hostname === "string" && result.proof.hostname.length > 0);
+  assert.ok(result.proof.session?.key && result.proof.session.sessionId);
+  assert.ok(result.proof.sessionFile?.path && result.proof.sessionFile.sha256);
   return result.proof;
 }

@@ -596,7 +596,7 @@ test(
       secretId = source.secrets.api_key?.id;
 
       await context.test(
-        "guided native OpenClaw provisioning and redeployment retain workspace files and required-worker execution",
+        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution",
         { timeout: 16 * 60_000 + 2 * nativeFirstAgentProofTimeout + 30_000 },
         async (nativeContext) => {
           const request = (method, path, body) =>
@@ -837,10 +837,11 @@ test(
             assert.equal(file.name, filename);
             assert.equal(file.content, content, `Redeployment must preserve ${filename}`);
           }
-          const replacementNativeProof = await assertNativeWorkerProofInController(
-            nativeContext,
-            proofOptions,
-          );
+          const replacementNativeProof = await assertNativeWorkerProofInController(nativeContext, {
+            ...proofOptions,
+            session: firstNativeProof.session,
+            sessionFile: firstNativeProof.sessionFile,
+          });
           assert.equal(
             replacementNativeProof.hostname,
             replacementProvider.pod.spec.hostname ?? replacementProvider.pod.metadata.name,
@@ -848,10 +849,15 @@ test(
           );
           assert.equal(replacementNativeProof.profileId, firstNativeProof.profileId);
           assert.equal(replacementNativeProof.providerId, firstNativeProof.providerId);
-          assert.notEqual(
-            replacementNativeProof.environmentId,
-            firstNativeProof.environmentId,
-            "The replacement must serve the fresh session in a new native worker environment",
+          assert.deepEqual(
+            replacementNativeProof.session,
+            firstNativeProof.session,
+            "The replacement must resume the exact native session created before redeployment",
+          );
+          assert.deepEqual(
+            replacementNativeProof.sessionFile,
+            firstNativeProof.sessionFile,
+            "The resumed exec must read the relative file written before redeployment",
           );
         },
       );
