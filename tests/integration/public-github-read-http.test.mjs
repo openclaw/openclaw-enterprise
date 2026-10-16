@@ -483,20 +483,23 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         held = res;
         holding.resolve();
       };
+      st.after(() => held?.writableEnded || (held && ok(held)));
       const before = requests;
       const reads = [from(first, "/pulls/30", reader.base)];
       await holding.promise;
-      // The reader takes the second caller's request synchronously: by this event it has either
-      // joined the read in flight or started its own provider read.
+      // The reader's own request listener is registered first and runs to `pending.get` before
+      // its first await, so by this event it has either joined the read in flight or started
+      // its own provider read.
       const taken = once(reader.server, "request");
       reads.push(from(second, "/pulls/30", reader.base));
       await taken;
       held.writeHead(200, json).end(JSON.stringify({ number: 30 }));
-      for (const { status, body } of await Promise.all(reads)) {
+      const responses = await Promise.all(reads);
+      assert.equal(requests, before + 1, "identical reads in flight must share one provider read");
+      for (const { status, body } of responses) {
         assert.equal(status, 200);
         assert.deepEqual(body, { number: 30 });
       }
-      assert.equal(requests, before + 1, "identical reads in flight must share one provider read");
     },
   );
   await t.test(
