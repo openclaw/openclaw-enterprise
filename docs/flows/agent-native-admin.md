@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-14"
-last_updated_session: "authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083"
+updated: 2026-10-15
+last_updated_session: authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d
 ---
 
 # Agent Native Admin UI Flow
@@ -81,7 +81,7 @@ auto-approval. An existing helper-owned name cannot change this selection.
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-The Agent detail tabs request `${path}/native-admin` with the panel hidden. Disabled and denied states hide it; stopped, unavailable, and unsupported states report their status. Only `available` exposes **Open native admin UI**, which opens the returned URL in a new tab with `noopener noreferrer`. An audited `403` stores the denied path in tab `sessionStorage` for the session owner, avoiding repeated reads until logout, a new sign-in, or a new tab. Deployment polling or **Refresh deployment** rereads after `activeRevisionId` or `desiredRuntimeState` changes; a refresh during a read triggers one follow-up read.
+Agent detail checks `${path}/native-admin` with access hidden. Disabled or denied stays hidden; stopped, unavailable, and unsupported explain why. Only `available` shows **Open admin console**, beside its gateway access and configuration warning. It opens the returned URL with `noopener noreferrer`. An audited `403` in the session owner’s tab `sessionStorage` suppresses repeat reads until logout, sign-in, or a new tab. Deployment reads refresh access when `activeRevisionId` or `desiredRuntimeState` changes, coalescing an in-flight refresh into one follow-up.
 
 The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
 
@@ -124,17 +124,7 @@ Native-host admission resolves the irreversible hash by checking existing Instal
 
 `apps/controller/src/auth/index.ts:createControllerAuth`
 
-When native admin is enabled, startup passes `nativeAdmin.sharedCookieDomain` to
-Better Auth as `OCC_AUTH_COOKIE_DOMAIN`, and Better Auth emits the ordinary OCE
-session cookie at that configured shared cookie parent domain. The controller
-validates that the console host and Agent host suffix fit that parent on
-DNS-label boundaries and rejects public suffixes, malformed domains, or values
-outside the parent. It does not infer a broader parent domain from the console
-or Agent hostname. When native admin is disabled, leftover shared-cookie-domain
-configuration is ignored and the console keeps the legacy host-only
-`openclaw_occ` cookie prefix and scope.
-
-A domain-scoped session cookie cannot use a host-only `__Host-` prefix. The controller keeps one canonical cookie name and scope so the browser does not choose between duplicate host-only and domain cookies during migration.
+When enabled, native admin passes the configured shared cookie domain to Better Auth. The controller validates that the console and Agent hosts fit that parent on DNS-label boundaries, rejecting public suffixes and malformed domains. It never infers a parent domain. When disabled, the console uses the host-only `openclaw_occ` cookie. A shared-domain cookie cannot use the `__Host-` prefix; one canonical name and scope prevents ambiguous duplicates.
 
 ### 6. OCC intercepts native-host HTTP requests
 
@@ -149,6 +139,8 @@ revalidates exact Agent `administer`, selects the current active revision, and
 validates native configuration support before proxying. Attributable IAM denials
 during proxy admission preserve an IAM denial audit for the human session and
 exact Agent instead of becoming unaudited dependency failures.
+
+An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. The console resolves it after authentication and exact Agent authorization; unknown and unauthorized keys get `404`.
 
 Admission reads Better Auth once and returns the verified session metadata with
 the caller identity. The status and proxy paths reuse that result to check
@@ -226,6 +218,8 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
+- 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
 - 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
 
 - 2026-10-14 00:10: Distinguished HTTP refusal from WebSocket socket closure without a response. (01a13783-3cb5-7f53-8668-b2e3affa2b12 - e64d04f12cb80eb438a4c442180e56c2a2adae38)

@@ -1,10 +1,27 @@
 import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
 export interface ConsoleAsset {
   readonly body: Buffer;
   readonly contentType: string;
   readonly statusCode: 200 | 404;
+  /** Set when `body` is compressed for the request's Accept-Encoding. */
+  readonly contentEncoding?: "br" | "gzip";
+  /** Static script and style assets vary by Accept-Encoding; the HTML shell never does. */
+  readonly variesByEncoding?: true;
 }
+
+interface EncodedAsset {
+  readonly identity: Buffer;
+  readonly br: Buffer;
+  readonly gzip: Buffer;
+}
+
+const brotliAsync = promisify(brotliCompress);
+const gzipAsync = promisify(gzip);
+// Compressed once per asset content: the files are static per build.
+const encodedAssets = new Map<string, Promise<EncodedAsset>>();
 
 const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
@@ -95,7 +112,16 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
   "style-src 'self'",
 ].join("; ");
 
-export async function readConsoleAsset(pathname: string): Promise<ConsoleAsset> {
+/**
+ * Reads a console asset. Pass the request's Accept-Encoding to receive a brotli or gzip body for
+ * static scripts and styles. Only these build-time files are compressed: they carry no secret or
+ * request data, so compression cannot leak one (BREACH). The HTML shell, which also answers the
+ * sign-in route, stays identity.
+ */
+export async function readConsoleAsset(
+  pathname: string,
+  acceptEncoding?: string,
+): Promise<ConsoleAsset> {
   if (pathname === "/console/default-codex-preset.mjs") {
     const preset = JSON.parse(
       await readFile(
@@ -103,19 +129,20 @@ export async function readConsoleAsset(pathname: string): Promise<ConsoleAsset> 
         "utf8",
       ),
     );
-    return {
-      body: Buffer.from(`export default ${JSON.stringify(preset)};\n`),
-      contentType: "text/javascript; charset=utf-8",
-      statusCode: 200,
-    };
+    return encodedAsset(
+      pathname,
+      Buffer.from(`export default ${JSON.stringify(preset)};\n`),
+      "text/javascript; charset=utf-8",
+      acceptEncoding,
+    );
   }
   const asset = CONSOLE_ASSETS.get(pathname);
   if (asset !== undefined) {
-    return {
-      body: await readFile(asset.path),
-      contentType: asset.contentType,
-      statusCode: 200,
-    };
+    const body = await readFile(asset.path);
+    if (!asset.contentType.startsWith("text/")) {
+      return { body, contentType: asset.contentType, statusCode: 200 };
+    }
+    return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   return {
     body: await readFile(CONSOLE_SHELL),
@@ -126,4 +153,66 @@ export async function readConsoleAsset(pathname: string): Promise<ConsoleAsset> 
         ? 200
         : 404,
   };
+}
+
+async function encodedAsset(
+  pathname: string,
+  body: Buffer,
+  contentType: string,
+  acceptEncoding: string | undefined,
+): Promise<ConsoleAsset> {
+  const identity = { body, contentType, statusCode: 200, variesByEncoding: true } as const;
+  const encoding = preferredEncoding(acceptEncoding);
+  if (encoding === undefined) {
+    return identity;
+  }
+  // Look the entry up without awaiting first, so concurrent first requests share one compression.
+  const existing = encodedAssets.get(pathname);
+  let encoded = existing === undefined ? undefined : await existing.catch(() => undefined);
+  if (encoded === undefined || !encoded.identity.equals(body)) {
+    const pending = Promise.all([
+      brotliAsync(body, {
+        params: {
+          [zlib.BROTLI_PARAM_MODE]: zlib.BROTLI_MODE_TEXT,
+          // Quality 10 is within 3% of 11 at under half the one-time CPU.
+          [zlib.BROTLI_PARAM_QUALITY]: 10,
+          [zlib.BROTLI_PARAM_SIZE_HINT]: body.length,
+        },
+      }),
+      gzipAsync(body, { level: zlib.Z_BEST_COMPRESSION }),
+    ]).then(([br, gzipped]) => ({ identity: body, br, gzip: gzipped }));
+    encodedAssets.set(pathname, pending);
+    // Never cache a failure: the next request compresses again.
+    pending.catch(() => {
+      if (encodedAssets.get(pathname) === pending) {
+        encodedAssets.delete(pathname);
+      }
+    });
+    encoded = await pending;
+  }
+  const compressed = encoded[encoding];
+  return compressed.length < body.length
+    ? { ...identity, body: compressed, contentEncoding: encoding }
+    : identity;
+}
+
+/** The accepted coding with the highest q-value; brotli wins a tie. Unlisted codings fall to `*`. */
+function preferredEncoding(acceptEncoding: string | undefined): "br" | "gzip" | undefined {
+  if (acceptEncoding === undefined) {
+    return undefined;
+  }
+  const weights = new Map<string, number>();
+  for (const entry of acceptEncoding.split(",")) {
+    const [name = "", ...parameters] = entry.split(";").map((part) => part.trim().toLowerCase());
+    const q = parameters.find((parameter) => parameter.startsWith("q="));
+    const weight = q === undefined ? 1 : Number(q.slice(2));
+    weights.set(name, Number.isFinite(weight) ? Math.min(Math.max(weight, 0), 1) : 0);
+  }
+  const weight = (name: string) => weights.get(name) ?? weights.get("*") ?? 0;
+  const br = weight("br");
+  const gzipWeight = weight("gzip");
+  if (br > 0 && br >= gzipWeight) {
+    return "br";
+  }
+  return gzipWeight > 0 ? "gzip" : undefined;
 }

@@ -7,6 +7,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
+import {
+  firstAgentPriorPatPolicy,
+  firstAgentPriorPatPolicyWarning,
+  firstAgentRevisionValuesMatch,
+} from "../../scripts/first-agent-model.mjs";
+
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
 
@@ -150,6 +156,82 @@ test("first-Agent requires dedicated Codex for OpenShell before external calls",
 
   assert.match(runFirstAgent(env), /OpenShell first-Agent workflow requires --harness codex/);
   await assert.rejects(readFile(engineLog), { code: "ENOENT" });
+});
+
+test("first-Agent recognizes the prior OpenShell PAT policy only on an identified revision", () => {
+  const values = (sandbox, approvalsReviewer = "user") => ({
+    plugins: { entries: { codex: { config: { appServer: { sandbox, approvalsReviewer } } } } },
+  });
+  const configured = values("read-only");
+  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  const matches = (snapshot, priorRevisionId) =>
+    firstAgentRevisionValuesMatch(snapshot, configured, record, "rev_saved", priorRevisionId);
+
+  const prior = values("workspace-write");
+  assert.equal(matches(prior, "rev_saved"), true, "read the saved or active prior revision");
+  assert.equal(matches(prior, "rev_other"), false, "do not adopt another obsolete revision");
+  assert.equal(matches(prior), false, "a new deployment cannot freeze the obsolete policy");
+  assert.equal(matches(values("danger-full-access")), true, "a new deployment uses current policy");
+  assert.equal(
+    matches(values("workspace-write", "auto_review"), "rev_saved"),
+    false,
+    "reviewer drift",
+  );
+  assert.equal(
+    firstAgentRevisionValuesMatch(
+      prior,
+      configured,
+      { ...record, authMethod: "api_key" },
+      "rev_saved",
+      "rev_saved",
+    ),
+    false,
+    "the historical exception is exclusive to PAT revisions",
+  );
+  assert.equal(
+    matches({ ...prior, tools: { allow: ["*"] } }, "rev_saved"),
+    false,
+    "the historical exception must retain unrelated configuration drift checks",
+  );
+  assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
+  assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
+});
+
+test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {
+  const values = (sandbox) => ({
+    plugins: {
+      entries: { codex: { config: { appServer: { sandbox, approvalsReviewer: "user" } } } },
+    },
+  });
+  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  const prior = values("workspace-write");
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_saved"), true);
+  for (const sandbox of ["danger-full-access", "read-only"]) {
+    assert.equal(
+      firstAgentPriorPatPolicy(values(sandbox), record, "rev_saved", "rev_saved"),
+      false,
+      sandbox,
+    );
+  }
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved"), false, "a new deployment");
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_other"), false);
+  assert.equal(
+    firstAgentPriorPatPolicy(prior, { ...record, authMethod: "api_key" }, "rev_saved", "rev_saved"),
+    false,
+  );
+  for (const other of [{ sandboxDriver: undefined }, { harness: "openclaw" }]) {
+    assert.equal(
+      firstAgentPriorPatPolicy(prior, { ...record, ...other }, "rev_saved", "rev_saved"),
+      false,
+      JSON.stringify(other),
+    );
+  }
+  const warning = firstAgentPriorPatPolicyWarning("rev_saved");
+  assert.match(warning, /rev_saved/);
+  assert.match(warning, /workspace-write/);
+  assert.match(warning, /shell tools fail/);
+  assert.match(warning, /--replace-key/);
+  assert.match(warning, /current sandbox mode \(danger-full-access/);
 });
 
 test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {

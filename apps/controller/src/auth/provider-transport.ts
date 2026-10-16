@@ -58,13 +58,18 @@ export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABL
 // unavailable provider also says why, for the operator log. The membership denials come only
 // from GitHub's sign-in allowlist, after the provider authenticated `subject`.
 export type ProviderExchange =
-  | { readonly subject: string }
+  | { readonly subject: string; readonly login?: string | undefined }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
   | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
-  | { readonly denial: "MEMBERSHIP_REQUIRED"; readonly subject: string }
+  | {
+      readonly denial: "MEMBERSHIP_REQUIRED";
+      readonly subject: string;
+      readonly login?: string | undefined;
+    }
   | {
       readonly denial: "MEMBERSHIP_UNAVAILABLE";
       readonly subject: string;
+      readonly login?: string | undefined;
       readonly failure: ProviderFailure;
     };
 

@@ -25,7 +25,7 @@ export function pluginWarningText(warning) {
 
 export function renderAgentPlugins(
   context,
-  { agent, snapshot, draft, path, onState, onSaved, onReload },
+  { agent, snapshot, draft, path, onState, onSaved, onReload, savedNotice = "" },
 ) {
   if (!draft) {
     return element(
@@ -183,7 +183,10 @@ export function renderAgentPlugins(
     input.setCustomValidity("");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  const reload = button("Reload plugin selections", onReload);
+  const reload = button("Reload plugin selections", () => {
+    reload.disabled = true;
+    void onReload();
+  });
   const section = element(
     "section",
     { className: "agent-card" },
@@ -288,7 +291,7 @@ export function renderAgentPlugins(
         return;
       }
       mutationStarted = true;
-      await context.request(path, {
+      const savedAgent = await context.request(path, {
         method: "PATCH",
         body: {
           configurationId: baseline.configurationId,
@@ -302,13 +305,13 @@ export function renderAgentPlugins(
       });
       saved = true;
       if (context.isCurrent()) {
-        pending = false;
-        updateState();
+        // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
+        feedback.textContent = "Plugin selections saved.";
         context.drafts.forget("plugins");
         if (oauthLogin.capture()) {
           context.drafts.track("plugins", () => ({ oauthLogin: oauthLogin.capture() }));
         }
-        onSaved();
+        void onSaved(savedAgent);
       }
     } catch (error) {
       if (!context.isCurrent()) {
@@ -332,7 +335,7 @@ export function renderAgentPlugins(
                   ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
                   : message(error, mutationStarted);
     } finally {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && !saved) {
         pending = false;
         updateState();
       }
@@ -340,6 +343,9 @@ export function renderAgentPlugins(
   }
 
   updateState();
+  if (savedNotice) {
+    feedback.textContent = savedNotice;
+  }
   void context.request(`${path}/plugins/capabilities`).then(
     (capabilities) => {
       if (context.isCurrent()) {

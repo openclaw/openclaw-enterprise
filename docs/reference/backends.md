@@ -310,7 +310,7 @@ request. Successful issuance does not prove that an Agent can reach its model.
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
-[service-account testing](../testing/service-accounts.md) for real provider
+[service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
 verification requirements.
 
 ## Deferred behavior

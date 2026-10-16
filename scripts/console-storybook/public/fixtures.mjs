@@ -180,6 +180,8 @@ export function installFixture(scenario, evidence) {
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configs = new Map();
+  const configurationReads = new Set();
+  let configurationChangedElsewhere = false;
   const agents = new Map();
   const revisions = new Map();
   const deployments = new Map();
@@ -192,6 +194,7 @@ export function installFixture(scenario, evidence) {
   const roles = [];
   const bindings = [];
   const deleted = new Set();
+  const clearRevisionOnRead = new Set();
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
@@ -917,12 +920,24 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
+          // Another browser saves this Configuration once the page has read it
+          // (configurationChangedElsewhere), so the next save preflight finds a newer generation.
+          if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
+            if (configurationReads.has(saved.id)) {
+              configurationChangedElsewhere = true;
+              saved.generation += 1;
+            }
+            configurationReads.add(saved.id);
+          }
           return response(saved);
         }
         if (method === "PATCH") {
           Object.assign(saved, body, { generation: saved.generation + 1 });
           return response(saved);
         }
+      }
+      if (resource === "permissions" && method === "GET") {
+        return response({ agents: { create: !scenario.readOnlyPermissionSummary } });
       }
       if (resource === "agents") {
         if (method === "GET") {
@@ -1146,6 +1161,9 @@ export function installFixture(scenario, evidence) {
               agents.delete(id);
               return error(404);
             }
+            if (clearRevisionOnRead.delete(id)) {
+              saved.activeRevisionId = null;
+            }
             return response(saved);
           }
           if (method === "PATCH") {
@@ -1159,8 +1177,15 @@ export function installFixture(scenario, evidence) {
             return response(saved, 202);
           }
         }
+        if (suffix === "/permissions" && method === "GET") {
+          const allowed = !scenario.readOnlyPermissionSummary;
+          return response({ update: allowed, deploy: allowed, operate: allowed, delete: allowed });
+        }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
+          if (scenario.clearRevisionOnStopReadback) {
+            clearRevisionOnRead.add(id);
+          }
           return response(saved, 202);
         }
         if (suffix === "/native-admin" && method === "GET") {

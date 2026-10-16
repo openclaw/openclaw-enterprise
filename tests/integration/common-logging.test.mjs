@@ -627,6 +627,47 @@ test("worker emitter reports health at debug and failures at error", () => {
   );
 });
 
+test("worker stop-yield counts survive local JSON logging on pending and completed passes", () => {
+  const output = memoryDestination();
+  const emit = createWorkerLogEmitter(
+    createOccLogger({ component: "occ-worker", destination: output.destination }),
+  );
+
+  // These are the completion shapes emitted when a predecessor drain yields,
+  // then finishes. Keep the count visible after the production sanitizer runs.
+  for (const [code, outcome, stopYields] of [
+    ["PREDECESSOR_STOP_YIELDED", "pending", 1],
+    ["REVISION_ACTIVATED", "success", 3],
+  ]) {
+    emit({
+      event: "worker.completed",
+      workId: "agent_revision:rev_test:reconcile",
+      attempt: 1,
+      operation: "agent_revision.reconcile",
+      code,
+      outcome,
+      stopYields,
+    });
+  }
+  assert.deepEqual(
+    output.lines.map(({ code, outcome, stopYields }) => ({ code, outcome, stopYields })),
+    [
+      { code: "PREDECESSOR_STOP_YIELDED", outcome: "pending", stopYields: 1 },
+      { code: "REVISION_ACTIVATED", outcome: "success", stopYields: 3 },
+    ],
+  );
+
+  for (const stopYields of [0, 1, 3, Number.MAX_SAFE_INTEGER]) {
+    emit({ event: "worker.completed", stopYields });
+    assert.equal(output.lines.at(-1).stopYields, stopYields);
+    assert.equal(typeof output.lines.at(-1).stopYields, "number");
+  }
+  for (const stopYields of [-1, "3", true, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    emit({ event: "worker.completed", stopYields });
+    assert.equal(Object.hasOwn(output.lines.at(-1), "stopYields"), false);
+  }
+});
+
 test("worker startup diagnostics honor logging YAML and stay on stderr", async (t) => {
   const path = await fixture(t, "logging:\n  level: debug\n");
   const result = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {

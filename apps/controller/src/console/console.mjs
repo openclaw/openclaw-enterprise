@@ -1,5 +1,10 @@
 import { element, button } from "./dom.mjs";
-import { renderAgentList, renderCreateAgent, renderAgentDetail } from "./agents.mjs";
+import {
+  clearResolvedSecretNames,
+  renderAgentList,
+  renderCreateAgent,
+  renderAgentDetail,
+} from "./agents.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
@@ -13,6 +18,9 @@ let session = null;
 let namespaces = [];
 let namespaceId = null;
 let observabilityUrl = null;
+// Set while the last Backends read was denied, so Retry and Refresh do not show the Namespace
+// selector again before the same answer hides it (finding 1491).
+let backendsDenied = false;
 // Session owner whose Installation-admin observability read has settled.
 let observabilityOwner = null;
 // The Installation-access probe still being answered, for the session owner that sent it.
@@ -38,6 +46,9 @@ const externalAttemptStorageKeys = {
 // The last discovered OIDC label, kept per tab so messages after the IdP round trip, which
 // reloads the Console before discovery answers, name the provider the person chose.
 const oidcLabelStorageKey = "occ.console.oidcLabel";
+const loginIntentStorageKey = "occ.console.loginIntent";
+const loginIntentLifetimeMs = 10 * 60 * 1000;
+let pendingIntent = null;
 // Google gradient G: https://commons.wikimedia.org/wiki/File_talk:Google_Favicon_2025.svg
 // GitHub mark: https://github.com/primer/octicons/blob/main/icons/mark-github-24.svg
 // A retained view revalidates each read it made. A paged read keeps its cursor, so it compares
@@ -370,20 +381,84 @@ const navigation = createNavigation({
   isLoggingOut: () => loggingOut,
   loadPage,
 });
-const { route, pageUrl, safeReturn, navigate } = navigation;
+const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate } = navigation;
+function forgetLoginIntent() {
+  try {
+    sessionStorage.removeItem(loginIntentStorageKey);
+  } catch {
+    // Tab storage is optional; no destination survives the external round trip.
+  }
+}
+
+function rememberLoginIntent(intent, attemptId) {
+  forgetLoginIntent();
+  if (!validIntent(intent)) {
+    return;
+  }
+  try {
+    sessionStorage.setItem(
+      loginIntentStorageKey,
+      JSON.stringify({ intent, attemptId, time: Date.now() }),
+    );
+  } catch {
+    // Sign-in still works without tab storage.
+  }
+}
+
+function takeLoginIntent(attemptId) {
+  let stored;
+  try {
+    stored = JSON.parse(sessionStorage.getItem(loginIntentStorageKey) ?? "null");
+  } catch {
+    // Invalid or unavailable storage cannot supply a destination.
+  }
+  forgetLoginIntent();
+  const age = Date.now() - stored?.time;
+  return attemptId &&
+    stored?.attemptId === attemptId &&
+    Number.isFinite(age) &&
+    age >= 0 &&
+    age <= loginIntentLifetimeMs &&
+    validIntent(stored.intent)
+    ? stored.intent
+    : null;
+}
+
+// The recovery fragment contains an opaque key, not an address or authority. Remove it
+// before any sign-in redirect and resolve it only after this tab has a confirmed session.
+function takeNativeFragment(current) {
+  if (
+    (current.url.pathname !== "/console" && current.url.pathname !== "/console/") ||
+    !current.url.hash
+  ) {
+    return null;
+  }
+  const match = /^#native-agent=([0-9a-f]{32})$/.exec(current.url.hash);
+  history.replaceState(history.state, "", current.url.pathname + current.url.search);
+  return match ? { kind: "native", key: match[1] } : null;
+}
+
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
-  onExpired: () => showLogin("Your session has expired.", location.pathname + location.search),
+  onExpired: () => showLogin("Your session has expired."),
   sessionKey: () => pinnedSessionKey,
 });
 const retainedViews = new Map();
+// Other first visits that settle sooner swap pages without showing loading (finding 1407).
+const loadingDelayMs = 250;
+// A return or refocus keeps its page until the recheck settles; past this delay it says so.
+const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
+// The lifetime of a load that opened an Agent with the pending "Loading agent details…" panel.
+// That load is itself the access check, so refocus checks wait until it finishes, Agent detail
+// included, and the panel and its way back stay (finding 1460).
+let openingAgentLoad = null;
 
 function sessionOwnerKey(value) {
   const userId = value?.user?.id;
@@ -461,7 +536,7 @@ function clearPasswordInputs() {
   });
 }
 
-function retainMountedView() {
+function retainMountedView(returnLink) {
   const owner = sessionOwnerKey(session);
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!owner || mountedRouteKey === null || !view) {
@@ -475,6 +550,8 @@ function retainMountedView() {
     title: app.querySelector(".content h1")?.textContent ?? null,
     scope: app.querySelector(".content .scope")?.textContent ?? null,
     scrollY: window.scrollY,
+    returnHref:
+      returnLink instanceof HTMLAnchorElement && view.contains(returnLink) ? returnLink.href : null,
   });
   while (retainedViews.size > 16) {
     retainedViews.delete(retainedViews.keys().next().value);
@@ -482,44 +559,93 @@ function retainMountedView() {
   mountedRouteKey = null;
 }
 
-function restoreRetainedView(current) {
+// Finds the destination's retained view without removing it. The load forgets it only once it
+// mounts or replaces the view; a load abandoned before then (Forward during a return's
+// recheck, say) leaves it for the next return (finding 1441).
+function peekRetainedView(current) {
   const owner = sessionOwnerKey(session);
   const key = routeKey(current);
   const retained = key && retainedViews.get(key);
   if (!owner || !retained || retained.owner !== owner) {
     return null;
   }
-  retainedViews.delete(key);
+  return { key, retained };
+}
+
+function forgetRetainedView(taken) {
+  if (taken && retainedViews.get(taken.key) === taken.retained) {
+    retainedViews.delete(taken.key);
+  }
+}
+
+// Names a recheck that outlasts stillCheckingDelayMs beside the page's actions, so a held page
+// is not mistaken for a stuck one (finding 1442). Returns a function that removes the note.
+function showStillChecking() {
+  const actions = app.querySelector(".content .page-actions");
+  if (!actions) {
+    return () => {};
+  }
+  const note = element("p", { className: "checking-status", role: "status" });
+  actions.prepend(note);
+  note.textContent = "Still checking…";
+  return () => note.remove();
+}
+
+// On a return, keeps the page already on screen, inert, in a fresh pending shell while the
+// retained route's admission and reads run. A retained view is then never painted before it revalidates
+// (finding 1412), and returns do not flash a loading state (finding 1415). Returns null when
+// no page is shown.
+function holdShownView(current, { busyCue = true } = {}) {
+  const view = app.querySelector('.content [aria-live="polite"]');
+  if (!view) {
+    return null;
+  }
+  const title = app.querySelector(".content h1")?.textContent;
+  const scope = app.querySelector(".content .scope")?.textContent;
+  const diagnostics = app.querySelector(".runtime-debug");
+  const scrollY = window.scrollY;
   const shell = renderShell(current.feature, true);
+  if (title) {
+    app.querySelector(".content h1").textContent = title;
+  }
+  if (scope) {
+    app.querySelector(".content .scope").textContent = scope;
+  }
+  view.inert = true;
+  view.setAttribute("aria-busy", "true");
+  // Navigation dims the held page after a moment (finding 1447); a refocus recheck keeps its
+  // look. The class lives on this load's shell, so the next shell drops it.
+  app.querySelector(".content").classList.toggle("holding", busyCue);
+  shell.view.replaceWith(view);
+  shell.view = view;
+  if (shell.diagnostics && diagnostics) {
+    diagnostics.inert = true;
+    shell.diagnostics.replaceWith(diagnostics);
+    shell.diagnostics = diagnostics;
+  }
+  window.scrollTo({ top: scrollY, left: 0 });
+  return shell;
+}
+
+// Mounts a retained view that revalidated unchanged, active at once.
+function mountRetainedView(current, retained) {
+  const shell = renderShell(current.feature, false);
   if (retained.title) {
     app.querySelector(".content h1").textContent = retained.title;
   }
   if (retained.scope) {
     app.querySelector(".content .scope").textContent = retained.scope;
   }
+  retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
-  shell.retained = retained;
   if (shell.diagnostics && retained.state?.diagnostics) {
+    retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
     shell.diagnostics = retained.state.diagnostics;
-    shell.diagnostics.inert = true;
   }
-  shell.view.setAttribute("aria-busy", "true");
-  shell.view.setAttribute("inert", "");
-  shell.blockedControls = [
-    ...shell.view.querySelectorAll("button, input, select, textarea"),
-  ].filter((control) => !control.disabled);
-  for (const control of shell.blockedControls) {
-    control.disabled = true;
-  }
-  mountedRouteKey = key;
-  const active = lifetime.capture();
-  requestAnimationFrame(() => {
-    if (lifetime.isCurrent(active) && mountedRouteKey === key) {
-      window.scrollTo({ top: retained.scrollY, left: 0 });
-    }
-  });
+  mountedRouteKey = routeKey(current);
+  window.scrollTo({ top: retained.scrollY, left: 0 });
   return shell;
 }
 
@@ -527,7 +653,7 @@ function markMountedRoute(current) {
   mountedRouteKey = routeKey(current);
 }
 
-function resetReads({ retainView = false } = {}) {
+function resetReads({ retainView = false, returnLink = null } = {}) {
   const resumeDrafts = drafts.suspend();
   if (mountedViewState) {
     mountedViewState.resumeDrafts = resumeDrafts;
@@ -538,7 +664,7 @@ function resetReads({ retainView = false } = {}) {
   clearPasswordInputs();
   shellUI.reset();
   if (retainView) {
-    retainMountedView();
+    retainMountedView(returnLink);
   } else {
     mountedRouteKey = null;
   }
@@ -547,17 +673,28 @@ function resetReads({ retainView = false } = {}) {
 }
 
 function renderShell(feature, namespaceAdmissionPending = false) {
-  return shellUI.renderShell(feature, {
+  const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
     namespaceId,
     observabilityUrl,
     namespaceAdmissionPending,
   });
+  if (feature === "backends" && backendsDenied && shell.scopeSelector) {
+    shell.scopeSelector.hidden = true;
+  }
+  return shell;
+}
+
+function renderPendingNamespaceShell(feature) {
+  const shell = renderShell(feature, true);
+  panel(shell.view, "Loading…", "Checking Namespace access.");
+  return shell;
 }
 
 function clearPrivate() {
   session = null;
+  backendsDenied = false;
   namespaces = [];
   namespaceId = null;
   observabilityUrl = null;
@@ -565,6 +702,7 @@ function clearPrivate() {
   installationAccessProbe = null;
   installationAdmin = null;
   clearRetainedViews();
+  clearResolvedSecretNames();
 }
 
 function clearDrafts() {
@@ -573,7 +711,7 @@ function clearDrafts() {
   draftUserId = null;
 }
 
-function showLogin(message = "", returnPath = null) {
+function showLogin(message = "", destination = null) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
   clearDrafts();
@@ -583,12 +721,9 @@ function showLogin(message = "", returnPath = null) {
   // A pending exchange runs before any login view; an abandoned attempt must not
   // turn a later password sign-in into a provider failure.
   takeExternalAttempt();
-  const url = new URL("/console/login", location.origin);
-  const destination = safeReturn(returnPath);
-  if (destination) {
-    url.searchParams.set("return", destination);
-  }
-  history.replaceState(null, "", `${url.pathname}${url.search}`);
+  pendingIntent = null;
+  forgetLoginIntent();
+  history.replaceState(null, "", "/console/login");
   const username = element("input", {
     id: "username",
     name: "username",
@@ -649,6 +784,7 @@ function showLogin(message = "", returnPath = null) {
         }
         if (externalSessionBinding) {
           rememberExternalAttempt(provider, result.attemptId);
+          rememberLoginIntent(destination, result.attemptId);
         }
         location.assign(authorization.href);
       } catch (error) {
@@ -716,7 +852,8 @@ function showLogin(message = "", returnPath = null) {
       }
       pinSessionKey(signedIn?.sessionKey);
       password.value = "";
-      history.replaceState(null, "", destination ?? "/console/agents");
+      pendingIntent = destination;
+      history.replaceState(null, "", "/console/agents");
       await loadPage();
     } catch (error) {
       if (!lifetime.isCurrent(active)) {
@@ -793,11 +930,48 @@ function showLogin(message = "", returnPath = null) {
     });
 }
 
-async function loadPage({ fromNavigation = false, reuseView = fromNavigation } = {}) {
+function showCheckingSession() {
+  const shown = app.firstElementChild?.classList.contains("startup") ? app.firstElementChild : null;
+  // Destination recovery can continue in another loadPage without restarting this status.
+  if (shown?.dataset.session !== undefined) {
+    return;
+  }
+  // The shell's static status (index.html) paints before any script, so a slow link never
+  // shows a blank page. Take it over in place: the status never blanks or moves (finding 1444).
+  const status = shown ?? element("p", { className: "startup", role: "status" });
+  status.dataset.session = "";
+  if (!shown) {
+    app.replaceChildren(status);
+  }
+  // Delay the announcement, never the session check or the view that replaces it.
+  setTimeout(() => {
+    if (status.isConnected) {
+      status.textContent = "Checking session…";
+    }
+  }, 300);
+}
+
+async function loadPage({
+  fromNavigation = false,
+  reuseView = fromNavigation,
+  fromRefresh = false,
+  openingAgent = false,
+  // Set only by the load that follows a chat-link lookup that failed (finding 1450).
+  chatLinkFailure = null,
+} = {}) {
   if (loggingOut) {
     return;
   }
+  // A refocus or visibility recheck of the shown page, as opposed to a navigation.
+  const resumingView = reuseView && !fromNavigation;
   const current = route();
+  const nativeIntent = takeNativeFragment(current);
+  if (fromNavigation && nativeIntent === null) {
+    pendingIntent = null;
+  }
+  if (nativeIntent !== null) {
+    pendingIntent = nativeIntent;
+  }
   if (fromNavigation && navigateAgentTab?.(current.url)) {
     // The tab handler can reject navigation and restore the previous URL.
     markMountedRoute(route());
@@ -814,7 +988,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     reuseView = false;
   }
   namespaceId = current.namespace;
-  const active = resetReads({ retainView: knownPrivateState });
+  const active = resetReads({
+    retainView: knownPrivateState,
+    returnLink: openingAgent ? document.activeElement : null,
+  });
   if (abandonedCreation) {
     const creationDrafts = drafts.scope(discardCreationOnExit.namespaceId, "create");
     creationDrafts.forget("create");
@@ -822,23 +999,112 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     retainedViews.delete(previousMountedRouteKey);
     discardCreationOnExit = null;
   }
-  let shell = knownPrivateState ? restoreRetainedView(current) : null;
-  let retained = shell !== null;
-  if (!retained) {
-    publicPanel("Loading…", "Checking your session.");
+  const taken = knownPrivateState ? peekRetainedView(current) : null;
+  if (!reuseView) {
+    // Refresh and save/reload discard the shown view even if the load is abandoned.
+    forgetRetainedView(taken);
   }
+  const retainedView = taken?.retained ?? null;
+  let retained = retainedView !== null;
+  // An Agent link opens its destination immediately. Other visits keep the shown page inert
+  // until a retained view revalidates or admission and the destination's first read settle.
+  let shell =
+    knownPrivateState && !openingAgent ? holdShownView(current, { busyCue: !resumingView }) : null;
+  let held = shell !== null;
+  let agentReturnHref = null;
+  let pendingAgentHeading = null;
+  let focusAgentResult = false;
+  let sessionResolved = false;
+  let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
     publicPanel("Page not found", "This console page is unavailable.", "Go to Agents", () =>
       navigate("agents", current.namespace),
     );
     return;
   }
-  if (current.feature !== "login" && !retained) {
+  // A load without a shown private page shows the startup status (no signed-in navigation
+  // before the session check) and keeps it, as a held page stays, until the load outlasts
+  // loadingDelayMs, so a fast one never flashes loading. A load that continues from the startup
+  // status (a sign-in destination) keeps it too. A return's held page stays until it
+  // revalidates (finding 1415). A signed-in load with no page to hold (an error panel, say)
+  // shows the pending shell at once.
+  const startup =
+    !held && (!knownPrivateState || app.firstElementChild?.classList.contains("startup") === true);
+  // Only a link from the open list sets openingAgent, so Back returns to that history entry.
+  // No Agent name, fields or controls are shown until the ordinary access checks and read pass.
+  // A second press before the first traversal lands would go back twice and can leave the
+  // console, so only the first press navigates (finding 1459).
+  let leaving = false;
+  const backToAgents = (event) => {
+    event.currentTarget.setAttribute("aria-disabled", "true");
+    if (!leaving) {
+      leaving = true;
+      history.back();
+    }
+  };
+  if (openingAgent && !startup) {
+    openingAgentLoad = active;
     shell = renderShell(current.feature, true);
-    panel(shell.view, "Loading…", "Checking your session and Namespace access.");
+    pendingAgentHeading = app.querySelector(".content h1");
+    pendingAgentHeading.textContent = "Agent details";
+    shell.view.replaceChildren(
+      element(
+        "section",
+        { className: "state-panel" },
+        element("p", { role: "status" }, "Loading agent details…"),
+        button("Back to Agents", backToAgents),
+      ),
+    );
+    shell.view.setAttribute("aria-busy", "false");
+    pendingAgentHeading.focus();
+  } else if (!held) {
+    if (startup) {
+      showCheckingSession();
+    } else {
+      shell = renderPendingNamespaceShell(current.feature);
+    }
   }
-  let sessionResolved = false;
-  let accessResolved = false;
+  // A return or refocus that can reuse its retained view keeps the shown page and, past
+  // stillCheckingDelayMs, says it is still checking. Other loads, Refresh included, show
+  // loading after loadingDelayMs (finding 1442).
+  const recheck = held && retained && reuseView;
+  let loadingTimer =
+    !held && !startup
+      ? null
+      : recheck
+        ? setTimeout(() => {
+            loadingTimer = null;
+            if (lifetime.isCurrent(active) && held) {
+              showStillChecking();
+            }
+          }, stillCheckingDelayMs)
+        : setTimeout(() => {
+            loadingTimer = null;
+            if (!lifetime.isCurrent(active)) {
+              return;
+            }
+            if (startup && !sessionResolved) {
+              // The startup status announces the session check itself.
+              return;
+            }
+            held = false;
+            if (!accessResolved) {
+              shell = renderPendingNamespaceShell(current.feature);
+              return;
+            }
+            shell = renderShell(current.feature, false);
+            panel(
+              shell.view,
+              "Loading…",
+              current.agentId
+                ? "Reading this Agent."
+                : `Reading ${pages[current.feature].toLowerCase()}.`,
+            );
+          }, loadingDelayMs);
+  const stopLoadingTimer = () => {
+    clearTimeout(loadingTimer);
+    loadingTimer = null;
+  };
   const authError = current.url.searchParams.get("authError");
   const providerError = Object.hasOwn(externalProviders, authError ?? "")
     ? externalProviders[authError]
@@ -857,6 +1123,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               ? githubMembershipFailures[authReason]
               : null;
   const externalAttempt = takeExternalAttempt();
+  const externalIntent = takeLoginIntent(externalAttempt?.attemptId);
   if (externalAttempt !== null && providerError === null) {
     // Adopt only the session this tab's own provider attempt created.
     try {
@@ -867,18 +1134,20 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       if (!lifetime.isCurrent(active)) {
         return;
       }
-      pinSessionKey(confirmed?.sessionKey);
+      if (typeof confirmed?.sessionKey !== "string" || confirmed.sessionKey.length === 0) {
+        throw new Error("Missing session binding");
+      }
+      pinSessionKey(confirmed.sessionKey);
+      pendingIntent = externalIntent;
     } catch {
       if (lifetime.isCurrent(active)) {
-        showLogin(
-          providerFailure(externalProviders[externalAttempt.provider].label),
-          "/console/agents",
-        );
+        showLogin(providerFailure(externalProviders[externalAttempt.provider].label));
       }
       return;
     }
   }
   try {
+    const hadSession = session !== null || pinnedSessionKey !== null;
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -888,17 +1157,15 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       pinSessionKey(resolvedSession.sessionKey);
     } else if (resolvedSession !== null && resolvedSession.sessionKey !== pinnedSessionKey) {
       // The controller rejects a mismatched key; never act on another session regardless.
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     session = resolvedSession;
     if (session === null) {
       const destination =
-        providerError !== null
-          ? "/console/agents"
-          : current.feature === "login"
-            ? current.url.searchParams.get("return")
-            : pageUrl(current.target, current.namespace);
+        providerError !== null || current.feature === "login" || hadSession
+          ? null
+          : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
@@ -920,20 +1187,54 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       observabilityOwner = null;
       installationAdmin = null;
       draftUserId = owner;
-      if (retained) {
-        retained = false;
+      retained = false;
+      if (shell && (!owner || (previousOwner !== null && previousOwner !== owner))) {
+        // Another account's page, or a shell naming it, must not stay on screen.
+        stopLoadingTimer();
+        held = false;
         shell = null;
-        publicPanel("Loading…", "Checking your session.");
+        showCheckingSession();
       }
     }
-    if (current.feature === "login") {
-      history.replaceState(
-        null,
-        "",
-        safeReturn(current.url.searchParams.get("return")) ?? "/console/agents",
-      );
+    const destination = pendingIntent;
+    if (destination?.kind === "native" && validIntent(destination)) {
+      let failure = null;
+      try {
+        const resolved = await request(`/native-admin/return/${destination.key}`);
+        if (!lifetime.isCurrent(active)) {
+          return;
+        }
+        const target = {
+          kind: "console",
+          feature: `agents/${resolved?.agentId}`,
+          namespaceId: resolved?.namespaceId,
+          revision: null,
+          tab: null,
+        };
+        pendingIntent = null;
+        history.replaceState(null, "", intentUrl(target) ?? "/console/agents");
+      } catch (error) {
+        if (!lifetime.isCurrent(active)) {
+          return;
+        }
+        pendingIntent = null;
+        failure = [400, 403, 404].includes(error.status) ? "unavailable" : "interrupted";
+        history.replaceState(null, "", "/console/agents");
+      }
+      void loadPage({ chatLinkFailure: failure });
+      return;
+    }
+    if (destination || current.feature === "login") {
+      pendingIntent = null;
+      history.replaceState(null, "", intentUrl(destination) ?? "/console/agents");
       void loadPage();
       return;
+    }
+    if (loadingTimer === null) {
+      // The loading delay passed while the session was checked (or there was none): show
+      // the pending shell now. Otherwise the startup status stays until the delay passes or
+      // the first reads settle.
+      shell ??= renderPendingNamespaceShell(current.feature);
     }
     // Read the admin-only destination once per session owner. Non-administrators
     // get 403, which the API audits as a denial, so do not repeat it per navigation
@@ -974,26 +1275,24 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
-    if (retained && current.namespace !== null) {
-      // Namespace admission is done, so the header selector is usable while the retained
-      // view revalidates, as on first loads. A switch resets the lifetime, discarding these reads.
-      // Without a URL selection the shell has none; the full render below picks the default.
-      shellUI.updateNamespaces(namespaces);
+    if (current.namespace !== null) {
+      // Namespace admission is done, so the header selector is usable while the destination's
+      // first read runs. A switch resets the lifetime, discarding these reads. Without a URL
+      // selection the full render below picks the default. A held page keeps the scope
+      // beside its rows until the destination replaces them.
+      shellUI.updateNamespaces(namespaces, { preservePageScope: held });
     }
-    let retainedItems = null;
-    let retainedAgent = null;
-    if (
-      retained &&
-      !agentsNamespaceUnavailable &&
-      current.feature !== "settings" &&
-      !current.creating
-    ) {
+    // The destination's first read runs before its shell renders, so the held page (or
+    // loading) is replaced once, by the page itself (finding 1407).
+    let firstItems = null;
+    let firstAgent = null;
+    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
-        retainedAgent = await request(
+        firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         );
       } else {
-        retainedItems =
+        firstItems =
           current.feature === "namespaces"
             ? namespaces
             : await request(
@@ -1006,20 +1305,21 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         return;
       }
     }
-    const retainedState = shell?.retained?.state;
+    const retainedState = retainedView?.state;
+    let unchanged = false;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
-      if (retainedAgent) {
+      if (firstAgent) {
         fresh.set(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          retainedAgent,
+          firstAgent,
         );
-      } else if (retainedItems && current.feature !== "namespaces") {
+      } else if (firstItems && current.feature !== "namespaces") {
         fresh.set(
           current.feature === "backends"
             ? "/backends"
             : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          retainedItems,
+          firstItems,
         );
       }
       const validations = await Promise.allSettled(
@@ -1037,7 +1337,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
       // A shell restored without a URL selection has none; once a Namespace is readable,
       // the full render below picks the default instead.
-      const unchanged =
+      unchanged =
         namespaceId === current.namespace &&
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
@@ -1045,28 +1345,42 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
           ([path, value]) =>
             readSignature(fresh.get(path), retainedState.metaReads.has(path)) === value,
         );
-      if (unchanged) {
-        mountedViewState = retainedState;
-        retainedState.active = active;
-        retainedState.resumeDrafts?.();
-        // Timers that fired while the view was detached stopped; let them re-arm.
-        for (const resume of retainedState.resumeHandlers) {
-          resume();
-        }
-        navigateAgentTab = retainedState.tabNavigation;
-        mountedAgent = retainedState.agent;
-        for (const control of shell.blockedControls) {
-          control.disabled = false;
-        }
-        shell.view.removeAttribute("inert");
-        if (shell.diagnostics) {
-          shell.diagnostics.inert = false;
-        }
-        shellUI.updateNamespaces(namespaces);
-        markMountedRoute(current);
-        return;
-      }
     }
+    // Resolve the old link in the admitted list, even if its row reads were unfinished and we
+    // must rebuild it. Capture focus before replacing the shell, not after it falls back to body.
+    if (
+      retained &&
+      reuseView &&
+      !agentsNamespaceUnavailable &&
+      document.activeElement === document.body
+    ) {
+      agentReturnHref = retainedView.returnHref;
+    }
+    // Remember who owns focus before replacing the loading heading, on first visit or retry.
+    focusAgentResult = document.activeElement === pendingAgentHeading;
+    if (unchanged) {
+      stopLoadingTimer();
+      forgetRetainedView(taken);
+      shell = mountRetainedView(current, retainedView);
+      // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
+      if (!resumingView) {
+        shell.view.querySelector(":scope > .unopened-chat-link")?.remove();
+      }
+      mountedViewState = retainedState;
+      retainedState.active = active;
+      retainedState.resumeDrafts?.();
+      // Timers that fired while the view was detached stopped; let them re-arm.
+      for (const resume of retainedState.resumeHandlers) {
+        resume();
+      }
+      navigateAgentTab = retainedState.tabNavigation;
+      mountedAgent = retainedState.agent;
+      markMountedRoute(current);
+      return;
+    }
+    stopLoadingTimer();
+    // The destination rebuilds: a retained view that did not match is stale from here on.
+    forgetRetainedView(taken);
     shell = renderShell(current.feature, false);
     const viewState = {
       active,
@@ -1162,11 +1476,23 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       onResume: (handler) => viewState.resumeHandlers.add(handler),
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
-          showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+          showLogin("Your session has expired.");
         }
       },
       setTitle: (title) => {
-        app.querySelector("h1").textContent = title;
+        const heading = app.querySelector("h1");
+        heading.textContent = title;
+        // The opening panel's heading had focus and the shell replaced it. Focus the Agent's
+        // heading as it appears, not once its tab's reads settle: on a slow link that left
+        // focus on body for 0.5-0.9 s (finding 1483).
+        if (
+          focusAgentResult &&
+          document.activeElement === document.body &&
+          lifetime.isCurrent(active)
+        ) {
+          heading.tabIndex = -1;
+          heading.focus({ preventScroll: true });
+        }
       },
       url: current.url,
       setTabNavigation(handler) {
@@ -1196,15 +1522,13 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       return;
     }
     if (current.agentId) {
-      if (retainedAgent) {
-        viewState.reads.set(
-          `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          JSON.stringify(retainedAgent),
-        );
-      }
+      viewState.reads.set(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
+        JSON.stringify(firstAgent),
+      );
       const agent = await renderAgentDetail(
         { ...agentContext, agentId: current.agentId },
-        { agent: retainedAgent },
+        { agent: firstAgent },
       );
       if (lifetime.isCurrent(active)) {
         mountedAgent = agent;
@@ -1217,19 +1541,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       }
       return;
     }
-    panel(shell.view, "Loading…", `Reading ${pages[current.feature].toLowerCase()}.`);
-    const items =
-      retainedItems ??
-      (current.feature === "namespaces"
-        ? namespaces
-        : await request(
-            current.feature === "backends"
-              ? "/backends"
-              : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          ));
-    if (!lifetime.isCurrent(active)) {
-      return;
-    }
+    const items = firstItems;
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
@@ -1243,7 +1555,14 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items });
+      showChatLinkFailure(shell.view, chatLinkFailure);
     } else {
+      if (current.feature === "backends" && backendsDenied) {
+        backendsDenied = false;
+        if (shell.scopeSelector) {
+          shell.scopeSelector.hidden = false;
+        }
+      }
       renderRows(shell.view, current.feature, items);
     }
     markMountedRoute(current);
@@ -1251,8 +1570,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
     if (!lifetime.isCurrent(active) || error.name === "AbortError") {
       return;
     }
+    stopLoadingTimer();
+    forgetRetainedView(taken);
     if (error.status === 401) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     if (!accessResolved) {
@@ -1260,6 +1581,7 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
       clearDrafts();
       resetReads();
       clearPrivate();
+      shell = null;
       publicPanel(
         sessionResolved ? "Namespace access unavailable" : "Session unavailable",
         sessionResolved
@@ -1280,6 +1602,10 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
         clearRetainedViewsForNamespace(selection);
       }
     }
+    // setTitle may already have moved that focus to the Agent's heading (finding 1483).
+    focusAgentResult =
+      document.activeElement === pendingAgentHeading ||
+      (focusAgentResult && document.activeElement === app.querySelector(".content h1"));
     shell = renderShell(current.feature);
     if (current.agentId && error.status === 404 && current.namespace === null) {
       // A typed or shared link has no Namespace, so the console read the Agent in
@@ -1329,31 +1655,93 @@ async function loadPage({ fromNavigation = false, reuseView = fromNavigation } =
               : current.feature === "backends"
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
+    if (openingAgent && ![400, 403, 404].includes(error.status)) {
+      panel(
+        shell.view,
+        "Could not load agent details",
+        "Try again to check access and load this Agent.",
+        "Try again",
+        () => void loadPage({ openingAgent: true }),
+        error.requestId,
+      );
+      shell.view.querySelector(".state-panel").append(button("Back to Agents", backToAgents));
+      return;
+    }
     const agentDenied = current.agentId && error.status === 403;
+    // Backends are Installation-wide: another Namespace cannot change a denial (finding 1491).
+    const installationDenied = current.feature === "backends" && error.status === 403;
+    if (current.feature === "backends") {
+      backendsDenied = installationDenied;
+    }
+    if (installationDenied && shell.scopeSelector) {
+      shell.scopeSelector.hidden = true;
+    }
     panel(
       shell.view,
       title,
       agentDenied
         ? "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you."
-        : error.status === 403
-          ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
-          : "The read could not be completed. Retry to check current access and saved state.",
+        : installationDenied
+          ? "Your account does not have access to Backends. Backends apply to the whole Installation, so choosing another Namespace would not change this. Ask an Installation administrator for access."
+          : error.status === 403
+            ? "Your account does not have access to this page in this Namespace. Ask an administrator for access, or choose another Namespace."
+            : "The read could not be completed. Retry to check current access and saved state.",
       "Retry",
       () => void loadPage(),
       error.requestId,
     );
   } finally {
+    stopLoadingTimer();
+    if (openingAgentLoad === active) {
+      openingAgentLoad = null;
+    }
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
-      if (
+      if (focusAgentResult && document.activeElement === document.body) {
+        const heading =
+          shell.view.querySelector(":scope > .state-panel > h2") ??
+          app.querySelector(".content h1");
+        heading.tabIndex = -1;
+        heading.focus({ preventScroll: true });
+      } else if (
         fromNavigation &&
         previousMountedRouteKey !== routeKey(current) &&
         document.activeElement === document.body
       ) {
-        app.querySelector(".content h1")?.focus({ preventScroll: true });
+        const link =
+          agentReturnHref &&
+          Array.from(shell.view.querySelectorAll("a[href]")).find(
+            (item) => item.href === agentReturnHref,
+          );
+        (link || app.querySelector(".content h1"))?.focus({ preventScroll: true });
+      }
+      if (fromRefresh && document.activeElement === document.body) {
+        // The held page's shell, and the Refresh button pressed in it, were replaced.
+        (shell.refresh.isConnected ? shell.refresh : app.querySelector(".content h1"))?.focus({
+          preventScroll: true,
+        });
       }
     }
+  }
+}
+
+// Static text only: a refused lookup never says whether the link expired or was denied.
+const chatLinkFailures = {
+  unavailable:
+    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+  interrupted: "This Agent chat link could not be opened. Try the link again.",
+};
+
+function showChatLinkFailure(view, failure) {
+  if (Object.hasOwn(chatLinkFailures, failure ?? "")) {
+    view.prepend(
+      element(
+        "p",
+        { className: "notice unopened-chat-link", role: "status" },
+        chatLinkFailures[failure],
+      ),
+    );
   }
 }
 
@@ -1410,13 +1798,19 @@ async function revalidateMountedAgent(current) {
   let checking = "session";
   // Block stale controls during admission without losing an editor's caret on return.
   view.inert = true;
+  let clearStillChecking = null;
+  const stillChecking = setTimeout(() => {
+    if (isCurrent()) {
+      clearStillChecking = showStillChecking();
+    }
+  }, stillCheckingDelayMs);
   try {
     const resolvedSession = await request("/api/auth/session");
     if (!isCurrent()) {
       return;
     }
     if (resolvedSession === null) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     if (sessionOwnerKey(resolvedSession) !== owner) {
@@ -1474,7 +1868,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (error.status === 401) {
-      showLogin("Your session has expired.", pageUrl(current.target, current.namespace));
+      showLogin("Your session has expired.");
       return;
     }
     resetReads();
@@ -1510,7 +1904,10 @@ async function revalidateMountedAgent(current) {
       error.requestId,
     );
   } finally {
-    if (view.isConnected) {
+    clearTimeout(stillChecking);
+    clearStillChecking?.();
+    // A newer load may hold this same node on screen; only this check's lifetime releases it.
+    if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
       if (
         isCurrent() &&
@@ -1528,10 +1925,19 @@ async function revalidateMountedAgent(current) {
 }
 
 function resumePage() {
-  if (document.hidden || !session || loggingOut || app.querySelector("dialog[open]")) {
+  if (
+    document.hidden ||
+    !session ||
+    loggingOut ||
+    pendingIntent ||
+    app.querySelector("dialog[open]")
+  ) {
     return;
   }
   if (resumePending) {
+    return;
+  }
+  if (openingAgentLoad !== null && lifetime.isCurrent(openingAgentLoad)) {
     return;
   }
   const current = route();
@@ -1552,6 +1958,9 @@ function resumePage() {
 
 async function logout() {
   loggingOut = true;
+  pendingIntent = null;
+  forgetLoginIntent();
+  takeExternalAttempt();
   clearDrafts();
   const active = resetReads();
   clearPrivate();

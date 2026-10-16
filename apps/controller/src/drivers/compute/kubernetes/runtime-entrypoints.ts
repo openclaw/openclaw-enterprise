@@ -1095,10 +1095,11 @@ function openClawPluginConfiguration(runtime, failures = [], base) {
     return pluginRuntimeTranslator.codexOpenClawConfiguration(
       runtime.manifest.selections ?? {},
       failures,
-      runtime.manifest.repositoryBrokerNetworkPolicy,
-      runtime.manifest.pluginApprovers,
-      process.env.APP_SERVER_URL !== undefined,
-      base?.plugins?.entries?.codex?.config?.appServer?.networkProxy?.enabled === true,
+      {
+        ...runtime.manifest,
+        dedicatedCodex: process.env.APP_SERVER_URL !== undefined,
+        baseProxyEnabled: base?.plugins?.entries?.codex?.config?.appServer?.networkProxy?.enabled === true,
+      },
     );
   }
   return undefined;

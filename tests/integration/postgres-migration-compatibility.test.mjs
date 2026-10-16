@@ -1634,7 +1634,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preHeldAuthenticationSession"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preHeldAuthenticationSession"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1649,7 +1650,7 @@ test(
         await assertCompletedHistory(db, receipts);
         assert.deepEqual(await canonicalData(db), before);
         await assertUpgradedAuthentication(db);
-        if (prefix === 54) {
+        if (prefix === 55) {
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
           child.diagnostic(
@@ -1910,7 +1911,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preHeldAuthenticationSession"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preHeldAuthenticationSession"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1993,7 +1995,8 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
-      [54, "preHeldAuthenticationSession"],
+      [54, "preComputeRevisionAdmission"],
+      [55, "preHeldAuthenticationSession"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2005,9 +2008,10 @@ test(
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
-        // Abort 0055 after its function was created, before the deferred trigger exists.
+        // Abort 0056 after its function was created, before the deferred trigger exists.
         const rollbackTag = [
-          [54, "CREATE TRIGGER"],
+          [55, "CREATE TRIGGER"],
+          [54, "ALTER TABLE"],
           [53, "CREATE FUNCTION"],
           [50, "GRANT"],
           [41, "ALTER TABLE"],

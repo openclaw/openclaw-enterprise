@@ -5,6 +5,11 @@ import {
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
 import { codexApprovalPolicy } from "@openclaw-enterprise/occ";
+import {
+  type CodexPublicGithubRead,
+  PUBLIC_GITHUB_READ_SKILL,
+  publicGithubReadSkill,
+} from "../repo/github/public-read/codex.ts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -59,6 +64,7 @@ export type PluginRuntimeSpec =
       readonly approvalPolicy?: string | undefined;
       readonly pluginApprovers?: AgentRevision["pluginApprovers"];
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
+      readonly publicGithubRead?: CodexPublicGithubRead;
       readonly modelEndpoint?: CodexModelEndpoint;
     };
 
@@ -95,6 +101,7 @@ function pluginFreeRuntimeForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   openaiBaseUrl?: string,
+  publicGithubRead?: CodexPublicGithubRead,
 ): PluginRuntimeSpec | undefined {
   if (!validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin approvers are invalid.");
@@ -111,6 +118,7 @@ function pluginFreeRuntimeForRevision(
         ? {}
         : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
+      ...(publicGithubRead === undefined ? {} : { publicGithubRead }),
     };
   }
   if (repositoryBrokerNetworkPolicy !== undefined) {
@@ -130,10 +138,16 @@ export function pluginRuntimeSpecForRevision(
   revision: Readonly<AgentRevision>,
   repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy,
   openaiBaseUrl?: string,
+  publicGithubRead?: CodexPublicGithubRead,
 ): PluginRuntimeSpec | undefined {
   const state = revision.plugins;
   if (state === undefined) {
-    return pluginFreeRuntimeForRevision(revision, repositoryBrokerNetworkPolicy, openaiBaseUrl);
+    return pluginFreeRuntimeForRevision(
+      revision,
+      repositoryBrokerNetworkPolicy,
+      openaiBaseUrl,
+      publicGithubRead,
+    );
   }
   if (!validPluginRevisionState(state) || !validPluginApprovers(revision.pluginApprovers)) {
     throw new Error("AgentRevision plugin selections are invalid.");
@@ -155,6 +169,7 @@ export function pluginRuntimeSpecForRevision(
             ? {}
             : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
+          ...(publicGithubRead === undefined ? {} : { publicGithubRead }),
         }
       : { kind: "openclaw", selections: state.plugins, pluginApprovers: revision.pluginApprovers };
   validateDriverMatchesRuntime(revision, runtime);
@@ -213,6 +228,9 @@ function configMapData(
   return Object.freeze({
     [PLUGIN_RUNTIME_MANIFEST]: JSON.stringify(runtimeManifest(runtime)),
     ...(codexConfig === undefined ? {} : { [PLUGIN_RUNTIME_CODEX_CONFIG]: codexConfig }),
+    ...(runtime.kind === "codex" && runtime.publicGithubRead !== undefined
+      ? { [PUBLIC_GITHUB_READ_SKILL]: publicGithubReadSkill(runtime.publicGithubRead) }
+      : {}),
   });
 }
 
@@ -273,6 +291,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined
       ? { repositoryBrokerNetworkPolicy: runtime.repositoryBrokerNetworkPolicy }
+      : {}),
+    ...(runtime.kind === "codex" && runtime.publicGithubRead !== undefined
+      ? { publicGithubRead: runtime.publicGithubRead }
       : {}),
   };
 }

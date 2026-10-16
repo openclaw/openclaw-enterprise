@@ -1,6 +1,6 @@
 # Publish the OCC CLI
 
-The [Release OCC CLI workflow](workflows/cli-release.yml) publishes four
+The [Release OCC CLI workflow](../../.github/workflows/cli-release.yml) publishes four
 standalone `occ` binaries and `SHA256SUMS` as a GitHub Release. It does not
 install OpenClaw Enterprise or make `occ dev up` usable outside a source checkout.
 
@@ -39,6 +39,6 @@ asset change between verification and publication could invalidate the result.
 
 After publication, check the release page, the tag's source SHA, the five
 assets, and a downloaded binary's `occ --version`. The binaries are useful for
-an existing OCC endpoint with a service-key file. Follow [CLI setup](../docs/guides/cli.md)
+an existing OCC endpoint with a service-key file. Follow [CLI setup](../guides/cli.md)
 for download and authentication. A private repository requires GitHub
 authentication to download its release assets.

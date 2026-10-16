@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-13
-last_updated_session: authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868
+updated: 2026-10-15
+last_updated_session: authoring-run/7eb24321-3670-4154-adde-41a0f1b36728
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -163,8 +163,8 @@ transaction verifies the Namespace, Agent, and Secret, then grants the Agent's
 existing principal `operate` on that exact Secret. It verifies the bootstrap
 identity, honors IAM restrictions, and audits a new grant.
 
-With OpenShell, the tool registers the Secret as an `openai` CredentialSource
-and uses the public Namespace IAM API to grant the Agent principal exact
+With OpenShell, the tool registers the Secret as an `openai` or `codex-pat`
+CredentialSource and uses the public Namespace IAM API to grant the Agent principal exact
 `credential_source:operate`. It does not grant Secret access. `--replace-key`
 updates the Secret and asks the Credential Gateway to reread it before deploying
 a new revision. The private helper record freezes the Harness and Sandbox Driver
@@ -172,8 +172,8 @@ choices so a rerun cannot silently change topology.
 
 The tool provisions initial runtime credentials and requests deployment through
 OCC. Its revision check expects OpenShell's frozen Codex policy:
-`sandbox: "danger-full-access"` and `approvalsReviewer: "user"`. Other
-Configuration differences fail the drift check. Once the revision is active,
+`sandbox: "danger-full-access"` and `approvalsReviewer: "user"` for both API-key
+and PAT sources. Other Configuration differences fail the drift check. Once the revision is active,
 [`findGateway`](../../scripts/first-agent-model.mjs) discovers the canonical
 tenant namespace through `openclaw.dev/namespace`. The supported local setup is
 single-cluster, so embedded and dedicated Gateways share that physical namespace
@@ -302,6 +302,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 09:40: Align first-Agent revision validation with OpenShell full access for API-key and PAT sources. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 7d777fb82e9af717fe40c46b6602df9851ec519e)
 
 - 2026-10-13 15:07: Align the first-Agent revision check with OpenShell's explicit user approval reviewer in the accompanying helper fix. (authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868 - 05a515c7f57faf3a870b7265b2792c407c0c4305)
 

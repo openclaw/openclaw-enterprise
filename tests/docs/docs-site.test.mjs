@@ -148,6 +148,43 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.notEqual(result.status, 0, `Build accepted ${target}`);
     assert.match(result.stderr + result.stdout, /missing/);
   }
+  // GitHub renders HTML examples as escaped code and omits comments, so none
+  // creates a fragment target in the linked repository source document.
+  await writeFile(
+    join(fixture, "CONTRIBUTING.md"),
+    [
+      "# Contributing",
+      '<a id="real-id"></a> and <a name="real-name"></a>',
+      '```html\n<a id="fenced-example"></a>\n```',
+      '    <a id="indented-example"></a>',
+      '`<a id="inline-example"></a>`',
+      '<!-- <a id="comment-example"></a> -->',
+      'Before <!-- <a id="inline-comment-example"></a> --> after',
+    ].join("\n\n"),
+  );
+  for (const fragment of ["real-id", "real-name"]) {
+    await writeFile(
+      join(fixture, "docs/README.md"),
+      `# Home\n\n[Valid](../CONTRIBUTING.md#${fragment})\n`,
+    );
+    result = validate();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  for (const fragment of [
+    "fenced-example",
+    "indented-example",
+    "inline-example",
+    "comment-example",
+    "inline-comment-example",
+  ]) {
+    await writeFile(
+      join(fixture, "docs/README.md"),
+      `# Home\n\n[Broken](../CONTRIBUTING.md#${fragment})\n`,
+    );
+    result = validate();
+    assert.notEqual(result.status, 0, `Build accepted ${fragment}`);
+    assert.match(result.stderr + result.stdout, /missing heading/);
+  }
   await writeFile(join(fixture, "docs/README.md"), "# Home\n");
   const pages = config.navigation.languages[0].tabs[0].groups[0].pages;
   pages.push("absent");

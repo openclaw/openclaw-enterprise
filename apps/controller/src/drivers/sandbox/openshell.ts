@@ -10,7 +10,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
-  CredentialSourceLoginMode,
   Backend,
   HarnessWorkloadRequirements,
   KubernetesNamespacedResource,
@@ -210,13 +209,13 @@ const OPENSHELL_WORKSPACE_STATE_DIRECTORY = "state";
 // OpenShell probes TMPDIR before the Harness entrypoint can create a nested directory.
 const OPENSHELL_TEMPORARY = "/tmp";
 /**
- * Default PAT and unresolved sources to managed Codex workspace restrictions. OpenShell owns
- * the outer filesystem, network and credential boundary; native sandbox failures remain
- * failures. The explicit user reviewer preserves human approval instead of selecting a
- * model-backed reviewer. Recheck against the pinned OpenClaw config-options.ts on upgrades.
+ * OpenShell owns the filesystem, network and credential boundary. The Codex bridge selects
+ * the explicit full-access profile, subject to native account policy, to avoid nesting a
+ * bubblewrap sandbox. Keep human approval through the explicit user reviewer.
+ * Recheck against the pinned OpenClaw config-options.ts on upgrades.
  */
 export const OPENSHELL_CODEX_APP_SERVER_POLICY = Object.freeze({
-  sandbox: "workspace-write",
+  sandbox: "danger-full-access",
   approvalsReviewer: "user",
 } as const);
 const OPENSHELL_DEFAULT_READ_ONLY_PATHS = Object.freeze([
@@ -1973,7 +1972,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   configureAgent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<AgentRevision["harness"]>,
-    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument {
     if (harness.mode !== "dedicated") {
       throw new OpenShellSandboxConfigurationFailure(
@@ -2021,6 +2019,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       codexConfig.appServer,
       "OpenShell Sandbox Codex app-server config",
     );
+    // OpenShell's egress policy is the network boundary. An enabled Codex network proxy wins
+    // over the full-access profile in the bridge and selects a restricted native profile, which
+    // needs the nested namespaces OpenShell blocks, so shell turns fail. Drop it rather than
+    // refuse it, like the sandbox pin: status reads rerun this hook on stored work.
+    const { networkProxy: _networkProxy, ...openShellAppServer } = appServer;
 
     return {
       ...configuration,
@@ -2034,14 +2037,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             config: {
               ...codexConfig,
               appServer: {
-                ...appServer,
+                ...openShellAppServer,
                 ...OPENSHELL_CODEX_APP_SERVER_POLICY,
-                // API-key login has no managed Codex policy; OpenShell owns its isolation.
-                // PAT and unresolved sources retain native restrictions until admission.
-                sandbox:
-                  credentialSourceLoginMode === "api_key"
-                    ? "danger-full-access"
-                    : "workspace-write",
               },
             },
           },
@@ -2274,6 +2271,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       url: harnessWebSocketUrl(service.advertisedUrl),
       workspaceRoot: "/sandbox/enterprise",
+      codexPermissionProfile: ":danger-full-access",
     });
   }
 

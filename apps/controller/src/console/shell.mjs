@@ -191,7 +191,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaceSelect.disabled = namespaceAdmissionPending || !session || readable.length === 0;
     namespaceSelect.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
-      let placeholder = "Checking access…";
+      // Once this session knows the Namespace list, admission names the selection instead of
+      // flashing "Checking access…"; the choices stay hidden until access is confirmed.
+      let placeholder = namespaceAdmissionPending
+        ? (namespaces.find((item) => item.id === namespaceId)?.name ?? "Checking access…")
+        : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
       }
@@ -227,7 +231,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function updateNamespaces(readable) {
+  function updateNamespaces(readable, { preservePageScope = false } = {}) {
     if (!namespaceSelect?.isConnected) {
       return;
     }
@@ -243,6 +247,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaces = readable;
     namespaceAdmissionPending = false;
     updateNamespaceSelector();
+    if (preservePageScope) {
+      return;
+    }
     const scope = app.querySelector(".content .scope");
     if (scope && route().feature === "agents") {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
@@ -270,6 +277,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       Boolean(drawerControls?.shell.classList.contains("drawer-open"));
     const drawerFocus =
       drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
+        ? document.activeElement
+        : null;
+    // Focus the person moved to a sidebar control during a load stays on it through the load's
+    // later renders (loading, then the page). reset() runs as each load starts, so the first
+    // render keeps none.
+    const sidebarFocus =
+      !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(document.activeElement)
         ? document.activeElement
         : null;
     if (!session) {
@@ -361,13 +375,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
       feature === "agents"
-        ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
+        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
-    const refresh = button("Refresh", () => void loadPage());
+    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
+    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
     refresh.disabled = true;
     const header = element(
       "header",
@@ -381,7 +396,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         { className: "page-actions" },
-        feature === "namespaces" ? null : namespaceSelector(),
+        scopeSelector,
         feature === "settings" ? null : refresh,
       ),
     );
@@ -452,6 +467,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         target?.focus({ preventScroll: true });
       }
     }
+    if (sidebarFocus) {
+      sameControl(sidebarFocus, sidebar)?.focus({ preventScroll: true });
+    }
     if (menuFocus) {
       menuFocus.focus({ preventScroll: true });
       // If focus can't return (the menu is hidden), don't leave it open out of sight.
@@ -459,7 +477,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuControls?.close();
       }
     }
-    return { view, refresh, diagnostics };
+    return { view, refresh, diagnostics, scopeSelector };
   }
 
   function sameControl(node, root) {

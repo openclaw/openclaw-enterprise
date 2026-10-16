@@ -1,14 +1,14 @@
 ---
 created: 2026-09-04
 updated: 2026-10-14
-last_updated_session: authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb
+last_updated_session: authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-CI's twenty-two noncredentialed lanes reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
@@ -24,7 +24,7 @@ graph TD
   A --> N["Suite Audit"]
   S -->|full PR| Q["Report affected packages (advisory)"]
   S -->|docs| D["Documentation checks"]
-  S -->|full or tests| B["All twenty-two or selected CI test lanes"]
+  S -->|full or tests| B["All ordinary or selected CI lanes"]
   B --> F["Prepare owned resources"]
   F -->|prepared| H["Run tests and validate cases"]
   F -->|preparation fails| J["Owned-resource cleanup"]
@@ -40,7 +40,7 @@ graph TD
   L --> R["Full CI coverage result"]
   C["Manual integration dispatch"] --> P["Source and environment preflight"]
   P -->|eligible source and environment| E["Protected test jobs"]
-  P -->|explicit dev-up-k3d| U["Credential-free installation job"]
+  P -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
   P -->|missing protection| X["Failed check"]
   E --> T["Owned preparation, tests, cleanup and aggregation"]
@@ -60,7 +60,7 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. Full mode runs the twenty-two-lane matrix (both `checks-baseline` and `checks-browser` parts) and `runtime-image-fixture`; tests mode, only the selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`; `keycloak-oidc` uses `blacksmith-8vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`; `keycloak-oidc` uses `blacksmith-8vcpu-ubuntu-2404`.
 
 For a PR, the selector verifies the tested checkout and that the event head is the merge's second parent, then compares the first parent (the current base) and tested trees. Git path decoding preserves a leading UTF-8 BOM as filename data; paths outside the allowlist select full. API reference outputs and Markdown under `docs/reference/api/` select full for `openapi:check`. Only nonempty changes to allowlisted regular Markdown files select docs mode. Registered test files (with documentation and their own lane manifest entries) select tests mode: their `ci` lanes in either tree (`checks-baseline-1` if only the fixture job would run). Other test-tree, code, configuration, workflow or unknown changes and non-PR events select full. Missing or unverifiable policy or source evidence selects full or fails closed. Policy comes from that first parent; a base without it selects full. `CI Required` re-verifies the mode (and tests mode's lane set) and requires impact, audit and every selected job to succeed and the rest skipped. Full and tests modes aggregate same-source results of their lanes; docs mode does not aggregate or invent test artifacts.
 
@@ -76,16 +76,16 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out immutable `github.sha`. Every lane admits `main`;
-`k3d-model` and `openshell` also admit exact environment-granted branches.
-Administrators remove temporary grants after verification. Other non-main
-credentialed lanes and tags fail preflight. Credential-free `dev-up-k3d` accepts
-branches, stays outside `all` and PR gates, and prepares Go, the same-source CLI,
-Chromium and k3d on disposable Ubuntu 22.04; file/job deadlines are 150/180 minutes.
-Dispatches serialize without cancellation: `dev-up-k3d` per branch, others in
-`full-integration`. The provider environment admits only `main`. Preflight rejects
-required reviewers and retains branch restrictions. Maintainers inspect commits
-before dispatch; no second approval is needed. Results prove only selected lanes.
+Full Integration checks out immutable `github.sha`. `all` selects every dispatch
+lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to finish, regardless of success.
+Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
+`all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
+branches; administrators remove temporary grants after verification.
+Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
+and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
+Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
+others in `full-integration`. Preflight rejects required reviewers and retains
+branch restrictions. Dispatchers inspect commits; no approval is needed.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -229,6 +229,8 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 22:31: Complete all selection. (authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c - 9b50982b75a578d6967ee12befb1fa3904e20a38)
 
 - 2026-10-14 14:09: Remove environment approvals. (authoring-run/ff0eb53f-ceb9-43fc-a81a-c1bc88b5c9fb - 909b0b9d4)
 

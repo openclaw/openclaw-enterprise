@@ -22,6 +22,7 @@ Installation, see the
 The console uses the [email/password session contract](authentication.md) with
 same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
+See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Identify the control-plane build
 
@@ -42,30 +43,28 @@ hidden; Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses light appearance and OCC-served fonts. Navigation focuses
-the destination heading when the previous control disappears.
-**Open navigation** opens a mobile drawer; desktop closes it
-and releases page controls.
+The Console uses light appearance and OCC-served fonts. Navigation focuses the
+destination heading; **Open navigation** opens the mobile drawer.
 
-When available, a retained view stays mounted and inert while a full-page return
-is revalidated: matching data reactivates it, changed data rebuilds it, and
-Refresh always rebuilds. Agent-detail refocus revalidates access without
-rebuilding, preserving editors, form input, open Slack searches, and the enabled
-header selector. Retained views are scoped to account, session, route, and
-Namespace; sign-out, session changes, exit, or Backend denial clear them.
+Opening an Agent shows its details page immediately. While it loads, **Back to
+Agents** returns to your place. A slow return to a retained page says **Still
+checking…** after one second. Refresh rebuilds; refocusing preserves edits, Slack
+searches, and the Namespace selector. Views belong to one account, session, route,
+and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 The header's **Namespace** selector switches readable scopes on desktop and
 mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
-Selection persists in `?namespace=<id>` across navigation, reload, and Back.
-An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
-namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks; retained-view reads do not.
-Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
-global pages remain available.
+The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
+ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
+updates the URL in place.
+
+During session and Namespace checks, the selector is disabled and hides its choices.
+Once the list is known, it names the destination's Namespace. On returns,
+later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
+get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
 scope; global pages stay open. The selector cannot broaden API authorization.
@@ -120,16 +119,15 @@ while the catalog list and plugin details scroll within the picker.
 **Save plugin selections** updates the Agent; deployment snapshots them.
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Current version** shows `activeRevisionId`, a selected pointer, not serving health.
-**Deployment activity** shows the newest authorized outcome and the viewed version’s
-own result. The Agent list’s **Latest deployment** links failure details beside
-Current version. Unreadable results remain unavailable. Bootstrap failures keep
-safe evidence; revision cleanup progress refreshes separately.
+binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
+**Deployment details** follows the newest readable deployment. Routine completion
+starts folded; pending work, failures, startup warnings, and cleanup are expanded.
+The viewed version retains its own result. Unreadable outcomes remain unknown.
+Bootstrap failures retain safe evidence; cleanup refreshes separately.
 
-For a failed deployment, **Open vN Logs** opens that exact version and brings
-its Logs panel into view, including when starting from the draft or another
-version. The panel shows runtime output or the applicable access or availability
-message; see [Agent logs](../guides/topics/agent-logs.md).
+A failure puts **Open vN Logs** near the top. It opens the failed version's
+[Logs panel](../guides/topics/agent-logs.md), showing output or the applicable
+access or availability message, even from the draft or another version.
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent
@@ -310,7 +308,7 @@ revision, and reports when native admin is unsupported. Installation
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open native admin UI** opens the Agent's active revision in a new tab, even
+**Open admin console** opens the Agent's active revision in a new tab, even
 from a draft or older revision. Its visible warning is part of the operator
 contract: native UI changes to the gateway bypass OCE and are not recorded in
 AgentRevisions. Use OCE for durable configuration. The tab shares
