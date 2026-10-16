@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
-import { firstAgentRevisionValuesMatch } from "../../scripts/first-agent-model.mjs";
+import {
+  firstAgentPriorPatPolicy,
+  firstAgentPriorPatPolicyWarning,
+  firstAgentRevisionValuesMatch,
+} from "../../scripts/first-agent-model.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -191,6 +195,42 @@ test("first-Agent recognizes the prior OpenShell PAT policy only on an identifie
   );
   assert.deepEqual(prior, values("workspace-write"), "reading never rewrites a frozen revision");
   assert.deepEqual(configured, values("read-only"), "reading never rewrites configured settings");
+});
+
+test("first-Agent flags a prior OpenShell PAT revision and points at --replace-key", () => {
+  const values = (sandbox) => ({
+    plugins: {
+      entries: { codex: { config: { appServer: { sandbox, approvalsReviewer: "user" } } } },
+    },
+  });
+  const record = { harness: "codex", sandboxDriver: "openshell", authMethod: "codex_pat" };
+  const prior = values("workspace-write");
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_saved"), true);
+  assert.equal(
+    firstAgentPriorPatPolicy(values("danger-full-access"), record, "rev_saved", "rev_saved"),
+    false,
+  );
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved"), false, "a new deployment");
+  assert.equal(firstAgentPriorPatPolicy(prior, record, "rev_saved", "rev_other"), false);
+  assert.equal(
+    firstAgentPriorPatPolicy(prior, { ...record, authMethod: "api_key" }, "rev_saved", "rev_saved"),
+    false,
+  );
+  assert.equal(
+    firstAgentPriorPatPolicy(
+      prior,
+      { ...record, sandboxDriver: undefined },
+      "rev_saved",
+      "rev_saved",
+    ),
+    false,
+  );
+  const warning = firstAgentPriorPatPolicyWarning("rev_saved");
+  assert.match(warning, /rev_saved/);
+  assert.match(warning, /workspace-write/);
+  assert.match(warning, /shell tools fail/);
+  assert.match(warning, /--replace-key/);
+  assert.match(warning, /current sandbox mode \(danger-full-access/);
 });
 
 test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {

@@ -76,7 +76,7 @@ drivers:
   compute:
     id: compute-kubernetes
     configuration:
-      # See kubernetes-compute.md for the required Kubernetes Compute config.
+      # See kubernetes-compute.md.
 
   sandbox:
     id: openshell-sandbox
@@ -176,8 +176,8 @@ OpenShell credentials must not appear in startup YAML.
 workspace mount. It may not mount the PVC root, may not use `..`, and must mount
 under `/sandbox/`.
 
-For dedicated Codex, OpenShell's `configureAgent` hook adds this to the effective
-configuration before OCC validates and freezes the revision:
+For dedicated Codex, OpenShell's `configureAgent` hook removes
+`appServer.networkProxy` and adds this before OCC validates and freezes the revision:
 
 ```json
 {
@@ -197,10 +197,10 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
-OpenShell supplies isolation independently of credential login mode. The bridge
+OpenShell isolates every login mode. The bridge
 requests `:danger-full-access` with `user` review, subject to native account policy.
-The Gateway refuses constrained threads before starting a turn. Restricted
-profiles require nested bubblewrap user namespaces, which OpenShell blocks.
+The Gateway refuses constrained threads before turns. Restricted profiles,
+including the proxy's, require nested bubblewrap namespaces, which OpenShell blocks.
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,

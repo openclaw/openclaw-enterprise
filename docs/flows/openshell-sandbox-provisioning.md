@@ -169,11 +169,12 @@ static `CODEX_ACCESS_TOKEN`, retaining account metadata. Codex receives only `AP
 Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
 `config.toml` workload files, removing their ConfigMap environment paths.
 
-`OpenShellSandboxDriver.configureAgent` sets full access and user review for all
-login modes. `deploy/runtime/openclaw-codex-full-access-profile.patch` sends the
-endpoint's `:danger-full-access` profile for threads and turns; constrained
-threads fail before a turn. First Agent accepts recorded PAT revisions' frozen
-`workspace-write`; new deployments freeze the current policy.
+`OpenShellSandboxDriver.configureAgent` sets full access/user review for all
+login modes and removes `appServer.networkProxy`.
+`deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
+`:danger-full-access` profile for threads/turns; constrained threads fail
+before a turn. First Agent warns: prior PAT `workspace-write` revisions break
+shell tools; `--replace-key` deploys current policy.
 OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 PAT bootstrap (`prepareHarnessAuth`;

@@ -18,6 +18,28 @@ export function selectFirstAgentModel(configuredModel, existing) {
   return model;
 }
 
+// Only a prior PAT revision identified by the helper can have the former workspace-write
+// policy, which OpenShell's blocked nested namespaces turn into failing shell tools.
+export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId) {
+  return (
+    record.sandboxDriver === "openshell" &&
+    record.harness === "codex" &&
+    record.authMethod === "codex_pat" &&
+    priorRevisionId !== undefined &&
+    revisionId === priorRevisionId &&
+    values.plugins?.entries?.codex?.config?.appServer?.sandbox === "workspace-write"
+  );
+}
+
+export function firstAgentPriorPatPolicyWarning(revisionId) {
+  return (
+    `Warning: revision ${revisionId} predates OpenShell full access and keeps the Codex ` +
+    "workspace-write sandbox, which OpenShell blocks: the model answers, but shell tools fail. " +
+    "Rerun with --replace-key to save the key again and deploy a new revision at the current " +
+    "sandbox mode (danger-full-access with user review)."
+  );
+}
+
 export function firstAgentRevisionValuesMatch(
   values,
   configured,
@@ -29,14 +51,8 @@ export function firstAgentRevisionValuesMatch(
     return isDeepStrictEqual(values, configured);
   }
 
-  // Only a prior PAT revision identified by the helper can have the former workspace-write
-  // policy. Reconstruct the expected snapshot; never change the revision or ignore other drift.
-  const saved = values.plugins?.entries?.codex?.config?.appServer;
-  const priorPatPolicy =
-    priorRevisionId !== undefined &&
-    revisionId === priorRevisionId &&
-    record.authMethod === "codex_pat" &&
-    saved?.sandbox === "workspace-write";
+  // Reconstruct the expected snapshot; never change the revision or ignore other drift.
+  const priorPatPolicy = firstAgentPriorPatPolicy(values, record, revisionId, priorRevisionId);
   const expected = structuredClone(configured);
   const appServer = expected.plugins.entries.codex.config.appServer;
   appServer.sandbox = priorPatPolicy ? "workspace-write" : "danger-full-access";

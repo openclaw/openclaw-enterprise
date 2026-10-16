@@ -2120,6 +2120,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       codexConfig.appServer,
       "OpenShell Sandbox Codex app-server config",
     );
+    // OpenShell's egress policy is the network boundary. An enabled Codex network proxy wins
+    // over the full-access profile in the bridge and selects a restricted native profile, which
+    // needs the nested namespaces OpenShell blocks, so shell turns fail. Drop it rather than
+    // refuse it, like the sandbox pin: status reads rerun this hook on stored work.
+    const { networkProxy: _networkProxy, ...openShellAppServer } = appServer;
 
     return {
       ...configured,
@@ -2133,7 +2138,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             config: {
               ...codexConfig,
               appServer: {
-                ...appServer,
+                ...openShellAppServer,
                 ...OPENSHELL_CODEX_APP_SERVER_POLICY,
               },
             },

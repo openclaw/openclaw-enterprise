@@ -141,8 +141,8 @@ CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o 
 ```
 
 The OpenShell Sandbox Driver freezes `"sandbox": "danger-full-access"` and
-`"approvalsReviewer": "user"` for dedicated Codex revisions. `approvalPolicy`
-stays configured. The bridge selects the native `:danger-full-access` profile,
+`"approvalsReviewer": "user"` for dedicated Codex revisions and removes
+`appServer.networkProxy`. `approvalPolicy` stays configured. The bridge selects the native `:danger-full-access` profile,
 which the Codex account must allow. OpenShell enforces the outer sandbox;
 restricted native profiles require nested bubblewrap namespaces that it blocks.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
