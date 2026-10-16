@@ -133,7 +133,7 @@ test("A failed version raises no recovery while the current version is on no loa
   const statusLine = page.locator(".agent-status-line");
   await statusLine
     .getByText(
-      /^The current version, rev_.*, is not among the versions listed, so this page cannot tell whether the failed v2 deployment affects it\.$/,
+      /^The current version, rev_.*, is not among the versions listed, so this page cannot tell whether the failed v2 deployment affects it\. Show older versions to check\.$/,
     )
     .waitFor();
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);

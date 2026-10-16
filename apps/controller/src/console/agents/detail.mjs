@@ -862,7 +862,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return;
   }
   context.setTitle(agent.name);
-  // A missing summary leaves each control on its usual path. The API authorizes the actual request.
+  // A missing summary leaves each control on its usual path, except the failed-version
+  // recovery's draft link, which needs update (finding 1478). The API authorizes the actual request.
   let callerPermissions = null;
   let callerPermissionsSettled = false;
   const callerPermissionsRead = request(`${path}/permissions`)
@@ -1563,7 +1564,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             ? `The current version, ${shortId(currentRevisionId)}, is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
             : null,
           failureBehindUnknown
-            ? `The current version, ${shortId(currentRevisionId)}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
+            ? `The current version, ${shortId(currentRevisionId)}, is not among the versions listed, so this page cannot tell whether the failed v${latest.revision} deployment affects it.${olderCursor ? " Show older versions to check." : ""}`
             : null,
           hiddenNotice ? readAccessHint : null,
         ]
@@ -1573,8 +1574,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
 
     // Recovery speaks for the current version, so it needs that version to be readable. It
-    // waits for the caller's permission answer, which decides its draft link, so it appears
-    // once with its final links instead of gaining one later (finding 1478).
+    // waits for the caller's permission answer, which decides its draft link, so it never
+    // shows a draft link the answer then withdraws (finding 1478). That read starts first, so
+    // it has usually settled by now.
     recovery.hidden =
       latestDeploymentStatus !== "failed" ||
       currentHidden ||
