@@ -1800,18 +1800,28 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
     child.kill("SIGTERM");
     await exited;
   });
+  const statusUrl = `http://127.0.0.1:${port}/openclaw/runtime/status`;
   const deadline = Date.now() + 5_000;
-  while (!errors.includes("Harness model authentication probe failed.")) {
+  let unauthenticated;
+  // The failure log precedes the asynchronous listen callback. Wait for an actual
+  // HTTP response before asserting the held endpoint's authentication behavior.
+  while (unauthenticated === undefined) {
     assert.equal(
       child.exitCode,
       null,
       `Harness exited instead of holding authentication: ${errors}`,
     );
-    assert.ok(Date.now() < deadline, `Harness did not publish authentication failure: ${errors}`);
-    await delay(20);
+    assert.ok(Date.now() < deadline, `Harness did not expose authentication failure: ${errors}`);
+    if (errors.includes("Harness model authentication probe failed.")) {
+      unauthenticated = await fetch(statusUrl, {
+        signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      }).catch(() => undefined);
+    }
+    if (unauthenticated === undefined) {
+      await delay(20);
+    }
   }
-  const statusUrl = `http://127.0.0.1:${port}/openclaw/runtime/status`;
-  assert.equal((await fetch(statusUrl)).status, 401);
+  assert.equal(unauthenticated.status, 401);
   const response = await fetch(statusUrl, {
     headers: { Authorization: `Bearer ${transportToken}` },
   });
