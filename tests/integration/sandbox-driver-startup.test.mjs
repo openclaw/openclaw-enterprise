@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -2047,29 +2047,24 @@ test("shipped startup names a rejected OpenShell policy without logging its name
   const template = sandboxInstallation().drivers.sandbox.configuration.policy.networkPolicies[0];
   const planted = "planted-policy-token";
 
-  // Each server reads its own installation file, so both start at once.
-  async function start(file, policies) {
+  function start(policies) {
     const configuration = sandboxInstallation();
     configuration.drivers.sandbox.configuration.policy.networkPolicies = policies;
-    const path = join(directory, file);
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    const env = {
-      PATH: process.env.PATH,
-      NODE_ENV: "development",
-      OCC_HOST: "127.0.0.1",
-      OCC_PORT: "18081",
-      OCC_CONFIG_PATH: path,
-    };
-    return new Promise((resolve) => {
-      const options = { cwd: process.cwd(), env, encoding: "utf8", timeout: 20_000 };
-      execFile(
-        process.execPath,
-        ["apps/controller/src/server.mjs"],
-        options,
-        (error, stdout, stderr) =>
-          resolve({ status: error === null ? 0 : (error.code ?? error.signal), stdout, stderr }),
-      );
-    });
+    const path = join(directory, "installation.yaml");
+    return writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
+      spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
+        cwd: process.cwd(),
+        env: {
+          PATH: process.env.PATH,
+          NODE_ENV: "development",
+          OCC_HOST: "127.0.0.1",
+          OCC_PORT: "18081",
+          OCC_CONFIG_PATH: path,
+        },
+        encoding: "utf8",
+        timeout: 20_000,
+      }),
+    );
   }
 
   function diagnostic(server) {
@@ -2080,23 +2075,25 @@ test("shipped startup names a rejected OpenShell policy without logging its name
       .map((line) => JSON.parse(line))
       .find((line) => line.event === "startup-error");
     assert.ok(event, server.stderr);
-    assert.equal(event.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
-    assert.equal(event.reason, "rename-or-merge");
+    return event;
   }
 
-  const [duplicate, reserved] = await Promise.all([
-    start("duplicate.yaml", [
-      { ...template, name: planted },
-      { ...template, name: planted },
-    ]),
-    start("reserved.yaml", [
-      { ...template, name: "model-egress" },
-      { ...template, name: "workspace-node-enrollment" },
-    ]),
+  const duplicate = await start([
+    { ...template, name: planted },
+    { ...template, name: planted },
   ]);
-  diagnostic(duplicate);
+  const duplicateEvent = diagnostic(duplicate);
+  assert.equal(duplicateEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
+  assert.equal(duplicateEvent.reason, "rename-or-merge");
   assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
-  diagnostic(reserved);
+
+  const reserved = await start([
+    { ...template, name: "model-egress" },
+    { ...template, name: "workspace-node-enrollment" },
+  ]);
+  const reservedEvent = diagnostic(reserved);
+  assert.equal(reservedEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
+  assert.equal(reservedEvent.reason, "rename-or-merge");
   assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
 });
 
