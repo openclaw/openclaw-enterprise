@@ -7,10 +7,10 @@ BOOTSTRAP_SERVICE_KEY_SOURCE="bootstrap:/var/lib/openclaw/bootstrap/initial-admi
 BOOTSTRAP_SERVICE_KEY_PATH="/var/lib/openclaw/bootstrap/initial-admin-service-key.json"
 STARTUP_TIMEOUT_SECONDS=300
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+script_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
-cd "$repo_root"
+CDPATH="" cd "$repo_root"
 
 development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"

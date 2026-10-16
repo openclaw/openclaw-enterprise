@@ -1,6 +1,6 @@
 # Publish the OCE Helm chart
 
-The protected [Enterprise Containers workflow](workflows/container-publish.yml)
+The protected [Enterprise Containers workflow](../../.github/workflows/container-publish.yml)
 optionally publishes the OpenClaw Control Plane (OCC) chart to public GHCR at
 `oci://ghcr.io/openclaw/charts/openclaw-enterprise`. It also gives the controller
 and runtime images a tag matching the chart. The existing `sha-<source-sha>` tags
@@ -74,7 +74,7 @@ operator values take precedence. The production example values contain a
 placeholder image, so replace it before installation.
 
 Prepare the other operator-owned values, database, Secrets, routing, and
-bootstrap volume as described in the [production installation guide](../docs/guides/deploy/production-installation.md).
+bootstrap volume as described in the [production installation guide](../guides/deploy/production-installation.md).
 Public GHCR image pulls need no node pull Secret. Private mirrors still need node
 pull credentials configured by the operator. Install the selected chart version
 after the prerequisites are ready:

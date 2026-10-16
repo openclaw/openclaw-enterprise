@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -13,8 +15,172 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  selectSecret,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+
+test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  );
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Approver search", { ready: true });
+  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  const { page, artifacts } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const lookups = [];
+  const lookupStarted = Promise.withResolvers();
+  const releaseLookup = Promise.withResolvers();
+  t.after(() => releaseLookup.resolve());
+  let denied = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      const body = route.request().postDataJSON();
+      lookups.push(body);
+      if (body.ids?.includes("UTEST123")) {
+        lookupStarted.resolve();
+        await releaseLookup.promise;
+      }
+      if (denied) {
+        await route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            workspaceId: "TTEST123",
+            workspaceName: "Test workspace",
+            candidates:
+              !body.query || "freeman".includes(body.query.toLowerCase())
+                ? [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }]
+                : [],
+            complete: true,
+          },
+          meta: { requestId: "req_test_directory" },
+        }),
+      });
+    },
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+  const people = page.getByRole("combobox", {
+    name: "Default plugin approvers people",
+    exact: true,
+  });
+  await people.fill("free");
+  await page
+    .getByText("Select a Slack bot token Secret to search by name. You can still paste exact IDs.")
+    .first()
+    .waitFor();
+  await people.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await page.screenshot({ path: join(artifacts, "approver-before-search.png") });
+  const secret = page.getByLabel("Slack bot token Secret for people search", { exact: true });
+  assert.equal(await secret.count(), 1);
+  await people.fill("UOTHER123");
+  await people.press("Enter");
+  await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
+  await page.getByRole("button", { name: "Remove selected person 1 (name unavailable)" }).click();
+  await selectSecret(page, "Slack bot token Secret for people search", bot);
+  denied = true;
+  await people.fill("denied");
+  await page.getByText(/permission to use its selected Slack bot Secret/).waitFor();
+  denied = false;
+  await people.fill("nobody");
+  await page.getByText("No matches found. Try another name or paste an exact ID.").waitFor();
+  await people.fill("free");
+  await page.getByRole("option", { name: /Freeman Example.*@freeman/ }).waitFor();
+  await people.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await page.screenshot({ path: join(artifacts, "approver-results.png") });
+  await people.press("ArrowDown");
+  await people.press("Enter");
+  // Hold name resolution at the first selected frame. The search result already identified this person.
+  await lookupStarted.promise;
+  const chip = page.locator(".slack-directory-chip");
+  assert.equal(await chip.locator("span").innerText(), "Freeman Example (@freeman)");
+  await chip
+    .getByRole("button", { name: "Remove Freeman Example (@freeman)", exact: true })
+    .waitFor();
+  releaseLookup.resolve();
+  assert.ok(lookups.some((body) => body.secretId === bot.id && body.query === "free"));
+  await page.getByLabel("Agent name").fill("Approver search Agent");
+  await enterManualModel(page, "synthetic-model-key", "gpt-5.1");
+  const created = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await created).status(), 201);
+  const body = pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).at(-1).body;
+  assert.deepEqual(body.pluginApprovers, [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }]);
+  const configuration = pathRequests(
+    requests,
+    "POST",
+    `/namespaces/${namespace.id}/configurations`,
+  ).at(-1).body;
+  assert.equal(configuration.secretBindings?.SLACK_BOT_TOKEN, undefined);
+});
+
+test("Create Agent keeps the search Secret out of plugin approver lookups", async (t) => {
+  const preset = JSON.parse(
+    await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+  );
+  const pluginId = "occ-plugin:diffs";
+  preset.template.agent.plugins = {
+    [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
+  };
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
+  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  const { page } = await newPage(t, fixture);
+  const lookups = [];
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+    async (route) => {
+      lookups.push(route.request().postDataJSON());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { workspaceId: "TTEST123", candidates: [], complete: true },
+          meta: { requestId: "req_test_directory" },
+        }),
+      });
+    },
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+  await selectSecret(page, "Slack bot token Secret for people search", bot);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByRole("button", { name: pluginId, exact: true }).click();
+  const pluginPeople = dialog.getByRole("combobox", {
+    name: `${pluginId} plugin approvers people`,
+    exact: true,
+  });
+  await pluginPeople.fill("unrelated");
+  await dialog
+    .getByText("Select a Slack bot token Secret to search by name. You can still paste exact IDs.")
+    .first()
+    .waitFor();
+  assert.deepEqual(lookups, []);
+});
 
 test("Agent plugin approver selectors save inheritance and workspace-qualified users", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -108,7 +274,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   });
   const picker = people.locator("..").locator("..");
   await people.focus();
-  await picker.getByRole("option", { name: /Alex.*UTEST123/ }).waitFor();
+  await picker.getByRole("option", { name: /Alex.*@alex/ }).waitFor();
   const searched = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/channel-directory/lookup`) &&
@@ -116,7 +282,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   );
   await people.fill("Alex");
   await searched;
-  const result = picker.getByRole("option", { name: /Alex.*UTEST123/ });
+  const result = picker.getByRole("option", { name: /Alex.*@alex/ });
   await result.waitFor();
   const resultNode = await result.elementHandle();
   const lookupCount = directoryBodies.length;
@@ -191,9 +357,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     await picker.locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]').count(),
     1,
   );
-  await picker
-    .getByRole("button", { name: "Remove team:TTEST123:user:UTEST123", exact: true })
-    .click();
+  await picker.getByRole("button", { name: "Remove Alex (@alex)", exact: true }).click();
   await people.fill("team:TOTHER123:user:UTEST123");
   await people.press("Enter");
   await picker
@@ -205,12 +369,14 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await people.press("Enter");
   await picker
     .locator('.slack-directory-chip[data-value="UTEST999"]')
-    .getByText("UTEST999")
+    .getByText("Name unavailable")
     .waitFor();
-  await picker.getByRole("button", { name: "Remove UTEST999", exact: true }).click();
+  await picker
+    .getByRole("button", { name: "Remove selected person 1 (name unavailable)", exact: true })
+    .click();
   directoryAvailable = true;
   await people.fill("Alex");
-  await picker.getByRole("option", { name: /Alex.*UTEST123/ }).click();
+  await picker.getByRole("option", { name: /Alex.*@alex/ }).click();
   assert.equal(
     await picker.locator('.slack-directory-chip[data-value="team:TTEST123:user:UTEST123"]').count(),
     1,

@@ -91,7 +91,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     backendId: revision.backendId,
     configuration: revision.configuration,
     harness: revision.harness,
-    compute: revision.compute,
+    compute: { id: revision.compute.id, implementation: revision.compute.implementation },
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
     plugins: revision.plugins,

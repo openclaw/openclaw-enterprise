@@ -17,6 +17,7 @@ import {
   NativeWorkerSupportError,
   OpenClawController,
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
+  ResourceStateConflictError,
   ScopeViolationError,
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
@@ -34,6 +35,27 @@ const installation = Object.freeze({
   id: "installation-configuration-occ",
   name: "Configuration OCC conformance",
   createdAt: "2026-08-19T00:00:00.000Z",
+});
+
+test("deployment freezes and persists the Compute Driver's admission decision", async () => {
+  const { agent, compute, controller, namespace, state } = await fixture();
+  let decision = "peer-one";
+  compute.admitRevision = (draft) => {
+    assert.equal(Object.isFrozen(draft), true);
+    assert.equal(Object.isFrozen(draft.configuration), true);
+    assert.equal(Object.isFrozen(draft.compute), true);
+    return decision;
+  };
+  const revision = await controller.deployAgent(
+    administrator,
+    { namespaceId: namespace.id, agentId: agent.id },
+    resolveApprovedDevelopmentHarness,
+  );
+  decision = "peer-two";
+  const stored = await state.read((view) =>
+    view.revisions.findRevision(namespace.id, agent.id, revision.id),
+  );
+  assert.equal(stored.compute.admission, "peer-one");
 });
 async function fixture(options = {}) {
   const iamState = principalIAMState([administrator, deployOnly], "configuration-conformance");
@@ -165,6 +187,35 @@ test("concurrent Configuration updates serialize into distinct server-managed ge
   const latest = await controller.getConfiguration(administrator, namespace.id, configuration.id);
   assert.equal(latest.generation, 3);
   assert.deepEqual(latest.values, { model: "second" });
+});
+
+// Two saves that read the same generation: the second is refused under the row lock instead of
+// silently replacing the first (finding 1505). An omitted expectedGeneration still replaces.
+test("concurrent Configuration updates from one read generation keep the first and refuse the second", async () => {
+  const { configuration, configurationDriver, controller, namespace } = await fixture();
+  const update = (model, expectedGeneration) =>
+    controller.updateConfiguration(administrator, {
+      namespaceId: namespace.id,
+      configurationId: configuration.id,
+      values: { model },
+      ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
+    });
+
+  const results = await Promise.allSettled([update("first", 1), update("second", 1)]);
+  assert.equal(results[0].status, "fulfilled");
+  assert.equal(results[0].value.generation, 2);
+  assert.equal(results[1].status, "rejected");
+  assert.ok(results[1].reason instanceof ResourceStateConflictError, String(results[1].reason));
+  const latest = await controller.getConfiguration(administrator, namespace.id, configuration.id);
+  assert.equal(latest.generation, 2);
+  assert.deepEqual(latest.values, { model: "first" });
+  assert.deepEqual(
+    (await configurationDriver.read({ id: configuration.id, namespaceId: namespace.id })).values,
+    { model: "first" },
+  );
+
+  assert.equal((await update("current", 2)).generation, 3);
+  assert.equal((await update("unchecked")).generation, 4);
 });
 
 test("Configuration metadata and selected substrate generation divergence fails closed", async () => {

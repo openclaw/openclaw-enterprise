@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-15"
-last_updated_session: "authoring-run/40b9b9bd-a17c-4a00-8101-d13ebd2facd5"
+updated: "2026-10-16"
+last_updated_session: "authoring-run/5e253249-62fe-4167-90cb-1b82da91396c"
 ---
 
 # Agent Native Admin UI Flow
@@ -16,7 +16,7 @@ Deployment prepares enabled Kubernetes native admin policy in an immutable Agent
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getGatewayEndpoint` value.
+- Assumptions: A valid human session, enabled native admin, configured Agent/cookie domains, a shared Better Auth cookie, and private gateway routing through `ComputeDriver.getGatewayEndpoint`.
 
 ## Flow
 
@@ -96,17 +96,17 @@ copy to Compute through `agentRuntimeConfiguration`. Agent save transforms the c
 and logging only. Kubernetes validates its gateway baseline and prepares device
 approval, `publicOrigin` and the exact allowed origin. Conflicts refuse admission;
 disabled Installation, routing, UI or device approval leaves policy unprepared.
-OCC applies logging, validates and freezes the result without changing the source
-Configuration or historical revisions. The runtime renderer selects its writable
-native copy.
+OCC applies logging and validates the result; the later `admitRevision` hook
+records separate Compute metadata. The immutable revision leaves the source
+Configuration and history unchanged. The runtime renders a writable native copy.
 
 ### 2. Console renders native admin availability
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-The Agent detail tabs request `${path}/native-admin` with the panel hidden. Disabled and denied states hide it; stopped, unavailable, and unsupported states report their status. Only `available` exposes **Open native admin UI**, which opens the returned URL in a new tab with `noopener noreferrer`. An audited `403` stores the denied path in tab `sessionStorage` for the session owner, avoiding repeated reads until logout, a new sign-in, or a new tab. Deployment polling or **Refresh deployment** rereads after `activeRevisionId` or `desiredRuntimeState` changes; a refresh during a read triggers one follow-up read.
+Agent detail checks `${path}/native-admin` with access hidden. Disabled or denied stays hidden; stopped, unavailable, and unsupported explain why. Only `available` shows **Open admin console**, beside its gateway access and configuration warning. It opens the returned URL with `noopener noreferrer`. An audited `403` in the session owner’s tab `sessionStorage` suppresses repeat reads until logout, sign-in, or a new tab. Deployment reads refresh access when `activeRevisionId` or `desiredRuntimeState` changes, coalescing an in-flight refresh into one follow-up.
 
-The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
+The warning directs operators to manage durable configuration through OCE.
 
 ### 3. OCC protects the availability route
 
@@ -166,6 +166,8 @@ origins from exposing console/API routes. It authenticates the shared cookie,
 resolves the IAM identity and exact Agent from platform state, checks
 `administer`, selects the active revision and validates native support.
 Attributable denials retain the human/exact-Agent IAM audit.
+
+An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. The console resolves it after authentication and exact Agent authorization; unknown and unauthorized keys get `404`.
 
 Admission reads Better Auth once, reusing verified session metadata for expiry
 and attribution. Each WebSocket lease repeats admission against current state.
@@ -255,6 +257,9 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-16 12:59: Retained copied-chat recovery and first-deployment preparation while adopting the current Sandbox contract. (authoring-run/5e253249-62fe-4167-90cb-1b82da91396c - 9c309cf67287428bdd762232d542759db7465198)
+- 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
+- 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
 - 2026-10-15 13:30: Merged deployment preparation with upstream local first-Agent and Compute-owner flows. (authoring-run/40b9b9bd-a17c-4a00-8101-d13ebd2facd5 - 128433480bdc186f460312eece38a8ad486ecdeb)
 
 - 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)

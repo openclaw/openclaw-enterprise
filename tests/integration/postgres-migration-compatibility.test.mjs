@@ -1634,6 +1634,7 @@ test(
       [51, "preProvisioningDeploymentOutcome"],
       [52, "preComputePreparationFailureEvidence"],
       [53, "preCredentialSourcePat"],
+      [54, "preComputeRevisionAdmission"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

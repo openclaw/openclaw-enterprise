@@ -18,8 +18,10 @@ Read the enforcement boundary below before deploying.
   support from a saved Configuration or a ready Pod.
 - Working native Linux sandbox enforcement in the Harness environment. For
   Kubernetes, follow the [runtime and seccomp setup](../../testing/kubernetes.md).
-  Do not select a SandboxDriver that replaces this policy with external
-  containment unless its policy has independently been verified.
+  The OpenShell SandboxDriver replaces this policy: it drops
+  `appServer.networkProxy` and selects full access, so OpenShell's egress
+  policy, not this allowlist, bounds tools. Select no other replacing
+  SandboxDriver unless its policy has independently been verified.
 - A model available to your credential and supporting Codex hosted search, plus
   the model API key and permission to create a Secret in the current Namespace. Follow [Harness authentication](../../reference/harness-execution.md#harness-authentication)
   for credential authorization and delivery.
@@ -127,7 +129,7 @@ host when Go downloads it through its module proxy.
 
 ## Enforcement boundary
 
-The native bridge requests a workspace-write permission profile with its managed
+Without a SandboxDriver, the native bridge requests a workspace-write permission profile with its managed
 network proxy enabled, `mode: limited`, and the build allowlist above. In Codex
 0.160.0, limited mode passes only `GET`, `HEAD`, and `OPTIONS` requests, so Git
 over HTTPS fails: `git ls-remote` or clone sends a `POST` to `git-upload-pack`
@@ -189,7 +191,3 @@ If the runtime rejects or ignores the network/search fields, stop deployment
 and select compatible images. Do not switch to danger-full-access or live
 search to make it work. A sandbox startup failure requires fixing the runtime
 or seccomp prerequisites.
-
-[Preset integration coverage](../../testing/local.md#standard-codex-preset)
-checks installation and draft creation. It does not substitute for the native
-enforcement and model checks above.

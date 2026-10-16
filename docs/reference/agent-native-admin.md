@@ -1,8 +1,8 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent gateway; it does not create an OCE-managed configuration editor.
+This pilot lets trusted operators open one Agent gateway's stock OpenClaw administrator surface from the platform console. Native edits remain outside OCE-managed configuration.
 
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. When enabled, the console shows **Gateway administration** on the Agent detail page only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
 ## Who can open it
 
@@ -52,7 +52,9 @@ and disabled Installation access leave the native policy unprepared. Unsafe
 device-auth or host-header fallback settings do not enable managed access.
 Conflicting authentication, approval scopes, `publicOrigin`, wildcard origins,
 or another origin inside the Installation's Agent domain refuse deployment with
-a setting-specific message. Omit managed origins from reusable Configurations.
+a setting-specific message. This includes the Console origin when its hostname is
+under the Agent suffix: the browser opens the native UI at the Agent origin, not
+the Console origin. Omit managed origins from reusable Configurations.
 Compatible password SecretRefs, loopback policy, other exact origins, model,
 Harness, plugin settings and Secret bindings are preserved. Drivers without the
 admission hook retain their existing availability requirements.
@@ -93,6 +95,10 @@ logs one `native_admin.compute_owner_mismatch` warning per revision and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 revision's Compute Driver again, with the same ID and implementation.
 
+When someone opens a copied `/chat/main` Agent link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+
+The console checks the browser session and offers sign-in if needed. Its authenticated `GET /native-admin/return/<key>` operation then checks exact Agent `administer` access and returns the Namespace and Agent IDs even if the Agent is stopped. Unknown and unauthorized keys receive the same `404`. Recovery ends at Agent detail; opening native chat is a separate action. Only a user-activated, top-level HTML navigation qualifies for the redirect. Link previews, API requests, WebSocket upgrades, and actual authorization denials keep their ordinary refusal behavior.
+
 ## Agent host identity
 
 OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.
@@ -103,7 +109,7 @@ An Agent URL uses the derived host directly:
 https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 ```
 
-The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
+Admission resolves the irreversible host hash through existing platform state, without a persistent registry or cache. Unknown hosts, wrong suffixes, deleted Agents and non-unique matches fail closed.
 
 The private upstream base remains the Compute Driver's existing gateway endpoint:
 
@@ -121,7 +127,7 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 
 ## Native authority and drift
 
-The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes availability, proxy admission, and socket closure checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
+The gateway uses the workspace-files service identity, `occ-workspace-files` with `operator.admin`, rather than per-human native accounts. OCC attributes availability, proxy admission and socket closure to the human session and exact-Agent IAM decision.
 
 Native admin changes affect gateway-local state outside OCE Configurations and
 immutable AgentRevisions. Manage durable configuration through OCE. In the

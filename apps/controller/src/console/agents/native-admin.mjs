@@ -2,7 +2,7 @@ import { button, element } from "../dom.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "Native admin access can change this gateway outside OCE. Do not change configuration here; use OCE. Native changes are not recorded in Agent versions and may be overwritten by deployment. You can access the conversations and credentials available to this gateway.";
+  "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions and can be overwritten by deployment.";
 
 function unavailableText(status) {
   switch (status) {
@@ -23,18 +23,37 @@ export function renderNativeAdminAccess(context, path) {
   const error = element("p", { className: "error", role: "alert" });
   const launch = element(
     "a",
-    { className: "primary", target: "_blank", rel: "noopener noreferrer", hidden: true },
-    "Open native admin UI",
+    {
+      className: "overview-primary",
+      target: "_blank",
+      rel: "noopener noreferrer",
+      "aria-describedby": "native-admin-scope native-admin-warning",
+      hidden: true,
+    },
+    "Open admin console",
+    element("span", { "aria-hidden": "true" }, "↗"),
   );
-  const reload = button("Refresh access", () => void load());
+  const reload = button("Refresh access", () => void load(), { className: "overview-text-button" });
+  const scope = element(
+    "p",
+    { id: "native-admin-scope" },
+    "Full native administration, including gateway conversations and credentials.",
+  );
+  const caution = element("p", { id: "native-admin-warning" }, warning);
   const section = element(
     "section",
-    { className: "agent-card native-admin-access" },
-    element("h2", {}, "Native admin UI"),
-    element("p", { className: "notice" }, warning),
+    { className: "native-admin-access", "aria-label": "Native admin UI" },
+    element(
+      "div",
+      { className: "native-admin-heading" },
+      element("h2", {}, "Gateway administration"),
+      launch,
+    ),
+    scope,
+    caution,
     status,
     error,
-    element("div", { className: "form-actions" }, reload, launch),
+    reload,
   );
 
   let current;
@@ -52,6 +71,9 @@ export function renderNativeAdminAccess(context, path) {
     } else {
       launch.href = current.url;
     }
+    scope.hidden = launch.hidden;
+    caution.hidden = launch.hidden;
+    status.hidden = !launch.hidden;
     section.hidden =
       !failed &&
       (current === undefined || current.status === "disabled" || current.status === "denied");
@@ -113,9 +135,9 @@ export function renderNativeAdminAccess(context, path) {
     }
   }
 
-  void load();
   return {
     section,
+    ready: load(),
     // Rereads access once, for example after the active version or runtime state changes.
     refresh() {
       if (pending) {
