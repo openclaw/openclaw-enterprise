@@ -70,8 +70,8 @@ A `CredentialSourceType` declares:
   config or Secret inputs.
 - `harnessAuth`: optional `{ modelProvider, loginMode }`. Only a type with this
   entry can authenticate a Harness. Login modes are `api_key` and, for dedicated
-  Codex, `chatgptAuthTokens`. An Agent lists every source it uses, of any type,
-  in `credentialSources`.
+  Codex, `codex_pat` or `chatgptAuthTokens`. An Agent lists every source it uses,
+  of any type, in `credentialSources`.
 
 ### External ChatGPT authentication
 
@@ -240,14 +240,14 @@ adopt or delete the same stored copy.
 
 ## Troubleshooting
 
-| Symptom                                              | What to check                                                                                                                     |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Registration returns `400`, `404`, or `409`          | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
-| Registration or binding returns `403`                | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
-| Deployment returns `409` with a gateway selected     | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
-| Registration, read status, or deletion returns `503` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
-| `503` naming the driver that registered the source   | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
-| A revision never activates                           | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
+| Symptom                                                            | What to check                                                                                                                     |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Registration returns `400`, `404`, or `409`                        | Compare the type and field names with the Driver catalog, and confirm each Secret belongs to the same Namespace.                  |
+| Registration or binding returns `403`                              | Check `credential_source:create` or `operate`, and `secret:operate` on each referenced Secret.                                    |
+| Deployment returns `409` with a gateway selected                   | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
+| Registration or deletion returns `503`, or a read reports `failed` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
+| `503` naming the driver that registered the source                 | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
+| A revision never activates                                         | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations
 
