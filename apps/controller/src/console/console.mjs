@@ -452,6 +452,8 @@ const loadingDelayMs = 250;
 // A return or refocus keeps its page until the recheck settles; past this delay it says so.
 const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
+// The page whose shell is on screen. A held page keeps its own navigation and header.
+let shownFeature = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
@@ -593,8 +595,9 @@ function showStillChecking() {
 
 // On a return, keeps the page already on screen, inert, in a fresh pending shell while the
 // retained route's admission and reads run. A retained view is then never painted before it revalidates
-// (finding 1412), and returns do not flash a loading state (finding 1415). Returns null when
-// no page is shown.
+// (finding 1412), and returns do not flash a loading state (finding 1415). The pending shell is
+// the shown page's own: the navigation and header change together with the body, never around
+// it (finding 1515). Returns null when no page is shown.
 function holdShownView(current, { busyCue = true } = {}) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
@@ -604,7 +607,7 @@ function holdShownView(current, { busyCue = true } = {}) {
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
   const scrollY = window.scrollY;
-  const shell = renderShell(current.feature, true);
+  const shell = renderShell(shownFeature ?? current.feature, true);
   if (title) {
     app.querySelector(".content h1").textContent = title;
   }
@@ -673,6 +676,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
 }
 
 function renderShell(feature, namespaceAdmissionPending = false) {
+  shownFeature = feature;
   const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
@@ -1006,14 +1010,22 @@ async function loadPage({
   }
   const retainedView = taken?.retained ?? null;
   let retained = retainedView !== null;
-  // An Agent link opens its destination immediately. Other visits keep the shown page inert
-  // until a retained view revalidates or admission and the destination's first read settle.
+  // Visits keep the shown page inert until a retained view revalidates or admission and the
+  // destination's first read settle. An Agent link from the list holds it the same way, and past
+  // loadingDelayMs shows the Agent's opening panel (finding 1516). Retry from that panel shows
+  // the panel again at once.
   let shell =
-    knownPrivateState && !openingAgent ? holdShownView(current, { busyCue: !resumingView }) : null;
+    knownPrivateState && (!openingAgent || fromNavigation)
+      ? holdShownView(current, { busyCue: !resumingView })
+      : null;
   let held = shell !== null;
   let agentReturnHref = null;
   let pendingAgentHeading = null;
   let focusAgentResult = false;
+  // What an opened Agent's page shows until its overview reveals: the held list, then the
+  // opening panel. The Agent's heading and toolbar never paint alone (finding 1516).
+  let openingPlaceholder = null;
+  let openingTitlePending = null;
   let sessionResolved = false;
   let accessResolved = false;
   if (!Object.hasOwn(pages, current.feature) && current.feature !== "login") {
@@ -1042,21 +1054,35 @@ async function loadPage({
       history.back();
     }
   };
-  if (openingAgent && !startup) {
-    openingAgentLoad = active;
-    shell = renderShell(current.feature, true);
+  const showOpeningPanel = ({ takeFocus = false } = {}) => {
+    const opening = element(
+      "section",
+      { className: "state-panel" },
+      element("p", { role: "status" }, "Loading agent details…"),
+      button("Back to Agents", backToAgents),
+    );
+    if (openingPlaceholder) {
+      // The Agent's page is already rendered, hidden until its overview reveals.
+      const placeholder = element("div", { "aria-live": "polite", "aria-busy": "false" }, opening);
+      openingPlaceholder.replaceWith(placeholder);
+      openingPlaceholder = placeholder;
+    } else {
+      shell = renderShell(current.feature, !accessResolved);
+      shell.view.replaceChildren(opening);
+      shell.view.setAttribute("aria-busy", "false");
+    }
     pendingAgentHeading = app.querySelector(".content h1");
     pendingAgentHeading.textContent = "Agent details";
-    shell.view.replaceChildren(
-      element(
-        "section",
-        { className: "state-panel" },
-        element("p", { role: "status" }, "Loading agent details…"),
-        button("Back to Agents", backToAgents),
-      ),
-    );
-    shell.view.setAttribute("aria-busy", "false");
-    pendingAgentHeading.focus();
+    // The held list's link had focus; a control the person moved to since keeps it.
+    if (takeFocus || document.activeElement === document.body) {
+      pendingAgentHeading.focus();
+    }
+  };
+  if (openingAgent && !startup) {
+    openingAgentLoad = active;
+    if (!held) {
+      showOpeningPanel({ takeFocus: true });
+    }
   } else if (!held) {
     if (startup) {
       showCheckingSession();
@@ -1085,6 +1111,11 @@ async function loadPage({
             }
             if (startup && !sessionResolved) {
               // The startup status announces the session check itself.
+              return;
+            }
+            if (openingAgent) {
+              showOpeningPanel();
+              held = false;
               return;
             }
             held = false;
@@ -1356,8 +1387,18 @@ async function loadPage({
     ) {
       agentReturnHref = retainedView.returnHref;
     }
-    // Remember who owns focus before replacing the loading heading, on first visit or retry.
-    focusAgentResult = document.activeElement === pendingAgentHeading;
+    // An opened Agent's page renders hidden behind what is shown: the held list, or the opening
+    // panel past loadingDelayMs (finding 1516).
+    const openingBody =
+      openingAgent && !startup && !unchanged && !agentsNamespaceUnavailable && current.agentId
+        ? app.querySelector('.content [aria-live="polite"]')
+        : null;
+    const openingTitle = openingBody ? app.querySelector(".content h1")?.textContent : null;
+    // Remember who owns focus before replacing the loading heading, on first visit or retry. The
+    // held list's link lost focus to the hold; the Agent's heading takes it as it appears.
+    focusAgentResult =
+      document.activeElement === pendingAgentHeading ||
+      (openingBody !== null && document.activeElement === document.body);
     if (unchanged) {
       stopLoadingTimer();
       forgetRetainedView(taken);
@@ -1378,7 +1419,9 @@ async function loadPage({
       markMountedRoute(current);
       return;
     }
-    stopLoadingTimer();
+    if (!openingBody) {
+      stopLoadingTimer();
+    }
     // The destination rebuilds: a retained view that did not match is stale from here on.
     forgetRetainedView(taken);
     shell = renderShell(current.feature, false);
@@ -1480,6 +1523,10 @@ async function loadPage({
         }
       },
       setTitle: (title) => {
+        if (openingPlaceholder) {
+          openingTitlePending = title;
+          return;
+        }
         const heading = app.querySelector("h1");
         heading.textContent = title;
         // The opening panel's heading had focus and the shell replaced it. Focus the Agent's
@@ -1522,6 +1569,42 @@ async function loadPage({
       return;
     }
     if (current.agentId) {
+      let markRevealed = () => {};
+      const revealed = new Promise((resolve) => {
+        markRevealed = resolve;
+      });
+      if (openingBody) {
+        const detailView = shell.view;
+        // The shown page is now this load's placeholder, not a held page.
+        held = false;
+        openingPlaceholder = openingBody;
+        detailView.before(openingBody);
+        detailView.hidden = true;
+        app.querySelector(".content h1").textContent = openingTitle;
+        if (pendingAgentHeading && focusAgentResult && document.activeElement === document.body) {
+          app.querySelector(".content h1").focus({ preventScroll: true });
+        }
+        lifetime.signal.addEventListener("abort", () => markRevealed(), { once: true });
+        // The overview's first reads settled, or its bounded wait ran out: show the heading,
+        // toolbar and overview in one frame.
+        agentContext.revealed = () => {
+          if (!openingPlaceholder || !lifetime.isCurrent(active) || !detailView.isConnected) {
+            return;
+          }
+          stopLoadingTimer();
+          openingPlaceholder.remove();
+          openingPlaceholder = null;
+          detailView.hidden = false;
+          // The held list kept its scroll position; the Agent's page starts at its top.
+          window.scrollTo({ top: 0, left: 0 });
+          if (openingTitlePending !== null) {
+            agentContext.setTitle(openingTitlePending);
+          }
+          markRevealed();
+        };
+      } else {
+        markRevealed();
+      }
       viewState.reads.set(
         `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
         JSON.stringify(firstAgent),
@@ -1530,6 +1613,8 @@ async function loadPage({
         { ...agentContext, agentId: current.agentId },
         { agent: firstAgent },
       );
+      // The load settles with the Agent's page shown, not its placeholder.
+      await revealed;
       if (lifetime.isCurrent(active)) {
         mountedAgent = agent;
         viewState.agent = agent;
@@ -1572,6 +1657,7 @@ async function loadPage({
     }
     stopLoadingTimer();
     forgetRetainedView(taken);
+    openingPlaceholder = null;
     if (error.status === 401) {
       showLogin("Your session has expired.");
       return;

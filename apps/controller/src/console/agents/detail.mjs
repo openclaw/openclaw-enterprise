@@ -1024,6 +1024,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     view.replaceChildren(header, deletion);
+    context.revealed?.();
   }
   if (deleting) {
     showDeleting();
@@ -1145,6 +1146,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function revealDetail() {
     clearTimeout(revealTimer);
     view.classList.remove("agent-detail-pending");
+    // An Agent opened from the list shows this page in place of the list only now (finding 1516).
+    context.revealed?.();
     markRevealed();
   }
   revealTimer = setTimeout(revealDetail, FIRST_ACTIVITY_WAIT_MS);

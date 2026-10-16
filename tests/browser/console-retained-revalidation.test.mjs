@@ -64,6 +64,50 @@ function recordShownPages() {
   });
 }
 
+// Names, after every DOM change, the navigation's current page, the heading, whether the header
+// has a Namespace selector, and the content shown (findings 1515, 1516). A page held under
+// another page's navigation or header, or an Agent heading over an empty page, shows up here.
+function recordShownFrames() {
+  const seen = [];
+  globalThis.__shownFrames = seen;
+  const record = () => {
+    const document = globalThis.document;
+    const nav = document.querySelector('.nav [aria-current="page"]')?.dataset.nav ?? "none";
+    const heading = document.querySelector(".content h1")?.textContent ?? "none";
+    const selector = document.querySelector(".page-header #namespace-selector")
+      ? "selector"
+      : "no selector";
+    const view = document.querySelector('.content [aria-live="polite"]:not([hidden])');
+    const status = view?.querySelector('[role="status"]')?.textContent;
+    const body = !view
+      ? "none"
+      : view.classList.contains("agent-detail-pending")
+        ? "Agent toolbar only"
+        : view.querySelector(".agent-current-summary")
+          ? "Agent"
+          : view.querySelector(".agent-table")
+            ? "Agents"
+            : view.querySelector('ul.collection[aria-label="Namespaces"]')
+              ? "Namespaces"
+              : view.querySelector("dl.settings")
+                ? "Settings"
+                : (status ?? "other");
+    const state = `${nav} | ${heading} | ${selector} | ${body}${view?.inert ? " (held)" : ""}`;
+    if (seen.at(-1) !== state) {
+      seen.push(state);
+    }
+  };
+  record();
+  new globalThis.MutationObserver(record).observe(globalThis.document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+}
+
+const shownFrames = (page) => page.evaluate(() => globalThis.__shownFrames.splice(0));
+
 // Stops page timers, so the loading delay passes only when a test runs the clock.
 async function pauseClock(page) {
   const now = await page.evaluate(() => Date.now());
@@ -301,15 +345,16 @@ test("Back during an Agent refocus check keeps the held page inert until the ret
   await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
 });
 
-test("Opening Agent details acknowledges navigation immediately; other first visits still swap once", async (t) => {
+test("Opening Agent details holds the list and swaps once, as other first visits do", async (t) => {
   const { page } = await openList(t, "Single swap", ["Swap Agent"]);
 
-  // Time stays paused: the destination appears immediately and has no minimum loading time.
+  // Time stays paused: reads that settle within the loading delay show no opening panel
+  // (finding 1516).
   await page.getByRole("link", { name: "Swap Agent" }).click();
   await page.locator(activeView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await page.evaluate(() => globalThis.__shownPages.splice(0)), [
     "Agents",
-    "Opening Agent",
+    "Agents (held)",
     "Agent",
   ]);
 
@@ -322,6 +367,100 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
     "Agent (held)",
     "Namespaces",
   ]);
+});
+
+// Moving into Agents held the previous page under the Agents navigation and header: Agents
+// highlighted, with a disabled Namespace selector in the Namespaces header (finding 1515).
+test("A page held for Agents keeps its own navigation and header until Agents replaces it", async (t) => {
+  const { namespace, page } = await openList(t, "Own shell", ["Shell Agent"]);
+  const list = `**/namespaces/${namespace.id}/agents`;
+  const settled = (name) => page.locator(settledView).getByRole(name[0], name[1]).waitFor();
+  const agentsShown = "agents | Agents | selector | Agents";
+
+  // From Namespaces: the list read is held.
+  await page.getByRole("link", NAMESPACES).click();
+  await settled(["list", NAMESPACES]);
+  await page.evaluate(recordShownFrames);
+  const firstRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await firstRead.requested;
+  firstRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  assert.deepEqual(await shownFrames(page), [
+    "namespaces | Namespaces | no selector | Namespaces",
+    "namespaces | Namespaces | no selector | Namespaces (held)",
+    agentsShown,
+  ]);
+
+  // A return from Settings: the retained list revalidates while Settings is held.
+  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.locator(settledView).locator("dl.settings").waitFor();
+  await shownFrames(page);
+  const returnRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await returnRead.requested;
+  returnRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  // The first entry is the state the recorder re-reads after the previous splice.
+  assert.deepEqual(await shownFrames(page), [
+    "none | Settings | selector | Settings",
+    "none | Settings | selector | Settings (held)",
+    agentsShown,
+  ]);
+});
+
+// Opening an Agent painted "Loading agent details…" at once, then the Agent's heading and toolbar
+// alone, then the page (finding 1516).
+test("Opening an Agent shows its loading panel only past the delay and its heading with the page", async (t) => {
+  const { namespace, agents, page } = await openList(
+    t,
+    "Opening frames",
+    ["Fast Agent", "Slow Agent"],
+    {
+      deploy: true,
+    },
+  );
+  await page.evaluate(recordShownFrames);
+
+  // The reads settle within the loading delay (time stays paused): the list, then the page.
+  await page.getByRole("link", { name: "Fast Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agents | selector | Agents (held)",
+    "agents | Fast Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Fast Agent" })), true);
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Slow Agent" }).waitFor();
+  await shownFrames(page);
+
+  // The overview's deployment record read is slow: the list, then past the delay the opening
+  // panel, then the whole page. Its heading and toolbar never show alone.
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agents[1].id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Slow Agent" }).click();
+  await record.requested;
+  await page.clock.runFor(249);
+  assert.equal(await page.getByText("Loading agent details…").count(), 0);
+  await page.clock.runFor(1);
+  const main = page.getByRole("main");
+  await main.getByText("Loading agent details…", { exact: true }).waitFor();
+  assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agents | selector | Agents (held)",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Slow Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Slow Agent" })), true);
+  assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
 });
 
 // On a slow link the opening panel's heading had focus, the Agent page rendered with focus on
@@ -372,7 +511,8 @@ for (const back of ["Browser Back", "Back to Agents"]) {
     await read.requested;
     assert.equal(new URL(page.url()).pathname, `/console/agents/${agent.id}`);
     const main = page.getByRole("main");
-    assert.equal(await main.getByRole("heading", { name: "Agent details" }).isVisible(), true);
+    // The list is held until the loading delay passes, then the opening panel shows.
+    await main.getByRole("heading", { name: "Agent details" }).waitFor();
     assert.equal(await main.getByText("Loading agent details…", { exact: true }).isVisible(), true);
     assert.equal(await main.getByText("Slow Agent", { exact: true }).count(), 0);
 
@@ -535,7 +675,7 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   ]);
   const opened = agents[1];
   await tagView(page, "list");
-  // The first read is held, so the destination shows its loading status.
+  // The first read is held, so the list stays shown, inert (finding 1516).
   const firstRead = await holdRequests(
     t,
     page,
@@ -551,9 +691,9 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   await page.goBack();
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
   await recheck.requested;
-  // Keep the pending destination inert until Back is admitted, not the retained private list.
-  await page.locator(heldView).getByText("Loading agent details…", { exact: true }).waitFor();
-  assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
+  // The shown page, the list the opening held, stays inert until Back is admitted.
+  await page.locator(heldView).getByRole("link", { name: "Opened Agent" }).waitFor();
+  assert.equal(await page.locator(`${activeView}[data-nav-tag="list"]`).count(), 0);
   // Forward abandons the return before it mounts the list.
   await page.goForward();
   await page.waitForURL(`**/console/agents/${opened.id}**`);
@@ -782,13 +922,8 @@ test("A first visit's read that answers after a second navigation paints nothing
   await page.clock.runFor(200);
   admission.release();
   await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
-  // The destination acknowledged the click; the superseded read never painted Agent details.
-  assert.deepEqual(await shownPages(page), [
-    "Agents",
-    "Opening Agent",
-    "Opening Agent (held)",
-    "Namespaces",
-  ]);
+  // The list stayed held; the superseded read never painted Agent details.
+  assert.deepEqual(await shownPages(page), ["Agents", "Agents (held)", "Namespaces"]);
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.textContent),
     "Namespaces",
@@ -1023,6 +1158,8 @@ async function openPendingAgent(t, page, namespace, agent) {
   await link.focus();
   await link.press("Enter");
   await read.requested;
+  // The list stays held until the loading delay passes (finding 1516).
+  await page.clock.runFor(250);
   const main = page.getByRole("main");
   await main.getByText("Loading agent details…", { exact: true }).waitFor();
   return { read, main };

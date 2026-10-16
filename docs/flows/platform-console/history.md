@@ -8,6 +8,12 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
+- 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
+- 2026-10-07 12:30: Explain a disabled account's provider sign-in (`authReason=account-disabled`). (fix-member-1007/d534)
+- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
+- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
+- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
 - 2026-09-30 19:00: Remember denied Agent detail snapshot reads per tab so reloads do not add an audited denial per view.
 
 - 2026-09-29 20:00: Trace repository descriptions and inherited access. (public-pr/374)
