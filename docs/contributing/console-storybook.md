@@ -134,12 +134,12 @@ gives presenter actions, expected visible states, and fallbacks for creating an
 Agent from the SWE Agent Preset and opening the deployed `oceclaw` Agent's
 simulated Admin UI, connected to no gateway, Slack, credential, or model.
 
-**Choose provider, harness, and authentication** shows supported combinations;
-Harness sets execution, tokens require Codex. **Enter another model ID** allows
-unverified models. **Experimental Dedicated OpenClaw** shows the runtime warning.
-**Native plugins** preserve policy. **Codex allowlist round-trip** rejects blocked
+**Choose provider, harness, and authentication** shows combinations;
+tokens require Codex. **Enter another model ID** allows
+unverified models. **Experimental Dedicated OpenClaw** shows a warning.
+**Native plugins** preserve policy. **Codex allowlist round-trip** blocks
 OpenClaw. **Native plugins with an allowlist** and **Codex denied by native policy**
-require explicit permission edits.
+require JSON edits.
 
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and
