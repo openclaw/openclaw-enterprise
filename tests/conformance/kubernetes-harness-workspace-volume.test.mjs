@@ -166,12 +166,25 @@ test("provider projection rejects unexpected node and OAuth home mounts", () => 
     [...mounts, node],
     mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)),
     mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)),
+    mounts.map((mount) => (mount === node ? { ...mount, subPath: `${nodeName}/../x` } : mount)),
     mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)),
     [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
   ]) {
     assert.throws(() => project(bad));
   }
   assert.throws(() => project(mounts, false));
+  // An API-key Harness has no OAuth home on the claim.
+  const apiKey = render("api_key", "setup-file", false);
+  assert.throws(
+    () =>
+      apiKey.driver.sandboxWorkspaceMounts(
+        apiKey.pod.volumes,
+        [...apiKey.pod.containers[0].volumeMounts, home],
+        false,
+        true,
+      ),
+    /OAuth home/,
+  );
 });
 
 test("requirements require node state only when node wiring was selected", async (t) => {

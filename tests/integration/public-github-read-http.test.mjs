@@ -622,4 +622,100 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.equal(served.body.message, "ready");
     },
   );
+  await t.test(
+    "a refused connection closes when its client does or after one second, and at most eight wait",
+    { timeout: 15_000 },
+    async (st) => {
+      // Only setTimeout is mocked: the one-second refusal timer fires when this test ticks.
+      st.mock.timers.enable({ apis: ["setTimeout"] });
+      st.after(() => st.mock.timers.reset());
+      const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
+      await once(guarded, "listening");
+      const clients = [];
+      st.after(() => {
+        for (const socket of clients) {
+          socket.destroy();
+        }
+        guarded.closeAllConnections();
+        guarded.close();
+      });
+      const port = guarded.address().port;
+      // Pairs each client with the reader's side of its connection.
+      const open = async (options = {}) => {
+        const accepted = once(guarded, "connection");
+        const client = connectTcp({ port, host: "127.0.0.1", ...options });
+        client.on("error", () => {});
+        clients.push(client);
+        await once(client, "connect");
+        const [socket] = await accepted;
+        return { client, socket };
+      };
+      // Unlike events.once, these never reject on the socket errors a reset produces.
+      const event = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
+      const closed = (socket) => socket.closed || event(socket, "close");
+      // Everything the client reads until the reader ends or resets the connection.
+      const answer = (client) =>
+        new Promise((resolve) => {
+          let text = "";
+          client.setEncoding("utf8").on("data", (chunk) => (text += chunk));
+          client.once("end", () => resolve(text)).once("close", () => resolve(text));
+        });
+      for (let held = 0; held < 4; held++) {
+        (await open()).client.write("GET /healthz HTTP/1.1\r\nHost: reader\r\n");
+      }
+      const refusal = /^HTTP\/1\.1 429 Too Many Requests\r\n[^]*too many reader connections/;
+
+      // A client that reads the answer and closes frees its refused connection at once.
+      const reader = await open();
+      assert.match(await answer(reader.client), refusal);
+      await closed(reader.socket);
+
+      // A request still arriving after the answer is drained, not reset: the client reads
+      // the answer once it has sent the rest of its request.
+      const slow = await open();
+      const [start, rest] = ["GET /healthz HTTP/1.1\r\n", "Host: reader\r\n\r\n"];
+      slow.client.pause().write(start);
+      await Promise.race([
+        slow.socket.writableFinished || event(slow.socket, "finish"),
+        closed(slow.socket),
+      ]);
+      slow.client.write(rest);
+      // Wait, without consuming it for the reader, until the reader received it or reset.
+      while (slow.socket.bytesRead < (start + rest).length && !slow.client.closed) {
+        await new Promise(setImmediate);
+      }
+      const late = answer(slow.client);
+      slow.client.resume();
+      assert.match(await late, refusal);
+      await closed(slow.socket);
+
+      // A client that resets its connection does not take the reader down.
+      const reset = await open({ allowHalfOpen: true });
+      assert.match(await answer(reset.client), refusal);
+      reset.client.resetAndDestroy();
+      await closed(reset.socket);
+
+      // A client that never closes is closed after one second.
+      const lingering = await open({ allowHalfOpen: true });
+      assert.match(await answer(lingering.client), refusal);
+      st.mock.timers.tick(999);
+      assert.equal(lingering.socket.destroyed, false);
+      st.mock.timers.tick(1);
+      assert.equal(lingering.socket.destroyed, true);
+
+      // Eight refused connections can wait for their clients; the ninth closes unanswered
+      // until one of them closes.
+      const waiting = [];
+      for (let refused = 0; refused < 8; refused++) {
+        const connection = await open({ allowHalfOpen: true });
+        assert.match(await answer(connection.client), refusal);
+        waiting.push(connection);
+      }
+      const ninth = await open({ allowHalfOpen: true });
+      assert.equal(await answer(ninth.client), "");
+      waiting[0].client.end();
+      await closed(waiting[0].socket);
+      assert.match(await answer((await open({ allowHalfOpen: true })).client), refusal);
+    },
+  );
 });
