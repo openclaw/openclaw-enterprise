@@ -13,7 +13,7 @@ import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profi
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
-import { renderAgentLogs } from "./logs.mjs";
+import { logTextDenied, renderAgentLogs } from "./logs.mjs";
 import {
   displayDate,
   shortId,
@@ -1479,11 +1479,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
     const current = visibleRevisions.find((revision) => revision.id === currentRevisionId);
     const currentLabel = current ? `v${current.revision}` : shortId(currentRevisionId ?? "");
+    // The caller cannot read the current version, so it may be newer than every version shown.
+    const currentHidden = currentRevisionId !== latest.id && revisionHidden(currentRevisionId);
     // A succeeded deployment becomes current, so a different current version is newer.
-    const newerHidden =
-      latestDeploymentStatus === "succeeded" &&
-      currentRevisionId !== latest.id &&
-      revisionHidden(currentRevisionId);
+    const newerHidden = latestDeploymentStatus === "succeeded" && currentHidden;
+    // A failed deployment never becomes current, so a hidden current version may be newer or
+    // older: the page cannot say whether that failure still matters (finding 1458).
+    const failureBehindHidden = latestDeploymentStatus === "failed" && currentHidden;
     const requestedHidden = selected !== currentRevisionId && revisionHidden(selected);
     // Deploying a dedicated Agent stops the previous version's workload before the new
     // one starts, so a failed newer deployment usually leaves nothing serving.
@@ -1536,8 +1538,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (latestDeploymentValue.dataset.outcome !== outcome) {
       latestDeploymentValue.dataset.outcome = outcome;
     }
-    statusLine.hidden = !requestedHidden && !newerHidden;
-    if (requestedHidden || newerHidden) {
+    statusLine.hidden = !requestedHidden && !newerHidden && !failureBehindHidden;
+    if (!statusLine.hidden) {
       setText(
         statusLine,
         [
@@ -1547,6 +1549,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           newerHidden
             ? `The current version, ${shortId(currentRevisionId)}, is one you cannot read; v${latest.revision} is an older version.`
             : null,
+          failureBehindHidden
+            ? `The current version, ${shortId(currentRevisionId)}, is one you cannot read, so this page cannot tell whether the failed v${latest.revision} deployment affects it.`
+            : null,
           readAccessHint,
         ]
           .filter(Boolean)
@@ -1554,7 +1559,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       );
     }
 
-    recovery.hidden = latestDeploymentStatus !== "failed";
+    // Recovery speaks for the current version, so it needs that version to be readable.
+    recovery.hidden = latestDeploymentStatus !== "failed" || currentHidden;
     if (!recovery.hidden) {
       const version = `v${latest.revision}`;
       const code = latestDeploymentErrorCode;
@@ -1568,7 +1574,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const failure = modelCheck
         ? `${version} failed its startup model check.`
         : `${version} did not deploy successfully.`;
-      let impact = "Check the failed version’s logs before deploying a new version.";
+      // Offer only links the caller's permission answer and this tab's remembered denials
+      // allow; the API still authorizes each page they open (finding 1458).
+      const logsAllowed =
+        !logTextDenied(context, agentId) &&
+        !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
+      const draftAllowed = callerPermissions?.update !== false;
+      let impact = logsAllowed
+        ? "Check the failed version’s logs before deploying a new version."
+        : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
       if (replacementFailed) {
         impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
       } else if (selectedFailed) {
@@ -1579,16 +1593,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
       const tab =
-        guidance === "credentials" && agent.harnessAuth?.method === "runtime" ? null : guidance;
-      const actionsFor = `${latest.id}/${tab}`;
+        !draftAllowed || (guidance === "credentials" && agent.harnessAuth?.method === "runtime")
+          ? null
+          : guidance;
+      const actionsFor = `${latest.id}/${tab}/${logsAllowed}`;
       if (recoveryTarget !== actionsFor) {
         recoveryTarget = actionsFor;
-        const logs = link(`Open ${version} Logs`, target(latest.id, "logs"), context);
-        logs.className = "overview-primary";
+        const logs = logsAllowed
+          ? link(`Open ${version} Logs`, target(latest.id, "logs"), context)
+          : null;
         const next = tab
           ? link(DEPLOYMENT_FAILURE_LINK_LABELS[tab], target("draft", tab), context)
           : null;
-        recoveryActions.replaceChildren(logs, ...(next ? [next] : []));
+        const actions = [logs, next].filter(Boolean);
+        if (actions.length) {
+          actions[0].className = "overview-primary";
+        }
+        recoveryActions.replaceChildren(...actions);
+        recoveryActions.hidden = actions.length === 0;
       }
     }
   }
@@ -1775,6 +1797,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       for (const control of selector.querySelectorAll(".revision-create")) {
         control.textContent = "Open version draft";
+      }
+      // The failed-version recovery offers draft links only to callers who may update.
+      if (!recovery.hidden) {
+        renderLatestDeployment();
       }
     }
     refreshDeployControls();
@@ -3292,6 +3318,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return false;
     }
     selectedTab = nextTab;
+    // A Logs visit may have just been denied: the recovery stops offering its Logs link.
+    if (!recovery.hidden) {
+      renderLatestDeployment();
+    }
     void renderTab();
     return true;
   });

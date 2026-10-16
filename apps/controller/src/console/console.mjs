@@ -447,6 +447,12 @@ let mountedRouteKey = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
+// The lifetime of a load showing the pending "Loading agent details…" panel. That load is
+// itself the access check, so a refocus while it runs keeps the panel (finding 1460).
+let openingAgentLoad = null;
+// Set when a copied Agent chat link could not be resolved; the Agents list it lands on says so
+// once (finding 1450). Any navigation clears it.
+let unopenedChatLink = false;
 
 function sessionOwnerKey(value) {
   const userId = value?.user?.id;
@@ -684,6 +690,7 @@ function clearPrivate() {
   observabilityOwner = null;
   installationAccessProbe = null;
   installationAdmin = null;
+  unopenedChatLink = false;
   clearRetainedViews();
 }
 
@@ -949,6 +956,9 @@ async function loadPage({
   if (fromNavigation && nativeIntent === null) {
     pendingIntent = null;
   }
+  if (fromNavigation) {
+    unopenedChatLink = false;
+  }
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
@@ -1012,8 +1022,17 @@ async function loadPage({
     !held && (!knownPrivateState || app.firstElementChild?.classList.contains("startup") === true);
   // Only a link from the open list sets openingAgent, so Back returns to that history entry.
   // No Agent name, fields or controls are shown until the ordinary access checks and read pass.
-  const backToAgents = () => history.back();
+  // A second press before the first traversal lands would go back twice and can leave the
+  // console, so only the first press navigates (finding 1459).
+  let leaving = false;
+  const backToAgents = () => {
+    if (!leaving) {
+      leaving = true;
+      history.back();
+    }
+  };
   if (openingAgent && !startup) {
+    openingAgentLoad = active;
     shell = renderShell(current.feature, true);
     pendingAgentHeading = app.querySelector(".content h1");
     pendingAgentHeading.textContent = "Agent details";
@@ -1187,6 +1206,7 @@ async function loadPage({
           return;
         }
         pendingIntent = null;
+        unopenedChatLink = true;
         history.replaceState(null, "", "/console/agents");
       }
       void loadPage();
@@ -1330,6 +1350,10 @@ async function loadPage({
       stopLoadingTimer();
       forgetRetainedView(taken);
       shell = mountRetainedView(current, retainedView);
+      // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
+      if (!resumingView) {
+        shell.view.querySelector(":scope > .unopened-chat-link")?.remove();
+      }
       mountedViewState = retainedState;
       retainedState.active = active;
       retainedState.resumeDrafts?.();
@@ -1507,6 +1531,7 @@ async function loadPage({
     );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items });
+      showUnopenedChatLink(shell.view);
     } else {
       renderRows(shell.view, current.feature, items);
     }
@@ -1624,6 +1649,9 @@ async function loadPage({
     );
   } finally {
     stopLoadingTimer();
+    if (openingAgentLoad === active) {
+      openingAgentLoad = null;
+    }
     if (lifetime.isCurrent(active) && shell) {
       shell.refresh.disabled = false;
       shell.view.setAttribute("aria-busy", "false");
@@ -1652,6 +1680,20 @@ async function loadPage({
         });
       }
     }
+  }
+}
+
+// Static text only: the lookup's answer never says whether the link expired or was denied.
+function showUnopenedChatLink(view) {
+  if (unopenedChatLink) {
+    unopenedChatLink = false;
+    view.prepend(
+      element(
+        "p",
+        { className: "notice unopened-chat-link", role: "status" },
+        "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+      ),
+    );
   }
 }
 
@@ -1845,6 +1887,9 @@ function resumePage() {
     return;
   }
   if (resumePending) {
+    return;
+  }
+  if (openingAgentLoad !== null && lifetime.isCurrent(openingAgentLoad)) {
     return;
   }
   const current = route();
