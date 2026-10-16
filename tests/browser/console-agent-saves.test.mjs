@@ -423,9 +423,11 @@ test("saving and reloading plugin selections update the Agent page in place", as
   await save.click();
   await reread.requested;
   await page.getByRole("status").filter({ hasText: "Plugin selections saved." }).waitFor();
-  // The plugin fields go inert while saving; the JSON stays in them.
+  // The plugin fields go inert while saving; the JSON stays readable but read-only.
   assert.equal(
-    await json.evaluate((node) => node.disabled || node.closest("[inert]") !== null),
+    await json.evaluate(
+      (node) => node.disabled || node.readOnly || node.closest("[inert]") !== null,
+    ),
     true,
   );
   assert.equal(await save.isDisabled(), true);

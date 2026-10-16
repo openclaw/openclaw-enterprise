@@ -143,7 +143,13 @@ const editableFields = (page, scope = ".agent-card") =>
   page.locator(scope).evaluateAll((cards) =>
     cards
       .flatMap((card) => [...card.querySelectorAll("input, select, textarea")])
-      .filter((field) => field.type !== "hidden" && !field.disabled && !field.closest("[inert]"))
+      .filter(
+        (field) =>
+          field.type !== "hidden" &&
+          !field.disabled &&
+          !field.readOnly &&
+          !field.closest("[inert]"),
+      )
       .map((field) => field.id || field.getAttribute("aria-label") || field.name),
   );
 
@@ -183,6 +189,12 @@ test("a member without Agent update sees the Agent-side saves and fields disable
     if (field) {
       // The saved settings stay in view.
       assert.equal(await page.getByLabel(field, { exact: true }).isVisible(), true);
+    }
+    if (tab === "plugins") {
+      // The selections JSON stays readable and focusable, but takes no edit.
+      const json = page.getByLabel("Plugin selections JSON", { exact: true });
+      assert.equal(await json.evaluate((node) => node.closest("[inert]") === null), true);
+      assert.equal(await json.isEditable(), false);
     }
   }
   assert.deepEqual(patches, []);
@@ -293,7 +305,7 @@ const readRefusals = [
 ];
 
 for (const c of readRefusals) {
-  test(`a refused read before a ${c.name} save names read access`, async (t) => {
+  test(`a refused read before saving the ${c.name} names read access`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });

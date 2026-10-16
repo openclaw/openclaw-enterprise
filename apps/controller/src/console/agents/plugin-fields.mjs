@@ -1022,7 +1022,13 @@ export function createPluginFields({
     section,
     setDisabled(value) {
       disabled = value;
-      section.toggleAttribute("inert", value);
+      // The selections JSON stays readable, focusable and copyable; the rest goes inert.
+      for (const child of section.children) {
+        if (child !== json) {
+          child.toggleAttribute("inert", value);
+        }
+      }
+      input.readOnly = value;
       configure.disabled = value;
       loadPlugins.disabled = value || !catalog?.canLoad || catalog?.status === "loading";
       previous.disabled =

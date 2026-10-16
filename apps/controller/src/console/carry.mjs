@@ -82,6 +82,8 @@ export function carryDocument(base, mine, current, path = "") {
   );
   // A key that holds an object on every side is the recursion's to name, so it does not mix
   // with a plain sibling: `gateway.auth.mode` against `gateway.port` names nothing (finding 1541).
+  // An object one browser added still counts as plain, since an added `auth.token` reference
+  // beside a changed `auth.mode` is the pair finding 1524 must name.
   const plain = (key) => ![base, mine, current].every((side) => isRecord(own(side, key)));
   const minePlain = mineKeys.filter(plain);
   const theirPlain = theirKeys.filter(plain);

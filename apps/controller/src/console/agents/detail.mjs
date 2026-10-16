@@ -888,6 +888,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
   // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
+  // Only the latest draft refresh's answer replaces the summary.
+  let permissionsRereads = 0;
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -2386,9 +2388,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     // The rebuilt editors take the fresh answer; a failed read keeps the last one.
     const previousUpdateAllowed = agentUpdateAllowed;
+    const reread = ++permissionsRereads;
     agentUpdateAllowed = request(`${path}/permissions`).then(
       (permissions) => {
-        if (context.isCurrent()) {
+        if (context.isCurrent() && reread === permissionsRereads) {
           callerPermissions = permissions;
         }
         return permissions?.update;
