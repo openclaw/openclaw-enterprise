@@ -205,6 +205,10 @@ configuration before OCC validates and freezes the revision:
 }
 ```
 
+The hook also removes `appServer.networkProxy`, for example from the Standard
+Codex Preset. OpenShell's egress policy is the network boundary, and an enabled
+Codex proxy would make the bridge select a restricted profile instead.
+
 OpenShell isolates both API-key and PAT sessions. The bundled bridge selects
 `:danger-full-access` with `user` review; the account must allow that profile.
 Codex still enforces managed policy. Restricted profiles require nested

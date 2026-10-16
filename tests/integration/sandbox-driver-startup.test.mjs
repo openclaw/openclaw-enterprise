@@ -617,6 +617,45 @@ test("OpenShell pins the Codex sandbox and approval reviewer while preserving ot
   }
 });
 
+test("OpenShell drops the Codex network proxy so it cannot replace full access", () => {
+  const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(workspaceGatewayClient()),
+  });
+  const harness = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  // The Standard Codex Preset's shape: an enabled proxy in the bridge wins over the
+  // full-access profile and selects a restricted profile OpenShell cannot run.
+  const networkProxy = {
+    enabled: true,
+    mode: "limited",
+    allowLocalBinding: false,
+    domains: { "registry.npmjs.org": "allow" },
+  };
+  for (const proxy of [networkProxy, { enabled: false }, { readOnlyPaths: ["/app"] }]) {
+    const appServer = {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "workspace-write",
+      approvalsReviewer: "user",
+      networkProxy: proxy,
+    };
+    const configuration = {
+      plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
+    };
+    const configured = driver.configureAgent(configuration, harness);
+    assert.deepEqual(configured.plugins.entries.codex.config.appServer, {
+      mode: "guardian",
+      approvalPolicy: "on-request",
+      sandbox: "danger-full-access",
+      approvalsReviewer: "user",
+    });
+    assert.equal(appServer.networkProxy, proxy, "the saved Configuration is not rewritten");
+    // Status reads rerun the hook on stored work, so dropping must be idempotent.
+    assert.deepEqual(driver.configureAgent(configured, harness), configured);
+  }
+});
+
 test("OpenShell pins an explicit main Agent workspace to the Sandbox data mount", () => {
   const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
     id: "openshell-sandbox",

@@ -82,6 +82,10 @@ Codex `config.toml` or a reasoning-effort override.
 | [**Standard OpenClaw**](../../deploy/presets/standard-openclaw.json)    | Embedded; name/model variables and masked API key                               | Standard gateway/tool policy; web search enabled without the Codex override                                                                                | None: native OpenClaw, no Codex plugin                                                                |
 | [`SWE Agent` / `swe-preset.json`](../../deploy/presets/swe-preset.json) | Dedicated; name/model variables; model defaults to `gpt-6-astra`; `codex_pat`   | Standard Codex settings plus Slack and workspace instructions                                                                                              | Same as Standard Codex, except `approvalPolicy: never`                                                |
 
+With the OpenShell SandboxDriver, dedicated Codex revisions get full access with
+`user` review and no Codex network proxy; OpenShell's egress policy is the
+network boundary. See [OpenShell configuration](drivers/openshell-sandbox.md#configuration).
+
 ### Plain console default
 
 **Start with default Preset** reads the authorized `default-codex` copy in the

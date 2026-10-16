@@ -171,12 +171,12 @@ adds only its SHA-256 verifier as `APP_TOKEN_SHA`. It converts the admitted plug
 snapshot into `runtime.json`/`config.toml` workload files and removes their ConfigMap
 paths from the environment.
 
-`OpenShellSandboxDriver.configureAgent` selects full access with user review.
+`OpenShellSandboxDriver.configureAgent` selects full access with user review and drops `appServer.networkProxy`.
 `deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access` on thread and turn requests only when the OpenShell
 endpoint selects that profile. If native policy returns a constrained thread,
 the Gateway fails the request before starting a turn. First Agent can read a
-prior PAT revision frozen with `workspace-write`; a new deployment must freeze
-the current policy and leaves the prior revision unchanged.
+prior PAT revision frozen with `workspace-write`, warning that shell tools fail
+there; `--replace-key` deploys one at the current policy.
 OpenShell blocks nested bubblewrap user namespaces; model readiness does not
 prove shell execution.
 
