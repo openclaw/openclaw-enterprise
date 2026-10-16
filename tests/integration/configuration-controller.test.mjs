@@ -399,6 +399,62 @@ test("native OpenClaw Configuration HTTP CRUD preserves documents, SecretRefs, e
   );
 });
 
+// A PATCH that names the generation it read is refused with 409 once another save moved it,
+// and the newer content stays; without the field the update replaces as before (finding 1505).
+test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the newer content", async () => {
+  const configurationDriver = createConfigurationBackend();
+  const { collection, ...context } = await fixture({ configurationDriver });
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: { model: "created" } },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const pathname = `${collection}/${created.body.data.id}`;
+
+  const first = await request(context.app, "PATCH", pathname, {
+    body: { values: { model: "first" }, expectedGeneration: 1 },
+  });
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.data.generation, 2);
+
+  const stale = await request(context.app, "PATCH", pathname, {
+    body: { values: { model: "stale" }, expectedGeneration: 1 },
+  });
+  assert.equal(stale.status, 409, JSON.stringify(stale.body));
+  assert.equal(stale.body.error.code, "RESOURCE_CONFLICT");
+  assert.equal(
+    stale.body.error.message,
+    "The Configuration changed since it was read. Read its current generation before updating it.",
+  );
+  const read = await request(context.app, "GET", pathname);
+  assert.equal(read.body.data.generation, 2);
+  assert.deepEqual(read.body.data.values, { model: "first" });
+  assert.deepEqual(configurationDriver.storedConfigurations()[0].values, { model: "first" });
+
+  for (const expectedGeneration of [0, -1, 1.5, "2", null]) {
+    const invalid = await request(context.app, "PATCH", pathname, {
+      body: { values: { model: "invalid" }, expectedGeneration },
+    });
+    assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
+    assert.equal(invalid.body.error.code, "INVALID_REQUEST");
+  }
+
+  const unchecked = await request(context.app, "PATCH", pathname, {
+    body: { values: { model: "unchecked" } },
+  });
+  assert.equal(unchecked.status, 200, JSON.stringify(unchecked.body));
+  assert.equal(unchecked.body.data.generation, 3);
+  assert.deepEqual(
+    context.auditSink.events
+      .filter((event) => event.resource.kind === "configuration")
+      .map((event) => event.action),
+    [
+      "openclaw.configurations.create",
+      "openclaw.configurations.update",
+      "openclaw.configurations.update",
+    ],
+  );
+});
+
 test("Configuration HTTP requires native supported requests and rejects immutable metadata changes", async () => {
   const configurationDriver = createConfigurationBackend();
   const { namespace, collection, ...context } = await fixture({ configurationDriver });

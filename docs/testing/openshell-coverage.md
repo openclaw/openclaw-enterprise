@@ -18,9 +18,11 @@ The default Codex scenario uses the production Driver path. Compute sends only
 one-shot node setup credential through a revision-owned provider. The test
 checks that the raw app-server token and model key are absent from Pod specs and
 nonsecret provider data. It then verifies missing, incorrect, and correct bearer
-requests through the exposed route and runs the real model and tool turns from
-the Agent Gateway. Exact workload identity, approved mounts and privileges,
-source withdrawal, denied egress, replacement, and cleanup remain required.
+requests through the exposed route. Two HTTP chat turns through the Agent Gateway
+exercise the OpenClaw bridge, with successful shell commands verified from the
+native Codex session records. Direct app-server probes then check filesystem,
+network, and credential enforcement. Exact workload identity, approved mounts
+and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
 ## Credential route
@@ -69,7 +71,7 @@ the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. Full
 manual integration lanes run from `main`; trusted pull requests also run the
-OpenShell advisory job described in [the QA guide](qa-matrix.md#automatic-openshell-coverage).
+OpenShell advisory job described in [Tests in each workflow](ci.md#tests-in-each-workflow).
 
 ## Not covered
 

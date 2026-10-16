@@ -1,15 +1,15 @@
 ---
 created: 2026-09-21
-updated: 2026-10-15
-last_updated_session: authoring-run/4863651f-24de-427e-ac6f-152c65948af3
+updated: 2026-10-16
+last_updated_session: authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The Console renders a Namespace Preset into an independent Agent draft.
-Deployment follows [revision admission](configuration-driver/persistence-and-revisions.md).
+Namespace Presets seed Agent drafts; [revision admission](configuration-driver/persistence-and-revisions.md)
+owns deployment.
 
 ## Entry Points
 
@@ -69,8 +69,8 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates the opt-in boolean and file list, reads bundled JSON, and
-resolves explicit paths beside the startup YAML. It validates names/templates and rejects missing,
+The loader validates options and bundled JSON; explicit paths resolve beside
+startup YAML. It validates names/templates and rejects missing,
 malformed, invalid, or duplicate-name files; a file named like a bundled default
 replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
 snapshot and source path (files are not watched), but only the API applies
@@ -148,13 +148,13 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read and returns summaries
-without templates), then reads the selected resource once. Quick-start prefers
-`default-codex`, otherwise the first readable Preset in case-insensitive locale
-order, with exact name order breaking ties. Custom starters appear by name.
-Variable-free templates apply immediately; others retain their chooser and origin. Empty or failed lists and reads cannot apply hidden templates. **Start without Preset** opens
-the ordinary form without reading a Preset; it does not replace a denied
-selection. Creation authorization still applies.
+lists readable summaries with Namespace read, then reads the selection
+once. Quick-start prefers `default-codex`, otherwise the first readable Preset in
+case-insensitive locale order, with exact name order breaking ties. Custom
+starters appear by name. Variable-free templates apply immediately; variables
+retain the chooser and shortcut origin. Empty or failed lists and reads cannot
+apply hidden templates. **Start without Preset** opens the form without a Preset
+read; it does not replace a denied selection. Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -175,28 +175,23 @@ The user then selects **Use Preset**. The shared
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
-Rendering makes no requests. Success opens the ordinary Agent form with rendered
-settings and optional ephemeral Secret metadata for access grants.
-The chooser lists Presets alphabetically by display name.
-Password values move into the ordinary masked credential input; the
-chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
-**Start over** discards the unsaved draft after confirmation and opens a fresh
-chooser. After a save succeeds or its outcome becomes uncertain, restart is
-disabled so the user follows ordinary creation recovery.
+Rendering makes no requests. Success opens the Agent form with rendered settings
+and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
+password values into the masked credential input and clears detached controls;
+later Preset changes cannot alter the form. Before saving, **Start over** confirms
+discard and opens a fresh chooser. A successful or uncertain save disables restart
+and uses ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting views, `loadPage` captures unsaved JSON, model controls,
-workspace files, repositories and staged Secret references in a user/Namespace
-map. Explicit Preset forms return through navigation/history from this copy;
-capability and repository discovery run again. Default-shortcut and bare forms
-instead discard on exit. Flushing captures removes their creation/channel
-snapshots and retained view when leaving creation or changing Namespace;
-re-entry opens the chooser, preserving saved resources. Invalid JSON stays text;
-passwords and discovery results are excluded. Start over, session loss, logout,
-user change and page exit clear captures. Starting save clears its capture
-before mutation, preventing replay as a new Agent. Partial-save recovery stays
-local to the form.
+Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
+files, repositories and staged Secret references per user and Namespace. Explicit
+Preset forms return from this copy with fresh capability and repository discovery;
+default-shortcut and bare forms discard on exit. Flushing removes creation and
+channel snapshots and the retained view on exit or Namespace change; re-entry
+opens the chooser and preserves saved resources. Invalid JSON stays text; passwords
+and discovery results are excluded. Start over, session loss, logout, user change,
+page exit, or starting save clears captures. Partial-save recovery stays local.
 
 `agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced
@@ -220,6 +215,9 @@ inherits the form default, an empty array keeps the explicit no-approver default
 and selected channel identities are submitted through the normal Agent create
 body. The Agent API and selected Plugin Driver validate the concrete approvers
 after variable rendering.
+The approver finder uses the staged Slack bot binding or a separately selected
+same-Namespace Secret, held only for search. OCC authorizes Agent creation and
+`operate` on the exact Secret per lookup. Results add workspace-qualified IDs.
 Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
 including explicit empty strings. The shared Preset validator checks supported
 filenames, Unicode, NUL, and byte limits before and after expansion; password
@@ -286,6 +284,10 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 13:00: Integrate upstream Console changes while retaining readable starter selection. (authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c - ba98603943c22e5fb4e40b03b07b95ade9b29db8)
+
+- 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
 - 2026-10-15 13:26: Name the selected custom starter and retain upstream Preset summaries. (authoring-run/4863651f-24de-427e-ac6f-152c65948af3 - 775a7cff0890d646ed433df45b9233ea58b553e6)
 

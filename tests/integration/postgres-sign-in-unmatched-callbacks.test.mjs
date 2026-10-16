@@ -85,8 +85,10 @@ test(
         headers: { origin },
       });
       assert.equal(started.statusCode, 200, started.body);
+      const { url, attemptId } = started.json().data;
       return {
-        state: new URL(started.json().data.url).searchParams.get("state"),
+        attemptId,
+        state: new URL(url).searchParams.get("state"),
         cookie: cookieHeaderFromSetCookie(started.headers["set-cookie"]),
       };
     };
@@ -134,9 +136,10 @@ test(
           consoleReason,
         );
         const added = (await auditEvents()).slice(auditsBefore);
+        const details = { provider, attemptId: attempt.attemptId };
         assert.deepEqual(
           added.map((event) => [event.kind, event.action, event.reasonCode, event.details]),
-          [["authorization_denial", "authentication.login", reasonCode, { provider }]],
+          [["authorization_denial", "authentication.login", reasonCode, details]],
           `${provider} ${error}`,
         );
         assert.equal(await unmatched(provider), countedBefore, `${provider} ${error}`);

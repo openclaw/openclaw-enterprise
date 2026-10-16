@@ -10,3 +10,4 @@ export const NeverDeployed = story("stopNeverDeployed");
 export const RepeatUnknown = story("stopRepeatUnknown");
 export const Denied = story("stopDenied");
 export const Unknown = story("stopUnknown");
+export const PermissionDuringConfirmation = story("stopPermissionDuringConfirmation");

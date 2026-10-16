@@ -119,9 +119,9 @@ OpenClaw instead routes `openai/<model>` through `agentRuntime.id: openclaw` and
 `https://api.openai.com/v1` with `openai-responses`.
 
 The standard Codex network proxy enables the `workspace` base profile in
-`limited` mode. Its nine allowed build domains and disabled proxy/socket escape
-options are listed in the [standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
-Cached search uses `tools.web.search.openaiCodex.mode: cached`.
+`limited` mode. Its build domains and disabled escape options are listed in the
+[standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
+The OpenShell SandboxDriver drops it ([details](drivers/openshell-sandbox.md#configuration)).
 
 Omitted fields inherit the selected native runtime's defaults; omission does
 not establish a particular reviewer, network policy, or tool permission. Compute

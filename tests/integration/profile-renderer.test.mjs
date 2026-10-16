@@ -1626,7 +1626,11 @@ test("preflight rejects inputs that Helm would reject", () => {
     "https://console.oce.example.internal#",
     "https://console.oce.example.internal/#",
     " https://console.oce.example.internal? ",
-    "https://admin@console.oce.example.internal",
+    syntheticCredentialUrl({
+      username: "admin",
+      password: "",
+      host: "console.oce.example.internal",
+    }),
     "ftp://console.oce.example.internal",
     "console.oce.example.internal",
     // Stricter than the API, like the chart: URL parsing repairs these into an origin.
@@ -2872,7 +2876,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
-      "https://user:pass@models.example.com/v1",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "pass",
+        host: "models.example.com",
+        pathname: "/v1",
+      }),
       "must not contain user info or an @ before the host.",
     ],
     ["http://models.example.com/v1", general],

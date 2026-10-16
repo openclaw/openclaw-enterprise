@@ -3,7 +3,7 @@
 The production Helm chart enables metrics on each OpenClaw Control Plane (OCC)
 API and worker by default; direct process and development defaults remain off.
 Each enabled process serves `GET /metrics` on a private listener. Use the
-[development walkthrough](../testing/metrics.md) for Prometheus and Grafana,
+[development walkthrough](../testing/local.md#metrics-and-observability-tests) for Prometheus and Grafana,
 or [production scraping](../guides/observability/metrics.md) for Kubernetes.
 
 ## Configuration and access
@@ -148,4 +148,4 @@ Memory can be summed for fleet use or maximized for the largest process.
 Inspect event-loop percentiles per process; do not average them.
 
 See [production queries and discovery](../guides/observability/metrics.md).
-The [metrics testing page](../testing/metrics.md) owns fixtures and proof limits.
+The [metrics testing page](../testing/local.md#metrics-and-observability-tests) owns fixtures and proof limits.

@@ -427,6 +427,11 @@ func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, err
 	}
 }
 
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
+}
+
 // GetAgentDeployment fetches durable deployment status for one Agent revision.
 func (client *Client) GetAgentDeployment(namespaceID, agentID, deploymentID string) (any, error) {
 	return client.get(

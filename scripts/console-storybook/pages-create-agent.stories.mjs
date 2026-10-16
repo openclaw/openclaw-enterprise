@@ -22,6 +22,7 @@ export const PluginsSelectedSecretDenied = story("createPluginsSelectedSecretDen
 export const PluginsTools = story("createPluginsTools");
 export const PluginsPolicies = story("createPluginsPolicies");
 export const PluginApproversMissingSecret = story("createPluginApproversMissingSecret");
+export const PluginApproversLookup = story("createPluginApproversLookup");
 export const PluginsSetupReminder = story("createPluginsSetupReminder");
 export const PluginsSecondPage = story("createPluginsSecondPage");
 export const PluginsEmpty = story("createPluginsEmpty");

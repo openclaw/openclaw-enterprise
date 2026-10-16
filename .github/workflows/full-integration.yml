@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: Integration lane to run.
+        description: Integration lane to run (all runs every lane).
         required: true
         default: docker-model
         type: choice
@@ -23,7 +23,7 @@ on:
           - k3d-otel
           - all
       qa_repository_fixture:
-        description: Repository credential fixture for the qa-matrix lane.
+        description: Repository credential fixture for qa-matrix (including all).
         required: true
         default: default
         type: choice
@@ -487,7 +487,7 @@ jobs:
     name: Local Kubernetes Installation
     runs-on: ubuntu-22.04
     needs: preflight
-    if: inputs.lane == 'dev-up-k3d'
+    if: inputs.lane == 'all' || inputs.lane == 'dev-up-k3d'
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -558,13 +558,8 @@ jobs:
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
-          } else if (lane === "dev-up-k3d") {
-            out["dev-up-k3d"] = needs["dev-up-k3d"] ?? { result: "missing" };
-          } else if (lane === "qa-matrix") {
-            // TODO: move qa-matrix into the `all` list once integration-qa exists.
-            out["qa-matrix"] = needs["qa-matrix"] ?? { result: "missing" };
           }
-          for (const name of ["docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
+          for (const name of ["qa-matrix", "dev-up-k3d", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
             if (lane === "all" || lane === name) {
               out[name] = needs[name] ?? { result: "missing" };
             }
@@ -582,7 +577,7 @@ jobs:
     name: Shipped Installation QA Matrix
     runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: [preflight, slack]
-    if: always() && needs.preflight.result == 'success' && (needs.slack.result == 'success' || needs.slack.result == 'skipped') && inputs.lane == 'qa-matrix'
+    if: ${{ !cancelled() && needs.preflight.result == 'success' && (inputs.lane == 'all' || inputs.lane == 'qa-matrix') }}
     timeout-minutes: 240
     environment: integration-qa
     env:

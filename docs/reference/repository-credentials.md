@@ -18,7 +18,7 @@ owns consumer access to the credential sidecar and the repository-bound Codex
 proxy policy, which allows the exact broker hostname with `allow_local_binding = true`
 and `mode = "full"`, disabling Codex's private-address guard and permitting every
 HTTP method at otherwise allowed destinations. Explicit denies, NetworkPolicy,
-TLS and broker authorization still apply. Unbound Agents keep their policy.
+TLS and broker authorization still apply. Operators can enable [anonymous public reads](public-github-reads.md).
 
 The separate service owns protected configuration, private sender callbacks and
 the `open`, `status`, `close` and `shutdown` controls; separate Git/gh artifacts

@@ -59,9 +59,9 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                              |
+| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
 | Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                                                                     |
-| Backends                | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                                                         |
+| Backends                | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                                                                 |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                                              |
 | Create Agent            | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
@@ -79,9 +79,9 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages** and **Return to Agent panels**.
-Search, expanded configuration, native admin access, and Credentials should survive
-Back/Forward and tab changes. Refresh reloads.
+Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
+**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
+survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
 
 ## Agent flows and UI gaps
 
@@ -149,7 +149,7 @@ selects it. A custom ID outside the list requires a new selection. After a provi
 change through Configuration JSON, the list must match and drop the old
 provider's model.
 
-The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
+The fixture supplies a Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console
 pages. One Secret picker selects or creates new version model Secrets and Slack
 tokens (Credentials tab and Channels drawer). See
