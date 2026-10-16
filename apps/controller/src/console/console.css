@@ -2397,6 +2397,11 @@ summary:focus-visible {
 .agent-logs-pending > .log-viewer {
   display: none;
 }
+/* The cards below a pending Logs view appear where the shown view puts them (finding 1479). */
+.agent-logs-opening > .stop-note,
+.agent-logs-opening > .deletion-note {
+  visibility: hidden;
+}
 .runtime-strip {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));

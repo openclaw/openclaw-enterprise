@@ -263,6 +263,9 @@ export function createChannelSecretsPanel({
     return "Ready to deploy.";
   }
 
+  // The last render's save outcome and next-step controls, for focus after a save.
+  const shown = {};
+
   function renderChannelForm(error) {
     if (!slackEnabled(state.values)) {
       return null;
@@ -286,6 +289,8 @@ export function createChannelSecretsPanel({
       { type: "submit", form: formId, className: "primary" },
       "Save channel Secrets",
     );
+    shown.status = status;
+    shown.save = save;
     function createTokenPicker(binding) {
       const picker = createSecretReferenceField({
         context,
@@ -467,9 +472,6 @@ export function createChannelSecretsPanel({
     return null;
   }
 
-  // The last render's save outcome and next-step controls, for focus after a save.
-  const shown = {};
-
   function render() {
     const error = element(
       "p",
@@ -499,15 +501,13 @@ export function createChannelSecretsPanel({
             void onReload();
           })
         : null;
+    shown.save = null;
+    shown.status = null;
     const form = renderChannelForm(error);
     shown.reload = reload;
-    shown.save = form?.querySelector('button[type="submit"]') ?? null;
     shown.outcome = state.saveError
       ? error
-      : (reloadMessage ??
-        unknownMessage ??
-        form?.querySelector('[role="status"]:not(:empty)') ??
-        null);
+      : (reloadMessage ?? unknownMessage ?? (shown.status?.textContent ? shown.status : null));
     section.replaceChildren(
       ...[
         element("h2", {}, "Channel Secrets"),

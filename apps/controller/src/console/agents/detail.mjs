@@ -1016,7 +1016,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function showDeleting() {
     deleting = true;
     headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
-    view.classList.remove("agent-detail-pending");
+    view.classList.remove("agent-detail-pending", "agent-logs-opening");
     view.replaceChildren(header, deletion);
   }
   if (deleting) {
@@ -2391,6 +2391,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   async function renderTab() {
+    // A Logs view left before it showed no longer holds the cards below it back.
+    view.classList.remove("agent-logs-opening");
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
       mountedTab.resumeDrafts = resumeDrafts;
@@ -2477,12 +2479,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       });
       content.append(logs.section);
       state.loading = false;
-      // The pending view is nearly empty: dropping the reserved height here moved Stop and
-      // Delete up under it, and the strip and output pushed them down again 0.6-1.7 s later
-      // (finding 1479). Keep the height until the view shows, in the same frame.
+      // The pending view is nearly empty: Stop and Delete sat under it, then the strip and
+      // output pushed them down 0.6-1.7 s later (finding 1479). Until the view shows, keep the
+      // reserved height and keep those cards hidden; they appear in place in the same frame.
+      view.classList.add("agent-logs-opening");
       void logs.firstView.then(() => {
         if (mountedTab === state) {
           content.style.minHeight = "";
+          view.classList.remove("agent-logs-opening");
         }
       });
       // Finish the overview layout and the Logs view's first reads before bringing this
