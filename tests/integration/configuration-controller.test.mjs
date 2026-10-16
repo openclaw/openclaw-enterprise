@@ -347,6 +347,17 @@ async function deployableAgent(context, namespace, { values, name, secretName })
   };
 }
 
+// A ready Agent whose Configuration holds `valid`, with the Driver that stores it, for
+// refusedAtSaveAndDeploy.
+async function storedRowAgent(context, configurationDriver, valid, { name, secretName }) {
+  const agent = await deployableAgent(context, context.namespace, {
+    values: valid,
+    name,
+    secretName,
+  });
+  return { ...agent, configurationDriver, valid };
+}
+
 // Writes a row past OCC, as an older release's create would have stored it.
 async function writePastOcc(configurationDriver, configurationId, values) {
   const stored = configurationDriver
@@ -385,21 +396,18 @@ const policyRetired = setting(
   'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
 );
 
-// The document that holds `value` at the JSON pointer `field`; a numeric segment indexes a list.
+// The document that holds `value` at the JSON pointer `field`; a segment 0 is a one-item list.
 const at = (field, value) =>
   field
     .split("/")
     .slice(1)
-    .reduceRight(
-      (inner, key) => (/^\d+$/.test(key) ? Object.assign([], { [key]: inner }) : { [key]: inner }),
-      value,
-    );
+    .reduceRight((inner, key) => (key === "0" ? [inner] : { [key]: inner }), value);
 
 const savePreset = (context, template, name = "Refused") =>
   request(context.app, "POST", context.presets, { body: { name, template } });
 
 // A 400 that names `message` and never echoes `sentinel`.
-function assertRefused(response, message, label = "", sentinel = undefined) {
+function assertRefused(response, message, { label = "", sentinel } = {}) {
   assert.equal(response.status, 400, `${label}: ${JSON.stringify(response.body)}`);
   assert.equal(response.body.error.code, "INVALID_REQUEST", label);
   assert.equal(response.body.error.message, message, label);
@@ -425,7 +433,10 @@ async function refusedOnSave(context, values, message, { item, preset = true, se
   }
   for (const [method, path, body] of saves) {
     const response = await request(context.app, method, path, { body });
-    assertRefused(response, message, `${method} ${path} ${JSON.stringify(values)}`, sentinel);
+    assertRefused(response, message, {
+      label: `${method} ${path} ${JSON.stringify(values)}`,
+      sentinel,
+    });
   }
 }
 
@@ -452,9 +463,10 @@ async function assertNothingStored(context, kept = []) {
 }
 
 // Create and update refuse `values` and leave the Agent's Configuration as it was. A row an older
-// release stored with them still reads, deployment refuses it, and only an update that keeps them
-// is refused. Then the valid row is stored again.
-async function refusedAtSaveAndDeploy(context, agent, values, message, deploy = [400, message]) {
+// release stored with them still reads, deployment refuses it with `deploy` (by default the save's
+// 400), and an update that keeps them is refused. Then the valid row is stored again.
+async function refusedAtSaveAndDeploy(context, agent, values, message, deploy = {}) {
+  const { status = 400, message: deployMessage = message } = deploy;
   const label = JSON.stringify(values);
   await refusedOnSave(context, values, message, { item: agent.item, preset: false });
   const unchanged = await request(context.app, "GET", agent.item);
@@ -464,13 +476,13 @@ async function refusedAtSaveAndDeploy(context, agent, values, message, deploy = 
   assert.equal(read.status, 200, label);
   assert.deepEqual(read.body.data.values, values, label);
   const deployed = await request(context.app, "POST", `${agent.agentPath}/deploy`);
-  assert.equal(deployed.status, deploy[0], `${label}: ${JSON.stringify(deployed.body)}`);
-  if (deploy[0] === 400) {
+  assert.equal(deployed.status, status, `${label}: ${JSON.stringify(deployed.body)}`);
+  if (status === 400) {
     assert.equal(deployed.body.error.code, "INVALID_REQUEST", label);
   }
-  assert.equal(deployed.body.error.message, deploy[1], label);
+  assert.equal(deployed.body.error.message, deployMessage, label);
   const kept = await request(context.app, "PATCH", agent.item, { body: { values } });
-  assertRefused(kept, message, label);
+  assertRefused(kept, message, { label });
   await writePastOcc(agent.configurationDriver, agent.configurationId, agent.valid);
 }
 
@@ -748,15 +760,17 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = "synthetic-model-credential-not-for-configuration";
   for (const [providers, key] of [
-    [{ gateway: { models: { m: { id: "m", headers: { "x-api-key": sentinel } } } } }, "gateway"],
-    [{ "my gateway": { models: null } }, '["my gateway"]'],
-    [{ openai: { models: "gpt-5" } }, "openai"],
-    [{ gateway: { models: {} } }, "gateway"],
+    [
+      { gateway: { models: { m: { id: "m", headers: { "x-api-key": sentinel } } } } },
+      "models.providers.gateway",
+    ],
+    [{ "my gateway": { models: null } }, 'models.providers["my gateway"]'],
+    [{ openai: { models: "gpt-5" } }, "models.providers.openai"],
+    [{ gateway: { models: {} } }, "models.providers.gateway"],
     // The list first, as on Kubernetes Compute, when a header name is refused too.
-    [{ gateway: { models: {}, headers: { "x-api-key ": sentinel } } }, "gateway"],
+    [{ gateway: { models: {}, headers: { "x-api-key ": sentinel } } }, "models.providers.gateway"],
   ]) {
-    const path = `models.providers${key.startsWith("[") ? key : `.${key}`}.models`;
-    const message = setting(path, "must be an array of model entries");
+    const message = setting(`${key}.models`, "must be an array of model entries");
     await refusedOnSave(context, { models: { providers } }, message, { item, sentinel });
   }
   const unchanged = await request(context.app, "GET", item);
@@ -825,15 +839,10 @@ test("Configuration save refuses an agents roster every deployment refuses, with
     computeDriver: kubernetesRules("compute-roster-integration", "validateHarnessAuth"),
   });
   const valid = withAgents({});
-  const agent = {
-    ...(await deployableAgent(context, context.namespace, {
-      values: valid,
-      name: "Roster consumer",
-      secretName: "roster-key",
-    })),
-    configurationDriver,
-    valid,
-  };
+  const agent = await storedRowAgent(context, configurationDriver, valid, {
+    name: "Roster consumer",
+    secretName: "roster-key",
+  });
   // An existing row with the shape still reads, and deployment refuses it as before, with the
   // text the save gives.
   for (const [values, message] of rosterRefusals) {
@@ -919,10 +928,12 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   for (const [index, [values, message]] of refused.entries()) {
     await t.test(`refuses Preset ${index}: ${message}`, async () => {
       const started = Date.now();
-      assertRefused(await savePreset(context, template(values)), message, JSON.stringify(values));
+      assertRefused(await savePreset(context, template(values)), message, {
+        label: JSON.stringify(values),
+      });
       if (index === refused.length - 1) {
         // Finding 1315: a save blocks the controller while it checks, so it must stay fast.
-        assert.ok(Date.now() - started < 5_000);
+        assert.ok(Date.now() - started < 5_000, JSON.stringify(values));
       }
     });
   }
@@ -977,15 +988,10 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     ),
   });
   const valid = runtimeSelected;
-  const agent = {
-    ...(await deployableAgent(context, context.namespace, {
-      values: valid,
-      name: "Settings consumer",
-      secretName: "settings-key",
-    })),
-    configurationDriver,
-    valid,
-  };
+  const agent = await storedRowAgent(context, configurationDriver, valid, {
+    name: "Settings consumer",
+    secretName: "settings-key",
+  });
   const { item, agentPath } = agent;
   const password = (value) => ({ ...valid, gateway: { auth: { password: value } } });
   const kubernetesPassword = setting(
@@ -1000,7 +1006,10 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
     [approvalPolicy("untrusted"), policyRetired],
     [password("literal-gateway-password"), gatewayPassword, kubernetesPassword],
   ]) {
-    await refusedAtSaveAndDeploy(context, agent, values, message, [409, deployMessage]);
+    await refusedAtSaveAndDeploy(context, agent, values, message, {
+      status: 409,
+      message: deployMessage,
+    });
   }
   assert.equal(configurationDriver.storedConfigurations().length, 1);
 
@@ -1062,7 +1071,9 @@ test("Preset save refuses a Codex approval policy every Gateway refuses, as Conf
     ["{{ vars.policy }}-never", policyEnum],
     ["{{ vars.count }}", policyEnum],
   ]) {
-    assertRefused(await savePreset(context, template(policy)), message, JSON.stringify(policy));
+    assertRefused(await savePreset(context, template(policy)), message, {
+      label: JSON.stringify(policy),
+    });
   }
   await assertNothingStored(context);
 
@@ -1303,28 +1314,17 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     "agents.defaults.model.fallbacks",
     "must use the primary model's provider",
   );
+  // A default model setting off the openai provider, and the refusal that names it.
+  const offDefaults = (path, settings) => [
+    { agents: { defaults: { ...runtimeDefaults, ...settings } } },
+    setting(`agents.defaults.${path}`, openaiOnly),
+  ];
   const offProvider = [
-    [
-      { agents: { defaults: { ...runtimeDefaults, subagents: { model: other } } } },
-      setting("agents.defaults.subagents.model", openaiOnly),
-    ],
-    [
-      { agents: { defaults: { ...runtimeDefaults, imageModel: other } } },
-      setting("agents.defaults.imageModel", openaiOnly),
-    ],
-    [
-      { agents: { defaults: { ...runtimeDefaults, pdfModel: { primary: other } } } },
-      setting("agents.defaults.pdfModel.primary", openaiOnly),
-    ],
+    offDefaults("subagents.model", { subagents: { model: other } }),
+    offDefaults("imageModel", { imageModel: other }),
+    offDefaults("pdfModel.primary", { pdfModel: { primary: other } }),
     // Finding 1306: OpenClaw's explicit /model allowlist, on the defaults and on an Agent entry.
-    [
-      {
-        agents: {
-          defaults: { ...runtimeDefaults, modelPolicy: { allow: [runtimeDefaults.model, other] } },
-        },
-      },
-      setting("agents.defaults.modelPolicy.allow", openaiOnly),
-    ],
+    offDefaults("modelPolicy.allow", { modelPolicy: { allow: [runtimeDefaults.model, other] } }),
     [
       {
         agents: {
@@ -1336,21 +1336,10 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
     ],
     // Finding 1310: OpenClaw reads openrouter:auto and openrouter:free, which have no slash, as
     // the openrouter provider's models, trimmed and in any case.
-    [
-      { agents: { defaults: { ...runtimeDefaults, subagents: { model: "openrouter:auto" } } } },
-      setting("agents.defaults.subagents.model", openaiOnly),
-    ],
-    [
-      {
-        agents: { defaults: { ...runtimeDefaults, modelPolicy: { allow: [" OpenRouter:Free "] } } },
-      },
-      setting("agents.defaults.modelPolicy.allow", openaiOnly),
-    ],
+    offDefaults("subagents.model", { subagents: { model: "openrouter:auto" } }),
+    offDefaults("modelPolicy.allow", { modelPolicy: { allow: [" OpenRouter:Free "] } }),
     // The provider with no model, a root model setting, and fallbacks that are not a list.
-    [
-      { agents: { defaults: { ...runtimeDefaults, subagents: { model: "openai/" } } } },
-      setting("agents.defaults.subagents.model", openaiOnly),
-    ],
+    offDefaults("subagents.model", { subagents: { model: "openai/" } }),
     [{ ...valid, tts: { summaryModel: other } }, setting("tts.summaryModel", openaiOnly)],
     [
       {
@@ -1421,8 +1410,8 @@ test("Configuration save refuses a model selection or apiKey off the primary mod
       const agentSaved = await request(context.app, "PATCH", agentPath, {
         body: { configurationId },
       });
-      assertRefused(agentSaved, message, label);
-      assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, label);
+      assertRefused(agentSaved, message, { label });
+      assertRefused(await request(context.app, "POST", `${agentPath}/deploy`), message, { label });
       // Refused before a revision exists.
       const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
       assert.deepEqual(revisions.body.data, [], label);
@@ -1707,9 +1696,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
     const label = JSON.stringify(values);
     await t.test(`refuses Preset ${index}: ${message}`, async () => {
       const template = { variables, configuration: { values } };
-      assertRefused(await savePreset(context, template), message, label, "claude-opus-4");
+      assertRefused(await savePreset(context, template), message, {
+        label,
+        sentinel: "claude-opus-4",
+      });
       // The same message as the Configuration a launch would create.
-      assertRefused(await launch(template), message, label);
+      assertRefused(await launch(template), message, { label });
     });
   }
   await assertNothingStored(context);
@@ -1784,11 +1776,8 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
       })),
     ];
     for (const [index, values] of accepted.entries()) {
-      const saved = await savePreset(
-        context,
-        { variables, configuration: { values } },
-        `T${index}`,
-      );
+      const template = { variables, configuration: { values } };
+      const saved = await savePreset(context, template, `Templated-${index}`);
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
     // Filled with another provider, the launch's Configuration is refused by name.
@@ -2189,7 +2178,7 @@ test("Filesystem Configuration API rejects plaintext model writes without changi
     body: { kind: "agent", values: unsafe },
   });
   // The caller learns which field must become a reference, never the submitted value.
-  assertRefused(rejected, literalModelKey("/models/providers/openai/apiKey"), "", sentinel);
+  assertRefused(rejected, literalModelKey("/models/providers/openai/apiKey"), { sentinel });
   assert.deepEqual(await readdir(root), []);
 
   const values = createOpenClawConfiguration();
@@ -2493,7 +2482,10 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
     // Finding 1221: the text around a variable is checked with a stand-in for it. The refusal shows
     // the variable's placeholder up to the first invalid literal character.
     [gateway({ headers: { "{{ vars.header }} ": "v" } }), invalidName("{{ vars.header }}…")],
-    [gateway({ headers: { "X-{{ vars.header }}​": "v" } }), invalidName("X-{{ vars.header }}…")],
+    [
+      gateway({ headers: { "X-{{ vars.header }}\u200b": "v" } }),
+      invalidName("X-{{ vars.header }}…"),
+    ],
     [gateway({ headers: { "\\{{ vars.url }}-{{ vars.header }}": "v" } }), startsWith()],
     [gateway({ baseUrl: "ftp://{{ vars.url }}" }), absoluteUrl(field("baseUrl"))],
     [
@@ -2551,7 +2543,7 @@ test("Without Kubernetes Compute, Configuration and Preset saves refuse what eve
       agent,
       configuration: { values },
     });
-    assertRefused(escaped, message, JSON.stringify(values), sentinel);
+    assertRefused(escaped, message, { label: JSON.stringify(values), sentinel });
   }
   // A default that fills a header name is a literal name: a credential name takes no literal.
   const filledCredential = await savePreset(context, {
@@ -2585,8 +2577,10 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
   });
   assert.equal(original.status, 201, JSON.stringify(original.body));
   const item = `${context.collection}/${original.body.data.id}`;
-  for (const [field, value = proxy] of [
-    ["/proxy/proxyUrl"],
+  // An MCP server that runs a command passes its environment to it.
+  const stdio = (env) => ({ command: "docs-mcp", env });
+  for (const [field, value = proxy, values = at(field, value)] of [
+    ["/proxy/proxyUrl", proxy, { proxy: { enabled: true, proxyUrl: proxy } }],
     ["/channels/telegram/proxy"],
     ["/channels/discord/proxy", `socks5://u:${sentinel}@proxy:1080`],
     ["/channels/telegram/accounts/ops/proxy"],
@@ -2606,7 +2600,11 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
     ["/proxy/proxyUrl", `\${EGRESS_PROXY:-${proxy}}`],
     // Finding 1259: an MCP server's environment reaches its stdio process, and plugins read
     // Codex's network proxy and a speech provider's proxy.
-    ["/mcp/servers/docs/env/HTTPS_PROXY"],
+    [
+      "/mcp/servers/docs/env/HTTPS_PROXY",
+      proxy,
+      at("/mcp/servers/docs", stdio({ HTTPS_PROXY: proxy })),
+    ],
     ["/nodeHost/mcp/servers/docs/env/all_proxy", `${sentinel}@proxy:3128`],
     ["/plugins/entries/codex/config/appServer/networkProxy/proxyUrl"],
     [
@@ -2620,10 +2618,14 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
     ["/agents/entries/main/tts/personas/calm/providers/microsoft/proxy"],
     ["/channels/discord/accounts/ops/voice/tts/providers/microsoft/proxy"],
     ["/talk/providers/microsoft/proxy"],
-    ["/plugins/entries/acpx/config/mcpServers/docs/env/HTTPS_PROXY"],
+    [
+      "/plugins/entries/acpx/config/mcpServers/docs/env/HTTPS_PROXY",
+      proxy,
+      at("/plugins/entries/acpx/config/mcpServers/docs", stdio({ HTTPS_PROXY: proxy })),
+    ],
     ["/plugins/entries/voice-call/config/numbers/+15550100/tts/providers/edge/proxy"],
   ]) {
-    await refusedOnSave(context, at(field, value), userinfo(field), { item, sentinel });
+    await refusedOnSave(context, values, userinfo(field), { item, sentinel });
   }
   const read = await request(context.app, "GET", item);
   assert.equal(read.status, 200, JSON.stringify(read.body));
@@ -2649,7 +2651,7 @@ test("Configuration and Preset saves refuse a user name or password in proxy, ch
       variables,
       configuration: { values: at(field, value) },
     });
-    assertRefused(response, userinfo(field), field, sentinel);
+    assertRefused(response, userinfo(field), { label: field, sentinel });
   }
 
   // A proxy without userinfo, a whole reference, a fallback without userinfo, NO_PROXY and an
@@ -2715,19 +2717,38 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
   const sentinel = `synthetic-env-url-userinfo-${randomUUID()}`;
   const index = `https://u:${sentinel}@pypi.example.test/simple`;
   const skill = (name, variable, value) => [`/skills/entries/${name}/env/${variable}`, value];
-  for (const [field, value = index] of [
+  const registry = `\${SCHEME}://u:${sentinel}@npm.test`;
+  // A process the Gateway starts runs a command, with its environment.
+  const command = (path, command, env, settings = {}) => at(path, { ...settings, command, env });
+  for (const [field, value = index, values = at(field, value)] of [
     ["/skills/entries/docs/env/HTTPS_PROXY"],
     ["/hooks/internal/entries/audit/env/PIP_INDEX_URL"],
-    ["/models/providers/local/localService/env/GOPROXY"],
-    ["/secrets/providers/vault/env/VAULT"],
+    [
+      "/models/providers/local/localService/env/GOPROXY",
+      index,
+      command("/models/providers/local/localService", "/usr/bin/serve", { GOPROXY: index }),
+    ],
+    [
+      "/secrets/providers/vault/env/VAULT",
+      index,
+      command("/secrets/providers/vault", "/usr/bin/vault", { VAULT: index }, { source: "exec" }),
+    ],
     ["/agents/defaults/sandbox/docker/env/npm_config_registry"],
     ["/agents/entries/main/sandbox/docker/env/HTTP_PROXY"],
-    ["/security/installPolicy/exec/env/GIT_CONFIG_VALUE_0"],
+    [
+      "/security/installPolicy/exec/env/GIT_CONFIG_VALUE_0",
+      index,
+      command("/security/installPolicy/exec", "/usr/bin/scan", { GIT_CONFIG_VALUE_0: index }),
+    ],
     // Any name, in the maps checked before: a URL anywhere in the value, also in a list.
     ["/env/vars/GOPROXY", `https://${sentinel}@proxy.example.test,direct`],
     ["/env/PIP_INDEX_URL"],
     ["/env/vars/PIP_EXTRA_INDEX_URL", `https://pypi.example.test ${index}`],
-    ["/mcp/servers/docs/env/NPM_REGISTRY", `\${SCHEME}://u:${sentinel}@npm.test`],
+    [
+      "/mcp/servers/docs/env/NPM_REGISTRY",
+      registry,
+      command("/mcp/servers/docs", "docs-mcp", { NPM_REGISTRY: registry }),
+    ],
     ["/env/vars/PIP_INDEX_URL", `\${PIP_URL:-https://u:${sentinel}@pypi.example.test}`],
     // URL parsers drop a tab or newline, a reference may render empty between `:` and `//`, and
     // an http(s) URL reads userinfo with one slash or none.
@@ -2752,7 +2773,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     ["/env/vars/HTTPS_PROXY", `http://u:p\\w${sentinel}@proxy.example:3128`],
   ]) {
     await t.test(`refuses ${field}`, async () => {
-      await refusedOnSave(context, at(field, value), userinfo(field), { item, sentinel });
+      await refusedOnSave(context, values, userinfo(field), { item, sentinel });
     });
   }
 
@@ -2776,7 +2797,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
         variables,
         configuration: { values: at(field, value) },
       });
-      assertRefused(response, userinfo(field), field, sentinel);
+      assertRefused(response, userinfo(field), { label: field, sentinel });
     });
   }
   // A value whose URLs would take too long to check is refused rather than block the controller.
@@ -2821,7 +2842,7 @@ test("Configuration and Preset saves refuse a user name or password in a URL in 
     });
   await t.test("refuses a whole Preset variable at launch", async () => {
     const field = "/skills/entries/x/env/PIP_INDEX_URL";
-    assertRefused(await launch(index), userinfo(field), field, sentinel);
+    assertRefused(await launch(index), userinfo(field), { label: field, sentinel });
   });
   const plain = await launch("https://pypi.example.test/simple");
   assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -3173,7 +3194,7 @@ test("Configuration save checks a large agents roster in step with its size", as
   assert.equal(refused.status, 400, JSON.stringify(refused.body).slice(0, 500));
   assert.equal(
     refused.body.error.message,
-    "Configuration field /agents/entries/a59999/sandbox/ssh/identityData holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef.",
+    literalKey("/agents/entries/a59999/sandbox/ssh/identityData"),
   );
 });
 
@@ -3207,7 +3228,10 @@ test("Configuration and Preset saves read a git config value as a proxy when its
       at("/agents/defaults/sandbox/docker/env", pair("remote.origin.proxy", 1)),
       "/agents/defaults/sandbox/docker/env/GIT_CONFIG_VALUE_1",
     ],
-    [at("/mcp/servers/docs/env", pair("http.proxy")), "/mcp/servers/docs/env/GIT_CONFIG_VALUE_0"],
+    [
+      at("/mcp/servers/docs", { command: "docs-mcp", env: pair("http.proxy") }),
+      "/mcp/servers/docs/env/GIT_CONFIG_VALUE_0",
+    ],
     // `env` and `env.vars` are one environment; a key's environment reference renders its
     // fallback.
     [
@@ -3303,7 +3327,7 @@ test("Configuration and Preset saves read a git config value as a proxy when its
         variables,
         configuration: { values: { skills: { entries: { x: { env } } } } },
       });
-      assertRefused(response, userinfo(field), field, sentinel);
+      assertRefused(response, userinfo(field), { label: field, sentinel });
     });
   }
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
@@ -3404,7 +3428,7 @@ test("Configuration and Preset saves refuse a literal credential in an MCP serve
       },
     });
     const field = "/mcp/servers/docs/headers/Authorization{{ vars.suffix }}";
-    assertRefused(response, literalHeader(field), field, sentinel);
+    assertRefused(response, literalHeader(field), { label: field, sentinel });
   });
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
@@ -3437,14 +3461,17 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = `synthetic-gateway-key-${randomUUID()}`;
   const option = (field) => `${inline(field)} Make the option value a \${NAME} reference.`;
-  const invalidName = (field, name) =>
+  const invalidHeaderNames = (field, name) =>
     `Configuration field ${field} must use valid HTTP header names, not ${JSON.stringify(name)}.`;
   // A literal at `field`, and the refusal that names it.
-  const slot = (message, field, value = sentinel) => [at(field, value), message(field)];
+  const slot = (field, message = literalKey, value = sentinel) => [
+    at(field, value),
+    message(field),
+  ];
   const refused = [
-    slot(literalKey, "/memory/search/remote/apiKey"),
-    slot(literalHeader, "/agents/entries/main/memory/search/remote/headers/Authorization"),
-    slot(userinfo, "/memory/search/remote/baseUrl", `https://u:${sentinel}@emb.example.test`),
+    slot("/memory/search/remote/apiKey"),
+    slot("/agents/entries/main/memory/search/remote/headers/Authorization", literalHeader),
+    slot("/memory/search/remote/baseUrl", userinfo, `https://u:${sentinel}@emb.example.test`),
     [
       {
         tools: { media: { models: [{ provider: "openai", headers: { "X-Api-Key": sentinel } }] } },
@@ -3456,37 +3483,37 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
       literalKey("/tools/media/audio/request/auth/token"),
     ],
     slot(
-      literalHeader,
       "/tools/media/image/models/0/request/headers/Authorization",
+      literalHeader,
       `Bearer ${sentinel}`,
     ),
-    slot(literalKey, "/tts/providers/openai/apiKey"),
-    slot(literalKey, "/tts/personas/narrator/providers/elevenlabs/apiKey"),
-    slot(literalKey, "/agents/entries/main/tts/providers/openai/apiKey"),
-    slot(literalKey, "/talk/providers/openai/apiKey"),
-    slot(literalKey, "/talk/realtime/providers/openai/apiKey", 12345),
-    slot(literalHeader, "/tools/web/fetch/headers/Authorization", `Bearer ${sentinel}`),
-    slot(literalHeader, "/diagnostics/otel/headers/x-api-key"),
-    slot(literalKey, "/skills/entries/weather/apiKey"),
-    slot(literalKey, "/cron/webhookToken"),
+    slot("/tts/providers/openai/apiKey"),
+    slot("/tts/personas/narrator/providers/elevenlabs/apiKey"),
+    slot("/agents/entries/main/tts/providers/openai/apiKey"),
+    slot("/talk/providers/openai/apiKey"),
+    slot("/talk/realtime/providers/openai/apiKey", literalKey, 12345),
+    slot("/tools/web/fetch/headers/Authorization", literalHeader, `Bearer ${sentinel}`),
+    slot("/diagnostics/otel/headers/x-api-key", literalHeader),
+    slot("/skills/entries/weather/apiKey"),
+    slot("/cron/webhookToken"),
     // Media query options carry a provider's key; a camelCase name is matched by its words.
-    slot(option, "/tools/media/models/0/providerOptions/google/key"),
-    slot(option, "/tools/media/audio/providerOptions/deepgram/accessToken"),
+    slot("/tools/media/models/0/providerOptions/google/key", option),
+    slot("/tools/media/audio/providerOptions/deepgram/accessToken", option),
     // A name that only starts like a token count still names a key.
-    slot(option, "/tools/media/models/0/providerOptions/google/max_tokens_key"),
-    slot(literalHeader, "/tools/media/video/headers/Authorization"),
-    slot(literalHeader, "/gateway/remote/edgeAuth/CF-Access-Client-Secret"),
+    slot("/tools/media/models/0/providerOptions/google/max_tokens_key", option),
+    slot("/tools/media/video/headers/Authorization", literalHeader),
+    slot("/gateway/remote/edgeAuth/CF-Access-Client-Secret", literalHeader),
     // A header name no HTTP client sends would hide a literal from the credential rule.
     [
       at("/memory/search/remote/headers/Authorization ", `Bearer ${sentinel}`),
-      invalidName("/memory/search/remote/headers", "Authorization…"),
+      invalidHeaderNames("/memory/search/remote/headers", "Authorization…"),
     ],
     [
       at("/mcp/servers/docs", {
         url: "https://mcp.example.test",
         headers: { "X-Api-Key\t": sentinel },
       }),
-      invalidName("/mcp/servers/docs/headers", "X-Api-Key…"),
+      invalidHeaderNames("/mcp/servers/docs/headers", "X-Api-Key…"),
     ],
   ];
   for (const [values, message] of refused) {
@@ -3501,7 +3528,7 @@ test("Configuration and Preset saves refuse a literal key in the other key and h
       variables: { suffix: { type: "string" } },
       configuration: { values: at(field, sentinel) },
     });
-    assertRefused(response, option(field), field, sentinel);
+    assertRefused(response, option(field), { label: field, sentinel });
   });
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
@@ -3584,7 +3611,7 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   const sentinel = `synthetic-sensitive-slot-${randomUUID()}`;
-  const slot = (field, value = sentinel, message = literalKey) => [
+  const slot = (field, message = literalKey, value = sentinel) => [
     at(field, value),
     message(field),
   ];
@@ -3606,12 +3633,12 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     // Channel settings: a token, an account's password and an inline service account.
     slot("/channels/telegram/botToken"),
     slot("/channels/matrix/accounts/work/password"),
-    slot("/channels/googlechat/serviceAccount", { private_key: sentinel }),
+    slot("/channels/googlechat/serviceAccount", literalKey, { private_key: sentinel }),
     // A field only the channel's manifest marks sensitive: a URL that carries a token.
-    slot("/channels/synology-chat/incomingUrl", tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/webhookUrl", tokenUrl),
-    slot("/channels/synology-chat/webhookUrl", tokenUrl),
-    slot("/channels/synology-chat/accounts/ops/incomingUrl", tokenUrl),
+    slot("/channels/synology-chat/incomingUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/webhookUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/webhookUrl", literalKey, tokenUrl),
+    slot("/channels/synology-chat/accounts/ops/incomingUrl", literalKey, tokenUrl),
     // Each word of the rule: a secret, an encryption key, a service account reference.
     slot("/channels/line/channelSecret"),
     slot("/channels/feishu/encryptKey"),
@@ -3632,8 +3659,8 @@ test("Configuration and Preset saves refuse a literal secret in the other slots 
     slot("/plugins/entries/voice-call/config/telnyx/publicKey"),
     slot(
       "/plugins/entries/codex/config/appServer/headers/Authorization",
-      `Bearer ${sentinel}`,
       literalHeader,
+      `Bearer ${sentinel}`,
     ),
     // A snake_case API key, a private key, and a token whose name starts with "file".
     slot("/plugins/entries/tavily/config/api_key"),
@@ -3913,42 +3940,21 @@ test("A stored Configuration with request credentials an older release accepted 
     `must not set the credential header "x-goog-api-key" (its name marks a credential): ${binding}`,
   );
 
-  for (const [label, stale, message] of [
+  // The openai provider's request transport settings, as an older release stored them.
+  for (const [label, transport, message] of [
     [
       "request.auth authorization-bearer",
-      {
-        ...valid,
-        models: {
-          providers: {
-            openai: { request: { auth: { mode: "authorization-bearer", token: sentinel } } },
-          },
-        },
-      },
+      { auth: { mode: "authorization-bearer", token: sentinel } },
       requestAuth,
     ],
     [
       "request.auth header",
-      {
-        ...valid,
-        models: {
-          providers: {
-            openai: { request: { auth: { mode: "header", headerName: "x-key", value: sentinel } } },
-          },
-        },
-      },
+      { auth: { mode: "header", headerName: "x-key", value: sentinel } },
       requestAuth,
     ],
-    [
-      "request.headers",
-      {
-        ...valid,
-        models: {
-          providers: { openai: { request: { headers: { "x-goog-api-key": sentinel } } } },
-        },
-      },
-      credentialHeader,
-    ],
+    ["request.headers", { headers: { "x-goog-api-key": sentinel } }, credentialHeader],
   ]) {
+    const stale = { ...valid, ...at("/models/providers/openai/request", transport) };
     // Seed the document the older release stored, directly in the Driver's storage.
     const current = JSON.parse(await readFile(path, "utf8"));
     await writeFile(path, JSON.stringify({ ...current, values: stale }));
@@ -3968,9 +3974,9 @@ test("A stored Configuration with request credentials an older release accepted 
     // Saving it unchanged and deploying it are refused with the same named message, and no
     // revision is admitted.
     const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
-    assertRefused(resaved, message, label, sentinel);
+    assertRefused(resaved, message, { label, sentinel });
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assertRefused(deployed, message, label, sentinel);
+    assertRefused(deployed, message, { label, sentinel });
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
 
@@ -4021,9 +4027,9 @@ test("A stored Configuration with a literal Gateway password an older release ac
     assert.deepEqual(read.body.data.values, stale, label);
     // Saving it unchanged and deploying it are refused with the same message.
     const resaved = await request(context.app, "PATCH", item, { body: { values: stale } });
-    assertRefused(resaved, gatewayPassword, label, sentinel);
+    assertRefused(resaved, gatewayPassword, { label, sentinel });
     const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
-    assertRefused(deployed, gatewayPassword, label, sentinel);
+    assertRefused(deployed, gatewayPassword, { label, sentinel });
     const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
     assert.deepEqual(revisions.body.data, [], label);
   }
