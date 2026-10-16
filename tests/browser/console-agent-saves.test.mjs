@@ -2,90 +2,265 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
+  pathRequests,
   selectSecret,
   waitForInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  createRepositoryLaunchFixture,
   focusedDescription,
   focusedText,
   openAdvancedSettings,
   watchForReload,
 } from "./console-agents-test-support.mjs";
 
-const scrollY = (page) => page.evaluate(() => globalThis.scrollY);
-const getReads = (requests) =>
-  requests.filter((request) => request.method === "GET").map((request) => request.path);
+// Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
+// URL: the page collapsed to its summary, reread the session, versions, permissions and
+// deployments (about 12 reads), jumped to the top, dropped focus and showed no saved message
+// (findings 1445 and 1446). They now refresh in place.
 
-// Saving the draft's Configuration updated nothing on screen but re-navigated to the same URL:
-// the page collapsed to its summary, made about 12 reads, jumped to the top and dropped focus,
-// with no saved message (finding 1445). It now refreshes the draft in place.
-test("saving the draft Configuration updates the Agent page in place", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Configuration in place");
-  const agent = await fixture.createAgent(namespace.id, "Saved In Place", nativeValues("before"), {
-    harnessAuth: { method: "runtime" },
-  });
-  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+const scrollY = (page) => page.evaluate(() => globalThis.scrollY);
+const pageReloadReads = (requests) =>
+  requests
+    .filter((request) => request.method === "GET")
+    .map((request) => request.path)
+    .filter((path) => /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path));
+
+// Opens an Agent draft tab. The default viewport is short, so a reload's jump to the top shows
+// as a lost scroll position.
+async function openTab(t, fixture, namespace, agent, tab, options = {}) {
   const { page } = await newPage(t, fixture, {
-    context: { viewport: { width: 1280, height: 720 } },
+    context: { viewport: options.viewport ?? { width: 1280, height: 600 } },
   });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  await page.getByRole("heading", { name: "Create new version" }).waitFor();
-  const deploy = page.getByRole("button", { name: "Deploy new version" });
-  await page.waitForFunction(
-    () => globalThis.document.querySelector(".agent-draft-actions .primary")?.disabled === false,
-  );
-  await page.getByRole("button", { name: "Edit Configuration" }).click();
-  await openAdvancedSettings(page);
-  const editor = page.getByLabel("Configuration JSON");
-  await editor.fill(JSON.stringify(nativeValues("after"), null, 2));
-  const save = page.getByRole("button", { name: "Save Configuration" });
-  await save.scrollIntoViewIfNeeded();
-  const scrollBefore = await scrollY(page);
-  assert.ok(scrollBefore > 0, "the Save button sits below the first screen");
+  await options.beforeLogin?.(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", tab));
+  return page;
+}
+
+// Scrolls `control` below the first screen and starts watching the page. check() asserts the
+// page was updated in place: the same summary node, no loading text, none of a page load's
+// reads, and the scroll position kept.
+async function watchPlace(page, fixture, control) {
+  await control.scrollIntoViewIfNeeded();
+  const before = await scrollY(page);
+  assert.ok(before > 0, "the control sits below the first screen");
   const kept = await watchForReload(page);
   const requests = apiRequests(page, fixture.origin);
+  return {
+    requests,
+    async check() {
+      assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
+      assert.deepEqual(pageReloadReads(requests), []);
+      assert.ok((await scrollY(page)) > before / 2, "the page kept its scroll position");
+    },
+  };
+}
 
-  await save.click();
-  const saved = page.getByRole("status").filter({ hasText: "Configuration saved." });
-  await saved.waitFor();
-  assert.deepEqual(await kept(), { marker: "kept", reloadedText: [] });
-  assert.equal(await focusedText(page), "Edit Configuration");
-  assert.equal(await focusedDescription(page), "Configuration saved.");
-  // The reader stays where they were instead of jumping to the top of the page.
-  assert.ok((await scrollY(page)) > scrollBefore / 2, "the page kept its scroll position");
-  await page.getByText(/Configuration .* · generation 2$/).waitFor();
-  // Two preflight reads and one read of the saved Configuration; no Agent page reload, which
-  // read the session, versions, permissions and deployment state again (about 12 reads).
-  const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const reads = getReads(requests);
-  assert.equal(reads.filter((path) => path === configurationPath).length, 2, reads.join(" "));
-  assert.deepEqual(
-    reads.filter((path) =>
-      /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path),
-    ),
-    [],
-  );
-  assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+// `prepare` sets up the bootstrapped fixture before the Agent is created.
+async function plainAgent(t, name, values = nativeValues("before"), options, prepare) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  prepare?.(fixture);
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, name, values, options);
+  return { fixture, namespace, agent };
+}
 
-  // The refreshed draft is current: deploying it passes the preflight against the saved state.
-  assert.equal(await deploy.isDisabled(), false);
-  const deploying = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/deploy`),
+async function slackAgent(t, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-in-place");
+  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-in-place");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    name,
+    nativeValues("channels", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          channels: {},
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
   );
-  await deploy.click();
-  assert.equal((await deploying).status(), 202);
-});
+  return { fixture, namespace, agent };
+}
+
+const configurationPath = ({ namespace, agent }) =>
+  `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+
+// Each save or Reload draft refreshes the draft in place, names the saved generation, moves
+// focus to the control that remains, and leaves a draft that can be deployed.
+const inPlaceCases = [
+  {
+    name: "saving the draft Configuration updates the Agent page in place",
+    async setup(t) {
+      const { fixture, namespace } = await createRuntimeAuthFixture(t, "Configuration in place");
+      const agent = await fixture.createAgent(
+        namespace.id,
+        "Saved In Place",
+        nativeValues("before"),
+        { harnessAuth: { method: "runtime" } },
+      );
+      await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+      return { fixture, namespace, agent };
+    },
+    tab: "configuration",
+    viewport: { width: 1280, height: 720 },
+    async prepare(page) {
+      await page.getByRole("heading", { name: "Create new version" }).waitFor();
+      await page.waitForFunction(
+        () =>
+          globalThis.document.querySelector(".agent-draft-actions .primary")?.disabled === false,
+      );
+      await page.getByRole("button", { name: "Edit Configuration" }).click();
+      await openAdvancedSettings(page);
+      const editor = page.getByLabel("Configuration JSON");
+      await editor.fill(JSON.stringify(nativeValues("after"), null, 2));
+      return page.getByRole("button", { name: "Save Configuration" });
+    },
+    saved: "Configuration saved.",
+    focus: "Edit Configuration",
+    described: true,
+    async verify(page, c, requests) {
+      // Two reads of the saved Configuration and none of an Agent page reload's reads.
+      const reads = requests
+        .filter((request) => request.method === "GET")
+        .map((request) => request.path);
+      const configurationReads = reads.filter((path) => path === configurationPath(c));
+      assert.equal(configurationReads.length, 2, reads.join(" "));
+      assert.equal(new URL(page.url()).searchParams.get("tab"), "configuration");
+      // The refreshed draft is current: deploying it passes the preflight against the saved
+      // state.
+      const deploying = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().endsWith(`/namespaces/${c.namespace.id}/agents/${c.agent.id}/deploy`),
+      );
+      await page.getByRole("button", { name: "Deploy new version" }).click();
+      assert.equal((await deploying).status(), 202);
+    },
+  },
+  {
+    name: "channel saves and Reload draft update the Agent page in place",
+    setup: (t) => slackAgent(t, "Channels In Place"),
+    tab: "channels",
+    async prepare(page) {
+      await page.getByRole("heading", { name: "Channels In Place" }).waitFor();
+      await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+      return page.getByRole("button", { name: "Disable Slack" });
+    },
+    saved: "Channels saved.",
+    // Disable is gone; focus stays on the provider's remaining action.
+    focus: "Edit Slack",
+    described: true,
+    async verify(page, c) {
+      assert.equal(await page.getByRole("button", { name: "Disable Slack" }).count(), 0);
+      const saved = await c.fixture.request("GET", configurationPath(c));
+      assert.equal(saved.data.values.channels.slack.enabled, false);
+    },
+  },
+  {
+    name: "Reload draft after a lost channel save updates the Agent page in place",
+    setup: (t) => slackAgent(t, "Channel Reload In Place"),
+    tab: "channels",
+    // The API commits, but the browser cannot know that the response was lost.
+    async beforeLogin(page, c) {
+      await page.route(`**${configurationPath(c)}`, async (route, request) => {
+        if (request.method() !== "PATCH") {
+          await route.continue();
+          return;
+        }
+        assert.equal((await route.fetch()).status(), 200);
+        await route.abort("failed");
+      });
+    },
+    async prepare(page) {
+      await page.getByRole("heading", { name: "Channel Reload In Place" }).waitFor();
+      await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+      await page.getByRole("button", { name: "Disable Slack" }).click();
+      const reload = page.getByRole("button", { name: "Reload draft" });
+      await reload.waitFor();
+      return reload;
+    },
+    saved: "Draft reloaded.",
+    focus: "Draft reloaded.",
+    async verify(page) {
+      assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
+      assert.equal(await page.getByRole("button", { name: "Disable Slack" }).count(), 0);
+    },
+  },
+  {
+    name: "Reload draft in the Configuration editor updates the Agent page in place",
+    setup: (t) => plainAgent(t, "Configuration Reload In Place"),
+    tab: "configuration",
+    async prepare(page, c) {
+      await page.getByRole("heading", { name: "Configuration Reload In Place" }).waitFor();
+      await page.getByRole("button", { name: "Edit Configuration" }).click();
+      await openAdvancedSettings(page);
+      const editor = page.getByLabel("Configuration JSON");
+      await editor.fill(JSON.stringify(nativeValues("mine"), null, 2));
+      const changed = await c.fixture.request("PATCH", configurationPath(c), {
+        body: { values: nativeValues("theirs") },
+      });
+      assert.equal(changed.status, 200);
+      await page.getByRole("button", { name: "Save Configuration" }).click();
+      const reload = page.getByRole("button", { name: "Reload draft" });
+      await reload.waitFor();
+      return reload;
+    },
+    saved: "Draft reloaded.",
+    focus: "Edit Configuration",
+    described: true,
+  },
+];
+
+for (const c of inPlaceCases) {
+  test(c.name, async (t) => {
+    const context = await c.setup(t);
+    const { fixture, namespace, agent } = context;
+    const page = await openTab(t, fixture, namespace, agent, c.tab, {
+      viewport: c.viewport,
+      beforeLogin: (routed) => c.beforeLogin?.(routed, context),
+    });
+    const control = await c.prepare(page, context);
+    const place = await watchPlace(page, fixture, control);
+
+    await control.click();
+    await page.getByRole("status").filter({ hasText: c.saved }).waitFor();
+    await page.getByText(/Configuration .* · generation 2$/).waitFor();
+    await place.check();
+    assert.equal(await focusedText(page), c.focus);
+    if (c.described) {
+      assert.equal(await focusedDescription(page), c.saved);
+    }
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
+    await c.verify?.(page, context, place.requests);
+  });
+}
 
 // The authentication source save re-navigated the same way. It now refreshes in place from
 // the saved Agent, and a second save checks against that saved state instead of the page's
@@ -102,10 +277,9 @@ test("saving and reloading the authentication source update the Agent page in pl
     nativeValues("auth", { harnessId: "codex" }),
     { harnessAuth: { method: "api_key", source: first.ref }, executionMode: "dedicated" },
   );
-  const { page } = await newPage(t, fixture, {
-    context: { viewport: { width: 390, height: 844 } },
+  const page = await openTab(t, fixture, namespace, agent, "credentials", {
+    viewport: { width: 390, height: 844 },
   });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
   await page.getByRole("heading", { name: "Authentication In Place" }).waitFor();
   const secretField = page.getByLabel("API key Secret");
   await waitForInputValue(secretField, secretOptionLabel(first));
@@ -143,26 +317,13 @@ test("saving and reloading the authentication source update the Agent page in pl
   assert.equal(await focusedText(page), "Reload authentication source");
 
   // Leaving the tab while Reload reads must not keep a Credentials form with its controls off.
-  let releaseRead;
-  const readHeld = new Promise((resolve) => {
-    releaseRead = resolve;
-  });
-  t.after(() => releaseRead());
   const agentPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
-  let readRequested;
-  const requested = new Promise((resolve) => {
-    readRequested = resolve;
-  });
-  await page.route(agentPath, async (route) => {
-    readRequested();
-    await readHeld;
-    await route.continue().catch(() => {});
-  });
+  const read = await holdRequests(t, page, agentPath);
   await reload.click();
-  await requested;
+  await read.requested;
   await page.getByRole("button", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
-  releaseRead();
+  read.release();
   await page.unroute(agentPath);
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
@@ -215,4 +376,207 @@ test("Refresh sharing, editor Cancel and the Create Agent shortcuts keep keyboar
       shortcut,
     );
   }
+});
+
+test("saving and reloading plugin selections update the Agent page in place", async (t) => {
+  const { fixture, namespace, agent } = await plainAgent(
+    t,
+    "Plugins In Place",
+    nativeValues("plugins", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
+    (created) => {
+      const pluginDriver = new CodexPluginDriver();
+      created.controller.registerDriver(pluginDriver);
+      created.controller.selectDriver("plugin", pluginDriver.id);
+    },
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const page = await openTab(t, fixture, namespace, agent, "plugins");
+  await page.getByRole("heading", { name: "Plugins In Place" }).waitFor();
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  const json = page.getByLabel("Plugin selections JSON", { exact: true });
+  const edited = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
+  await json.fill(JSON.stringify(edited));
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  const place = await watchPlace(page, fixture, save);
+
+  // Until the rebuilt tab mounts, the saved editor stays locked: an edit made there would be
+  // dropped by the rebuild (review of #2551).
+  const reread = await holdRequests(t, page, `**${configurationPath({ namespace, agent })}`, {
+    once: true,
+    method: "GET",
+  });
+  await save.click();
+  await reread.requested;
+  await page.getByRole("status").filter({ hasText: "Plugin selections saved." }).waitFor();
+  // The plugin fields go inert while saving; the JSON stays in them.
+  assert.equal(
+    await json.evaluate((node) => node.disabled || node.closest("[inert]") !== null),
+    true,
+  );
+  assert.equal(await save.isDisabled(), true);
+  reread.release();
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.getAttribute("role") === "status",
+  );
+  await place.check();
+  // Save is disabled with nothing left to save, so the saved status takes focus.
+  assert.equal(await focusedText(page), "Plugin selections saved.");
+  assert.deepEqual(JSON.parse(await json.inputValue()), edited);
+  assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins, edited);
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "plugins");
+
+  // A change saved elsewhere asks for a reload, which also rebuilds in place.
+  const elsewhere = { "codex-plugin:linear@openai-curated-remote": { enabled: true } };
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    plugins: elsewhere,
+  });
+  // The rebuilt tab starts with its JSON collapsed, as a fresh page does.
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await json.fill("{}");
+  await save.click();
+  const reload = page.getByRole("button", { name: "Reload plugin selections" });
+  await reload.waitFor();
+  await reload.click();
+  await page.getByRole("status").filter({ hasText: "Plugin selections reloaded." }).waitFor();
+  await place.check();
+  assert.deepEqual(JSON.parse(await json.inputValue()), elsewhere);
+  assert.equal(await save.isDisabled(), true);
+  // The rebuilt editor is clean, so the tabs are free to leave again.
+  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+});
+
+const repositoryAccess = (defaultProfile) => ({
+  defaultProfile,
+  repositories: [{ repositoryRef: "application" }],
+});
+
+// An Agent with Contributor access to one repository its Namespace may use.
+async function repositoryAgent(t, name) {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1600",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("repositories"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const saved = await fixture.request("PATCH", agentPath, {
+    body: {
+      configurationId: agent.configurationId,
+      repositoryAccess: repositoryAccess("git-full"),
+    },
+  });
+  assert.equal(saved.status, 200);
+  return { fixture, namespace, agent, agentPath };
+}
+
+test("repository saves, Cancel and Reload draft update the Agent page in place", async (t) => {
+  const { fixture, namespace, agent, agentPath } = await repositoryAgent(
+    t,
+    "Repositories In Place",
+  );
+  const page = await openTab(t, fixture, namespace, agent, "repositories");
+  await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+  const place = await watchPlace(page, fixture, save);
+
+  await page.locator("#repository-default-git-read").check();
+  await save.click();
+  await page.getByRole("status").filter({ hasText: "Repository access saved." }).waitFor();
+  await place.check();
+  assert.equal(await focusedText(page), "Repository access saved.");
+  assert.equal(await save.isDisabled(), true);
+  assert.deepEqual(
+    (await fixture.request("GET", agentPath)).data.repositoryAccess,
+    repositoryAccess("git-read"),
+  );
+
+  // Cancel drops the edit and rebuilds from the saved state in place.
+  await page.locator("#repository-default-git-full").check();
+  assert.equal(await save.isEnabled(), true);
+  await cancel.click();
+  await page.waitForFunction(
+    () => globalThis.document.querySelector("#repository-default-git-read")?.checked === true,
+  );
+  await place.check();
+  assert.equal(await focusedText(page), "Cancel");
+  assert.equal(await save.isDisabled(), true);
+
+  // A change saved elsewhere asks for Reload draft, which rebuilds in place too.
+  const concurrent = await fixture.request("PATCH", agentPath, {
+    body: {
+      configurationId: agent.configurationId,
+      repositoryAccess: repositoryAccess("git-write"),
+    },
+  });
+  assert.equal(concurrent.status, 200);
+  await page.locator("#repository-default-git-full").check();
+  await save.click();
+  await page
+    .getByText("Repository access changed while you were editing. Reload this draft before saving.")
+    .waitFor();
+  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  await reload.click();
+  await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
+  await place.check();
+  await page
+    .getByText("Contributor · no issue management · Agent default", { exact: true })
+    .waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await cancel.isEnabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(pathRequests(place.requests, "PATCH", agentPath).length, 1);
+});
+
+// Cancel rereads the Agent before the tab is rebuilt. A repository-choices read that finished
+// in that window re-enabled the editor being replaced, so the cancelled edit could be changed
+// and saved again (review of #2551).
+test("repository Cancel keeps the replaced editor locked while choices finish loading", async (t) => {
+  const { fixture, namespace, agent, agentPath } = await repositoryAgent(
+    t,
+    "Repositories Cancel Lock",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const options = await holdRequests(t, page, `${fixture.origin}${agentPath}/repository-options`, {
+    once: true,
+    method: "GET",
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"));
+  await options.requested;
+  const remove = page.getByRole("button", { name: /^Remove/ });
+  await remove.click();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+  const reread = await holdRequests(t, page, `${fixture.origin}${agentPath}`, {
+    once: true,
+    method: "GET",
+  });
+  await cancel.click();
+  await reread.requested;
+  options.release();
+  await page.waitForResponse((response) => response.url().endsWith("/repository-options"));
+  // The choices' completion updates the editor; it must stay locked, so no field can make
+  // the cancelled edit savable again.
+  const profile = page.locator("#repository-default-git-read");
+  await profile.waitFor();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await cancel.isDisabled(), true, "the cancelled editor is still shown");
+  assert.equal(await profile.isDisabled(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
+
+  reread.release();
+  await remove.waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
+  assert.deepEqual((await fixture.request("GET", agentPath)).data.repositoryAccess.repositories, [
+    { repositoryRef: "application" },
+  ]);
 });

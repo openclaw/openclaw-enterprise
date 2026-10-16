@@ -44,11 +44,8 @@ const createConsoleAppFixture = (t, options = {}) =>
 // side by side in the Console Browser 2 lane. Name sibling test files only by suffix: CI Impact
 // runs full CI for a test file that another file names.
 
-test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Provision outcomes", { ready: true });
-  const { page } = await newPage(t, fixture);
+// The Installation provisions dedicated Agents and the Namespace offers no repository choices.
+async function routeDedicatedProvisioning(page, fixture, namespace) {
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
     route.fulfill({
@@ -57,6 +54,14 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
     }),
   );
+}
+
+test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision outcomes", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const json = (data, status = 200) => ({
     status,
@@ -340,14 +345,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision retry refusals", { ready: true });
   const { page } = await newPage(t, fixture);
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const jobUrl = (work) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
@@ -471,14 +469,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   );
   assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
   const { page } = await newPage(t, fixture);
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_stopped`;
@@ -652,14 +643,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision label", { ready: true });
   const { page } = await newPage(t, fixture);
-  await routeInstallationProvisioning(page, fixture);
-  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
-    }),
-  );
+  await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_label`;

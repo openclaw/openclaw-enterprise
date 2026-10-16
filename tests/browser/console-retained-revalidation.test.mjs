@@ -1,236 +1,31 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { detailUrl, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
+import {
+  detailUrl,
+  holdRequests,
+  login,
+  nativeValues,
+  newPage,
+} from "./console-agents-browser-helpers.mjs";
 
-// Hold matching reads until release(); requested resolves when the first arrives. With once,
-// only the first match is held. With afterServer, the server answers first and the response
-// reaches the page on release (a write that landed while the page waits). With fulfill, the
-// held request is answered with that response instead.
-async function holdRead(
-  t,
-  page,
-  path = "**/api/auth/session",
-  { once = false, afterServer = false, fulfill = null } = {},
-) {
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  let requestedResolve;
-  let timer;
-  // Fails instead of hanging the run when the page never starts the read.
-  const requested = new Promise((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`No ${path} read was requested`)), 10_000);
-    requestedResolve = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-  });
-  requested.catch(() => {});
-  await page.route(
-    path,
-    async (route) => {
-      const response = afterServer ? await route.fetch().catch(() => null) : null;
-      requestedResolve();
-      await held;
-      await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
-        () => {},
-      );
-    },
-    once ? { times: 1 } : undefined,
-  );
-  t.after(() => {
-    clearTimeout(timer);
-    release();
-  });
-  return { requested, release };
-}
-
+const SESSION = "**/api/auth/session";
 const activeView = '.content [aria-live="polite"]:not([inert])';
+const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+const heldView = '.content [aria-live="polite"][inert]';
+const NAMESPACES = { name: "Namespaces", exact: true };
+const SUMMARY = { name: "Agent state at a glance" };
+const isFocused = (locator) =>
+  locator.evaluate((node) => node === globalThis.document.activeElement);
+// Refocusing the window rechecks the session and Namespace access.
+const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
-test("Refocusing a loaded page keeps it steady while access is rechecked", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Steady return", { ready: true });
-  await fixture.createAgent(namespace.id, "Steady Agent", nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.getByRole("link", { name: "Steady Agent" }).waitFor();
-  await page.locator(activeView).waitFor();
-  const selector = page.locator("#namespace-selector");
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  const create = page.getByRole("button", { name: "Create Agent" });
-  const lookOf = (node) => {
-    const style = node.ownerDocument.defaultView.getComputedStyle(node);
-    return { opacity: style.opacity, color: style.color, background: style.backgroundColor };
-  };
-  const createLook = await create.evaluate(lookOf);
-
-  const session = await holdRead(t, page);
-  // Refocusing the window rechecks the session and Namespace access before the page is reused.
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-  await session.requested;
-  await page.locator('.content [aria-live="polite"][inert]').waitFor();
-  // The selector hides its choices until access is confirmed, but keeps naming the Namespace
-  // instead of flashing a placeholder, and the inert page keeps its look.
-  assert.equal(await selector.isDisabled(), true);
-  assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-  assert.equal(
-    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
-    "Steady return",
-  );
-  assert.deepEqual(await create.evaluate(lookOf), createLook);
-
-  session.release();
-  await page.locator(activeView).waitFor();
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  assert.equal(await selector.locator(`option[value="${namespace.id}"]`).count(), 1);
-  await create.click();
-  await page.waitForURL("**/console/agents/new**");
-});
-
-test("Back after switching Namespace keeps the shown page until the return is admitted", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const first = await fixture.createNamespace("First scope", { ready: true });
-  const second = await fixture.createNamespace("Second scope", { ready: true });
-  const firstRow = "First scope Agent";
-  const secondRow = "Second scope Agent";
-  await fixture.createAgent(first.id, firstRow, nativeValues("v1"));
-  await fixture.createAgent(second.id, secondRow, nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents?namespace=${first.id}`);
-  await page.locator(activeView).waitFor();
-  const selector = page.locator("#namespace-selector");
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  await page.locator(activeView).getByText(firstRow, { exact: true }).waitFor();
-  await selector.selectOption(second.id);
-  await page.waitForURL(`**/console/agents?namespace=${second.id}`);
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  await page.locator(activeView).getByText(secondRow, { exact: true }).waitFor();
-  const scope = page.locator(".content .scope");
-  const heldView = page.locator('.content [aria-live="polite"][inert]');
-
-  const session = await holdRead(t, page);
-  const collection = await holdRead(t, page, `**/namespaces/${first.id}/agents`);
-  await page.goBack();
-  await session.requested;
-  await heldView.waitFor();
-  // The shown page keeps its scope; the disabled selector already names the destination.
-  assert.equal(await scope.textContent(), "Namespace · Second scope");
-  assert.equal(
-    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
-    "First scope",
-  );
-  assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-
-  // Admission enables the destination selector before its collection read finishes.
-  // Until the rows change, the content's scope must still describe the rows on screen.
-  session.release();
-  await collection.requested;
-  await page.locator("#namespace-selector:not(:disabled)").waitFor();
-  assert.equal(await selector.inputValue(), first.id);
-  await heldView.getByText(secondRow, { exact: true }).waitFor();
-  assert.equal(await scope.textContent(), "Namespace · Second scope");
-  assert.equal(await heldView.getByText(firstRow, { exact: true }).count(), 0);
-
-  collection.release();
-  const visibleView = page.locator(activeView);
-  await visibleView.getByText(firstRow, { exact: true }).waitFor();
-  assert.equal(await scope.textContent(), "Namespace · First scope");
-  assert.equal(await visibleView.getByText(secondRow, { exact: true }).count(), 0);
-});
-
-test("Back to a retained Agent page after access was revoked never shows the cached page", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Revoked scope", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
-  const summary = page.getByRole("region", { name: "Agent state at a glance" });
-  await summary.waitFor();
-  await page.locator(activeView).waitFor();
-  await page.getByRole("link", { name: "← Agents" }).click();
-  await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
-  await page.locator(activeView).waitFor();
-
-  fixture.policy.restrictions.push({
-    id: "revoke-retained-agent-namespace",
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
-  // Record every DOM state and painted frame from Back until the refusal.
-  await page.evaluate((configurationId) => {
-    const seen = [];
-    globalThis.__cachedAgentSeen = seen;
-    const check = (when) => {
-      const document = globalThis.document;
-      if (
-        document.querySelector(".agent-current-summary, .deployment-status, .agent-tabs") ||
-        document.body.textContent.includes(configurationId)
-      ) {
-        seen.push(when);
-      }
-    };
-    new globalThis.MutationObserver(() => check("mutation")).observe(globalThis.document, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-      attributes: true,
-    });
-    const frame = () => {
-      check("frame");
-      globalThis.requestAnimationFrame(frame);
-    };
-    globalThis.requestAnimationFrame(frame);
-  }, agent.configurationId);
-  await page.goBack();
-  await page.getByRole("heading", { name: "Namespace unavailable" }).waitFor();
-  await page.locator(activeView).waitFor();
-  assert.deepEqual(
-    await page.evaluate(() => globalThis.__cachedAgentSeen.slice(0, 5)),
-    [],
-    "the retained Agent page was painted or mounted after its access was revoked",
-  );
-  assert.equal(await page.locator(".agent-current-summary").count(), 0);
-});
-
-test("Back during an Agent refocus check keeps the held page inert until the return is admitted", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Interrupted check", { ready: true });
-  await fixture.createAgent(namespace.id, "Interrupted Agent", nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
-  await page.getByRole("link", { name: "Interrupted Agent" }).click();
-  await page.getByRole("region", { name: "Agent state at a glance" }).waitFor();
-  // Only a finished detail rechecks in place on refocus.
-  await page.locator('.content [aria-live="polite"][aria-busy="false"]:not([inert])').waitFor();
-
-  const session = await holdRead(t, page);
-  // Refocusing Agent detail rechecks access in place; Back cuts that check short.
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-  await session.requested;
-  await page.goBack();
-  await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
-  await page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
-      }),
-  );
-  assert.equal(await page.locator('.content [aria-live="polite"][inert]').count(), 1);
-  assert.equal(await page.locator(activeView).count(), 0);
-
-  session.release();
-  await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
-});
+async function showNamespaces(page) {
+  await page.getByRole("link", NAMESPACES).click();
+  await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
+}
 
 // Names the page in the content view after every DOM change, marking a held (inert) page.
 function recordShownPages() {
@@ -274,23 +69,243 @@ async function pauseClock(page) {
   await page.clock.pauseAt(new Date(now + 1000));
 }
 
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
-
-test("Opening Agent details acknowledges navigation immediately; other first visits still swap once", async (t) => {
+// Signs in to a loaded Agents list. Unless `running`, the page clock is installed and paused once
+// the list loads, so timers run only when a test runs it, and every page shown is recorded.
+async function openList(t, name, agentNames, { deploy = false, running = false } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Single swap", { ready: true });
-  await fixture.createAgent(namespace.id, "Swap Agent", nativeValues("v1"));
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agents = [];
+  for (const agentName of agentNames) {
+    const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
+    agents.push(
+      deploy ? (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).agent : agent,
+    );
+  }
   const { page } = await newPage(t, fixture);
-  await page.clock.install();
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.locator(settledView).getByRole("link", { name: "Swap Agent" }).waitFor();
-  await pauseClock(page);
-  await page.evaluate(recordShownPages);
+  if (!running) {
+    await page.clock.install();
+  }
+  const listUrl = `/console/agents?namespace=${namespace.id}`;
+  await login(page, fixture, listUrl);
+  await page.locator(settledView).getByRole("link", { name: agentNames[0] }).waitFor();
+  // The list reads each row's latest deployment after it settles; let those finish, so the
+  // list is reusable and no test's held read catches one of them.
+  await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+  if (!running) {
+    await pauseClock(page);
+    await page.evaluate(recordShownPages);
+  }
+  return { fixture, namespace, agents, agent: agents[0], page, listUrl };
+}
+
+// A copied Agent chat link opened in this tab.
+function openChatLink(page, key) {
+  return page.evaluate((value) => {
+    globalThis.history.pushState(null, "", `/console#native-agent=${value}`);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, key);
+}
+
+function revokeNamespace(fixture, namespace, id) {
+  fixture.policy.restrictions.push({
+    id,
+    namespaceId: namespace.id,
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+}
+
+// Marks the content view node, so a test can tell a remounted retained node from a rebuild.
+function tagView(page, tag) {
+  return page.evaluate((value) => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.navTag = value;
+  }, tag);
+}
+
+function viewTag(page) {
+  return page.evaluate(
+    () =>
+      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.navTag ?? null,
+  );
+}
+
+const shownPages = (page) => page.evaluate(() => globalThis.__shownPages.splice(0));
+
+test("Refocusing a loaded page keeps it steady while access is rechecked", async (t) => {
+  const { namespace, page } = await openList(t, "Steady return", ["Steady Agent"], {
+    running: true,
+  });
+  const selector = page.locator("#namespace-selector");
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  const create = page.getByRole("button", { name: "Create Agent" });
+  const lookOf = (node) => {
+    const style = node.ownerDocument.defaultView.getComputedStyle(node);
+    return { opacity: style.opacity, color: style.color, background: style.backgroundColor };
+  };
+  const createLook = await create.evaluate(lookOf);
+
+  const session = await holdRequests(t, page, SESSION);
+  // Refocusing the window rechecks the session and Namespace access before the page is reused.
+  await refocus(page);
+  await session.requested;
+  await page.locator(heldView).waitFor();
+  // The selector hides its choices until access is confirmed, but keeps naming the Namespace
+  // instead of flashing a placeholder, and the inert page keeps its look.
+  assert.equal(await selector.isDisabled(), true);
+  assert.equal(await selector.locator('option:not([value=""])').count(), 0);
+  assert.equal(
+    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
+    "Steady return",
+  );
+  assert.deepEqual(await create.evaluate(lookOf), createLook);
+
+  session.release();
+  await page.locator(activeView).waitFor();
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  assert.equal(await selector.locator(`option[value="${namespace.id}"]`).count(), 1);
+  await create.click();
+  await page.waitForURL("**/console/agents/new**");
+});
+
+test("Back after switching Namespace keeps the shown page until the return is admitted", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const first = await fixture.createNamespace("First scope", { ready: true });
+  const second = await fixture.createNamespace("Second scope", { ready: true });
+  const firstRow = "First scope Agent";
+  const secondRow = "Second scope Agent";
+  await fixture.createAgent(first.id, firstRow, nativeValues("v1"));
+  await fixture.createAgent(second.id, secondRow, nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents?namespace=${first.id}`);
+  await page.locator(activeView).waitFor();
+  const selector = page.locator("#namespace-selector");
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  await page.locator(activeView).getByText(firstRow, { exact: true }).waitFor();
+  await selector.selectOption(second.id);
+  await page.waitForURL(`**/console/agents?namespace=${second.id}`);
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  await page.locator(activeView).getByText(secondRow, { exact: true }).waitFor();
+  const scope = page.locator(".content .scope");
+  const held = page.locator(heldView);
+
+  const session = await holdRequests(t, page, SESSION);
+  const collection = await holdRequests(t, page, `**/namespaces/${first.id}/agents`);
+  await page.goBack();
+  await session.requested;
+  await held.waitFor();
+  // The shown page keeps its scope; the disabled selector already names the destination.
+  assert.equal(await scope.textContent(), "Namespace · Second scope");
+  assert.equal(
+    await selector.evaluate((node) => node.selectedOptions[0]?.textContent),
+    "First scope",
+  );
+  assert.equal(await selector.locator('option:not([value=""])').count(), 0);
+
+  // Admission enables the destination selector before its collection read finishes.
+  // Until the rows change, the content's scope must still describe the rows on screen.
+  session.release();
+  await collection.requested;
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  assert.equal(await selector.inputValue(), first.id);
+  await held.getByText(secondRow, { exact: true }).waitFor();
+  assert.equal(await scope.textContent(), "Namespace · Second scope");
+  assert.equal(await held.getByText(firstRow, { exact: true }).count(), 0);
+
+  collection.release();
+  const visibleView = page.locator(activeView);
+  await visibleView.getByText(firstRow, { exact: true }).waitFor();
+  assert.equal(await scope.textContent(), "Namespace · First scope");
+  assert.equal(await visibleView.getByText(secondRow, { exact: true }).count(), 0);
+});
+
+test("Back to a retained Agent page after access was revoked never shows the cached page", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Revoked scope", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Revoked Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const summary = page.getByRole("region", SUMMARY);
+  await summary.waitFor();
+  await page.locator(activeView).waitFor();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("link", { name: "Revoked Agent" }).waitFor();
+  await page.locator(activeView).waitFor();
+
+  revokeNamespace(fixture, namespace, "revoke-retained-agent-namespace");
+  // Record every DOM state and painted frame from Back until the refusal.
+  await page.evaluate((configurationId) => {
+    const seen = [];
+    globalThis.__cachedAgentSeen = seen;
+    const check = (when) => {
+      const document = globalThis.document;
+      if (
+        document.querySelector(".agent-current-summary, .deployment-status, .agent-tabs") ||
+        document.body.textContent.includes(configurationId)
+      ) {
+        seen.push(when);
+      }
+    };
+    new globalThis.MutationObserver(() => check("mutation")).observe(globalThis.document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true,
+    });
+    const frame = () => {
+      check("frame");
+      globalThis.requestAnimationFrame(frame);
+    };
+    globalThis.requestAnimationFrame(frame);
+  }, agent.configurationId);
+  await page.goBack();
+  await page.getByRole("heading", { name: "Namespace unavailable" }).waitFor();
+  await page.locator(activeView).waitFor();
+  assert.deepEqual(
+    await page.evaluate(() => globalThis.__cachedAgentSeen.slice(0, 5)),
+    [],
+    "the retained Agent page was painted or mounted after its access was revoked",
+  );
+  assert.equal(await page.locator(".agent-current-summary").count(), 0);
+});
+
+test("Back during an Agent refocus check keeps the held page inert until the return is admitted", async (t) => {
+  const { namespace, page } = await openList(t, "Interrupted check", ["Interrupted Agent"], {
+    running: true,
+  });
+  await page.getByRole("link", { name: "Interrupted Agent" }).click();
+  await page.getByRole("region", SUMMARY).waitFor();
+  // Only a finished detail rechecks in place on refocus.
+  await page.locator(settledView).waitFor();
+
+  const session = await holdRequests(t, page, SESSION);
+  // Refocusing Agent detail rechecks access in place; Back cuts that check short.
+  await refocus(page);
+  await session.requested;
+  await page.goBack();
+  await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
+      }),
+  );
+  assert.equal(await page.locator(heldView).count(), 1);
+  assert.equal(await page.locator(activeView).count(), 0);
+
+  session.release();
+  await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
+});
+
+test("Opening Agent details acknowledges navigation immediately; other first visits still swap once", async (t) => {
+  const { page } = await openList(t, "Single swap", ["Swap Agent"]);
 
   // Time stays paused: the destination appears immediately and has no minimum loading time.
   await page.getByRole("link", { name: "Swap Agent" }).click();
-  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  await page.locator(activeView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await page.evaluate(() => globalThis.__shownPages.splice(0)), [
     "Agents",
     "Opening Agent",
@@ -299,8 +314,8 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
 
   await page.locator(settledView).waitFor();
   await page.evaluate(() => globalThis.__shownPages.splice(0, Infinity, "Agent"));
-  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.locator(activeView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.getByRole("link", NAMESPACES).click();
+  await page.locator(activeView).getByRole("list", NAMESPACES).waitFor();
   assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), [
     "Agent",
     "Agent (held)",
@@ -310,18 +325,18 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
 
 for (const back of ["Browser Back", "Back to Agents"]) {
   test(`${back} during a pending Agent visit restores the list and wins over the late read`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Slow first visit", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Slow Agent", nativeValues("v1"));
-    const { page } = await newPage(t, fixture);
-    const listUrl = `/console/agents?namespace=${namespace.id}`;
-    await login(page, fixture, listUrl);
+    const { namespace, agent, page, listUrl } = await openList(
+      t,
+      "Slow first visit",
+      ["Slow Agent"],
+      {
+        running: true,
+      },
+    );
     const link = page.locator(settledView).getByRole("link", { name: "Slow Agent" });
-    await link.waitFor();
 
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    const read = await holdRead(t, page, `**${path}`);
+    const read = await holdRequests(t, page, `**${path}`);
     await link.focus();
     await link.press("Enter");
     await read.requested;
@@ -339,7 +354,7 @@ for (const back of ["Browser Back", "Back to Agents"]) {
     }
     await page.waitForURL(`**${listUrl}`);
     await link.waitFor();
-    assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
+    assert.equal(await isFocused(link), true);
     read.release();
     await abandoned;
     assert.equal(await link.isVisible(), true);
@@ -361,19 +376,19 @@ for (const focusTarget of [
     const { page } = await newPage(t, fixture);
 
     // Leaving while a row is still loading means Back must build a fresh list, not reuse its DOM.
-    const revision = await holdRead(t, page, `${list}/${agent.id}/revisions`, { once: true });
+    const revision = await holdRequests(t, page, `${list}/${agent.id}/revisions`, { once: true });
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await revision.requested;
     await tagView(page, "original-list");
     const link = page.locator(settledView).getByRole("link", { name: agent.name });
-    const detail = await holdRead(t, page, `${list}/${agent.id}`, { once: true });
+    const detail = await holdRequests(t, page, `${list}/${agent.id}`, { once: true });
     await link.focus();
     await link.press("Enter");
     await detail.requested;
     revision.release();
 
     const removed = focusTarget === "the heading if the Agent is gone";
-    const collection = await holdRead(t, page, list, {
+    const collection = await holdRequests(t, page, list, {
       once: true,
       fulfill: removed ? { json: { data: [] } } : null,
     });
@@ -385,7 +400,7 @@ for (const focusTarget of [
       "no interactive Agent link while the admitted list is still loading",
     );
     const movedFocus = focusTarget === "newer sidebar focus";
-    const sidebar = page.getByRole("link", { name: "Namespaces", exact: true });
+    const sidebar = page.getByRole("link", NAMESPACES);
     if (movedFocus) {
       await sidebar.focus();
     }
@@ -397,10 +412,7 @@ for (const focusTarget of [
       : removed
         ? page.getByRole("heading", { name: "Agents", exact: true })
         : link;
-    assert.equal(
-      await expected.evaluate((node) => node === globalThis.document.activeElement),
-      true,
-    );
+    assert.equal(await isFocused(expected), true);
     detail.release();
   });
 }
@@ -412,14 +424,10 @@ for (const [outcome, failsAgain, leaveFocus] of [
   ["fails after focus moved to the sidebar", true, true],
 ]) {
   test(`Retry from Agent details preserves keyboard focus when it ${outcome}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Failed first visit", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Retry Agent", nativeValues("v1"));
-    const { page } = await newPage(t, fixture);
-    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const { namespace, agent, page } = await openList(t, "Failed first visit", ["Retry Agent"], {
+      running: true,
+    });
     const link = page.locator(settledView).getByRole("link", { name: "Retry Agent" });
-    await link.waitFor();
 
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agent.id}`,
@@ -433,15 +441,14 @@ for (const [outcome, failsAgain, leaveFocus] of [
     assert.equal(await main.getByRole("button", { name: "Back to Agents" }).isVisible(), true);
 
     const historyLength = await page.evaluate(() => globalThis.history.length);
-    const session = await holdRead(t, page, "**/api/auth/session", { once: true });
+    const session = await holdRequests(t, page, SESSION, { once: true });
     await retry.focus();
     await retry.press("Enter");
     await session.requested;
     assert.equal(await main.getByText("Loading agent details…").isVisible(), true);
     const loading = main.getByRole("heading", { name: "Agent details" });
-    const focused = (node) => node === globalThis.document.activeElement;
-    assert.equal(await loading.evaluate(focused), true);
-    const sidebar = page.getByRole("link", { name: "Namespaces", exact: true });
+    assert.equal(await isFocused(loading), true);
+    const sidebar = page.getByRole("link", NAMESPACES);
     if (leaveFocus) {
       await sidebar.focus();
     }
@@ -450,7 +457,9 @@ for (const [outcome, failsAgain, leaveFocus] of [
       name: failsAgain ? "Could not load agent details" : "Retry Agent",
     });
     await result.waitFor();
-    assert.equal(await (leaveFocus ? sidebar : result).evaluate(focused), true);
+    // Focus moves to the result once the load settles, after the heading has rendered.
+    await page.locator(settledView).waitFor();
+    assert.equal(await isFocused(leaveFocus ? sidebar : result), true);
     assert.equal(
       await page.evaluate(() => globalThis.history.length),
       historyLength,
@@ -462,17 +471,8 @@ for (const [outcome, failsAgain, leaveFocus] of [
 }
 
 test("A full load whose session check outlasts the loading delay shows no navigation before it", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slow session", { ready: true });
-  await fixture.createAgent(namespace.id, "Session Agent", nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await page.clock.install();
-  const url = `/console/agents?namespace=${namespace.id}`;
-  await login(page, fixture, url);
-  await page.locator(settledView).getByRole("link", { name: "Session Agent" }).waitFor();
-  await pauseClock(page);
-  const session = await holdRead(t, page);
+  const { page } = await openList(t, "Slow session", ["Session Agent"]);
+  const session = await holdRequests(t, page, SESSION);
 
   await page.reload();
   await session.requested;
@@ -484,16 +484,7 @@ test("A full load whose session check outlasts the loading delay shows no naviga
 });
 
 test("A full load replaces the startup status once when its reads settle in time", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Single load", { ready: true });
-  await fixture.createAgent(namespace.id, "Loaded Agent", nativeValues("v1"));
-  const { page } = await newPage(t, fixture);
-  await page.clock.install();
-  const url = `/console/agents?namespace=${namespace.id}`;
-  await login(page, fixture, url);
-  await page.locator(settledView).getByRole("link", { name: "Loaded Agent" }).waitFor();
-  await pauseClock(page);
+  const { page } = await openList(t, "Single load", ["Loaded Agent"]);
   // Record from before the console's module runs, which takes over the startup status.
   await page.addInitScript(
     `document.addEventListener("readystatechange", () => {
@@ -507,63 +498,26 @@ test("A full load replaces the startup status once when its reads settle in time
   assert.deepEqual(await page.evaluate(() => globalThis.__shownPages), ["startup", "Agents"]);
 });
 
-const heldView = '.content [aria-live="polite"][inert]';
-
-// Signs in to a loaded Agents list, pauses the page clock and records every page shown.
-async function openPausedList(t, name, agentNames, { deploy = false } = {}) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
-  const agents = [];
-  for (const agentName of agentNames) {
-    const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
-    agents.push(
-      deploy ? (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).agent : agent,
-    );
-  }
-  const { page } = await newPage(t, fixture);
-  await page.clock.install();
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.locator(settledView).getByRole("link", { name: agentNames[0] }).waitFor();
-  // The list reads each row's latest deployment after it settles; let those finish, so the
-  // list is reusable and no test's held read catches one of them.
-  await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
-  await pauseClock(page);
-  await page.evaluate(recordShownPages);
-  return { fixture, namespace, agents, page };
-}
-
-// Marks the content view node, so a test can tell a remounted retained node from a rebuild.
-function tagView(page, tag) {
-  return page.evaluate((value) => {
-    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.navTag = value;
-  }, tag);
-}
-
-function viewTag(page) {
-  return page.evaluate(
-    () =>
-      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.navTag ?? null,
-  );
-}
-
-const shownPages = (page) => page.evaluate(() => globalThis.__shownPages.splice(0));
-
 test("Forward during a return's recheck keeps the returning page for the next Back", async (t) => {
-  const { namespace, agents, page } = await openPausedList(t, "Forward during return", [
+  const { namespace, agents, page } = await openList(t, "Forward during return", [
     "Listed Agent",
     "Opened Agent",
   ]);
   const opened = agents[1];
   await tagView(page, "list");
   // The first read is held, so the destination shows its loading status.
-  const firstRead = await holdRead(t, page, `**/namespaces/${namespace.id}/agents/${opened.id}`, {
-    once: true,
-  });
+  const firstRead = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${opened.id}`,
+    {
+      once: true,
+    },
+  );
   await page.getByRole("link", { name: "Opened Agent" }).click();
   await firstRead.requested;
   // Back returns to the list; its recheck waits on the session read.
-  const recheck = await holdRead(t, page, "**/api/auth/session", { once: true });
+  const recheck = await holdRequests(t, page, SESSION, { once: true });
   await page.goBack();
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
   await recheck.requested;
@@ -575,21 +529,17 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   await page.waitForURL(`**/console/agents/${opened.id}**`);
   recheck.release();
   firstRead.release();
-  await page
-    .locator(settledView)
-    .getByRole("region", { name: "Agent state at a glance" })
-    .waitFor();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
 
   // The next Back rechecks the retained list and remounts that same node, with no loading
   // state. Before the recheck passes, the cached list is not in the page at all.
-  const listRead = await holdRead(t, page, `**/namespaces/${namespace.id}/agents`, { once: true });
+  const listRead = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents`, {
+    once: true,
+  });
   await page.goBack();
   await listRead.requested;
   await page.clock.runFor(300);
-  assert.equal(
-    await page.locator(heldView).getByRole("region", { name: "Agent state at a glance" }).count(),
-    1,
-  );
+  assert.equal(await page.locator(heldView).getByRole("region", SUMMARY).count(), 1);
   assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
   assert.equal(await page.getByText("Reading agents.", { exact: true }).count(), 0);
   listRead.release();
@@ -613,7 +563,7 @@ const slowRecheckCases = [
     hold: (namespace) => `**/namespaces/${namespace.id}/agents`,
     async act(page) {
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
-      await page.getByRole("link", { name: "Namespaces", exact: true }).focus();
+      await page.getByRole("link", NAMESPACES).focus();
     },
     shows: "loading",
     // Focus the person moved during the load stays there through both re-renders.
@@ -622,39 +572,32 @@ const slowRecheckCases = [
   {
     name: "Back to a loaded page",
     async prepare(page) {
-      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-      await page
-        .locator(settledView)
-        .getByRole("list", { name: "Namespaces", exact: true })
-        .waitFor();
+      await showNamespaces(page);
     },
     act: (page) => page.goBack(),
     shows: "checking",
   },
   {
     name: "Refocusing a loaded page",
-    act: (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus"))),
+    act: (page) => refocus(page),
     shows: "checking",
   },
   {
     name: "Refocusing Agent detail",
     async prepare(page) {
       await page.getByRole("link", { name: "Slow Agent" }).click();
-      await page
-        .locator(settledView)
-        .getByRole("region", { name: "Agent state at a glance" })
-        .waitFor();
+      await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
     },
-    act: (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus"))),
+    act: (page) => refocus(page),
     shows: "checking",
   },
 ];
 
 for (const c of slowRecheckCases) {
   test(`${c.name} with a slow read says it is ${c.shows === "loading" ? "loading" : "still checking"}`, async (t) => {
-    const { namespace, page } = await openPausedList(t, c.name, ["Slow Agent"]);
+    const { namespace, page } = await openList(t, c.name, ["Slow Agent"]);
     await c.prepare?.(page);
-    const read = await holdRead(t, page, c.hold?.(namespace) ?? "**/api/auth/session", {
+    const read = await holdRequests(t, page, c.hold?.(namespace) ?? SESSION, {
       once: true,
     });
     await c.act(page);
@@ -702,12 +645,8 @@ for (const c of [
     name: "A held return",
     cue: true,
     async act(page, t) {
-      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-      await page
-        .locator(settledView)
-        .getByRole("list", { name: "Namespaces", exact: true })
-        .waitFor();
-      const read = await holdRead(t, page, "**/api/auth/session", { once: true });
+      await showNamespaces(page);
+      const read = await holdRequests(t, page, SESSION, { once: true });
       await page.goBack();
       return read;
     },
@@ -716,8 +655,8 @@ for (const c of [
     name: "A held first visit",
     cue: true,
     async act(page, t) {
-      const read = await holdRead(t, page, "**/namespaces", { once: true });
-      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+      const read = await holdRequests(t, page, "**/namespaces", { once: true });
+      await page.getByRole("link", NAMESPACES).click();
       return read;
     },
   },
@@ -725,14 +664,14 @@ for (const c of [
     name: "A held refocus recheck",
     cue: false,
     async act(page, t) {
-      const read = await holdRead(t, page, "**/api/auth/session", { once: true });
-      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      const read = await holdRequests(t, page, SESSION, { once: true });
+      await refocus(page);
       return read;
     },
   },
 ]) {
   test(`${c.name} ${c.cue ? "shows a delayed busy cue" : "keeps its look"} without moving`, async (t) => {
-    const { page } = await openPausedList(t, c.name, ["Busy Agent"]);
+    const { page } = await openList(t, c.name, ["Busy Agent"]);
     const read = await c.act(page, t);
     await read.requested;
     const held = page.locator(heldView);
@@ -779,14 +718,13 @@ for (const c of [
 }
 
 test("Back after an abandoned Refresh rebuilds the page instead of restoring it", async (t) => {
-  const { namespace, page } = await openPausedList(t, "Abandoned Refresh", ["Refreshed Agent"]);
+  const { namespace, page } = await openList(t, "Abandoned Refresh", ["Refreshed Agent"]);
   await tagView(page, "before-refresh");
-  const read = await holdRead(t, page, `**/namespaces/${namespace.id}/agents`, { once: true });
+  const read = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents`, { once: true });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await read.requested;
   // Leave before the Refresh finishes; the page it was replacing must not come back.
-  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await showNamespaces(page);
   read.release();
   await page.goBack();
   await page.locator(settledView).getByRole("link", { name: "Refreshed Agent" }).waitFor();
@@ -794,8 +732,8 @@ test("Back after an abandoned Refresh rebuilds the page instead of restoring it"
 });
 
 test("A first visit's read that answers after a second navigation paints nothing", async (t) => {
-  const { namespace, agents, page } = await openPausedList(t, "Superseded visit", ["Late Agent"]);
-  const agentRead = await holdRead(
+  const { namespace, agents, page } = await openList(t, "Superseded visit", ["Late Agent"]);
+  const agentRead = await holdRequests(
     t,
     page,
     `**/namespaces/${namespace.id}/agents/${agents[0].id}`,
@@ -807,13 +745,13 @@ test("A first visit's read that answers after a second navigation paints nothing
   await agentRead.requested;
   // A second navigation within the loading delay; its admission read is held.
   await page.clock.runFor(100);
-  const admission = await holdRead(t, page, "**/namespaces", { once: true });
-  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  const admission = await holdRequests(t, page, "**/namespaces", { once: true });
+  await page.getByRole("link", NAMESPACES).click();
   await admission.requested;
   agentRead.release();
   await page.clock.runFor(200);
   admission.release();
-  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
   // The destination acknowledged the click; the superseded read never painted Agent details.
   assert.deepEqual(await shownPages(page), [
     "Agents",
@@ -828,8 +766,8 @@ test("A first visit's read that answers after a second navigation paints nothing
 });
 
 test("Logout during a first visit's hold leaves nothing private, even after Back", async (t) => {
-  const { namespace, agents, page } = await openPausedList(t, "Logout during hold", ["Held Agent"]);
-  const agentRead = await holdRead(
+  const { namespace, agents, page } = await openList(t, "Logout during hold", ["Held Agent"]);
+  const agentRead = await holdRequests(
     t,
     page,
     `**/namespaces/${namespace.id}/agents/${agents[0].id}`,
@@ -857,22 +795,14 @@ test("Logout during a first visit's hold leaves nothing private, even after Back
 });
 
 test("A Stop that lands after leaving the Agent closes its dialog, and Back rebuilds the page", async (t) => {
-  const { namespace, agents, page } = await openPausedList(
-    t,
-    "Stop after leaving",
-    ["Stopping Agent"],
-    {
-      deploy: true,
-    },
-  );
+  const { namespace, agents, page } = await openList(t, "Stop after leaving", ["Stopping Agent"], {
+    deploy: true,
+  });
   await page.getByRole("link", { name: "Stopping Agent" }).click();
-  await page
-    .locator(settledView)
-    .getByRole("region", { name: "Agent state at a glance" })
-    .waitFor();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   await tagView(page, "before-stop");
   // The server applies the Stop, but its answer reaches the page only after the user leaves.
-  const stop = await holdRead(
+  const stop = await holdRequests(
     t,
     page,
     `**/namespaces/${namespace.id}/agents/${agents[0].id}/stop`,
@@ -894,10 +824,7 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
 
   // The write invalidated the cached Agent page: Back reads and rebuilds it as stopped.
   await page.goBack();
-  await page
-    .locator(settledView)
-    .getByRole("region", { name: "Agent state at a glance" })
-    .waitFor();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.notEqual(await viewTag(page), "before-stop");
   assert.equal(
     await page.getByRole("button", { name: "Stop Agent", exact: true }).first().isDisabled(),
@@ -905,19 +832,80 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
   );
 });
 
+// The case above trusts holdRequests() to send a held write exactly once. A loopback origin
+// counts each POST and drops the first answer on /lost.
+test("holdRequests sends a held write once, and fails it when its answer is lost", async (t) => {
+  const posts = new Map([
+    ["/lost", 0],
+    ["/after", 0],
+    ["/before", 0],
+  ]);
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.end("<!doctype html><title>holds</title>");
+      return;
+    }
+    if (!posts.has(request.url)) {
+      response.writeHead(404).end();
+      return;
+    }
+    posts.set(request.url, posts.get(request.url) + 1);
+    if (request.url === "/lost" && posts.get("/lost") === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(202).end("applied");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const fixture = await createConsoleAppFixture(t);
+  const { page } = await newPage(t, fixture);
+  await page.goto(`${origin}/`);
+  const post = (path) =>
+    page.evaluate(
+      (url) =>
+        fetch(url, { method: "POST" }).then(
+          async (response) => `${response.status} ${await response.text()}`,
+          () => "failed",
+        ),
+      `${origin}${path}`,
+    );
+
+  const lost = await holdRequests(t, page, `${origin}/lost`, { afterServer: true });
+  const lostAnswer = post("/lost");
+  // The hold caught the POST: the waiter gets the lost answer, not the no-request deadline.
+  await assert.rejects(lost.requested, (error) => !/was held/.test(error.message));
+  assert.equal(await lostAnswer, "failed");
+  assert.equal(posts.get("/lost"), 1);
+
+  for (const [path, options] of [
+    ["/after", { afterServer: true }],
+    ["/before", {}],
+  ]) {
+    const hold = await holdRequests(t, page, `${origin}${path}`, { once: true, ...options });
+    const answer = post(path);
+    await hold.requested;
+    assert.equal(posts.get(path), options.afterServer ? 1 : 0);
+    hold.release();
+    assert.equal(await answer, "202 applied");
+    assert.equal(posts.get(path), 1);
+  }
+});
+
 test("Leaving a new Agent page before its reveal does not leave it hidden on return", async (t) => {
   const {
     namespace,
     agents: [agent],
     page,
-  } = await openPausedList(t, "Early leave", ["Revealed Agent"], { deploy: true });
+  } = await openList(t, "Early leave", ["Revealed Agent"], { deploy: true });
   const record = `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`;
   // Until the reveal, the detail shows only its toolbar.
   const pendingDetail = page.locator(".agent-detail-pending");
   const shownDetail = page.locator(`${activeView}.agent-detail-pending`);
   // Deployment record reads are held (Deployment activity's and the version panel's, in either
   // order), so the page shows only its toolbar until the 1 s reveal.
-  const firstRecord = await holdRead(t, page, record);
+  const firstRecord = await holdRequests(t, page, record);
   await page.getByRole("link", { name: "Revealed Agent" }).click();
   await shownDetail.waitFor({ state: "attached" });
   await firstRecord.requested;
@@ -929,7 +917,7 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   firstRecord.release();
 
   // Forward rebuilds the page, held again on its record read; it reveals at 1 s as on a first visit.
-  const returnRecord = await holdRead(t, page, record);
+  const returnRecord = await holdRequests(t, page, record);
   await page.goForward();
   await returnRecord.requested;
   await shownDetail.waitFor({ state: "attached" });
@@ -937,16 +925,16 @@ test("Leaving a new Agent page before its reveal does not leave it hidden on ret
   assert.equal(await pendingDetail.count(), 1);
   await page.clock.runFor(1);
   assert.equal(await pendingDetail.count(), 0);
-  await page.locator(activeView).getByRole("region", { name: "Agent state at a glance" }).waitFor();
+  await page.locator(activeView).getByRole("region", SUMMARY).waitFor();
   returnRecord.release();
   await page.locator(settledView).waitFor();
 });
 
 test("A chat link's Agent lookup that answers after a manual navigation is ignored", async (t) => {
-  const { namespace, agents, page } = await openPausedList(t, "Chat link race", ["Linked Agent"]);
+  const { namespace, agents, page } = await openList(t, "Chat link race", ["Linked Agent"]);
   const key = "b".repeat(32);
   // The lookup answers as the API would for this Agent, but only after the user navigates.
-  const lookup = await holdRead(t, page, `**/native-admin/return/${key}`, {
+  const lookup = await holdRequests(t, page, `**/native-admin/return/${key}`, {
     once: true,
     fulfill: {
       status: 200,
@@ -958,42 +946,30 @@ test("A chat link's Agent lookup that answers after a manual navigation is ignor
     },
   });
   // A chat link opened in this tab: the console resolves its key after the session check.
-  await page.evaluate((value) => {
-    globalThis.history.pushState(null, "", `/console#native-agent=${value}`);
-    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
-  }, key);
+  await openChatLink(page, key);
   await lookup.requested;
-  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await showNamespaces(page);
   lookup.release();
   await page.clock.runFor(400);
-  await page.locator(settledView).getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/namespaces");
   assert.ok(
     !(await shownPages(page)).some((shown) => shown.startsWith("Agent ") || shown === "Agent"),
     "the stale chat-link lookup opened its Agent",
   );
   // The abandoned link no longer blocks refocus checks.
-  const session = await holdRead(t, page, "**/api/auth/session", { once: true });
-  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  const session = await holdRequests(t, page, SESSION, { once: true });
+  await refocus(page);
   await session.requested;
   session.release();
 });
 
 test("A Namespace revoked during a first visit's admission is not repainted by Back", async (t) => {
-  const { fixture, namespace, page } = await openPausedList(t, "Revoked during visit", [
-    "Revoked Agent",
-  ]);
+  const { fixture, namespace, page } = await openList(t, "Revoked during visit", ["Revoked Agent"]);
   await tagView(page, "list");
-  fixture.policy.restrictions.push({
-    id: "revoke-during-first-visit",
-    namespaceId: namespace.id,
-    resourceKind: "namespace",
-    action: "read",
-    effect: "deny",
-  });
+  revokeNamespace(fixture, namespace, "revoke-during-first-visit");
   // The first visit's admission read drops the Namespace, so its retained list is discarded.
-  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("link", NAMESPACES).click();
   await page.locator(settledView).waitFor();
   await page.goBack();
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
@@ -1005,4 +981,190 @@ test("A Namespace revoked during a first visit's admission is not repainted by B
     !(await shownPages(page)).slice(1).includes("Agents"),
     "the revoked Namespace's list was shown again",
   );
+});
+
+// Opens the Agent from the list while its first read is held, so the pending panel stays.
+async function openPendingAgent(t, page, namespace, agent) {
+  const read = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
+    once: true,
+  });
+  const link = page.locator(settledView).getByRole("link", { name: agent.name });
+  await link.focus();
+  await link.press("Enter");
+  await read.requested;
+  const main = page.getByRole("main");
+  await main.getByText("Loading agent details…", { exact: true }).waitFor();
+  return { read, main };
+}
+
+test("Refocusing the window keeps the pending Agent panel and its way back", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Pending refocus", ["Pending Agent"]);
+  const { read, main } = await openPendingAgent(t, page, namespace, agent);
+  // A refocus check would read the session again; hold it so a swap would stay on screen.
+  const session = await holdRequests(t, page, SESSION, { once: true });
+
+  await refocus(page);
+  await page.evaluate(() => globalThis.document.dispatchEvent(new Event("visibilitychange")));
+  await page.clock.runFor(1500);
+  assert.equal(await main.getByText("Loading agent details…", { exact: true }).isVisible(), true);
+  assert.equal(await main.getByRole("button", { name: "Back to Agents" }).isVisible(), true);
+  assert.equal(await main.getByText("Checking Namespace access.").count(), 0);
+  assert.equal(await main.getByText("Reading this Agent.").count(), 0);
+  assert.equal(await page.locator(heldView).count(), 0);
+  assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+
+  // The opening load is the access check: it finishes and shows the Agent.
+  read.release();
+  session.release();
+  await page.locator(activeView).getByRole("region", SUMMARY).waitFor();
+  await page.getByRole("heading", { name: "Pending Agent" }).waitFor();
+  assert.equal(session.wasRequested(), false);
+
+  // Once the opening load has finished, a refocus checks the Agent again as before.
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  const recheck = await holdRequests(t, page, SESSION, { once: true });
+  await refocus(page);
+  await recheck.requested;
+  recheck.release();
+});
+
+test("A double press on Back to Agents goes back once and stays in the console", async (t) => {
+  const { namespace, agent, page, listUrl } = await openList(t, "Double back", ["Double Agent"]);
+  const { read, main } = await openPendingAgent(t, page, namespace, agent);
+  const back = main.getByRole("button", { name: "Back to Agents" });
+  // Both presses land before the first traversal does, as a fast double click can.
+  await back.evaluate((node) => {
+    node.click();
+    node.click();
+  });
+  await page.waitForURL(`**${listUrl}`);
+  await page.locator(activeView).getByRole("link", { name: "Double Agent" }).waitFor();
+  // A second traversal, if queued, lands within a few frames; give it real time to show.
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, listUrl);
+  assert.equal(
+    await page.locator(activeView).getByRole("link", { name: "Double Agent" }).isVisible(),
+    true,
+  );
+  read.release();
+});
+
+test("A chat link that cannot be resolved says so on the Agents list, once", async (t) => {
+  const { page } = await openList(t, "Chat link", ["Listed Agent"], { running: true });
+  const notice = page.getByText(
+    "This Agent chat link could not be opened. It may have expired, or your access may not include its Agent.",
+    { exact: true },
+  );
+  assert.equal(await notice.count(), 0);
+
+  // The key resolves to nothing (404).
+  const lookup = page.waitForResponse((response) =>
+    response.url().includes(`/native-admin/return/${"c".repeat(32)}`),
+  );
+  await openChatLink(page, "c".repeat(32));
+  assert.equal((await lookup).status(), 404);
+  await page.waitForURL(/\/console\/agents/);
+  await notice.waitFor();
+  assert.equal(await notice.getAttribute("role"), "status");
+  await page.locator(settledView).getByRole("link", { name: "Listed Agent" }).waitFor();
+
+  // The notice belongs to that landing only.
+  await showNamespaces(page);
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.locator(settledView).getByRole("link", { name: "Listed Agent" }).waitFor();
+  assert.equal(await notice.count(), 0);
+
+  // A lookup that fails for another reason (here 503) asks to try again instead.
+  const key = "d".repeat(32);
+  await page.route(`**/native-admin/return/${key}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
+        meta: { requestId: "req_test_chat_link" },
+      }),
+    }),
+  );
+  await openChatLink(page, key);
+  await page.getByText("This Agent chat link could not be opened. Try the link again.").waitFor();
+  assert.equal(await notice.count(), 0);
+});
+
+const firstContentfulPaint = () =>
+  globalThis.performance.getEntriesByName("first-contentful-paint").length > 0;
+
+// On a slow link the console's module graph takes seconds. The shell's static status paints
+// before any script runs, so the page is never blank, and it names nothing signed-in. The
+// console then takes that status over in place: it never blanks, moves or flashes navigation
+// (finding 1444, a regression from removing the static status for chat links).
+test("the console shell paints a neutral status before any script runs and keeps it in place", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const key = "0123456789abcdef0123456789abcdef";
+  for (const path of ["/console/agents", "/console/login", `/console/#native-agent=${key}`]) {
+    const script = await holdRequests(t, page, "**/console/console.mjs");
+    const session = await holdRequests(t, page, SESSION);
+    await page.goto(`${fixture.origin}${path}`, { waitUntil: "commit" });
+    await script.requested;
+    const status = page.locator("#app > p.startup[role='status']");
+    // Text paints while the entry script is still held, after the loading delay.
+    await page.waitForFunction(firstContentfulPaint, null, { timeout: 5_000 });
+    await status.getByText("Loading OpenClaw Enterprise…", { exact: true }).waitFor();
+    assert.equal(await page.locator("nav, .content, #namespace-selector").count(), 0, path);
+    assert.equal(await page.getByLabel("Username").count(), 0, path);
+    const box = await status.boundingBox();
+    await status.evaluate((node) => {
+      node.dataset.staticShell = "kept";
+    });
+
+    // The script runs; the session check is still pending. The same node becomes the session
+    // status without moving, and no signed-in chrome or sign-in form is drawn before it settles.
+    script.release();
+    await session.requested;
+    await status.getByText("Checking session…", { exact: true }).waitFor();
+    assert.equal(await status.getAttribute("data-static-shell"), "kept", path);
+    assert.deepEqual(await status.boundingBox(), box, path);
+    assert.equal(await page.locator("nav, .content, #namespace-selector").count(), 0, path);
+    assert.equal(await page.getByLabel("Username").count(), 0, path);
+    session.release();
+    await page.getByLabel("Username").waitFor();
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
+});
+
+// The web font is fetched alongside the stylesheet, so it is ready before the console's first
+// view renders instead of arriving 1.6-2 s after first paint and reflowing text (finding 1448).
+test("the console web font is ready before the entry script runs, fetched once", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const fonts = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith(".woff2")) {
+      fonts.push(request.url());
+    }
+  });
+  const script = await holdRequests(t, page, "**/console/console.mjs");
+  const stylesheet = await holdRequests(t, page, "**/console/console.css");
+  const fontLoaded = page.waitForResponse("**/console/fonts/instrument-sans-latin.woff2");
+  await page.goto(`${fixture.origin}/console/agents`, { waitUntil: "commit" });
+  await script.requested;
+  // The font arrives while the stylesheet that declares it is still held.
+  await stylesheet.requested;
+  assert.equal((await fontLoaded).status(), 200);
+  stylesheet.release();
+  await page.waitForFunction(
+    () =>
+      globalThis.document.fonts.check('14px "Instrument Sans"') &&
+      [...globalThis.document.fonts].some(
+        (face) => face.family.replaceAll('"', "") === "Instrument Sans" && face.status === "loaded",
+      ),
+    null,
+    { timeout: 5_000 },
+  );
+  script.release();
+  await page.getByLabel("Username").waitFor();
+  assert.deepEqual(fonts, [`${fixture.origin}/console/fonts/instrument-sans-latin.woff2`]);
 });
