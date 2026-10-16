@@ -31,7 +31,10 @@ const privateKeyShape =
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
 const secretShapes = [
   privateKeyShape,
-  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+\S{8,}/gu,
+  // The value stops at a quote, backslash or closing bracket, so a quoted header keeps its
+  // closing quote (finding 1556). A short value is redacted when it has a digit, so "Bearer
+  // token expired" stays readable.
+  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+(?:[^\s"'\\)\]}]{8,}|(?=[^\s"'\\)\]}]*\d)[^\s"'\\)\]}]+)/gu,
   /\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*)/gu,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/gu,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/gu,
@@ -47,27 +50,70 @@ const secretShapes = [
 const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
 
+const secretKeywords = String.raw`password|passwd|passphrase|pwd|secret|token|(?:api|private|client|access)[_-]?key|authorization|cookie|credential|signature|sig`;
+// After these keys a colon may be followed by words separated by spaces: a passphrase in
+// prose or YAML, or an Authorization header's scheme and value.
+const multiWordKeywords = /^(?:password|passwd|passphrase|pwd|authorization)$/iu;
+const multiWordEnd = /[\n\r"',;}&\]]/u;
+const assignment = new RegExp(
+  String.raw`\b([A-Za-z_-]{0,40}(${secretKeywords})s?(?:\\*["'])?\s*([:=])\s*)(?:(\\*)(["'])|([{[])|[^\s"',;}&]+)`,
+  "giu",
+);
+
+// The end of a value that opened with "{" or "[" at `start`: its matching close, or the end of
+// the line when it does not close there.
+function bracketValueEnd(text, start) {
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "\n") {
+      return index;
+    }
+    if (char === "{" || char === "[") {
+      depth += 1;
+    } else if ((char === "}" || char === "]") && --depth === 0) {
+      return index + 1;
+    }
+  }
+  return text.length;
+}
+
 // A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
-// been serialized, its opening delimiter tells us how many backslashes end the value.
+// been serialized, its opening delimiter tells us how many backslashes end the value. A value
+// that opens with "{" or "[" is redacted to its close on the same line (finding 1559).
 function redactSecretAssignments(text) {
-  const assignment =
-    /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?(?:\\*["'])?\s*[:=]\s*)(?:(\\*)(["'])|[^\s"',;}&]+)/giu;
   let result = "";
   let end = 0;
+  assignment.lastIndex = 0;
   for (let match; (match = assignment.exec(text));) {
-    const [, key, escapes = "", quote = ""] = match;
+    const [value, key, keyword, separator, escapes = "", quote = "", bracket] = match;
     const delimiter = escapes + quote;
     result += text.slice(end, match.index) + key + delimiter + "[redacted]";
     end = assignment.lastIndex;
+    if (bracket) {
+      end = bracketValueEnd(text, match.index + value.length - 1);
+      assignment.lastIndex = end;
+      continue;
+    }
     if (!quote) {
+      if (separator === ":" && multiWordKeywords.test(keyword)) {
+        // Take the following words up to the end of the phrase, but not its trailing spaces.
+        for (let index = end; index < text.length && !multiWordEnd.test(text[index]); index += 1) {
+          if (!/\s/u.test(text[index])) {
+            end = index + 1;
+          }
+        }
+        assignment.lastIndex = end;
+      }
       continue;
     }
 
     // In ordinary JSON, a closing quote follows an even number of backslashes. Each
-    // serialization doubles that escape width. If the log ends mid-value, redact to its end.
+    // serialization doubles that escape width. JSON never holds a raw newline, so an unclosed
+    // value ends with its line (finding 1556), or with the log if that ends mid-value.
     const escapeWidth = 2 * delimiter.length;
     let backslashes = 0;
-    while (end < text.length) {
+    while (end < text.length && text[end] !== "\n") {
       const char = text[end++];
       if (char === quote && backslashes % escapeWidth === escapes.length) {
         result += delimiter;
