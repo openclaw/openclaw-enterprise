@@ -291,6 +291,9 @@ is still current, focus moves to Logs and the output scrolls into view; an addre
 shows the page already there. Clicking the
 Logs tab instead keeps the strip in place when the output is already visible.
 [Agent runtime logs](agent-runtime-logs.md) covers status, output, and access errors.
+Logs `403`s stay remembered until logout; a status `403` is asked once more when the
+Agent permission answer allows operate again. A refused follow poll clears its rows, and
+Back rebuilds that view. Back shows the page its Logs check read.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -368,8 +371,8 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 18:30: Forget Logs denials at logout; clear the rows of a refused follow poll; show the page Back's Logs check read. (lows-1016o)
 - 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
-- 2026-10-16 14:30: Scroll a Logs view that loads before its Agent page shows to its newest output. (flake-fix-1016)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
