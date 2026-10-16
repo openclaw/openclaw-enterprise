@@ -87,18 +87,13 @@ or false; local verification uses the separate password.
 }
 ```
 
-Ingress must authenticate human aliases, validate OIDC, authorize the exact Gateway,
-and overwrite identity headers. This adds no browser route or Keycloak integration.
-Private operator routes retain the machine identity. Named roles must also permit
-machine admin.
+Ingress must validate OIDC, authorize humans per Gateway and overwrite identity
+headers. Ingress deployment remains external; private operator routes retain
+machine identity, which native roles must allow to administer.
 
-When `allowUsers` includes humans, `deviceAutoApprove.scopes` must exclude
-`operator.admin`. OpenClaw unions device and identity scopes, so retaining the
-pilot's admin auto-approval would elevate every admitted browser. Grant human
-administrators explicitly through `identityScopes`; use read/write for automatic
-device approval. Machine-only Agents may retain admin auto-approval. Each
-`identityScopes` value must be an array of strings. Invalid combinations fail
-preflight with `409 RESOURCE_CONFLICT`, naming the setting and requirement.
+Human allowlists forbid `operator.admin` in `deviceAutoApprove.scopes`: device
+grants are unioned with `identityScopes`. Grant human admins explicitly. Identity
+grants must be string arrays. Machine-only admin auto-approval remains valid.
 
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
