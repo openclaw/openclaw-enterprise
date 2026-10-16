@@ -3590,7 +3590,6 @@ async function holdGatewayOutboundTunnel(context, topology, proxyHost) {
 }
 
 async function assertRevisionAccessConfigurationWithdrawal(context, topology) {
-  assert.match(topology.revision.compute.admission, /^public-github-read:v1:/);
   assert.ok(topology.revision.gatewayOutbound, "the revision must admit both network capabilities");
   assert.equal(topology.placement, topology.gatewayPlacement);
   const harnessName = `agent-${hash(topology.agent.id)}-rev-${hash(topology.revision.id)}`;
@@ -4138,7 +4137,6 @@ async function assertManagedGatewayOutbound(context, topology) {
   await redeployGatewayOutbound(topology);
   await assertProxyResourcesAbsent(topology, initialRevisionId);
   assert.notEqual(topology.revision.id, initialRevisionId);
-  assert.match(topology.revision.compute.admission, /^public-github-read:v1:/);
   await resource(
     "networkpolicy",
     `allow-public-github-read-${hash(topology.agent.id)}-rev-${hash(topology.revision.id)}`,
@@ -5121,6 +5119,14 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
 }
 
 async function assertActualPublicGithubRead(topology) {
+  // Compute admission is private; the public revision response intentionally omits it.
+  const { rows } = await topology.observerPool.query(
+    `SELECT admitted_spec->'compute'->>'admission' AS admission
+       FROM occ.agent_revisions WHERE namespace_id = $1 AND agent_id = $2 AND id = $3`,
+    [topology.agent.namespaceId, topology.agent.id, topology.revision.id],
+  );
+  assert.equal(rows.length, 1);
+  assert.match(rows[0].admission, /^public-github-read:v1:/);
   const status = await gatewayCall(topology, "skills.status", { agentId: "main" });
   assert.ok(
     status.skills.some(({ name }) => name === "public-github-read"),
