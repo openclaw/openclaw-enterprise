@@ -5486,6 +5486,7 @@ export class OpenClawController {
       if (!metadata) {
         throw new ScopeViolationError("The Configuration does not belong to the exact Namespace.");
       }
+      await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       // Compared under the row lock, so a save that read an older generation cannot replace a
       // newer one (finding 1505).
       if (
@@ -5496,7 +5497,6 @@ export class OpenClawController {
           "The Configuration changed since it was read. Read its current generation before updating it.",
         );
       }
-      await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       const previous = await this.lockedConfiguration(driver, metadata);
       let secretBindings: SecretBindings;
       if (input.secretBindings === undefined) {

@@ -4027,6 +4027,7 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 409,
+        code: "RESOURCE_CONFLICT",
       },
     ],
     actions: [click("Edit Slack"), click("Save configuration")],

@@ -859,12 +859,23 @@ const racedSaveCases = [
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
   },
+  {
+    name: "channel Secrets",
+    tab: "credentials",
+    message: "Configuration changed. Reload this draft before saving channel Secrets.",
+    async act(page, c) {
+      await selectNewSlackSecrets(page, c);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    },
+  },
 ];
 
 for (const c of racedSaveCases) {
   test(`a ${c.name} save raced after its reread is refused and offers Reload draft`, async (t) => {
     const context = await slackAgent(t, `Raced ${c.name}`);
     const { fixture, namespace, agent } = context;
+    context.secondApp = await fixture.createSecret(namespace.id, "Second app token", "xapp-2");
+    context.secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
     const patches = [];
     const before = (await fixture.request("GET", configurationPath(context))).data.values;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
@@ -880,8 +891,9 @@ for (const c of racedSaveCases) {
     });
     await page.getByRole("heading", { name: `Raced ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
-    await c.act(page);
+    await c.act(page, context);
     const message =
+      c.message ??
       "The saved Configuration changed while you were editing. Reload this draft before saving.";
     await page.getByText(message).first().waitFor();
     assert.equal(await focusedText(page), "Reload draft");

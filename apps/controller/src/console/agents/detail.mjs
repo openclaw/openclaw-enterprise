@@ -2668,7 +2668,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               context.onExpired();
               throw new Error("Your session has expired.");
             }
-            if (error.status === 409 && mutationStarted && !configurationSaved) {
+            if (
+              error.status === 409 &&
+              error.code === "RESOURCE_CONFLICT" &&
+              mutationStarted &&
+              !configurationSaved
+            ) {
               // The PATCH found a newer generation than the reread: the same recovery applies.
               throw Object.assign(new Error(CONFIGURATION_CHANGED), { reloadRequired: true });
             }
@@ -3270,6 +3275,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       feedbackLocked = true;
       updateState();
       let mutationStarted = false;
+      let configurationSaved = false;
       try {
         const [freshAgent, freshConfig] = await Promise.all([
           request(path),
@@ -3299,6 +3305,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             body: { values: nextValues, expectedGeneration: baseline.generation },
           },
         );
+        configurationSaved = true;
         if (context.isCurrent()) {
           context.drafts.forget("configuration");
           await refreshDraftInPlace({
@@ -3314,7 +3321,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
           return;
         }
-        if (error.status === 409 && mutationStarted) {
+        if (
+          error.status === 409 &&
+          error.code === "RESOURCE_CONFLICT" &&
+          mutationStarted &&
+          !configurationSaved
+        ) {
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
           reloadRequired = true;

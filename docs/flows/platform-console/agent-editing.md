@@ -237,8 +237,8 @@ credentials after a historical revision require operator investigation. Model
 and channel Secrets remain separate.
 
 On explicit submission, the browser rereads Agent and Configuration; a changed
-ID or generation requires reload. It then PATCHes selected Secret references while
-preserving other bindings, then calls `ensureSecretOperateBinding` for changed
+ID or generation requires reload. It then PATCHes selected Secret references with
+`expectedGeneration`, preserving other bindings, then calls `ensureSecretOperateBinding` for changed
 and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
 deployment in the current view. Subsequent saves retry still-referenced pending
 grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed

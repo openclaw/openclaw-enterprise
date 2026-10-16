@@ -395,7 +395,7 @@ export function createChannelSecretsPanel({
           state.reloadRequired = true;
           return;
         }
-        // The preflight cannot prevent a concurrent write before this PATCH.
+        // A write from another browser after the preflight is refused with 409 (finding 1505).
         mutationStarted = true;
         state.configuration = await context.request(
           `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(
@@ -403,7 +403,11 @@ export function createChannelSecretsPanel({
           )}`,
           {
             method: "PATCH",
-            body: { values: state.values, secretBindings: draft.secretBindings },
+            body: {
+              values: state.values,
+              secretBindings: draft.secretBindings,
+              expectedGeneration: state.configuration.generation,
+            },
           },
         );
         configurationSaved = true;
@@ -428,6 +432,15 @@ export function createChannelSecretsPanel({
         }
         if (cause.status === 401) {
           context.onExpired();
+          return;
+        }
+        if (
+          cause.status === 409 &&
+          cause.code === "RESOURCE_CONFLICT" &&
+          mutationStarted &&
+          !configurationSaved
+        ) {
+          state.reloadRequired = true;
           return;
         }
         state.saveError = cause;
