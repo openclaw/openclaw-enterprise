@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-14
-last_updated_session: issue-2406
+updated: 2026-10-15
+last_updated_session: authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1
 ---
 
 # Compose development flow
@@ -104,6 +104,10 @@ graph TD
 ### 1. Start and initialize the local stack
 
 `scripts/dev-up`, `apps/controller/src/server.mjs:start`
+
+Both shell wrappers locate the checkout with command-local `CDPATH="" cd`,
+so shell search paths cannot change the selected repository or contaminate the
+captured path; the delegated CLI retains the caller's original `CDPATH`.
 
 [Docker or Podman Compose startup](docker-compose-development/startup.md) owns
 engine selection, database initialization, local API admission and worker startup.
@@ -240,6 +244,8 @@ OCC Namespace becomes ready. See the
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-14 18:14: Bound declared and streamed Docker API response bodies before complete buffering. (issue-2406 - 1fc3258afdd73b2888c524092b988a2110449bbb)
 

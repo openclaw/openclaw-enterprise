@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -829,6 +830,58 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
     await page.getByRole("button", { name: "Stop Agent", exact: true }).first().isDisabled(),
     true,
   );
+});
+
+// The case above trusts holdRequests() to send a held write exactly once. A loopback origin
+// counts each POST and drops the first answer on /lost.
+test("holdRequests sends a held write once, and fails it when its answer is lost", async (t) => {
+  const posts = { "/lost": 0, "/after": 0, "/before": 0 };
+  const server = createServer((request, response) => {
+    if (request.method !== "POST") {
+      response.end("<!doctype html><title>holds</title>");
+      return;
+    }
+    posts[request.url] += 1;
+    if (request.url === "/lost" && posts["/lost"] === 1) {
+      request.socket.destroy();
+      return;
+    }
+    response.writeHead(202).end("applied");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const fixture = await createConsoleAppFixture(t);
+  const { page } = await newPage(t, fixture);
+  await page.goto(`${origin}/`);
+  const post = (path) =>
+    page.evaluate(
+      (url) =>
+        fetch(url, { method: "POST" }).then(
+          async (response) => `${response.status} ${await response.text()}`,
+          () => "failed",
+        ),
+      `${origin}${path}`,
+    );
+
+  const lost = await holdRequests(t, page, `${origin}/lost`, { afterServer: true });
+  const lostAnswer = post("/lost");
+  await assert.rejects(lost.requested);
+  assert.equal(await lostAnswer, "failed");
+  assert.equal(posts["/lost"], 1);
+
+  for (const [path, options] of [
+    ["/after", { afterServer: true }],
+    ["/before", {}],
+  ]) {
+    const hold = await holdRequests(t, page, `${origin}${path}`, { once: true, ...options });
+    const answer = post(path);
+    await hold.requested;
+    assert.equal(posts[path], options.afterServer ? 1 : 0);
+    hold.release();
+    assert.equal(await answer, "202 applied");
+    assert.equal(posts[path], 1);
+  }
 });
 
 test("Leaving a new Agent page before its reveal does not leave it hidden on return", async (t) => {

@@ -340,12 +340,13 @@ export function repositoryCheckbox(page, name) {
 
 // Holds requests matching `url` until release(). `requested` resolves when the first one is
 // held. Once a test awaits it, it rejects if none is held within 10 s, so a test fails instead
-// of hanging. With `once`, only
-// the first match is held; with `method`, only matches with that method. Requests not held fall
-// through to earlier routes. `once` is a hand-written flag, not Playwright's { times: 1 }: that
+// of hanging. With `once`, only the first match is held; with `method`, only matches with that
+// method. Requests not held fall through to earlier routes. `once` is a hand-written flag, not
+// Playwright's { times: 1 }: that
 // turns interception off once no routes remain, which silently releases other held requests.
 // With `afterServer`, the server answers first and the page gets that answer on release (a
-// write that landed while the page waits). With `fulfill`, the held request gets that response.
+// write that landed while the page waits); if that answer is lost, the page's request fails
+// rather than being sent again. With `fulfill`, the held request gets that response.
 export async function holdRequests(
   t,
   page,
@@ -364,7 +365,10 @@ export async function holdRequests(
       clearTimeout(timer);
       resolve();
     };
-    failRequested = () => reject(new Error(`No ${url} request was held`));
+    failRequested = (error = new Error(`No ${url} request was held`)) => {
+      clearTimeout(timer);
+      reject(error);
+    };
   });
   requested.catch(() => {});
   let taken = false;
@@ -374,7 +378,18 @@ export async function holdRequests(
       return;
     }
     taken = true;
-    const response = afterServer ? await route.fetch().catch(() => null) : null;
+    let response = null;
+    if (afterServer) {
+      try {
+        response = await route.fetch();
+      } catch (error) {
+        // The server may have applied a write before its answer was lost. Never send it again:
+        // `requested` rejects with the failure and the page's request fails.
+        failRequested(error);
+        await route.abort("failed").catch(() => {});
+        return;
+      }
+    }
     markRequested();
     await held;
     await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
