@@ -600,6 +600,87 @@ test("Create new version keeps the Agent page until the draft's overview reveals
   assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
 });
 
+// A fresh load of an Agent URL (reload, new tab, shared link, sign-in landing) whose reads beat
+// the loading delay had no page to hold, so the Agent's heading and toolbar painted over an
+// empty overview for up to 2 s (finding 1537). The startup status now stands in until the
+// overview reveals, and gives way to loading if the delay passes first.
+for (const pastDelay of [false, true]) {
+  test(`A fresh load of an Agent page keeps a stand-in until the overview reveals${pastDelay ? " past the loading delay" : ""}`, async (t) => {
+    const { fixture, namespace, agent, page } = await openList(
+      t,
+      pastDelay ? "Fresh slow reveal" : "Fresh reveal",
+      ["Fresh Agent"],
+      { deploy: true },
+    );
+    // Record from before the console's module runs, which takes over the startup status.
+    await page.addInitScript(
+      `document.addEventListener("readystatechange", () => {
+        if (document.readyState === "interactive") (${recordShownFrames})();
+      });`,
+    );
+    const record = await holdRequests(
+      t,
+      page,
+      `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+    );
+    await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+    await record.requested;
+    // The Agent page has rendered, waiting for its overview.
+    await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
+    if (pastDelay) {
+      await page.clock.runFor(250);
+      await page.locator(activeView).getByText("Reading this Agent.").waitFor();
+    }
+    record.release();
+    await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+    assert.deepEqual(await shownFrames(page), [
+      "none | none | no selector | none",
+      ...(pastDelay ? ["agents | Agents | selector | Loading…Reading this Agent."] : []),
+      "agents | Fresh Agent | selector | Agent",
+    ]);
+    assert.equal(await page.locator('[aria-live="polite"][hidden]').count(), 0);
+    assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+  });
+}
+
+// While an Agent page rendered hidden behind a held page, its tab handler took Back between two
+// tabs of the same version in place: it marked the Agent's route mounted with another page on
+// screen, so one more navigation could retain that page under the Agent's URL (finding 1542).
+// The move now starts a full load, which keeps the held page until the overview reveals.
+test("Back between an Agent's tabs before its overview reveals loads the tab in full", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Hidden tabs", ["Tab Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Tab Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.waitForURL(/tab=plugins/);
+  await showNamespaces(page);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.goBack();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  await page.locator(heldView).getByRole("list", NAMESPACES).waitFor();
+  const session = await holdRequests(t, page, SESSION, { once: true });
+  await page.goBack();
+  await page.waitForURL((url) => !url.searchParams.has("tab"));
+  // A full load checks the session again; the hidden page did not take the move.
+  await session.requested;
+  session.release();
+  await page.locator(heldView).getByRole("list", NAMESPACES).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.equal(
+    await page.locator('.content [aria-current="page"]', { hasText: "Configuration" }).count(),
+    1,
+  );
+  assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
+});
+
 // Records each focus move as `<tag>#<element number> <text>`, numbering elements in the order
 // they first take focus, so the same name focused on two elements, or twice, shows up.
 function recordFocus() {
