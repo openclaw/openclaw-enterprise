@@ -4150,8 +4150,8 @@ async function openShellSupervisorPod(topology) {
   return supervisors[0];
 }
 
-async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
-  const secrets = failureSecrets([
+function turnFailureSecrets(topology, gatewayPassword) {
+  return failureSecrets([
     process.env,
     {
       MODEL_CREDENTIAL: modelCredential,
@@ -4159,6 +4159,10 @@ async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
       APP_SERVER_TOKEN: topology.appServerToken,
     },
   ]);
+}
+
+async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
+  const secrets = turnFailureSecrets(topology, gatewayPassword);
   const unavailable = (label, error) =>
     `${label} diagnostics unavailable: ${redactLogLine(
       error?.message ?? String(error),
@@ -4955,7 +4959,7 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
   const agentId = topology.agent.id;
   const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
   assert.equal(current.status, 200, JSON.stringify(current.error));
-  await waitForProviderHarnessPod(topology.placement, {
+  const harnessPod = await waitForProviderHarnessPod(topology.placement, {
     id: current.data.activeRevisionId,
     agentId,
   });
@@ -4967,15 +4971,18 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
   const eventsBefore = (await untrustedTls.events()).length;
   let rejected = false;
   let observation;
+  let rejection;
+  let gatewayPod;
   let failure;
   try {
     await setModelProviderDns(topology, untrustedTls.address);
     const nonce = `OCC-OPENSHELL-UNTRUSTED-${randomUUID()}`;
     try {
+      gatewayPod = await currentGatewayPod(topology);
       observation = JSON.stringify(
         await requestCodexTurnFromGatewayPod({
           namespace: topology.gatewayPlacement,
-          gatewayPod: await currentGatewayPod(topology),
+          gatewayPod,
           providerModel,
           prompt: `Reply with exactly ${nonce}.`,
         }),
@@ -4983,6 +4990,10 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
     } catch (error) {
       rejected = true;
       observation = error instanceof Error ? error.message : String(error);
+      // The kubectl error message starts with the whole probe script; its stderr says why.
+      if (typeof error?.stderr === "string") {
+        rejection = error.stderr.trim() || "kubectl returned no stderr; probe command omitted.";
+      }
     }
   } catch (error) {
     failure = error;
@@ -5015,9 +5026,57 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
     "a refused model route must not expose the model key",
   );
   assert.equal(rejected, true, "a model turn must not complete through an untrusted upstream.");
-  assert.ok(observed.tlsFailures > 0, "OpenShell must attempt and refuse the upstream handshake.");
-  assert.equal(observed.handshakes, 0, "no upstream handshake may complete.");
-  assert.equal(observed.requests, 0, "no model request, or key, may reach the upstream.");
+  const refused = observed.tlsFailures > 0 && observed.handshakes === 0 && observed.requests === 0;
+  const detail = refused
+    ? ""
+    : await untrustedUpstreamFailureDetail(topology, {
+        harnessPod,
+        gatewayPod,
+        observed,
+        text: rejection ?? observation,
+      });
+  assert.ok(
+    observed.tlsFailures > 0,
+    `OpenShell must attempt and refuse the upstream handshake.${detail}`,
+  );
+  assert.equal(observed.handshakes, 0, `no upstream handshake may complete.${detail}`);
+  assert.equal(observed.requests, 0, `no model request, or key, may reach the upstream.${detail}`);
+}
+
+// Finding 1507: a turn refused with no upstream event failed before OpenShell tried the
+// untrusted upstream (the DNS override unseen, or the Gateway failing first as in 1496).
+// The turn's text is redacted before it is cut, and stays small enough that the Gateway,
+// Harness and supervisor sections still fit the 16 KiB failure message.
+const untrustedTurnObservationChars = 1_000;
+
+async function untrustedUpstreamFailureDetail(
+  topology,
+  { harnessPod, gatewayPod, observed, text },
+) {
+  const passwordSecret = await resource(
+    "secret",
+    `gateway-password-${hash(topology.agent.id)}`,
+    topology.gatewayPlacement,
+  ).catch(() => undefined);
+  const encodedPassword = passwordSecret?.data?.["gateway-password"];
+  const gatewayPassword =
+    encodedPassword === undefined ? undefined : Buffer.from(encodedPassword, "base64").toString();
+  const secrets = turnFailureSecrets(topology, gatewayPassword);
+  const shown = redactLogLine(String(text), secrets, untrustedTurnObservationChars);
+  const detail = `\nTurn observation: ${shown}`;
+  if (observed.tlsFailures !== 0 || observed.handshakes !== 0 || observed.requests !== 0) {
+    return detail;
+  }
+  if (gatewayPod === undefined) {
+    // The turn never ran: finding no running Gateway Pod counted as the refusal.
+    return `${detail}\nNo running Agent Gateway Pod was found for the turn.`;
+  }
+  // The diagnostic reads the replacement's Harness and the Gateway Pod that ran the turn.
+  const diagnostic = await gatewayTurnFailureDiagnostic(
+    { ...topology, harnessPod, gatewayPod: { metadata: { name: gatewayPod } } },
+    gatewayPassword,
+  );
+  return `${detail}${diagnostic}`;
 }
 
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {

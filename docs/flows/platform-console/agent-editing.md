@@ -127,7 +127,8 @@ history readback before retry; browser reads are not atomic with admission.
 excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage
 or URLs. Configuration, authentication, and channel baselines prevent stale saves;
-channel snapshots include controls and staged Secret metadata. Save and Cancel
+channel snapshots include controls and staged Secret metadata. Reload draft reapplies
+only the reader's edits, naming values both browsers changed. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
 `dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
@@ -181,15 +182,15 @@ recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
 Saving channels rereads Agent and Configuration; a changed association or
-generation offers Reload draft, which reapplies the editor's changes over the
-reread settings. The PATCH sends `{ values, expectedGeneration }`, adding
+generation, or a racing `409`, offers Reload draft. The PATCH sends
+`{ values, expectedGeneration }`, adding
 `secretBindings` only for changed selections. A rejected PATCH writes no Secret grant.
 
 After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
 and asks a Namespace administrator to grant access without repeating the
-channel save. A later race gets `409` and Reload draft. An uncertain PATCH blocks another
+channel save. An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)

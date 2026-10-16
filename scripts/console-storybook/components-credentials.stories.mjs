@@ -12,6 +12,10 @@ export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
   name: "Slack token switch",
 };
+export const CredentialsSlackCarried = {
+  ...story("credentialsSlackCarried"),
+  name: "Slack token choice carried through a conflict",
+};
 export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),
   name: "Secret list denied",
