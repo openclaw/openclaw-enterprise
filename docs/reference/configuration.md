@@ -129,12 +129,12 @@ requires the replacement `values` and may also set `secretBindings` and
 }
 ```
 
-GET and PATCH return HTTP `200`; PATCH always includes a replacement `values`
-document and increments its server-managed `generation` exactly once, so
-omitted `models` and `secrets` sections disappear. Omitting `secretBindings` on
-PATCH preserves the existing bindings; send `{}` to clear them. PATCH cannot
-change or accept `kind`, `generation`, or ownership fields. Successful DELETE
-returns HTTP `204` with no body.
+GET and PATCH return HTTP `200`. PATCH replaces the whole `values` document, so
+omitted `models` and `secrets` sections disappear. Omitting `secretBindings`
+preserves the existing bindings; send `{}` to clear them. Use the `generation` OCC
+returns: it normally advances by one, but recovery from an interrupted write can
+skip a number. Do not send `kind`, `generation`, or ownership fields in a PATCH.
+Successful DELETE returns HTTP `204` with no body.
 
 `expectedGeneration` is an optional positive safe integer from the caller's last
 GET. OCC compares it with the current generation while holding the Configuration
@@ -255,10 +255,12 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   selected Kubernetes identity's namespaced ConfigMap Role separately.
 - **Configuration operation returns `404`:** Confirm the Configuration ID
   belongs to the Namespace in the request path.
-- **Configuration update returns `409 RESOURCE_CONFLICT`:** If the message says
-  the Configuration changed since it was read, repeat GET and merge your edits
-  before submitting the current `expectedGeneration`. In the console, choose
-  **Reload draft** and reapply the edits to the current Configuration.
+- **Configuration update returns `409 RESOURCE_CONFLICT`:** A detail at
+  `/expectedGeneration` means your copy is stale. Read the Configuration again,
+  merge your changes, and send the generation you just read. In the console,
+  choose **Reload draft**, review the result, and save only the changes you still
+  intend. Rereading does not clear a provisioning reservation, which also returns
+  `409` but has no `/expectedGeneration` detail.
 - **Configuration deletion returns `409`:** An Agent still references that
   Configuration. Reassign every referencing Agent, or
   [delete the Agents](agents.md#deletion) and wait for teardown before retrying.
