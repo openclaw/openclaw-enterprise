@@ -203,10 +203,24 @@ export interface OpenShellBackendDefinition {
   };
 }
 
+export interface StrandsBoxBackendDefinition {
+  readonly id: string;
+  readonly type: "strands-box";
+  /** All three members belong to the same protected backend. No legacy attachment or refresh role. */
+  readonly configuration: Readonly<Record<string, never>>;
+  readonly drivers: {
+    readonly sandbox: string;
+    readonly credential_gateway: string;
+    readonly credential_proxy: string;
+    readonly credential_refresh?: never;
+  };
+}
+
 export type BackendDefinition =
   | ChatGPTBackendDefinition
   | GitHubRepositoryCredentialBackendDefinition
-  | OpenShellBackendDefinition;
+  | OpenShellBackendDefinition
+  | StrandsBoxBackendDefinition;
 
 export interface BackendSummary {
   readonly id: string;

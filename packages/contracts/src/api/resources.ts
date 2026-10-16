@@ -767,7 +767,12 @@ export const ServiceAccountSchema = Type.Object(
 export const BackendSummarySchema = Type.Object(
   {
     id: BackendId,
-    type: Type.Union([Type.Literal("chatgpt"), Type.Literal("github"), Type.Literal("openshell")]),
+    type: Type.Union([
+      Type.Literal("chatgpt"),
+      Type.Literal("github"),
+      Type.Literal("openshell"),
+      Type.Literal("strands-box"),
+    ]),
   },
   { additionalProperties: false },
 );

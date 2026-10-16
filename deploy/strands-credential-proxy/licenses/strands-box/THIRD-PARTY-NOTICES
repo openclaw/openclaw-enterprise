@@ -1,0 +1,26 @@
+Strands Box third-party notices
+
+This repository includes the third-party software below in source form.
+
+================================================================================
+1. Strands Shell
+================================================================================
+Source:    https://github.com/strands-agents/shell
+Revision:  06169c666260c15422e464a64ad5115ec6e9ac5f
+Location:  crates/shell
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+The full license text is in crates/shell/LICENSE, and the upstream notice is
+in crates/shell/NOTICE.
+
+This copy is modified. Each modified file starts with a modification notice,
+and crates/shell/UPSTREAM.md describes the changes.
+
+================================================================================

@@ -1,0 +1,14 @@
+// Example: count every inspected HTTP attempt, including this one, in an inclusive sliding hour.
+// A denial extends the window. This counts neither successful provider calls nor an exact spend budget.
+permit(principal, action == Box::Action::"net:connect", resource);
+permit(principal, action == Box::Action::"http:request", resource)
+when { context.input.intercepted }
+when temporal {
+  exists (n: Long). (
+    (count for (t: Timepoint). where (
+      formerly within 3600s (
+        Box::Action::"http:request"::request{ input.method: _ } && tp(t)
+      )
+    )) == n && n <= 1
+  )
+};

@@ -4,21 +4,13 @@ import { validateInstallationTokenResponse } from "../../apps/controller/src/dri
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
-import { createPreparedStore } from "../fixtures/repository-credentials/github/prepared-store.mjs";
+import { preparedMetadataFixture } from "../helpers/prepared-metadata-fixture.mjs";
 import {
   startGitHubFixture,
   fixtureRepository,
   fixtureRepositoryId,
-  fixtureInstallationId,
-  fixtureAppId,
 } from "../fixtures/repository-credentials/github.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import {
-  createGitHubPreparationOwner,
-  preparationIssuerAuthority,
-  createGitHubWarmReader,
-  createGitHubKeyOwner,
-} from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
 
 // Real source/Agent/binding/deployment APIs, IAM, protected forwarder, preparation owner,
 // scoped GitHub issuance, HTTPS GET and actual last trailer. The test plays the enrolled supervisor and the store is in-memory;
@@ -34,97 +26,20 @@ test("consented protected repository read uses only exact, already prepared meta
       }
     },
   });
-  const key = createGitHubKeyOwner({ appId: fixtureAppId, clock, privateKey: gh.privateKey });
-  t.after(() => key.close());
-  let reads = 0;
-  let sendChecks = 0;
-  let store;
-  let admission;
-  let reader;
-  let owner;
-  const config = {
-    app_id: fixtureAppId,
-    installation_id: fixtureInstallationId,
-    repository_id: fixtureRepositoryId,
-    repository: fixtureRepository,
-  };
+  const fixture = preparedMetadataFixture(t, { gh, clock });
   const f = await staticEgressFixture(t, {
-    preparedGitHub: {
-      apiOrigin: gh.origin,
-      async configure(source, secret) {
-        assert.equal(secret.name, "provider-key");
-        const { grant } = source;
-        const { id, generation } = source.key.source;
-        admission = {
-          familyId: id,
-          issuerAuthority: preparationIssuerAuthority(gh.origin, gh.tls.ca),
-          generation,
-          ownerEpoch: 1,
-          inputVersion: "fixture-key-1",
-          grant: { ...grant, id },
-        };
-        store = createPreparedStore(admission).connect();
-        reader = createGitHubWarmReader(store, clock.wallNow);
-        owner = createGitHubPreparationOwner({
-          admission,
-          store,
-          clock,
-          getKey: async () => key,
-          apiOrigin: gh.origin,
-          ca: gh.tls.ca,
-          renewBeforeMs: 120000,
-          minimumValidityMs: 10000,
-        });
-      },
-      async readWarm(source, { signal, deadlineAt }) {
-        signal.throwIfAborted();
-        assert.ok(Date.parse(deadlineAt) > clock.wallNow());
-        reads++;
-        assert.equal(source.origin, gh.origin);
-        const result = await reader.readWarm(admission);
-        if (result.kind !== "warm") {
-          return undefined;
-        }
-        const { materialVersion, providerExpiresAt, usableUntil, bytes, attemptId } =
-          result.material;
-        try {
-          return {
-            value: Buffer.from(bytes).toString(),
-            materialVersion,
-            providerExpiresAt: new Date(providerExpiresAt).toISOString(),
-            usableUntil: new Date(usableUntil).toISOString(),
-            materialId: admission.familyId,
-            family: source.key.source,
-            preparationAttemptId: attemptId,
-            ownerEpoch: 1,
-            inputVersion: admission.inputVersion,
-          };
-        } finally {
-          bytes.fill(0);
-        }
-      },
-      async current(_source, evidence) {
-        sendChecks++;
-        return store.readCurrent(
-          admission.familyId,
-          (row) =>
-            row?.enabled === true &&
-            row.committed.materialVersion === evidence.materialVersion &&
-            row.committed.attemptId === evidence.preparationAttemptId,
-        );
-      },
-    },
+    preparedGitHub: fixture.preparedGitHub,
     async admitSource({ app, agent, namespace, secret, path }) {
       const input = {
         name: "protected-repository-read",
         type: "github-app-metadata",
-        config: { ...config, agent_id: agent.id },
+        config: { ...fixture.config, agent_id: agent.id },
         secrets: { private_key: secret.ref },
       };
       const missingConsent = await app.request("POST", path, { body: input });
       // OCC intentionally hides out-of-scope catalog fields. No lifecycle was configured; the only added field is consent.
       assert.equal(missingConsent.status, 404);
-      assert.equal(owner, undefined);
+      assert.equal(fixture.configured, false);
       input.config.authority = "execution";
       const created = await app.request("POST", path, { body: input });
       assert.equal(created.status, 201, JSON.stringify(created.body));
@@ -145,14 +60,13 @@ test("consented protected repository read uses only exact, already prepared meta
   const [route] = installation.plan.routes;
   assert.equal(route.binding.grant.profile, "metadata-read");
   assert.equal(f.attachment.configuration.network_policies["oce-egress-0"].binaries, undefined);
-  const signal = new AbortController().signal;
   const resolve = (changed) => f.resolve(captureMetadata(f, changed));
   assert.equal(
     (await resolve()).refused.code,
     f.refusalCode("NOT_READY"),
     "cold material must return not ready",
   );
-  assert.equal(reads, 1);
+  assert.equal(fixture.reads, 1);
   assert.equal(gh.issuesOfTokens.length, 0, "cold capture must not issue or schedule");
   for (const changed of [
     { body: Buffer.from("x") },
@@ -167,11 +81,8 @@ test("consented protected repository read uses only exact, already prepared meta
   ]) {
     assert.equal((await resolve(changed)).refused.code, f.refusalCode("DENIED"));
   }
-  assert.equal(reads, 1, "wrong body, target or method touched prepared material");
-  assert.equal(
-    await owner.run("managed-prepare-1", { signal, deadlineMonoMs: clock.monotonicNow() + 20000 }),
-    "committed",
-  );
+  assert.equal(fixture.reads, 1, "wrong body, target or method touched prepared material");
+  assert.equal(await fixture.prepare(), "committed");
   assert.equal(gh.issuesOfTokens.length, 1);
 
   for (const block of [false, true]) {
@@ -189,14 +100,12 @@ test("consented protected repository read uses only exact, already prepared meta
   }
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
-  await store.transact(admission.familyId, (row) => {
-    row.enabled = false;
-  });
+  await fixture.disable();
   assert.equal(
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 3);
+  assert.equal(fixture.sendChecks, 3);
   assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
 });
 

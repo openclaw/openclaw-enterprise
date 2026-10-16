@@ -1,0 +1,75 @@
+{{- if .Values.strandsBoxCredentialProxy.enabled }}
+{{- $image := required "strandsBoxCredentialProxy.gatewayImage must pin the installed sender digest" .Values.strandsBoxCredentialProxy.gatewayImage }}
+{{- if not (regexMatch "@sha256:[a-f0-9]{64}$" $image) }}{{ fail "Strands installation requires an immutable sender image digest" }}{{- end }}
+# Install on the execution cluster, in its trusted platform namespace, never a tenant namespace.
+# Stable ordinal permits exact read-only RBAC while the StatefulSet handles replacement and image upgrades.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: oce-strands-installation
+spec:
+  # Discovery uses authenticated Pod proxy by name; no governing DNS Service or volume is needed.
+  serviceName: oce-strands-installation
+  replicas: 1
+  selector:
+    matchLabels: {openclaw.dev/strands-role: installation}
+  template:
+    metadata:
+      labels: {openclaw.dev/strands-role: installation}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: installation
+          image: {{ $image | quote }}
+          args: ["--installation-profile"]
+          env:
+            - name: OCE_INSTALLATION_POD_UID
+              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            tcpSocket: {port: 8081}
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+---
+# Kubernetes Pod proxy is the only intended path. No Service, credentials, volumes or egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: oce-strands-installation}
+spec:
+  podSelector: {matchLabels: {openclaw.dev/strands-role: installation}}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: oce-strands-installation-reader}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    resourceNames: [oce-strands-installation-0]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    resourceNames: ["oce-strands-installation-0:8081"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: oce-strands-installation-reader}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: oce-strands-installation-reader}
+subjects:
+  {{- range $component := list "api" "worker" }}
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $.Release.Namespace | quote }}
+  {{- end }}
+{{- end }}

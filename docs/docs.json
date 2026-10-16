@@ -311,6 +311,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/strands-box-credential-proxy",
+                        "label": "Strands Box (experimental)"
                       }
                     ]
                   },
@@ -1007,6 +1011,7 @@
               "flows/agent-presets",
               "flows/credential-source-egress",
               "testing/static-egress",
+              "testing/strands-box-credential-proxy",
               "testing/protected-repository-custody"
             ]
           }

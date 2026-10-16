@@ -1,0 +1,4 @@
+These notices accompany the Strands Box source selected in build-gateway.sh,
+including our request-exchange changes, and dogwood-language and
+dogwood-local-engine 1.0.0 selected in Cargo.lock. They do not constitute a
+complete license inventory for a distribution.

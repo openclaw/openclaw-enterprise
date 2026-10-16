@@ -44,7 +44,9 @@
     "qa-matrix": "./test-suites/qa-matrix.json",
     "keycloak-oidc": "./test-suites/keycloak-oidc.json",
     "egress-connected": "./test-suites/egress-connected.json",
-    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json",
+    "strands-box-installed": "./test-suites/strands-box-installed.json",
+    "strands-box-production-worker": "./test-suites/strands-box-production-worker.json"
   },
   "groups": {
     "ci": [

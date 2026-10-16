@@ -1,0 +1,1311 @@
+diff --git a/crates/egress-gateway/Cargo.toml b/crates/egress-gateway/Cargo.toml
+index 8b103ee..7d4f3bf 100644
+--- a/crates/egress-gateway/Cargo.toml
++++ b/crates/egress-gateway/Cargo.toml
+@@ -24,6 +24,8 @@ tls-intercept = [
+     "dep:rcgen",
+ ]
+ 
++request-exchange = ["tls-intercept", "dep:tokio"]
++
+ [dependencies]
+ serde = { version = "1", features = ["derive"] }
+ # The credential vault (mint half). This is the ONE-WAY dependency the mint/inject
+@@ -62,9 +64,14 @@ ring = { version = "0.17", optional = true }
+ # X.509 cert generation for the ephemeral CA + per-host leaves (ring backend, matching rustls).
+ rcgen = { version = "0.14", optional = true, default-features = false, features = ["ring", "pem"] }
+ 
++# Only the opt-in terminal exchange uses an async, cancel-safe connect.
++tokio = { version = "1", optional = true, features = ["net"] }
++
+ [dev-dependencies]
+ # The full-interception E2E stands up a real TLS upstream and a real TLS workload client (both
+ # trusting the ephemeral CA) so a request is genuinely intercepted end-to-end over TLS.
+ rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+ rustls-pki-types = "1"
+ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
++tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
++tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+diff --git a/crates/egress-gateway/src/intercept/mitm/exchange.rs b/crates/egress-gateway/src/intercept/mitm/exchange.rs
+new file mode 100644
+index 0000000..350f65f
+--- /dev/null
++++ b/crates/egress-gateway/src/intercept/mitm/exchange.rs
+@@ -0,0 +1,144 @@
++//! The trusted terminal sender for one inspected HTTPS request.
++
++use super::SharedState;
++use super::connect::ConnectRequest;
++use super::http1::{MAX_HEAD_BYTES, ParsedResponse, is_token_byte};
++use super::listener::claim_address;
++use crate::{EffectOutcome, HeaderMap, RequestId, Target};
++use std::io;
++use std::net::{IpAddr, SocketAddr};
++use tokio::net::TcpStream;
++
++/// A trusted sender that authenticates TLS, bounds I/O, sends at most once and returns only releasable bytes.
++pub trait RequestExchange: Send + Sync {
++    /// Complete one exchange on the supplied origin, without redirects, retries or another connection.
++    fn exchange(&self, request: DelegatedRequest<'_>) -> Result<DelegatedReply, DelegatedFailure>;
++}
++
++/// The complete canonical request after CONNECT binding, request controls and policy admission.
++pub struct DelegatedRequest<'a> {
++    /// The inspected authority, path and query.
++    pub target: &'a Target,
++    /// The admitted HTTP method.
++    pub method: &'a str,
++    /// End-to-end headers, without the client's proxy authorization or transport framing.
++    pub headers: &'a HeaderMap,
++    /// The complete request body after canonicalization.
++    pub body: &'a [u8],
++    /// The only origin connection opportunity for this request.
++    pub origin: ExchangeOrigin<'a>,
++}
++
++/// A single-use connection opportunity bound to the inspected host and port.
++pub struct ExchangeOrigin<'a> {
++    pub(super) state: &'a SharedState,
++    pub(super) connect: &'a ConnectRequest,
++    pub(super) correlation: &'a RequestId,
++}
++
++impl ExchangeOrigin<'_> {
++    /// Authorize and dial exactly this pinned address, marking the connect indeterminate if canceled.
++    pub async fn connect(self, ip: IpAddr) -> io::Result<TcpStream> {
++        let address = SocketAddr::new(ip, self.connect.port);
++        let permit = claim_address(self.state, self.connect, address, self.correlation)?;
++        let stream = match TcpStream::connect(address).await {
++            Ok(stream) => stream,
++            Err(error) => {
++                permit.record_outcome(EffectOutcome::ConnectFailed(error.kind()))?;
++                return Err(error);
++            }
++        };
++        let peer = stream.peer_addr()?;
++        if peer != address {
++            return Err(io::Error::other(
++                "origin peer differs from the admitted address",
++            ));
++        }
++        permit.record_outcome(EffectOutcome::Connected(peer))?;
++        Ok(stream)
++    }
++}
++
++/// A complete sender-approved response, still subject to the gateway's response controls and release permit.
++pub struct DelegatedReply {
++    /// A final HTTP status in 200 through 599.
++    pub status: u16,
++    /// End-to-end response headers, without transport framing.
++    pub headers: HeaderMap,
++    /// The bounded body approved for this workload.
++    pub body: Vec<u8>,
++    /// Request bytes accepted by the origin transport, not a claim that the server acted on them.
++    pub accepted_bytes: usize,
++}
++
++impl DelegatedReply {
++    pub(super) fn into_response(
++        self,
++        max_body: usize,
++    ) -> Result<(ParsedResponse, usize), DelegatedFailure> {
++        let Self {
++            status,
++            headers,
++            body,
++            accepted_bytes,
++        } = self;
++        let mut head_bytes = 64;
++        let valid = (200..=599).contains(&status)
++            && body.len() <= max_body
++            && headers.iter().all(|(n, v)| {
++                head_bytes += n.len() + v.len() + 4;
++                head_bytes <= MAX_HEAD_BYTES
++                    && !n.is_empty()
++                    && n.bytes().all(is_token_byte)
++                    && v.bytes().all(|b| b == b'\t' || (b >= 0x20 && b != 0x7f))
++            });
++        if !valid {
++            return Err(DelegatedFailure::Uncertain { accepted_bytes });
++        }
++        Ok((
++            ParsedResponse {
++                status,
++                headers,
++                body,
++            },
++            accepted_bytes,
++        ))
++    }
++}
++
++/// A definite failure before HTTP dispatch or an indeterminate dispatch that must not be retried.
++pub enum DelegatedFailure {
++    /// Refused before sending any HTTP bytes.
++    Refused,
++    /// Unavailable before sending any HTTP bytes.
++    Unavailable,
++    /// Dispatch was possible, but no complete response was approved for release.
++    Uncertain {
++        /// Known accepted request bytes, possibly zero even when dispatch cannot be excluded.
++        accepted_bytes: usize,
++    },
++}
++
++impl DelegatedFailure {
++    pub(super) fn disposition(self) -> (EffectOutcome, u16, &'static [u8]) {
++        let (error_kind, status) = match self {
++            Self::Refused => (io::ErrorKind::PermissionDenied, 403),
++            Self::Unavailable => (io::ErrorKind::NotConnected, 502),
++            Self::Uncertain { accepted_bytes } => {
++                return (
++                    EffectOutcome::Indeterminate { accepted_bytes },
++                    502,
++                    b"origin dispatch is uncertain; the gateway did not retry",
++                );
++            }
++        };
++        (
++            EffectOutcome::Failed {
++                accepted_bytes: 0,
++                error_kind,
++            },
++            status,
++            b"request not sent",
++        )
++    }
++}
+diff --git a/crates/egress-gateway/src/intercept/mitm/http1.rs b/crates/egress-gateway/src/intercept/mitm/http1.rs
+index b909b33..850e565 100644
+--- a/crates/egress-gateway/src/intercept/mitm/http1.rs
++++ b/crates/egress-gateway/src/intercept/mitm/http1.rs
+@@ -36,7 +36,7 @@ pub(super) struct ParsedResponse {
+ ///
+ /// That sentence was false for as long as `read_head` used `read_until`, which appended a whole line
+ /// before the check and so bounded the line *count*. `read_head` now checks before each copy.
+-const MAX_HEAD_BYTES: usize = 64 * 1024;
++pub(super) const MAX_HEAD_BYTES: usize = 64 * 1024;
+ 
+ /// Maximum wire length of one chunk-size or trailer line, including its terminating CRLF.
+ const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
+@@ -159,7 +159,7 @@ fn uses_chunked_transfer_encoding(headers: &HeaderMap) -> Result<bool> {
+ }
+ 
+ /// Whether a byte is valid in an HTTP token (RFC 9110 section 5.6.2).
+-fn is_token_byte(byte: u8) -> bool {
++pub(super) fn is_token_byte(byte: u8) -> bool {
+     byte.is_ascii_alphanumeric()
+         || matches!(
+             byte,
+diff --git a/crates/egress-gateway/src/intercept/mitm/l7.rs b/crates/egress-gateway/src/intercept/mitm/l7.rs
+index 89cbdd8..d8a9f35 100644
+--- a/crates/egress-gateway/src/intercept/mitm/l7.rs
++++ b/crates/egress-gateway/src/intercept/mitm/l7.rs
+@@ -25,14 +25,31 @@ use crate::mcp::{
+     remove_dot_segments,
+ };
+ 
+-/// Terminate the client's TLS, run the L7 legs, and forward to the pinned upstream.
+-///
+-/// A thin transport wrapper: it does the TLS-specific setup (present a per-host leaf, open the
+-/// upstream TLS), reads the request, checks the CONNECT binding, then hands the shared request and
+-/// response legs to [`run_l7_legs`].
++/// The exclusive forwarding path as it moves from CONNECT through request inspection.
++#[derive(Clone)]
++pub(super) enum Transport<T> {
++    Direct(T),
++    #[cfg(feature = "request-exchange")]
++    Exchange(Arc<dyn super::RequestExchange>),
++}
++
++impl<T> Transport<T> {
++    pub(super) fn try_map<U, E>(
++        self,
++        direct: impl FnOnce(T) -> std::result::Result<U, E>,
++    ) -> std::result::Result<Transport<U>, E> {
++        match self {
++            Self::Direct(value) => direct(value).map(Transport::Direct),
++            #[cfg(feature = "request-exchange")]
++            Self::Exchange(exchange) => Ok(Transport::Exchange(exchange)),
++        }
++    }
++}
++
++/// Inspect the client's TLS, bind the request to CONNECT, then run the governed exchange.
+ pub(super) fn intercept_tls<C: Read + Write>(
+     client: C,
+-    upstream: TcpStream,
++    upstream: Transport<TcpStream>,
+     connect: &ConnectRequest,
+     state: &SharedState,
+     correlation: RequestId,
+@@ -53,14 +70,15 @@ pub(super) fn intercept_tls<C: Read + Write>(
+     // --- Request leg: read plaintext, then run the shared legs ---
+     let parsed = http1::read_request(&mut client_tls, state.config.response_limits.max_body_bytes)?;
+ 
+-    // --- Client side: connect to the pinned upstream over the additive trust bundle ---
+-    // The listener already opened this exact pinned socket under the Connect lifecycle. A TLS
+-    // handshake failure here is a hard-fail drop, never a second socket attempt.
+-    let mut upstream_tls = BufReader::new(start_upstream_tls(
+-        &connect.host,
+-        Bounded::new(upstream, state.config.upstream_read_deadline),
+-        state,
+-    )?);
++    // Only direct forwarding has an open origin here; failure never causes a second dial.
++    let upstream_tls = upstream.try_map(|stream| {
++        start_upstream_tls(
++            &connect.host,
++            Bounded::new(stream, state.config.upstream_read_deadline),
++            state,
++        )
++        .map(BufReader::new)
++    })?;
+     let correlation = correlation.with_headers(&parsed.headers);
+     // Pre-leg binding: the inner request must name the CONNECT authority, before any mutation.
+     if let Err(error) =
+@@ -113,7 +131,7 @@ pub(super) fn intercept_tls<C: Read + Write>(
+     run_l7_legs(
+         connect,
+         req,
+-        &mut upstream_tls,
++        upstream_tls,
+         client_tls.get_mut(),
+         state,
+         correlation,
+@@ -122,19 +140,12 @@ pub(super) fn intercept_tls<C: Read + Write>(
+     )
+ }
+ 
+-/// Run the shared L7 request/response legs over an already-open client writer and upstream stream.
+-///
+-/// Both the TLS ([`intercept_tls`]) and plain-HTTP ([`forward_plain`]) paths converge here after
+-/// their transport-specific setup: `req` is the parsed request, `upstream` the buffered upstream,
+-/// and `client_writer` the sink for diagnostics and the governed response. `revalidate` runs after
+-/// the credential mutation — the TLS path re-checks the CONNECT binding there; plain HTTP has no
+-/// authority to bind, so it passes a no-op. Every control (request/response legs, effect lifecycle,
+-/// audit) fires identically for both.
++/// Apply request policy, use the selected transport, then apply response and release controls.
+ #[allow(clippy::too_many_arguments)]
+ fn run_l7_legs<S, CW>(
+     connect: &ConnectRequest,
+     mut req: InterceptedRequest,
+-    upstream: &mut BufReader<S>,
++    upstream: Transport<BufReader<S>>,
+     client_writer: &mut CW,
+     state: &SharedState,
+     correlation: RequestId,
+@@ -294,14 +305,17 @@ where
+         }
+         _ => Cow::Borrowed(req.body.as_bytes()),
+     };
+-    let mut prepared_request = Zeroizing::new(Vec::new());
+-    http1::write_request(
+-        &mut *prepared_request,
+-        &request_method,
+-        &fwd_target,
+-        &req.headers,
+-        &forwarded_body,
+-    )?;
++    let upstream = upstream.try_map(|stream| {
++        let mut prepared_request = Zeroizing::new(Vec::new());
++        http1::write_request(
++            &mut *prepared_request,
++            &request_method,
++            &fwd_target,
++            &req.headers,
++            &forwarded_body,
++        )?;
++        Ok::<_, ProxyError>((stream, prepared_request))
++    })?;
+     let request_attempt = EffectAttempt::HttpRequest {
+         host: &connect.host,
+         port: connect.port,
+@@ -378,34 +392,69 @@ where
+         correlation.clone(),
+     );
+     // The request permit is consumed at reply time, or when no reply comes.
+-    let (request_permit, request_bytes) = deliver_or_record_failure(
+-        upstream.get_mut(),
+-        &prepared_request,
+-        request_permit,
+-        "upstream request",
+-    )?;
+-
+-    // --- Response leg: read, evaluate+apply, return ---
+-    let parsed_res = match http1::read_response(
+-        &mut *upstream,
+-        &request_method,
+-        state.config.response_limits.max_body_bytes,
+-    ) {
+-        Ok(parsed_res) => parsed_res,
+-        Err(failure) => {
+-            let outcome = match failure.status {
+-                Some(status) => EffectOutcome::Replied {
+-                    accepted_bytes: request_bytes,
+-                    status,
++    let (parsed_res, request_permit, request_bytes) = match upstream {
++        Transport::Direct((mut upstream, prepared_request)) => {
++            let (request_permit, request_bytes) = deliver_or_record_failure(
++                upstream.get_mut(),
++                &prepared_request,
++                request_permit,
++                "upstream request",
++            )?;
++
++            // --- Response leg: read, evaluate+apply, return ---
++            let parsed_res = match http1::read_response(
++                &mut upstream,
++                &request_method,
++                state.config.response_limits.max_body_bytes,
++            ) {
++                Ok(parsed_res) => parsed_res,
++                Err(failure) => {
++                    let outcome = match failure.status {
++                        Some(status) => EffectOutcome::Replied {
++                            accepted_bytes: request_bytes,
++                            status,
++                        },
++                        None => EffectOutcome::Completed(request_bytes),
++                    };
++                    request_permit.record_outcome(outcome).map_err(|error| {
++                        ProxyError::Io(format!(
++                            "recording upstream request outcome after a failed reply: {error}"
++                        ))
++                    })?;
++                    return Err(failure.error);
++                }
++            };
++            (parsed_res, request_permit, request_bytes)
++        }
++        #[cfg(feature = "request-exchange")]
++        Transport::Exchange(exchange) => {
++            use super::exchange::{DelegatedRequest, ExchangeOrigin};
++            req.headers.remove("Content-Length");
++            let delegated = DelegatedRequest {
++                target: &req.target,
++                method: &request_method,
++                headers: &req.headers,
++                body: &forwarded_body,
++                origin: ExchangeOrigin {
++                    state,
++                    connect,
++                    correlation: &correlation,
+                 },
+-                None => EffectOutcome::Completed(request_bytes),
+             };
+-            request_permit.record_outcome(outcome).map_err(|error| {
+-                ProxyError::Io(format!(
+-                    "recording upstream request outcome after a failed reply: {error}"
+-                ))
+-            })?;
+-            return Err(failure.error);
++            match exchange
++                .exchange(delegated)
++                .and_then(|reply| reply.into_response(state.config.response_limits.max_body_bytes))
++            {
++                Ok((response, bytes)) => (response, request_permit, bytes),
++                Err(failure) => {
++                    let (outcome, status, message) = failure.disposition();
++                    request_permit.record_outcome(outcome).map_err(|_| {
++                        ProxyError::Io("recording delegated request outcome".into())
++                    })?;
++                    write_trusted_diagnostic(client_writer, &request_method, status, message);
++                    return Ok(());
++                }
++            }
+         }
+     };
+     request_permit
+@@ -566,8 +615,7 @@ pub(super) fn forward_plain(
+     state: &SharedState,
+     correlation: RequestId,
+ ) -> Result<()> {
+-    let mut upstream_buf =
+-        BufReader::new(Bounded::new(upstream, state.config.upstream_read_deadline));
++    let upstream_buf = BufReader::new(Bounded::new(upstream, state.config.upstream_read_deadline));
+ 
+     // Build the canonical forward target and the "secret must ride TLS" refusal together, so the path
+     // is canonicalized BEFORE the credential-control match (see the helper). Judging the raw spelling
+@@ -641,7 +689,7 @@ pub(super) fn forward_plain(
+     run_l7_legs(
+         connect,
+         req,
+-        &mut upstream_buf,
++        Transport::Direct(upstream_buf),
+         client_writer,
+         state,
+         correlation,
+diff --git a/crates/egress-gateway/src/intercept/mitm/listener.rs b/crates/egress-gateway/src/intercept/mitm/listener.rs
+index b119d6d..11aaa72 100644
+--- a/crates/egress-gateway/src/intercept/mitm/listener.rs
++++ b/crates/egress-gateway/src/intercept/mitm/listener.rs
+@@ -10,6 +10,7 @@ use crate::audit::RequestId;
+ 
+ use super::SharedState;
+ use super::connect::{self, ConnectRequest};
++use super::l7::Transport;
+ use super::resolve::PinnedDestination;
+ use crate::audit::{Decision as AuditDecision, EgressDecision, NetworkAuditEvent};
+ use crate::effect::{ClaimedEffectPermit, EffectAttempt, EffectOutcome};
+@@ -115,6 +116,11 @@ fn dispatch_connection(mut client: TcpStream, state: &SharedState) -> Result<(),
+     match connect::parse_connect(&head) {
+         // HTTPS via CONNECT: terminate TLS and inspect.
+         Some(connect) => handle_tls_connect(client, connect, state),
++        #[cfg(feature = "request-exchange")]
++        None if matches!(state.transport, Transport::Exchange(_)) => {
++            write_status(&mut client, 403, "TLS inspection required")
++                .map_err(|e| ProxyError::Io(e.to_string()))
++        }
+         // Not a CONNECT. Treat it as a plain-HTTP absolute-form request — the same controls apply
+         // (net:connect and the L7 legs), over plaintext with no CONNECT ack. The CONNECT-only
+         // v1 used to 400 here.
+@@ -124,7 +130,7 @@ fn dispatch_connection(mut client: TcpStream, state: &SharedState) -> Result<(),
+ 
+ /// Handle one CONNECT (HTTPS) connection: run the shared L4 controls, terminate TLS, run the L7 legs.
+ fn handle_tls_connect(
+-    mut client: TcpStream,
++    mut client: impl Read + Write,
+     connect: ConnectRequest,
+     state: &SharedState,
+ ) -> Result<(), ProxyError> {
+@@ -139,10 +145,15 @@ fn handle_tls_connect(
+ 
+     let correlation = RequestId::unique();
+ 
+-    // Shared L4: the pre-resolution `net:connect`, resolve-once/pin, and the per-address
+-    // `net:connect` effect. Claimed and opened BEFORE the CONNECT ack, so a denial returns 403 without
+-    // creating a socket or exposing a false tunnel.
+-    let upstream = match open_governed_upstream(state, &connect, &correlation) {
++    // Direct mode opens the pinned origin before the acknowledgment. A terminal exchange
++    // authorizes the host here and opens an origin only after we inspect and admit the request.
++    let upstream = authorize_resolution(state, &connect, &correlation).and_then(|()| {
++        state
++            .transport
++            .clone()
++            .try_map(|()| open_authorized_upstream(state, &connect, &correlation))
++    });
++    let upstream = match upstream {
+         Ok(upstream) => upstream,
+         Err(error) => {
+             error.write_response(&mut client, "CONNECT");
+@@ -150,7 +161,7 @@ fn handle_tls_connect(
+         }
+     };
+ 
+-    // The upstream is open and its outcome was recorded; now let the client proceed.
++    // Acknowledge an inspection session, never an opaque tunnel.
+     client
+         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+         .map_err(|e| ProxyError::Io(format!("writing CONNECT ack: {e}")))?;
+@@ -182,7 +193,7 @@ fn handle_tls_connect(
+ /// A workload dialing an `http://` URL through the proxy sends an absolute-form request rather than a
+ /// CONNECT. This runs the identical controls as the CONNECT path — `net:connect`, and
+ /// then the L7 request/response legs over plaintext (`http:request` + credential injection) — reusing
+-/// [`open_governed_upstream`] and [`super::l7::forward_plain`]. There is no TLS termination and no
++/// [`open_authorized_upstream`] and [`super::l7::forward_plain`]. There is no TLS termination and no
+ /// CONNECT ack.
+ fn handle_plain_http(
+     client: TcpStream,
+@@ -239,7 +250,9 @@ fn handle_plain_http(
+ 
+     // Shared L4: the pre-resolution `net:connect`, resolve-once/pin, and the per-address
+     // `net:connect` effect — identical to the CONNECT path. No CONNECT ack for a plain-HTTP request.
+-    let upstream = match open_governed_upstream(state, &connect, &correlation) {
++    let upstream = match authorize_resolution(state, &connect, &correlation)
++        .and_then(|()| open_authorized_upstream(state, &connect, &correlation))
++    {
+         Ok(upstream) => upstream,
+         Err(error) => {
+             error.write_response(&mut writer, &parsed.method);
+@@ -296,11 +309,7 @@ pub(super) fn accept_loop_unix(
+     }
+ }
+ 
+-/// Handle one AF_UNIX client connection end-to-end. Mirrors [`handle_tls_connect`]
+-/// step for step — read CONNECT head, best-effort token check, the shared L4 controls, then the L7
+-/// legs — differing only in the client leg's type (`UnixStream`). It stays CONNECT-only: a non-CONNECT
+-/// head is a 400, because the AF_UNIX pin has no plain-HTTP client. The shared L4 controls
+-/// ([`open_governed_upstream`]) and the L7 path ([`super::l7::intercept_tls`]) are reused unchanged.
++/// Require CONNECT on the Unix client transport, then use the same inspection path as TCP.
+ fn handle_connection_unix(mut client: UnixStream, state: &SharedState) -> Result<(), ProxyError> {
+     // 1. Read the CONNECT head. Same byte-exact protocol as the TCP path.
+     let head = match read_until_headers_end(&mut client) {
+@@ -315,38 +324,7 @@ fn handle_connection_unix(mut client: UnixStream, state: &SharedState) -> Result
+         }
+     };
+ 
+-    // 2. Best-effort token check — never the primary defense.
+-    if !connect::token_ok(
+-        state.expected_token.as_deref(),
+-        connect.proxy_authorization.as_deref(),
+-    ) {
+-        let _ = write_status(&mut client, 407, "proxy authentication required");
+-        return Ok(());
+-    }
+-
+-    let correlation = RequestId::unique();
+-
+-    // Shared L4: the pre-resolution `net:connect`, resolve-once/pin, and the per-address
+-    // `net:connect` effect — transport-agnostic, so the AF_UNIX path reuses it unchanged. Opened
+-    // before the CONNECT ack, exactly as on the TCP client path.
+-    let upstream = match open_governed_upstream(state, &connect, &correlation) {
+-        Ok(upstream) => upstream,
+-        Err(error) => {
+-            error.write_response(&mut client, "CONNECT");
+-            return Ok(());
+-        }
+-    };
+-
+-    // The upstream is open and its outcome was recorded; now let the client proceed.
+-    client
+-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+-        .map_err(|e| ProxyError::Io(format!("writing CONNECT ack: {e}")))?;
+-
+-    // Same generic L7 interception as the TCP path — `intercept_tls` is generic over the client
+-    // stream, so the `UnixStream` client flows through unchanged. Termination is
+-    // unconditional here for the same reason as the TCP path.
+-    super::l7::intercept_tls(client, upstream, &connect, state, correlation)?;
+-    Ok(())
++    handle_tls_connect(client, connect, state)
+ }
+ 
+ /// A failure before CONNECT can be acknowledged.
+@@ -375,19 +353,12 @@ impl OpenUpstreamError {
+     }
+ }
+ 
+-/// Run the shared L4 controls for one destination and open the governed upstream.
+-///
+-/// The pre-resolution `net:connect`, resolve-once/pin, and the per-address `net:connect`
+-/// effect ([`open_upstream`]) are identical for every transport (TCP, AF_UNIX) and every request
+-/// shape (CONNECT, plain HTTP), so all three handlers converge here. On refusal it pushes the audit
+-/// event and returns the refusal the caller writes to its own client stream; on success
+-/// it returns the open upstream socket. The caller owns acknowledging CONNECT (or not) and running
+-/// the L7 legs.
+-fn open_governed_upstream(
++/// Authorize the host before resolution or acknowledgment of an inspection session.
++fn authorize_resolution(
+     state: &SharedState,
+     connect: &ConnectRequest,
+     correlation: &RequestId,
+-) -> std::result::Result<TcpStream, OpenUpstreamError> {
++) -> std::result::Result<(), OpenUpstreamError> {
+     // Policy decides the host before it is resolved, so a denied destination sends no DNS query: a
+     // workload cannot carry data out in the labels of a name the gateway looks up and then refuses.
+     // The per-address `net:connect` below still decides every resolved address.
+@@ -420,6 +391,15 @@ fn open_governed_upstream(
+         }
+     }
+ 
++    Ok(())
++}
++
++/// Resolve and govern an origin for direct forwarding, after the host decision.
++fn open_authorized_upstream(
++    state: &SharedState,
++    connect: &ConnectRequest,
++    correlation: &RequestId,
++) -> std::result::Result<TcpStream, OpenUpstreamError> {
+     // Resolve-once + pin, honoring any supervisor DNS override. A resolution failure
+     // is a hard 502, never a retry.
+     let override_ip = state.dns_override(&connect.host);
+@@ -466,54 +446,13 @@ fn open_upstream(
+     for address in pinned.pinned_addrs() {
+         // Each pinned address is its own authorization: the address authorized is the address
+         // dialed, so a fallback cannot ride the first address's permit.
+-        let attempt = EffectAttempt::Connect {
+-            host: &connect.host,
+-            port: connect.port,
+-            address,
+-            // **Unconditionally true, so TLS termination is never selective.** Every connection is
+-            // terminated and inspected; no opaque-tunnel path exists.
+-            //
+-            // This arrived through three layers — a `SharedState::route_needs_http` that returned
+-            // `true` for every route, a `needs_http` local at each caller, and a parameter on this
+-            // function. All three are gone. A maintainer reading them went looking for the selective
+-            // path they implied, and there was none to find.
+-            //
+-            // The field stays because `EffectAttempt` is in this crate's frozen `lib.rs` `pub use`
+-            // set, and it is an attribute a policy adapter could expose to a rule. Its one production
+-            // consumer, `policy`'s egress adapter, discards it today.
+-            http_visibility: true,
+-        };
+-        let permit = match state.effect_interceptor.intercept(&attempt) {
+-            Ok(permit) => ClaimedEffectPermit::new(permit),
+-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+-                emit_connect_decision(
+-                    state,
+-                    connect,
+-                    AuditDecision::Deny,
+-                    &error.to_string(),
+-                    correlation.clone(),
+-                );
+-                return Err(OpenUpstreamError::Denied(error));
+-            }
+-            Err(error) => {
+-                emit_connect_decision(
+-                    state,
+-                    connect,
+-                    AuditDecision::Deny,
+-                    &error.to_string(),
+-                    correlation.clone(),
+-                );
+-                return Err(OpenUpstreamError::Failed);
++        let permit = claim_address(state, connect, address, correlation).map_err(|error| {
++            if error.kind() == io::ErrorKind::PermissionDenied {
++                OpenUpstreamError::Denied(error)
++            } else {
++                OpenUpstreamError::Failed
+             }
+-        };
+-        emit_connect_decision(
+-            state,
+-            connect,
+-            AuditDecision::Allow,
+-            "",
+-            correlation.clone(),
+-        );
+-
++        })?;
+         let upstream = match TcpStream::connect(address) {
+             Ok(upstream) => upstream,
+             Err(error) => {
+@@ -540,6 +479,30 @@ fn open_upstream(
+     Err(OpenUpstreamError::Failed)
+ }
+ 
++/// Claim this exact address for an inspected connection, in either forwarding mode.
++pub(super) fn claim_address(
++    state: &SharedState,
++    connect: &ConnectRequest,
++    address: std::net::SocketAddr,
++    correlation: &RequestId,
++) -> io::Result<ClaimedEffectPermit> {
++    let result = state
++        .effect_interceptor
++        .intercept(&EffectAttempt::Connect {
++            host: &connect.host,
++            port: connect.port,
++            address,
++            http_visibility: true,
++        })
++        .map(ClaimedEffectPermit::new);
++    let (decision, reason) = match &result {
++        Ok(_) => (AuditDecision::Allow, String::new()),
++        Err(error) => (AuditDecision::Deny, error.to_string()),
++    };
++    emit_connect_decision(state, connect, decision, &reason, correlation.clone());
++    result
++}
++
+ fn emit_connect_decision(
+     state: &SharedState,
+     connect: &ConnectRequest,
+@@ -828,6 +791,7 @@ mod tests {
+             audit: crate::audit::SharedAuditLog::new(),
+             emitter: Box::new(StubEmitter::new()),
+             effect_interceptor: policy,
++            transport: Transport::Direct(()),
+             expected_token: None,
+         }
+     }
+diff --git a/crates/egress-gateway/src/intercept/mitm/mod.rs b/crates/egress-gateway/src/intercept/mitm/mod.rs
+index ae83ca9..d0d8b1b 100644
+--- a/crates/egress-gateway/src/intercept/mitm/mod.rs
++++ b/crates/egress-gateway/src/intercept/mitm/mod.rs
+@@ -3,6 +3,8 @@
+ mod ca;
+ mod connect;
+ mod diagnostic;
++#[cfg(feature = "request-exchange")]
++mod exchange;
+ mod handle;
+ mod http1;
+ mod l7;
+@@ -22,6 +24,7 @@ use rustls::ClientConfig;
+ 
+ use self::ca::EphemeralCa;
+ use self::handle::{BoundTransport, CredentialEnv};
++use self::l7::Transport;
+ use crate::audit::SharedAuditLog;
+ use crate::capability::CapabilitySet;
+ use crate::effect::EffectInterceptor;
+@@ -29,6 +32,10 @@ use crate::error::{ProxyError, Result};
+ use crate::intercept::Interceptor;
+ use crate::seams::{Emitter, StubEmitter};
+ 
++#[cfg(feature = "request-exchange")]
++pub use exchange::{
++    DelegatedFailure, DelegatedReply, DelegatedRequest, ExchangeOrigin, RequestExchange,
++};
+ pub use handle::MitmHandle;
+ 
+ /// Response size/content limits enforced on the response leg.
+@@ -84,9 +91,9 @@ pub struct MitmConfig {
+     /// The longest one exchange waits on its upstream socket, per read or write and in total;
+     /// defaults to 300 seconds.
+     pub upstream_read_deadline: std::time::Duration,
+-    /// The maximum number of connections handled concurrently. The adapter is thread-per-connection
+-    /// (this crate pulls in no async runtime), so this bounds the thread count: excess connections wait
+-    /// for a slot rather than spawning unbounded OS threads. The workload is contained but *untrusted*
++    /// The maximum number of connections handled concurrently. The adapter is thread-per-connection,
++    /// so this bounds the thread count: excess connections wait for a slot rather than spawning
++    /// unbounded OS threads. The workload is contained but *untrusted*
+     /// (it is the very thing this crate exists to contain), so the cap is a hard backpressure limit,
+     /// not an optimization. Defaults to 256.
+     pub max_connections: usize,
+@@ -135,6 +142,7 @@ pub(crate) struct SharedState {
+     emitter: Box<dyn Emitter>,
+     /// The authorization authority for every outbound effect.
+     effect_interceptor: Arc<dyn EffectInterceptor>,
++    transport: Transport<()>,
+     /// The best-effort proxy session token.
+     expected_token: Option<String>,
+ }
+@@ -193,6 +201,7 @@ impl MitmInterceptor {
+             Box::new(StubEmitter::new()),
+             effect_interceptor,
+             None,
++            Transport::Direct(()),
+         )
+     }
+ 
+@@ -203,7 +212,14 @@ impl MitmInterceptor {
+         effect_interceptor: Arc<dyn EffectInterceptor>,
+         emitter: Box<dyn Emitter>,
+     ) -> Result<MitmHandle> {
+-        Self::start_inner(config, credentials, emitter, effect_interceptor, None)
++        Self::start_inner(
++            config,
++            credentials,
++            emitter,
++            effect_interceptor,
++            None,
++            Transport::Direct(()),
++        )
+     }
+ 
+     /// Start with an already-open file for the public interception CA.
+@@ -220,6 +236,24 @@ impl MitmInterceptor {
+             emitter,
+             effect_interceptor,
+             Some(ca_file),
++            Transport::Direct(()),
++        )
++    }
++
++    /// Inspect HTTPS with Box policy, then give a trusted sender the only opportunity to forward it.
++    #[cfg(feature = "request-exchange")]
++    pub fn start_with_request_exchange(
++        config: MitmConfig,
++        effect_interceptor: Arc<dyn EffectInterceptor>,
++        exchange: Arc<dyn RequestExchange>,
++    ) -> Result<MitmHandle> {
++        Self::start_inner(
++            config,
++            CapabilitySet::default(),
++            Box::new(StubEmitter::new()),
++            effect_interceptor,
++            None,
++            Transport::Exchange(exchange),
+         )
+     }
+ 
+@@ -229,6 +263,7 @@ impl MitmInterceptor {
+         emitter: Box<dyn Emitter>,
+         effect_interceptor: Arc<dyn EffectInterceptor>,
+         ca_file: Option<&std::fs::File>,
++        transport: Transport<()>,
+     ) -> Result<MitmHandle> {
+         // The MITM adapter's max visibility is `Http` when tls-intercept is on (this compile), so a
+         // Control needing Http is satisfiable. Validate the set fail-closed.
+@@ -262,6 +297,7 @@ impl MitmInterceptor {
+             audit: audit.clone(),
+             emitter,
+             effect_interceptor,
++            transport,
+             expected_token,
+         });
+ 
+diff --git a/crates/egress-gateway/src/intercept/mitm/request_leg.rs b/crates/egress-gateway/src/intercept/mitm/request_leg.rs
+index d70a057..d8a90d3 100644
+--- a/crates/egress-gateway/src/intercept/mitm/request_leg.rs
++++ b/crates/egress-gateway/src/intercept/mitm/request_leg.rs
+@@ -19,11 +19,7 @@ pub(super) fn evaluate_and_apply(
+     req: &mut InterceptedRequest,
+     cx: &CapabilityContext,
+ ) -> RequestDecision {
+-    // The Request scope runs HTTP guards and credential controls deny-overrides;
+-    // the Connection gate (DNS/IP) already authorized the connection on the pinned IPs at the
+-    // Connection phase and is not re-run here. The adapter has already AND-ed the Connection
+-    // verdict (a Deny there blocked before this leg), so a Request-scope Allow here is the final
+-    // Allow for a TLS-terminated route.
++    // The adapter authorizes the address when it opens the origin, which may follow this leg.
+     match controls.evaluate_request(req, cx) {
+         Verdict::Allow { mutations } => {
+             apply_all(mutations, req);
+diff --git a/crates/egress-gateway/src/intercept/mod.rs b/crates/egress-gateway/src/intercept/mod.rs
+index 3da5ba0..ae78de7 100644
+--- a/crates/egress-gateway/src/intercept/mod.rs
++++ b/crates/egress-gateway/src/intercept/mod.rs
+@@ -9,3 +9,8 @@ pub use port::Interceptor;
+ 
+ #[cfg(feature = "tls-intercept")]
+ pub use mitm::{MitmConfig, MitmHandle, MitmInterceptor, ResponseLimits};
++
++#[cfg(feature = "request-exchange")]
++pub use mitm::{
++    DelegatedFailure, DelegatedReply, DelegatedRequest, ExchangeOrigin, RequestExchange,
++};
+diff --git a/crates/egress-gateway/src/lib.rs b/crates/egress-gateway/src/lib.rs
+index 1742a8f..63d6020 100644
+--- a/crates/egress-gateway/src/lib.rs
++++ b/crates/egress-gateway/src/lib.rs
+@@ -32,3 +32,8 @@ pub use seams::{Emitter, StubEmitter};
+ 
+ #[cfg(feature = "tls-intercept")]
+ pub use intercept::{MitmConfig, MitmHandle, MitmInterceptor, ResponseLimits};
++
++#[cfg(feature = "request-exchange")]
++pub use intercept::{
++    DelegatedFailure, DelegatedReply, DelegatedRequest, ExchangeOrigin, RequestExchange,
++};
+diff --git a/crates/egress-gateway/tests/effect_interception.rs b/crates/egress-gateway/tests/effect_interception.rs
+index 4a3cf6b..28394a9 100644
+--- a/crates/egress-gateway/tests/effect_interception.rs
++++ b/crates/egress-gateway/tests/effect_interception.rs
+@@ -1142,3 +1142,7 @@ fn attempt_schema_never_carries_body_or_header_content() {
+         );
+     }
+ }
++
++#[cfg(feature = "request-exchange")]
++#[path = "effect_interception/terminal_exchange/mod.rs"]
++mod terminal_exchange;
+diff --git a/crates/egress-gateway/tests/effect_interception/terminal_exchange/mod.rs b/crates/egress-gateway/tests/effect_interception/terminal_exchange/mod.rs
+new file mode 100644
+index 0000000..df2f348
+--- /dev/null
++++ b/crates/egress-gateway/tests/effect_interception/terminal_exchange/mod.rs
+@@ -0,0 +1,303 @@
++//! The post-policy sender is terminal, including on cancellation, refusal and uncertain dispatch.
++use super::*;
++use egress_gateway::{DelegatedFailure, DelegatedReply, DelegatedRequest, RequestExchange};
++use std::io::{Read, Write};
++use std::net::Ipv4Addr;
++
++mod receipt;
++
++#[test]
++fn confirmed_receipt_is_released_but_receiver_data_and_caller_credentials_are_not() {
++    receipt_case(receipt::REPLY, None, "receipt confirmed");
++}
++
++#[test]
++fn incomplete_receipt_is_indeterminate_and_is_not_retried_or_released() {
++    receipt_case(
++        &receipt::REPLY[..receipt::REPLY.len() - 1],
++        None,
++        "dispatch is uncertain",
++    );
++}
++
++#[test]
++fn response_policy_can_withhold_the_confirmed_receipt() {
++    receipt_case(receipt::REPLY, Some(EffectKind::ResponseRelease), "403");
++}
++
++fn receipt_case(wire: &'static [u8], deny: Option<EffectKind>, expected: &str) {
++    let host = "receipt.test";
++    let receiver = TlsUpstream::start_with_response(host, wire);
++    let events = Arc::new(Mutex::new(Vec::new()));
++    let policy = RecordingInterceptor {
++        events: events.clone(),
++        deny,
++        fail_recording: None,
++    };
++    let handle = MitmInterceptor::start_with_request_exchange(
++        config_for(host, &receiver),
++        Arc::new(policy),
++        Arc::new(receipt::ReceiptExchange::new(
++            receiver.port(),
++            &receiver.ca_pem(),
++        )),
++    )
++    .unwrap();
++    let mut client = WorkloadClient::connect(proxy_port(&handle), host, receiver.port());
++    client.send_request(
++        "GET",
++        "/%72eceipt",
++        &[("Authorization", "Bearer caller-private")],
++        &[],
++    );
++    let reply = client.read_response();
++    let ok = deny.is_none() && wire == receipt::REPLY;
++    assert!(reply.contains(expected), "{reply}");
++    assert_eq!(reply.contains("receipt confirmed"), ok);
++    assert!(!reply.contains("receiver-"));
++    let request = receiver.last_request().raw;
++    assert!(request.starts_with("GET /receipt HTTP/1.1"));
++    assert!(!request.contains("caller-private"));
++    assert_eq!(receiver.request_count(), 1);
++    let events = events.lock().unwrap();
++    assert_eq!(
++        &event_names(&events)[..5],
++        [
++            "attempt:resolve",
++            "attempt:request",
++            "attempt:connect",
++            "outcome:connect",
++            "outcome:request"
++        ]
++    );
++    let port = receiver.port();
++    let address = (Ipv4Addr::LOCALHOST, port).into();
++    assert_eq!(
++        events[2],
++        Event::Attempt(AttemptSnapshot::Connect {
++            host: host.to_owned(),
++            port,
++            address,
++            http_visibility: true,
++        })
++    );
++    assert_eq!(
++        events[3],
++        Event::Outcome(EffectKind::Connect, EffectOutcome::Connected(address))
++    );
++    if wire != receipt::REPLY {
++        assert!(matches!(
++            events[4],
++            Event::Outcome(
++                EffectKind::HttpRequest,
++                EffectOutcome::Indeterminate {
++                    accepted_bytes: 1..
++                }
++            )
++        ));
++        assert_eq!(events.len(), 5, "no release follows the incomplete reply");
++    }
++}
++
++type Reply = Result<DelegatedReply, DelegatedFailure>;
++struct Sender(fn(DelegatedRequest<'_>) -> Reply);
++impl RequestExchange for Sender {
++    fn exchange(&self, request: DelegatedRequest<'_>) -> Reply {
++        (self.0)(request)
++    }
++}
++
++#[test]
++fn denied_host_request_or_address_never_opens_an_origin_and_sender_refusal_has_no_fallback() {
++    use EffectKind::{Connect, HttpRequest, Resolve};
++    for deny in [Some(Resolve), Some(HttpRequest), Some(Connect), None] {
++        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++        let port = listener.local_addr().unwrap().port();
++        let host = "no-origin.test";
++        // A direct-send fallback would reach this listener.
++        let config = MitmConfig {
++            dns_overrides: vec![(host.into(), Ipv4Addr::LOCALHOST.into())],
++            ..MitmConfig::default()
++        };
++        let sender = Sender(match deny {
++            Some(Connect) => |req| {
++                let error = runtime()
++                    .block_on(req.origin.connect(Ipv4Addr::LOCALHOST.into()))
++                    .unwrap_err();
++                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
++                Err(DelegatedFailure::Refused)
++            },
++            None => |_| Err(DelegatedFailure::Refused),
++            _ => |_| panic!("sender called before the policy decision"),
++        });
++        let events = Arc::new(Mutex::new(Vec::new()));
++        let policy = RecordingInterceptor {
++            events: events.clone(),
++            deny,
++            fail_recording: None,
++        };
++        let handle = MitmInterceptor::start_with_request_exchange(
++            config,
++            Arc::new(policy),
++            Arc::new(sender),
++        )
++        .unwrap();
++        let reply = if deny == Some(Resolve) {
++            WorkloadClient::connect_raw(proxy_port(&handle)).raw_connect(host, port)
++        } else {
++            let mut client = WorkloadClient::connect(proxy_port(&handle), host, port);
++            client.send_request("POST", "/once", &[], b"one");
++            client.read_response()
++        };
++        assert!(
++            reply.contains("403") && !reply.contains("200 Connection Established"),
++            "{reply:?}"
++        );
++        listener.set_nonblocking(true).unwrap();
++        assert_eq!(
++            listener.accept().unwrap_err().kind(),
++            io::ErrorKind::WouldBlock
++        );
++        let events = events.lock().unwrap();
++        let want = match deny {
++            Some(Resolve) => 1,
++            Some(HttpRequest) => 2,
++            Some(Connect) => 4,
++            None => 3,
++            _ => unreachable!(),
++        };
++        assert_eq!(events.len(), want, "{events:?}");
++    }
++}
++
++fn runtime() -> tokio::runtime::Runtime {
++    tokio::runtime::Builder::new_current_thread()
++        .enable_all()
++        .build()
++        .unwrap()
++}
++
++#[test]
++fn canceled_real_connect_can_reach_the_peer_and_records_exactly_one_indeterminate() {
++    use std::{
++        future::{Future, poll_fn},
++        task::Poll,
++    };
++    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
++    let events = Arc::new(Mutex::new(Vec::new()));
++    let sender = Sender(|req| {
++        runtime().block_on(async {
++            let mut dial = Box::pin(req.origin.connect(Ipv4Addr::LOCALHOST.into()));
++            poll_fn(|cx| {
++                assert!(
++                    dial.as_mut().poll(cx).is_pending(),
++                    "exercise cancellation at a real pending connect"
++                );
++                Poll::Ready(())
++            })
++            .await;
++            drop(dial); // Equivalent to the enclosing deadline canceling this future at Pending.
++        });
++        Err(DelegatedFailure::Unavailable) // We sent no HTTP request.
++    });
++    let handle = MitmInterceptor::start_with_request_exchange(
++        MitmConfig::default(),
++        Arc::new(RecordingInterceptor::allowing(events.clone())),
++        Arc::new(sender),
++    )
++    .unwrap();
++    let port = listener.local_addr().unwrap().port();
++    let mut client = WorkloadClient::connect(proxy_port(&handle), "cancel.test", port);
++    client.send_request("POST", "/once", &[], b"one");
++    assert_eq!(client.read_status(), 502);
++
++    listener.set_nonblocking(true).unwrap();
++    let (mut peer, _) = listener
++        .accept()
++        .expect("the canceled connect reached this peer");
++    assert_eq!(
++        peer.read(&mut [0]).unwrap(),
++        0,
++        "no HTTP bytes accepted by the peer"
++    );
++    assert_eq!(
++        listener.accept().unwrap_err().kind(),
++        io::ErrorKind::WouldBlock,
++        "no second dial"
++    );
++    assert_eq!(
++        event_names(&events.lock().unwrap()),
++        [
++            "attempt:resolve",
++            "attempt:request",
++            "attempt:connect",
++            "indeterminate:connect",
++            "outcome:request"
++        ]
++    );
++}
++
++#[test]
++fn unix_client_cannot_bypass_request_policy_and_plain_tcp_is_refused() {
++    use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
++    use std::{
++        io::{BufRead, BufReader},
++        os::unix::net::UnixStream,
++    };
++    let dir = std::env::temp_dir().join(format!("box-exchange-test-{}", std::process::id()));
++    std::fs::create_dir(&dir).unwrap();
++    let path = dir.join("egress.sock");
++    let policy = Arc::new(RecordingInterceptor::denying(
++        Arc::default(),
++        EffectKind::HttpRequest,
++    ));
++    let sender = Arc::new(Sender(|_| panic!("denial called the sender")));
++    let config = MitmConfig {
++        unix_socket_path: Some(path.clone()),
++        intercept_ca_dir: Some(dir.clone()),
++        ..MitmConfig::default()
++    };
++    let handle =
++        MitmInterceptor::start_with_request_exchange(config, policy.clone(), sender.clone())
++            .unwrap();
++    let mut client = UnixStream::connect(&path).unwrap();
++    client
++        .write_all(b"CONNECT unix.test:443 HTTP/1.1\r\n\r\n")
++        .unwrap();
++    let mut head = String::new();
++    let mut reader = BufReader::new(&client);
++    while !head.ends_with("\r\n\r\n") {
++        assert_ne!(reader.read_line(&mut head).unwrap(), 0);
++    }
++    assert!(head.contains("200 Connection Established"));
++    let mut roots = rustls::RootCertStore::empty();
++    roots
++        .add(CertificateDer::from_pem_file(handle.intercept_ca_path().unwrap()).unwrap())
++        .unwrap();
++    let cfg = rustls::ClientConfig::builder()
++        .with_root_certificates(roots)
++        .with_no_client_auth();
++    let conn =
++        rustls::ClientConnection::new(cfg.into(), ServerName::try_from("unix.test").unwrap())
++            .unwrap();
++    let mut tls = rustls::StreamOwned::new(conn, client);
++    tls.write_all(b"GET /unix HTTP/1.1\r\nHost: unix.test\r\n\r\n")
++        .unwrap();
++    let mut reply = String::new();
++    BufReader::new(&mut tls).read_line(&mut reply).unwrap();
++    assert!(reply.contains("403"), "{reply:?}");
++    handle.shutdown();
++    std::fs::remove_dir_all(dir).unwrap();
++
++    let handle =
++        MitmInterceptor::start_with_request_exchange(MitmConfig::default(), policy, sender)
++            .unwrap();
++    let mut plain =
++        std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, proxy_port(&handle))).unwrap();
++    plain
++        .write_all(b"GET http://plain.test/ HTTP/1.1\r\nHost: plain.test\r\n\r\n")
++        .unwrap();
++    let mut reply = String::new();
++    BufReader::new(plain).read_line(&mut reply).unwrap();
++    assert!(reply.contains("403 TLS inspection required"), "{reply:?}");
++}
+diff --git a/crates/egress-gateway/tests/effect_interception/terminal_exchange/receipt.rs b/crates/egress-gateway/tests/effect_interception/terminal_exchange/receipt.rs
+new file mode 100644
+index 0000000..0529958
+--- /dev/null
++++ b/crates/egress-gateway/tests/effect_interception/terminal_exchange/receipt.rs
+@@ -0,0 +1,111 @@
++//! Reference embedding for a fixed HTTPS receipt endpoint; only its confirmation may leave the gateway.
++
++use egress_gateway::{
++    DelegatedFailure, DelegatedReply, DelegatedRequest, HeaderMap, RequestExchange,
++};
++use rustls::pki_types::{CertificateDer, ServerName, pem::PemObject};
++use std::{io, net::Ipv4Addr, sync::Arc, time::Duration};
++use tokio::io::{AsyncReadExt, AsyncWriteExt};
++use tokio_rustls::TlsConnector;
++
++pub(super) const REPLY: &[u8] =
++    b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\nConnection: close\r\n\r\nreceiver-private";
++
++pub(super) struct ReceiptExchange {
++    port: u16,
++    tls: TlsConnector,
++}
++
++impl ReceiptExchange {
++    pub(super) fn new(port: u16, receiver_ca: &str) -> Self {
++        let mut roots = rustls::RootCertStore::empty();
++        roots
++            .add(CertificateDer::from_pem_slice(receiver_ca.as_bytes()).unwrap())
++            .unwrap();
++        let tls = rustls::ClientConfig::builder()
++            .with_root_certificates(roots)
++            .with_no_client_auth();
++        Self {
++            port,
++            tls: Arc::new(tls).into(),
++        }
++    }
++}
++
++impl RequestExchange for ReceiptExchange {
++    fn exchange(&self, req: DelegatedRequest<'_>) -> Result<DelegatedReply, DelegatedFailure> {
++        let target = req.target;
++        if target.host != "receipt.test"
++            || target.port != self.port
++            || target.path != "/receipt"
++            || !target.query.is_empty()
++            || req.method != "GET"
++            || !req.body.is_empty()
++        {
++            return Err(DelegatedFailure::Refused);
++        }
++
++        // Connect only to the installed recipient, then authenticate the inspected host on that socket.
++        let mut sent = None;
++        let run = async {
++            let tcp = req
++                .origin
++                .connect(Ipv4Addr::LOCALHOST.into())
++                .await
++                .map_err(|error| {
++                    if error.kind() == io::ErrorKind::PermissionDenied {
++                        DelegatedFailure::Refused
++                    } else {
++                        DelegatedFailure::Unavailable
++                    }
++                })?;
++            let name = ServerName::try_from(target.host.as_str()).unwrap();
++            let mut tls = self
++                .tls
++                .connect(name.to_owned(), tcp)
++                .await
++                .map_err(|_| DelegatedFailure::Unavailable)?;
++
++            // This route forwards no caller headers and releases only a complete, recognized receipt.
++            let request = format!(
++                "GET /receipt HTTP/1.1\r\nHost: receipt.test:{}\r\nConnection: close\r\n\r\n",
++                self.port
++            );
++            let n = sent.insert(0);
++            while *n < request.len() {
++                let wrote = tls
++                    .write(&request.as_bytes()[*n..])
++                    .await
++                    .map_err(|_| uncertain(*n))?;
++                if wrote == 0 {
++                    return Err(uncertain(*n));
++                }
++                *n += wrote;
++            }
++            tls.flush().await.map_err(|_| uncertain(*n))?;
++            let mut reply = [0u8; REPLY.len()];
++            tls.read_exact(&mut reply)
++                .await
++                .map_err(|_| uncertain(*n))?;
++            if reply != REPLY {
++                return Err(uncertain(*n));
++            }
++            Ok(DelegatedReply {
++                accepted_bytes: *n,
++                status: 200,
++                headers: HeaderMap::new(),
++                body: b"receipt confirmed".to_vec(),
++            })
++        };
++        tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()
++            .map_err(|_| DelegatedFailure::Unavailable)?
++            .block_on(async { tokio::time::timeout(Duration::from_secs(5), run).await })
++            .unwrap_or_else(|_| Err(sent.map_or(DelegatedFailure::Unavailable, uncertain)))
++    }
++}
++
++fn uncertain(accepted_bytes: usize) -> DelegatedFailure {
++    DelegatedFailure::Uncertain { accepted_bytes }
++}

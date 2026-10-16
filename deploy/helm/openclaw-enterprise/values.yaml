@@ -347,3 +347,10 @@ preparedGitHub:
   issuerPort: 443
   # Optional public ca.crt for an explicitly configured private HTTPS issuer.
   issuerCaConfigMapName: ""
+
+# Additional namespace-scoped tenant role permissions for a selected Strands Credential Proxy.
+# Enable only with a qualified enforcing network and trusted Pod/label writers in the execution namespace.
+strandsBoxCredentialProxy:
+  enabled: false
+  # Same immutable sender image as drivers.credential_proxy.configuration.strandsBox.gatewayImage.
+  gatewayImage: ""

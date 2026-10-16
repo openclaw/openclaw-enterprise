@@ -19,3 +19,10 @@ dns:
 # Keep equal to the openclaw-enterprise chart's agentRuntimeLogs.enabled.
 agentRuntimeLogs:
   enabled: true
+
+# Additional namespace-scoped tenant role permissions for a selected Strands Credential Proxy.
+# Enable only with a qualified enforcing network and trusted Pod/label writers in the execution namespace.
+strandsBoxCredentialProxy:
+  enabled: false
+  # Same immutable sender image as drivers.credential_proxy.configuration.strandsBox.gatewayImage.
+  gatewayImage: ""

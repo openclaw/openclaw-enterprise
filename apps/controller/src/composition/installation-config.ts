@@ -72,6 +72,12 @@ import { GitHubRepoDriver } from "../drivers/repo/github/driver.ts";
 import { composeRepoDriver } from "./repository-credentials/platform.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
 import {
+  createStrandsBoxDrivers,
+  strandsCredentialProxyImplementation,
+  strandsPairedImplementation,
+  type StrandsBoxOptions,
+} from "../backends/strands-box.ts";
+import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
 } from "../drivers/credential-gateway/openshell.ts";
@@ -309,14 +315,14 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
 }
 
 function backendConfiguration(
-  value: unknown,
+  value: readonly BackendDefinition[],
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
   repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
   credentialGatewayId: string | undefined,
   credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
 ): readonly BackendDefinition[] {
-  const backends = validateBackendDefinitions(value ?? []);
+  const backends = value;
   if (serviceAccount !== undefined && !backends.some((backend) => backend.type === "chatgpt")) {
     throw new Error("drivers.service_account requires an owning backend entry with type chatgpt.");
   }
@@ -328,14 +334,14 @@ function backendConfiguration(
   }
   if (
     credentialGatewayId !== undefined &&
-    !backends.some((backend) => backend.type === "openshell")
+    !backends.some((backend) => backend.type === "openshell" || backend.type === "strands-box")
   ) {
     throw new Error(
-      "drivers.credential_gateway requires an owning backend entry with type openshell.",
+      "drivers.credential_gateway requires an owning openshell or strands-box backend entry.",
     );
   }
   for (const backend of backends) {
-    if (backend.type === "openshell") {
+    if (backend.type === "openshell" || backend.type === "strands-box") {
       // Sandbox membership is checked once the Sandbox selection is resolved.
       if (backend.drivers.credential_gateway !== credentialGatewayId) {
         throw new Error(
@@ -343,7 +349,10 @@ function backendConfiguration(
         );
       }
       // Refresh state lives on the gateway's provider record, so both roles share this Backend.
-      if (backend.drivers.credential_refresh !== credentialRefreshId) {
+      if (
+        (backend.type === "openshell" ? backend.drivers.credential_refresh : undefined) !==
+        credentialRefreshId
+      ) {
         throw new Error(
           `backend[${backend.id}].drivers.credential_refresh must match the selected drivers.credential_refresh.id.`,
         );
@@ -577,6 +586,8 @@ export async function loadInstallationConfiguration(options: {
     closed(selection, ["id", "configuration"], "drivers.repo");
     repoSelection = selected(selection, "repo", "github", GitHubRepoDriver);
   }
+  const definitions = validateBackendDefinitions(configuration.backend ?? []);
+  const strandsBackend = definitions.find((definition) => definition.type === "strands-box");
   let credentialGateway: SelectedDriverConfiguration | undefined;
   if (drivers.credential_gateway !== undefined) {
     const selection = object(drivers.credential_gateway, "drivers.credential_gateway");
@@ -584,8 +595,8 @@ export async function loadInstallationConfiguration(options: {
     credentialGateway = selected(
       selection,
       "credential_gateway",
-      "openshell",
-      OpenShellCredentialGatewayDriver,
+      strandsBackend ? "strands-box" : "openshell",
+      strandsBackend ? strandsPairedImplementation : OpenShellCredentialGatewayDriver,
     );
   }
   let credentialRefresh: SelectedDriverConfiguration | undefined;
@@ -610,11 +621,23 @@ export async function loadInstallationConfiguration(options: {
     const egress = object(selection.configuration, "drivers.credential_proxy.configuration");
     closed(
       egress,
-      ["middlewareName", "authorityScope", "authority", "preparedGitHub"],
+      [
+        ...(strandsBackend ? ["strandsBox"] : ["middlewareName", "authorityScope"]),
+        "authority",
+        "preparedGitHub",
+      ],
       "drivers.credential_proxy.configuration",
     );
     egressAuthority = egressAuthorityConfiguration(egress.authority, options.mode);
-    const { authority: _authority, preparedGitHub, ...policy } = egress;
+    const { authority: _authority, preparedGitHub, strandsBox, ...openShellPolicy } = egress;
+    const policy = strandsBackend
+      ? {
+          ...object(strandsBox, "drivers.credential_proxy.configuration.strandsBox"),
+          issuer: egressAuthority.issuer,
+          audience: egressAuthority.audience,
+          keyId: egressAuthority.keyId,
+        }
+      : openShellPolicy;
     if (preparedGitHub !== undefined) {
       const prepared = object(preparedGitHub, "preparedGitHub");
       closed(prepared, ["custodyKeyPath", "apiOrigin", "issuerCaPath"], "preparedGitHub");
@@ -637,12 +660,12 @@ export async function loadInstallationConfiguration(options: {
     proxySelection = selected(
       { ...selection, configuration: policy },
       "credential_proxy",
-      "openshell",
-      OpenShellCredentialProxyDriver,
+      strandsBackend ? "strands-box" : "openshell",
+      strandsBackend ? strandsCredentialProxyImplementation : OpenShellCredentialProxyDriver,
     );
   }
   const backends = backendConfiguration(
-    configuration.backend,
+    definitions,
     serviceAccount,
     repoSelection,
     credentialGateway?.id,
@@ -742,7 +765,7 @@ export async function loadInstallationConfiguration(options: {
           options.packageRoot !== undefined,
         );
   const bundledSandboxPackage =
-    sandboxSelection !== undefined && sandboxPackage === undefined
+    sandboxSelection !== undefined && sandboxPackage === undefined && !strandsBackend
       ? await loadBundledOpenShellSandboxDriver()
       : undefined;
 
@@ -784,13 +807,19 @@ export async function loadInstallationConfiguration(options: {
       : selected(
           sandboxSelection,
           "sandbox",
-          sandboxPackage?.implementation ?? "openshell",
-          sandboxPackage?.module ?? bundledSandboxPackage!,
+          sandboxPackage?.implementation ?? (strandsBackend ? "strands-box" : "openshell"),
+          sandboxPackage?.module ??
+            (strandsBackend ? strandsPairedImplementation : bundledSandboxPackage!),
         );
   if (sandbox !== undefined && computePackage !== undefined) {
     throw new Error("drivers.sandbox requires the bundled Kubernetes Compute Driver.");
   }
-  if (sandbox !== undefined && sandboxPackage === undefined && openShellBackend === undefined) {
+  if (
+    sandbox !== undefined &&
+    sandboxPackage === undefined &&
+    openShellBackend === undefined &&
+    !strandsBackend
+  ) {
     throw new Error(
       "The bundled OpenShell drivers.sandbox requires a backend entry with type openshell.",
     );
@@ -857,8 +886,53 @@ export async function loadInstallationConfiguration(options: {
       ? undefined
       : (options.createOpenShellBackend?.(openShellBackend) ??
         createOpenShellBackend(openShellBackend));
+  const secretDriver = new KubernetesSecretDriver(
+    secret.configuration as unknown as KubernetesSecretDriverOptions,
+    { id: secret.id, implementation: secret.implementation },
+  );
+  const preparedGitHub =
+    preparedGitHubKeyPath === undefined
+      ? undefined
+      : new PostgresPreparedGitHubLifecycle(
+          preparedGitHubKeyPath,
+          secretDriver,
+          preparedGitHubOrigin,
+          preparedGitHubCa,
+        );
+  let strands: ReturnType<typeof createStrandsBoxDrivers> | undefined;
+  if (strandsBackend) {
+    const ids = strandsBackend.drivers;
+    if (
+      !sandbox ||
+      !credentialGateway ||
+      !proxySelection ||
+      openShellBackend ||
+      credentialRefresh ||
+      sandboxPackage ||
+      !kubernetesCompute ||
+      computePackage ||
+      ids.sandbox !== sandbox.id ||
+      ids.credential_gateway !== credentialGateway.id ||
+      ids.credential_proxy !== proxySelection.id
+    ) {
+      throw new Error(
+        "Strands requires its exact paired protected Sandbox, source catalog, Credential Proxy and Kubernetes Compute.",
+      );
+    }
+    const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
+    const settings = proxySelection.configuration as unknown as StrandsBoxOptions;
+    strands = createStrandsBoxDrivers(settings, {
+      backendId: strandsBackend.id,
+      sandboxId: ids.sandbox,
+      proxyId: ids.credential_proxy,
+      credentialGatewayId: ids.credential_gateway,
+      authentication: kubernetes.executionCluster?.authentication ?? kubernetes.authentication,
+      ...(preparedGitHub ? { preparedGitHub } : {}),
+    });
+  }
   const sandboxDriver =
-    sandbox === undefined
+    strands?.sandbox ??
+    (sandbox === undefined
       ? undefined
       : options.createSandboxDriver !== undefined
         ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
@@ -874,9 +948,10 @@ export async function loadInstallationConfiguration(options: {
                 backend: openShell!,
               },
             )
-          : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
+          : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver));
   const credentialGatewayDriver =
-    credentialGateway === undefined
+    strands?.credentialGateway ??
+    (credentialGateway === undefined
       ? undefined
       : new OpenShellCredentialGatewayDriver(
           credentialGateway.configuration as unknown as OpenShellCredentialGatewayOptions,
@@ -885,9 +960,10 @@ export async function loadInstallationConfiguration(options: {
             implementation: credentialGateway.implementation,
             backend: openShell!,
           },
-        );
+        ));
   if (
     proxySelection !== undefined &&
+    !strands &&
     (!openShell ||
       !sandboxDriver ||
       !kubernetesCompute ||
@@ -900,21 +976,9 @@ export async function loadInstallationConfiguration(options: {
       "Protected egress requires paired Kubernetes/OpenShell Drivers and an authenticated TLS gateway endpoint.",
     );
   }
-  const secretDriver = new KubernetesSecretDriver(
-    secret.configuration as unknown as KubernetesSecretDriverOptions,
-    { id: secret.id, implementation: secret.implementation },
-  );
-  const preparedGitHub =
-    preparedGitHubKeyPath === undefined
-      ? undefined
-      : new PostgresPreparedGitHubLifecycle(
-          preparedGitHubKeyPath,
-          secretDriver,
-          preparedGitHubOrigin,
-          preparedGitHubCa,
-        );
   const proxyDriver =
-    proxySelection === undefined
+    strands?.proxy ??
+    (proxySelection === undefined
       ? undefined
       : new OpenShellCredentialProxyDriver(
           proxySelection.configuration as unknown as OpenShellProxyOptions,
@@ -924,7 +988,7 @@ export async function loadInstallationConfiguration(options: {
             sandbox: sandboxDriver!,
             ...(preparedGitHub ? { preparedGitHub } : {}),
           },
-        );
+        ));
   const credentialRefreshDriver =
     credentialRefresh === undefined
       ? undefined

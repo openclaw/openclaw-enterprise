@@ -1,3 +1,4 @@
+import { PROTECTED_HARNESS_OBSERVATION } from "./protected-harness-observation.ts";
 import { createPublicKey, sign, type KeyObject } from "node:crypto";
 import type {
   EgressExecution,
@@ -133,7 +134,15 @@ function waitForHarnessEgressEnrollment(enrollment) {
       };
       const authorization = typeof request.headers.authorization === "string"
         ? /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/i.exec(request.headers.authorization) : null;
-      if (authorization === null || !timingSafeEqual(createHash("sha256").update(authorization[1]).digest(), expected)) {
+      // A Kubernetes Pod proxy consumes Authorization. Authenticate the transport bearer
+      // on our enrollment header instead; it still confers no ability to sign a startup release.
+      const proof = request.headers["x-oce-enrollment-proof"];
+      const podProxy = process.env.OPENCLAW_EGRESS_KUBERNETES_ENROLLMENT === "1" &&
+        typeof proof === "string" && /^[A-Za-z0-9\-._~+/]+=*$/.test(proof) &&
+        timingSafeEqual(createHash("sha256").update(proof).digest(), expected);
+      const authenticated = authorization !== null &&
+        timingSafeEqual(createHash("sha256").update(authorization[1]).digest(), expected);
+      if (!authenticated && !podProxy) {
         answer(401, { error: "unauthorized" });
         return;
       }
@@ -181,7 +190,10 @@ function waitForHarnessEgressEnrollment(enrollment) {
         // A release is only startup coordination. Both per-request authority
         // checks still run before any material access or business send.
         released = true;
-        response.on("finish", () => finish(true));
+        response.on("finish", () => {
+          if (podProxy) releasedKubernetesObservation = startProtectedKubernetesHarnessObservation(installation, expected, port);
+          finish(true);
+        });
         answer(200, { enrolled: true, startupId: challenge.startupId });
       } catch {
         if (!response.destroyed) {
@@ -197,4 +209,6 @@ function waitForHarnessEgressEnrollment(enrollment) {
     server.listen(port, "0.0.0.0");
   });
 }
+
+${PROTECTED_HARNESS_OBSERVATION}
 `;

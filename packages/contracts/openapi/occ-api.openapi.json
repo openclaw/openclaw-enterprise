@@ -10746,7 +10746,8 @@
                             "anyOf": [
                               { "const": "chatgpt", "type": "string" },
                               { "const": "github", "type": "string" },
-                              { "const": "openshell", "type": "string" }
+                              { "const": "openshell", "type": "string" },
+                              { "const": "strands-box", "type": "string" }
                             ]
                           }
                         },

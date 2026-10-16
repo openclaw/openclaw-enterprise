@@ -1,3 +1,4 @@
+import { strandsExecutionMaintenanceIntervalMs } from "../../strands-box/execution-bearer.ts";
 import {
   assertExecutionAdmission,
   preparedGitHubSourceFromRoute,
@@ -3123,6 +3124,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
+  readonly maintenanceIntervalMs?: number;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
   readonly agentProvisioning = Object.freeze({
@@ -3528,6 +3530,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
     this.proxyDriver = selection.proxyDriver;
+    if (this.proxyDriver?.implementation === "strands-box") {
+      this.maintenanceIntervalMs = strandsExecutionMaintenanceIntervalMs;
+    }
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -5338,14 +5343,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (
       plan === undefined ||
       this.options.runtime === undefined ||
-      this.proxyDriver?.implementation !== "openshell" ||
+      !this.proxyDriver ||
+      !sandbox ||
+      !["openshell", "strands-box"].includes(this.proxyDriver.implementation) ||
       this.proxyDriver.id !== plan.egressDriverId ||
-      sandbox?.implementation !== "openshell" ||
+      sandbox.implementation !== this.proxyDriver.implementation ||
       sandbox.id !== plan.sandboxDriverId ||
       !sandbox.provisionHarness ||
       !sandbox.enrollHarness ||
-      !sandbox.harnessEndpoint ||
-      !sandbox.harnessStatus
+      !sandbox.harnessStatus ||
+      (sandbox.implementation === "openshell" && !sandbox.harnessEndpoint)
     ) {
       throw new DependencyUnavailableError(
         "Protected execution is unavailable without its exact paired Compute release.",
@@ -5923,7 +5930,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         context,
         harnessAuth,
         namespace,
-        sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex"
+        ["openshell", "strands-box"].includes(sandboxDriver?.implementation ?? "") &&
+          revision.harness.id === "codex"
           ? "verifier"
           : "secret",
       ),
@@ -6267,7 +6275,24 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ...(proxyWiring === undefined
             ? {}
             : {
-                proxyWiring,
+                proxyWiring:
+                  this.proxyDriver?.implementation === "strands-box"
+                    ? {
+                        ...proxyWiring,
+                        configuration: {
+                          ...proxyWiring.configuration,
+                          computeWorkload: {
+                            resources: this.options.resources.agent,
+                            nodeSelector: this.options.runtime?.nodeSelector,
+                            codexSeccompProfile: this.options.runtime?.codexSeccompProfile,
+                          },
+                          computeControlEgress: this.options.gatewayRouting
+                            ? this.workspaceNodeNetworkPolicy(revisionOwnership, gatewayNamespace)
+                                .spec?.egress
+                            : [],
+                        },
+                      }
+                    : proxyWiring,
                 // Bind enrollment to the immutable admitted revision without
                 // exposing Compute's private status identity to the provider.
                 environment: [
@@ -6325,6 +6350,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
               },
             ),
           );
+          if (sandboxDriver.implementation === "strands-box") {
+            const observed = await sandboxDriver.harnessStatus!({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken: await this.sandboxTransportTokenText(revision),
+            });
+            if (observed.state !== "serving") {
+              return incomplete();
+            }
+          }
         }
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
@@ -6809,14 +6845,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const activatedHarnessAuth =
       revision.harnessAuth.method === "oauth" ||
-      (sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex")
+      (["openshell", "strands-box"].includes(sandboxDriver?.implementation ?? "") &&
+        revision.harness.id === "codex")
         ? revision.harnessAuth.method === "oauth"
           ? await this.deliverHarnessAuth(
               admittedRevision,
               context,
               harnessAuth,
               namespace,
-              sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex"
+              ["openshell", "strands-box"].includes(sandboxDriver?.implementation ?? "") &&
+                revision.harness.id === "codex"
                 ? "verifier"
                 : "secret",
             )
@@ -6917,7 +6955,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
         throw new Error("The exact AgentRevision workload is not ready.");
       }
-      if (sandboxDriver.harnessEndpoint !== undefined) {
+      if (sandboxDriver.harnessEndpoint !== undefined || revision.egressPlan !== undefined) {
         const sandboxContext = await this.sandboxNamespaceContext(
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
@@ -6933,7 +6971,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             context!,
           );
         }
-        providerEndpoint = await sandboxDriver.harnessEndpoint({
+        providerEndpoint = await sandboxDriver.harnessEndpoint?.({
           ...sandboxContext,
           revision,
           requirements,

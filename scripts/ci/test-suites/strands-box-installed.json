@@ -1,0 +1,21 @@
+{
+  "env": {
+    "OCC_TEST_STRANDS_INSTALLED": "1"
+  },
+  "requiredEnv": [
+    "KUBECONFIG",
+    "STRANDS_PROXY_FIXTURE_IP",
+    "STRANDS_PROXY_GATEWAY_IMAGE",
+    "STRANDS_PROXY_NEXT_GATEWAY_IMAGE",
+    "STRANDS_PROXY_WORKLOAD_IMAGE"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/strands-box-credential-proxy-installed-k3d-real.test.mjs",
+      "expectedTests": [
+        "installed Strands Box and Dogwood enforce execution egress and preserve Credential Proxy response custody"
+      ]
+    }
+  ]
+}

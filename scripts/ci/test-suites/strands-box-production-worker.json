@@ -1,0 +1,23 @@
+{
+  "env": {
+    "OCC_TEST_STRANDS_PRODUCTION_WORKER": "1"
+  },
+  "requiredEnv": [
+    "KUBECONFIG",
+    "STRANDS_PROXY_FIXTURE_IP",
+    "STRANDS_PROXY_GATEWAY_IMAGE",
+    "STRANDS_PROXY_RUNTIME_IMAGE",
+    "STRANDS_PROXY_KUBERNETES_CONTEXT",
+    "STRANDS_PROXY_TEST_PLATFORM_NAMESPACE",
+    "STRANDS_PROXY_TEST_DATABASE_URL"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/strands-box-credential-proxy-production-worker-k3d-real.test.mjs",
+      "expectedTests": [
+        "ordinary production selection releases a real Codex Harness and preserves its admitted Strands Responses boundary"
+      ]
+    }
+  ]
+}

@@ -3587,6 +3587,17 @@ function probeCodexAuthentication(timeout) {
         HOME: directory,
         CODEX_HOME: process.env.CODEX_HOME,
         RUST_LOG: "error",
+        // A Strands Harness uses an explicit CONNECT listener behind its per-execution fence.
+        // Preserve only that admitted IPv4 ClusterIP:8080, never ambient proxies or general bypasses.
+        ...(process.env.OPENCLAW_EGRESS_KUBERNETES_ENROLLMENT !== "1" ? {} : (() => {
+          const proxy = process.env.HTTPS_PROXY;
+          const {origin,protocol,hostname,port} = new URL(proxy);
+          if (origin !== proxy || protocol !== "http:" || port !== "8080" || !require("node:net").isIPv4(hostname) ||
+              pluginRuntime?.manifest.providerTools !== "none" || enrollment?.inference !== true) {
+            throw new Error("Protected model probe requires its admitted CONNECT endpoint.");
+          }
+          return { HTTPS_PROXY:proxy, NO_PROXY:"localhost,127.0.0.1" };
+        })()),
         ...Object.fromEntries(
           ["SSL_CERT_FILE", "SSL_CERT_DIR"]
             .filter((name) => typeof process.env[name] === "string" && process.env[name].length > 0)
@@ -3748,6 +3759,8 @@ const child = spawn(
   // stdout is the protocol stream; stderr passes through the span-noise filter.
   { stdio: ["inherit", "inherit", "pipe"], cwd: workspaceDirectory, env: codexChildEnvironment() },
 );
+// The released native app-server lifetime fences its authenticated observation connection.
+child.once("exit", () => releasedKubernetesObservation?.close());
 forwardTermination(child);
 const codexStderrDone = child.stderr ? forwardCodexStderr(child.stderr) : Promise.resolve();
 child.on("exit", (code, signal) => {

@@ -383,6 +383,12 @@
       "path": "tests/integration/static-egress.test.mjs"
     },
     {
+      "path": "tests/integration/strands-box-credential-proxy-control.test.mjs"
+    },
+    {
+      "path": "tests/integration/strands-box-credential-proxy-fences.test.mjs"
+    },
+    {
       "path": "tests/integration/egress-enrollment.test.mjs"
     },
     {

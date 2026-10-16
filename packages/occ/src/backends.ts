@@ -67,9 +67,12 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   if (
     candidate.type !== "chatgpt" &&
     candidate.type !== "github" &&
-    candidate.type !== "openshell"
+    candidate.type !== "openshell" &&
+    candidate.type !== "strands-box"
   ) {
-    throw new ScopeViolationError(path(id, "type") + " must be chatgpt, github, or openshell.");
+    throw new ScopeViolationError(
+      path(id, "type") + " must be chatgpt, github, openshell, or strands-box.",
+    );
   }
   // Repository bindings still store a GitHub Backend ID under a 200 UTF-16 code unit bound
   // (occ.repository_bindings_are_valid, the repository registry and the binding state), so a
@@ -92,6 +95,28 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
     throw new ScopeViolationError(
       path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
     );
+  }
+  if (candidate.type === "strands-box") {
+    if (
+      Object.keys(configuration).length ||
+      Object.keys(drivers).some(
+        (k) => !["sandbox", "credential_gateway", "credential_proxy"].includes(k),
+      )
+    ) {
+      throw new ScopeViolationError(
+        path(id, "configuration") + " contains an unsupported Strands option.",
+      );
+    }
+    return {
+      id,
+      type: "strands-box",
+      configuration: {},
+      drivers: {
+        sandbox: backendId(drivers.sandbox, "Sandbox Driver ID"),
+        credential_gateway: backendId(drivers.credential_gateway, "Credential catalog Driver ID"),
+        credential_proxy: backendId(drivers.credential_proxy, "Credential Proxy Driver ID"),
+      },
+    };
   }
   if (candidate.type === "openshell") {
     return validateOpenShellBackend(id, configuration, drivers);
@@ -418,6 +443,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   if (backend.type === "github") {
     return [`repo:${backend.drivers.repo}`];
   }
+  if (backend.type === "strands-box") {
+    return Object.entries(backend.drivers).map(([capability, id]) => capability + ":" + id);
+  }
   return [
     `sandbox:${backend.drivers.sandbox}`,
     `credential_gateway:${backend.drivers.credential_gateway}`,
@@ -457,6 +485,9 @@ export function validateBackendDefinitions(value: unknown = []): readonly Backen
   }
   if (backends.filter((backend) => backend.type === "openshell").length > 1) {
     throw new ScopeViolationError("Only one bundled OpenShell Backend can be configured.");
+  }
+  if (backends.filter((backend) => backend.type === "strands-box").length > 1) {
+    throw new ScopeViolationError("Only one bundled Strands Box Backend can be configured.");
   }
   return Object.freeze(backends);
 }
@@ -533,7 +564,7 @@ export function validateSelectedBackendDrivers(
     !backends.some((backend) => backendMembers(backend).includes(`credential_proxy:${proxy.id}`))
   ) {
     throw new DriverSelectionError(
-      "The selected Credential Proxy Driver must belong to the OpenShell Backend.",
+      "The selected Credential Proxy Driver must belong to a configured protected Backend.",
     );
   }
   const gateway = selected.credential_gateway;

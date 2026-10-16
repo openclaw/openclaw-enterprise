@@ -130,6 +130,33 @@ export function encodeSyntheticEvents(events) {
 
 /** Counts every request independently, including requests with rejected credentials.
  * Only the two explicitly synthetic values may be reflected; raw requests are never logged. */
+// Observe the external wire, without retaining native turn or workspace metadata values.
+function nativeTurnPrivacyAtOrigin(request, body) {
+  const field = "x-codex-turn-metadata";
+  const describe = (wire) => {
+    try {
+      const turn = JSON.parse(wire);
+      return {
+        nativeTurn:
+          turn.request_kind === "turn" &&
+          typeof turn.turn_id === "string" &&
+          turn.turn_id.length > 0,
+        workspaceTelemetry: Object.hasOwn(turn, "workspaces") ? "present" : "absent",
+      };
+    } catch {
+      return { nativeTurn: false, workspaceTelemetry: "unparseable" };
+    }
+  };
+  const mirrors = request.headersDistinct[field] ?? [];
+  const metadata = body.client_metadata?.[field];
+  return {
+    body: describe(metadata),
+    header: describe(mirrors[0]),
+    headerCount: mirrors.length,
+    bodyMatchesHeader: typeof metadata === "string" && metadata === mirrors[0],
+  };
+}
+
 export async function startSyntheticEgressProvider(t, configuration, credentials) {
   assert.deepEqual(Object.keys(credentials).sort(), ["initial", "rotated"]);
   for (const value of Object.values(credentials)) {
@@ -202,6 +229,9 @@ export async function startSyntheticEgressProvider(t, configuration, credentials
             ),
           ],
         });
+        if (nonce && configuration.observeNativeWorkspacePrivacy) {
+          observation.nativeTurnPrivacy = nativeTurnPrivacyAtOrigin(request, body);
+        }
         assert.equal(body.model, configuration.model);
         assert.equal(body.stream, true, "the genuine Codex caller must use HTTP/SSE");
         assert.equal(body.store, false);

@@ -47,6 +47,15 @@ rules:
   - apiGroups: [""]
     resources: [pods/proxy]
     verbs: [get]
+  {{- if .Values.strandsBoxCredentialProxy.enabled }}
+  # Verify public installation evidence and exact containment. No sender Secret access is added.
+  - apiGroups: [""]
+    resources: [configmaps, services, persistentvolumeclaims]
+    verbs: [get]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [list]
+  {{- end }}
   {{- if .Values.agentRuntimeLogs.enabled }}
   # Runtime log reads: OCC re-checks revision ownership of every named Pod.
   - apiGroups: [""]
@@ -73,6 +82,16 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch, patch]
+  {{- if .Values.strandsBoxCredentialProxy.enabled }}
+  # The protected Sandbox creates and UID-deletes the dedicated sender and Harness Pods.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, delete]
+  # POST the Compute-signed release to the exact held Harness, via the execution API.
+  - apiGroups: [""]
+    resources: [pods/proxy]
+    verbs: [create]
+  {{- end }}
   - apiGroups: [""]
     resources: [pods/proxy]
     verbs: [get]
