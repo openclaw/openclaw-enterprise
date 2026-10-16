@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { promisify } from "node:util";
 import {
   assertProbeDenied,
+  createKubernetesClient,
+  diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
   inlineProbeCommand,
   isTransientKubectlFailure,
@@ -153,7 +157,10 @@ test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 
   const stalled = new Promise(() => {});
   const started = Date.now();
   assert.equal(
-    await withinDiagnosticDeadline(stalled, { timeoutMs: 50, timedOut: "\nDiagnostic timed out" }),
+    await withinDiagnosticDeadline(() => stalled, {
+      timeoutMs: 50,
+      timedOut: "\nDiagnostic timed out",
+    }),
     "\nDiagnostic timed out",
   );
   assert.ok(Date.now() - started < 2_000);
@@ -165,14 +172,89 @@ test(
   { timeout: 5_000 },
   async () => {
     // The default 60 s deadline must not hold the test (or the caller) once the diagnostic settles.
-    assert.equal(await withinDiagnosticDeadline(Promise.resolve("\nWorker: {}")), "\nWorker: {}");
+    assert.equal(await withinDiagnosticDeadline(async () => "\nWorker: {}"), "\nWorker: {}");
     const failure = new Error("diagnostic read failed");
     await assert.rejects(
-      withinDiagnosticDeadline(Promise.reject(failure)),
+      withinDiagnosticDeadline(async () => {
+        throw failure;
+      }),
       (error) => error === failure,
     );
   },
 );
+
+test(
+  "a failure diagnostic's kubectl reads stop at its deadline",
+  { timeout: 20_000 },
+  async (t) => {
+    // A fake kubectl that records its pid and then stalls for 30 s, like a read on a stalled API
+    // server (finding 1557). No cluster is involved.
+    const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const started = join(directory, "started");
+    await writeFile(
+      join(directory, "kubectl"),
+      `#!/bin/sh\necho "$$" >> '${started}'\nexec sleep 30\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = `${directory}${delimiter}${path}`;
+    t.after(() => {
+      process.env.PATH = path;
+    });
+    const { kubectl } = createKubernetesClient({
+      selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
+    });
+
+    const begun = Date.now();
+    let work;
+    const result = await withinDiagnosticDeadline(
+      (signal) =>
+        (work = (async () => {
+          const first = await kubectl("get", "pods").catch((error) => error);
+          // A read the diagnostic starts after its deadline is refused without running kubectl.
+          const second = await kubectl("get", "pods").catch((error) => error);
+          return { first, second, aborted: signal.aborted, passed: diagnosticDeadlinePassed() };
+        })()),
+      { timeoutMs: 500, timedOut: "\nDiagnostic timed out" },
+    );
+    assert.equal(result, "\nDiagnostic timed out");
+    const { first, second, aborted, passed } = await work;
+    // The stalled kubectl was killed at the deadline instead of running its 30 s.
+    assert.equal(first.name, "AbortError");
+    assert.equal(second.name, "AbortError");
+    assert.ok(aborted && passed);
+    assert.ok(Date.now() - begun < 10_000);
+    const pids = (await readFile(started, "utf8").catch(() => ""))
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    assert.ok(pids.length <= 1, `kubectl ran ${pids.length} times`);
+    for (const pid of pids) {
+      assert.throws(() => process.kill(Number(pid), 0), { code: "ESRCH" });
+    }
+    // Outside a diagnostic nothing has passed a deadline.
+    assert.equal(diagnosticDeadlinePassed(), false);
+  },
+);
+
+test("a nested failure diagnostic stops at the outer deadline", { timeout: 5_000 }, async () => {
+  let inner;
+  const result = await withinDiagnosticDeadline(
+    () =>
+      withinDiagnosticDeadline(
+        async (signal) => {
+          inner = signal;
+          await once(signal, "abort");
+          return "inner stopped";
+        },
+        { timeoutMs: 60_000, timedOut: "inner timed out" },
+      ),
+    { timeoutMs: 50, timedOut: "outer timed out" },
+  );
+  assert.equal(result, "outer timed out");
+  assert.equal(inner.aborted, true);
+});
 
 test("a dropped kubectl create counts AlreadyExists on its retry as done", async () => {
   const { sleeps, logs, options } = recordingOptions();

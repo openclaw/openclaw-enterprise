@@ -2262,10 +2262,7 @@ test("a quoted auth header keeps the failure text after it", async () => {
   // Synthetic values. The auth-scheme value used to take the closing quote, so the quoted
   // value then ran to the end of the text and took the assertion with it (finding 1556).
   for (const [header, expected] of [
-    [
-      '{"authorization":"Bearer syntheticBearer0123"}',
-      '{"authorization":"[redacted]"}',
-    ],
+    ['{"authorization":"Bearer syntheticBearer0123"}', '{"authorization":"[redacted]"}'],
     [
       "headers: { authorization: 'Bearer syntheticBearer0123' }",
       "headers: { authorization: '[redacted]' }",
@@ -2298,7 +2295,10 @@ test("the redactor removes structured, multi-word and short secret values", asyn
       '{"credentials":{"key":"syntheticNested0"},"after":"keep"}',
       '{"credentials":[redacted],"after":"keep"}',
     ],
-    ['{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}', '{"tokens":[redacted],"after":"keep"}'],
+    [
+      '{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}',
+      '{"tokens":[redacted],"after":"keep"}',
+    ],
     ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
     ["token: {unclosed synthetic0\nnext line", "token: [redacted]\nnext line"],
     // A passphrase in prose or YAML, and an Authorization header, take every word.
@@ -2310,7 +2310,10 @@ test("the redactor removes structured, multi-word and short secret values", asyn
     ["password=synthetic0 next=keep", "password=[redacted] next=keep"],
     // Short scheme values with a digit, and keys the list did not have.
     ["sent Bearer s0 upstream", "sent [redacted] upstream"],
-    ["https://blob.example/x?sv=1&sig=syntheticSig0&se=2", "https://blob.example/x?sv=1&sig=[redacted]&se=2"],
+    [
+      "https://blob.example/x?sv=1&sig=syntheticSig0&se=2",
+      "https://blob.example/x?sv=1&sig=[redacted]&se=2",
+    ],
     ["pwd=synthetic0", "pwd=[redacted]"],
     ["passphrase=synthetic0", "passphrase=[redacted]"],
     ["accessKey=synthetic0", "accessKey=[redacted]"],
