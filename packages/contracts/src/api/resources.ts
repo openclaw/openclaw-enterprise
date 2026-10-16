@@ -258,6 +258,7 @@ const CredentialSourceFieldSchema = Type.Object(
     name: Type.String({ minLength: 1 }),
     required: Type.Boolean(),
     description: Type.Optional(Type.String()),
+    issuerRotated: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -267,10 +268,13 @@ const CredentialSourceCatalogSchema = Type.Object(
     type: CredentialSourceType,
     config: Type.Array(CredentialSourceFieldSchema),
     secrets: Type.Array(CredentialSourceFieldSchema),
-    rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("gateway")]),
+    rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
     harnessAuth: Type.Optional(
       Type.Object(
-        { modelProvider: Type.String({ minLength: 1 }), loginMode: Type.Literal("api_key") },
+        {
+          modelProvider: Type.String({ minLength: 1 }),
+          loginMode: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
+        },
         { additionalProperties: false },
       ),
     ),

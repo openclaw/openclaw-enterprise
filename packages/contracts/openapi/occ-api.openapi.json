@@ -10850,6 +10850,7 @@
                                           "additionalProperties": false,
                                           "properties": {
                                             "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
                                             "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
@@ -10861,7 +10862,12 @@
                                       "harnessAuth": {
                                         "additionalProperties": false,
                                         "properties": {
-                                          "loginMode": { "const": "api_key", "type": "string" },
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" }
+                                            ]
+                                          },
                                           "modelProvider": { "minLength": 1, "type": "string" }
                                         },
                                         "required": ["modelProvider", "loginMode"],
@@ -10871,7 +10877,7 @@
                                         "anyOf": [
                                           { "const": "none", "type": "string" },
                                           { "const": "external", "type": "string" },
-                                          { "const": "gateway", "type": "string" }
+                                          { "const": "refresh", "type": "string" }
                                         ]
                                       },
                                       "secrets": {
@@ -10879,6 +10885,7 @@
                                           "additionalProperties": false,
                                           "properties": {
                                             "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
                                             "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
@@ -11161,6 +11168,7 @@
                                           "additionalProperties": false,
                                           "properties": {
                                             "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
                                             "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },
@@ -11172,7 +11180,12 @@
                                       "harnessAuth": {
                                         "additionalProperties": false,
                                         "properties": {
-                                          "loginMode": { "const": "api_key", "type": "string" },
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" }
+                                            ]
+                                          },
                                           "modelProvider": { "minLength": 1, "type": "string" }
                                         },
                                         "required": ["modelProvider", "loginMode"],
@@ -11182,7 +11195,7 @@
                                         "anyOf": [
                                           { "const": "none", "type": "string" },
                                           { "const": "external", "type": "string" },
-                                          { "const": "gateway", "type": "string" }
+                                          { "const": "refresh", "type": "string" }
                                         ]
                                       },
                                       "secrets": {
@@ -11190,6 +11203,7 @@
                                           "additionalProperties": false,
                                           "properties": {
                                             "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
                                             "name": { "minLength": 1, "type": "string" },
                                             "required": { "type": "boolean" }
                                           },

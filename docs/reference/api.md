@@ -1300,14 +1300,16 @@ Get the singleton Installation
 | `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
-| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat"` | Yes | — |
 | `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
-| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "gateway"` | Yes | — |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
@@ -1388,14 +1390,16 @@ Bootstrap the singleton Installation
 | `data.capabilities.credentialSources.types` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].config[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].config[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].config[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].config[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].harnessAuth` | `object` | No | — |
-| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key"` | Yes | — |
+| `data.capabilities.credentialSources.types[].harnessAuth.loginMode` | `"api_key" or "codex_pat"` | Yes | — |
 | `data.capabilities.credentialSources.types[].harnessAuth.modelProvider` | `string` | Yes | min length: 1 |
-| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "gateway"` | Yes | — |
+| `data.capabilities.credentialSources.types[].rotation` | `"none" or "external" or "refresh"` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets` | `array<object>` | Yes | — |
 | `data.capabilities.credentialSources.types[].secrets[].description` | `string` | No | — |
+| `data.capabilities.credentialSources.types[].secrets[].issuerRotated` | `boolean` | No | — |
 | `data.capabilities.credentialSources.types[].secrets[].name` | `string` | Yes | min length: 1 |
 | `data.capabilities.credentialSources.types[].secrets[].required` | `boolean` | Yes | — |
 | `data.capabilities.credentialSources.types[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
