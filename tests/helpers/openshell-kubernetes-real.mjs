@@ -123,7 +123,9 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken) 
         } catch {
           return fail("invalid JSON");
         }
-        if (message?.id !== id || "method" in message) return;
+        if (message?.id !== id || "method" in message) {
+          return;
+        }
         if (message.error !== undefined) {
           const code = message.error?.code;
           return fail(Number.isSafeInteger(code) ? `RPC error (code ${code})` : "RPC error");
@@ -135,7 +137,9 @@ export async function assertExposedCodexInitializes(serviceUrl, appServerToken) 
         stage = "initialized notification write";
         const notification = { jsonrpc: "2.0", method: "initialized", params: {} };
         socket.send(JSON.stringify(notification), (error) => {
-          if (error) return fail("WebSocket write failed");
+          if (error) {
+            return fail("WebSocket write failed");
+          }
           clearTimeout(deadline);
           resolve();
         });
