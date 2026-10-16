@@ -267,6 +267,21 @@ function stopPasses(events, stop) {
   );
 }
 
+// The worker emits worker.completed after its queue transaction commits, so the database can say
+// the work succeeded before the event arrives (finding 1607). Wait for the work's first successful
+// pass, check it is the last one observed, and return every pass.
+async function completedPasses(events, work) {
+  const completed = await completion(
+    events,
+    `work ${work.idempotencyKey} to complete successfully`,
+    ({ event, workId, outcome }) =>
+      event === "worker.completed" && workId === work.idempotencyKey && outcome === "success",
+  );
+  const passes = stopPasses(events, work);
+  assert.equal(passes.at(-1), completed);
+  return passes;
+}
+
 async function stopAudit(fixture, owner) {
   const audit = await fixture.observerPool.query(
     `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
@@ -320,6 +335,7 @@ test(
       fixture.work(first, "succeeded", 30_000),
       fixture.work(second, "succeeded", 30_000),
     ]);
+    await Promise.all([first, second].map((stop) => completedPasses(events, stop)));
 
     // Same-run ordering, not a wall-clock total (finding 1344). The worker is serial, so another
     // Agent's pass ends inside the drain only if a stop pass ended during it, which a yield does
@@ -405,23 +421,14 @@ revisionTest(
       fixture.work(stop, "succeeded", 30_000),
       fixture.work(replacement, "succeeded", 30_000),
     ]);
-    const [replacementCompleted, stopCompleted] = await Promise.all(
-      [replacement, stop].map((work) =>
-        completion(
-          events,
-          `work ${work.idempotencyKey} to complete successfully`,
-          ({ event, workId, outcome }) =>
-            event === "worker.completed" && workId === work.idempotencyKey && outcome === "success",
-        ),
-      ),
+    const [replacementPasses, stopWorkPasses] = await Promise.all(
+      [replacement, stop].map((work) => completedPasses(events, work)),
     );
     // The replacement's own work stopped it as a stopped Agent's revision, and yielded while the
     // Gateway drained instead of spending its attempts.
-    const replacementPasses = stopPasses(events, replacement);
     const replacementCodes = replacementPasses.map(({ code }) => code);
     assert.ok(replacementCodes.includes("AGENT_STOP_YIELDED"), replacementCodes.join(", "));
-    assert.equal(replacementPasses.at(-1), replacementCompleted);
-    assert.equal(replacementCompleted.code, "REVISION_STOPPED");
+    assert.equal(replacementCodes.at(-1), "REVISION_STOPPED");
     assert.ok(!replacementCodes.includes("DEPENDENCY_UNAVAILABLE"), replacementCodes.join(", "));
     // The stop's retries reached both revisions; Harnesses stop only after the drain.
     assert.ok(record.yields >= 1);
@@ -431,9 +438,7 @@ revisionTest(
     );
     assert.deepEqual([...record.pointers], [candidate.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
-    const stopWorkPasses = stopPasses(events, stop);
-    assert.equal(stopWorkPasses.at(-1), stopCompleted);
-    assert.equal(stopCompleted.code, "AGENT_STOPPED");
+    assert.equal(stopWorkPasses.at(-1).code, "AGENT_STOPPED");
     assert.deepEqual(
       stopWorkPasses.map(({ code }) => code).filter((code) => code !== "AGENT_STOP_YIELDED"),
       ["AGENT_STOPPED"],
@@ -460,6 +465,7 @@ revisionTest(
     ]);
     const stops = [await fixture.requestStop(first.owner), await fixture.requestStop(second.owner)];
     await Promise.all(stops.map((stop) => fixture.work(stop, "succeeded", 30_000)));
+    const passes = await Promise.all(stops.map((stop) => completedPasses(events, stop)));
     // The drains overlap: one starts before the other ends. Drains taken in turn, each stop
     // holding the serial worker for its whole drain, start the second only after the first ends.
     // Same-run ordering, not a wall-clock total (finding 1344); 30 s only guards against a hang.
@@ -488,11 +494,9 @@ revisionTest(
       assert.deepEqual([...record.pointers], [candidate.id]);
       assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
     }
-    for (const stop of stops) {
+    for (const stopWorkPasses of passes) {
       assert.deepEqual(
-        stopPasses(events, stop)
-          .map(({ code }) => code)
-          .filter((code) => code !== "AGENT_STOP_YIELDED"),
+        stopWorkPasses.map(({ code }) => code).filter((code) => code !== "AGENT_STOP_YIELDED"),
         ["AGENT_STOPPED"],
       );
     }
@@ -516,7 +520,7 @@ revisionTest(
     const stop = await fixture.requestStop(owner);
     await fixture.work(stop, "succeeded", 30_000);
     assert.ok(record.yields >= 2, `yields ${record.yields}`);
-    const passes = stopPasses(events, stop);
+    const passes = await completedPasses(events, stop);
     // The completion carries the count of every yield, logged or not.
     assert.deepEqual(
       passes.map(({ code, stopYields }) => [code, stopYields]),
@@ -557,6 +561,7 @@ for (const change of ["redeploy", "deletion"]) {
         const redeployed = await fixture.revision(owner, 2);
         await fixture.work(redeployed, "succeeded", 30_000);
         await fixture.work(stop, "succeeded", 30_000);
+        assert.equal((await completedPasses(events, stop)).at(-1).code, "STOP_SUPERSEDED");
         const current = await fixture.currentAgent(owner);
         assert.equal(current.desiredRuntimeState, "running");
         assert.equal(current.activeRevisionId, redeployed.id);
@@ -626,7 +631,7 @@ test(
     assert.equal(record.waitingWithoutYield, true);
     assert.equal(record.calls, 1);
     assert.deepEqual(
-      stopPasses(events, stop).map(({ code }) => code),
+      (await completedPasses(events, stop)).map(({ code }) => code),
       ["AGENT_STOPPED"],
     );
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
@@ -692,7 +697,7 @@ for (const moment of ["preparation", "commit", "activation"]) {
       const done = await fixture.work(candidate, "succeeded", 30_000);
       assert.ok(stop !== undefined, "the stop was admitted during the pass");
       await fixture.work(stop, "succeeded", 30_000);
-      const passes = stopPasses(events, candidate).map(({ code }) => code);
+      const passes = (await completedPasses(events, candidate)).map(({ code }) => code);
       assert.ok(passes.includes("AGENT_STOP_YIELDED"), passes.join(", "));
       assert.equal(passes.at(-1), "REVISION_STOPPED");
       assert.ok(!passes.includes("DEPENDENCY_UNAVAILABLE"), passes.join(", "));
