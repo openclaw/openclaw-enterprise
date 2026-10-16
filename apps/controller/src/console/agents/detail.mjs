@@ -2823,6 +2823,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       let updateDenied = false;
       void agentUpdateAllowed.then((allowed) => {
         if (allowed === false && context.isCurrent()) {
+          // Retry credential access only rechecks the Secret grant; it is not an Agent update.
+          if (savedAuthentication) {
+            return;
+          }
           updateDenied = true;
           updateNote.textContent = AGENT_UPDATE_DENIED;
           updateNote.hidden = false;
@@ -3104,6 +3108,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       saveState = "saving";
       update();
       let mutationStarted = false;
+      let saved = false;
       try {
         const fresh = await request(path);
         if (!context.isCurrent()) {
@@ -3129,6 +3134,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             repositoryAccess: fields.access(),
           },
         });
+        saved = true;
         fields.recordSuccessfulSave();
         if (context.isCurrent()) {
           data.setDraftEditorState({ dirty: false, saving: false });
@@ -3141,7 +3147,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent = rejectionMessage(refusedSave(error, "agent"), mutationStarted);
+          feedback.textContent = rejectionMessage(
+            saved ? error : refusedSave(error, "agent"),
+            mutationStarted,
+          );
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
             saveState = "uncertain";
           }

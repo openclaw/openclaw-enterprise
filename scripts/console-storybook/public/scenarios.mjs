@@ -2800,9 +2800,10 @@ export const scenarios = {
     auth: "codex_pat",
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
+    pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections is disabled from the first paint and the note names the grant to ask for. The API still decides.",
+      "The permission answer denies Agent update, so Save plugin selections stays disabled, even after an edit, and the note names the grant to ask for. The API still decides.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsDraft: {

@@ -150,6 +150,7 @@ test("a member without Agent update sees the Agent-side saves disabled with the 
     const button = page.getByRole("button", { name: save, exact: true });
     await button.waitFor();
     await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
+    // The note is the proof where Save is also disabled for an unedited form.
     if (tab === "plugins") {
       // An edit does not enable it.
       await page.getByText("Plugin selections JSON", { exact: true }).click();
