@@ -1255,10 +1255,12 @@ test("a Logs view that loads before its Agent page reveals opens at the newest o
   );
   // A paused clock keeps the overview's bounded wait from revealing the page instead.
   await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
   await deployment.requested;
   // The Logs view's first reads settle while the Agent page is still hidden.
   await page.locator(".agent-logs:not(.agent-logs-pending)").waitFor({ state: "attached" });
+  assert.equal(await page.locator(".agent-detail-pending").count(), 1);
   deployment.release();
 
   const pane = page.getByRole("log", { name: "Runtime log output" });

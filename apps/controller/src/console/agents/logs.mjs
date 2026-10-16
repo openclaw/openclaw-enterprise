@@ -118,7 +118,7 @@ export function renderAgentLogs(
       // A hidden pane cannot scroll; open at the newest output as a shown one would. The page
       // holding the view can still be hidden (an Agent page waits for its overview), so scroll
       // once it shows. Scrolled to the top, the pane would read as scrolled up and Follow would
-      // never read (finding 1536).
+      // stay paused (finding 1536).
       void shown.then(() => {
         if (current()) {
           pane.scrollTop = pane.scrollHeight;
