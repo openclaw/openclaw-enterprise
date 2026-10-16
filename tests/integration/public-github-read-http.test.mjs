@@ -560,4 +560,66 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       assert.equal(idle.filter((socket) => !socket.closed).length, 0);
     },
   );
+  await t.test(
+    "a connection over the per-address cap is answered 429 and closed",
+    { timeout: 15_000 },
+    async (st) => {
+      const guarded = createPublicGithubReadServer().listen(0, "127.0.0.1");
+      await once(guarded, "listening");
+      st.after(() => {
+        guarded.closeAllConnections();
+        guarded.close();
+      });
+      const port = guarded.address().port;
+      // This address holds its four connections with unfinished request headers.
+      const held = [];
+      st.after(() => {
+        for (const socket of held) {
+          socket.destroy();
+        }
+      });
+      for (let open = 0; open < 4; open++) {
+        const socket = connectTcp({ port, host: "127.0.0.1" });
+        socket.on("error", () => {}).resume();
+        held.push(socket);
+        await once(socket, "connect");
+        socket.write("GET /healthz HTTP/1.1\r\nHost: reader\r\n");
+      }
+      const healthz = () =>
+        new Promise((resolve, reject) => {
+          http
+            .get("http://127.0.0.1:" + port + "/healthz", { agent: false }, async (res) => {
+              let text = "";
+              res.setEncoding("utf8");
+              try {
+                for await (const chunk of res) {
+                  text += chunk;
+                }
+                resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(text) });
+              } catch (error) {
+                reject(error);
+              }
+            })
+            .once("error", reject);
+        });
+      // The fifth gets the documented retryable answer, not a reset (finding 1475).
+      const refused = await healthz();
+      assert.equal(refused.status, 429);
+      assert.equal(refused.headers["retry-after"], "1");
+      assert.equal(refused.headers.connection, "close");
+      assert.match(refused.body.message, /too many reader connections/);
+      // Once this address closes its connections, it is served again.
+      for (const socket of held) {
+        socket.destroy();
+      }
+      const closing = Date.now();
+      let served = await healthz();
+      while (served.status !== 200 && Date.now() - closing < 5000) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        served = await healthz();
+      }
+      assert.equal(served.status, 200);
+      assert.equal(served.body.message, "ready");
+    },
+  );
 });

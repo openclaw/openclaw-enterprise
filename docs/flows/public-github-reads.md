@@ -66,7 +66,7 @@ bypasses private addresses.
 accepts only approved GET paths. The fixed anonymous provider request carries
 neither caller headers nor credentials. Each caller Pod address gets one read in flight,
 so one Agent cannot hold every provider slot. Each address also gets at most four of the
-reader's 48 connections, and Node checks the 6 s header timeout every second, so idle
+reader's 48 connections (a fifth is answered 429 with `Retry-After: 1` and closed), and Node checks the 6 s header timeout every second, so idle
 sockets from one Agent cannot lock other callers out for more than a few seconds. A GitHub rate limit parks every caller; an
 exhausted quota parks until the later of GitHub's retry and reset times. In-flight work and
 rate-limit backoff are process-local;

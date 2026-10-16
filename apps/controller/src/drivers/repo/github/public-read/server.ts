@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type OutgoingHttpHeaders } from "node:http";
 import { Agent, get } from "node:https";
+import type { Socket } from "node:net";
 import { URL, URLSearchParams } from "node:url";
 
 const origin = "https://api.github.com";
@@ -8,6 +9,22 @@ const maxConcurrent = 3;
 // requests answered 429 or sockets still closing. More would let it hold the
 // server-wide connection limit with idle sockets until the headers timeout.
 const maxConnectionsPerAddress = 4;
+// A connection over that cap gets this fixed answer, written before its request is read.
+// At most this many refused connections wait for their client to read it.
+const maxRefusing = 8;
+const refusedBody = JSON.stringify({
+  message: "This caller has too many reader connections open. Retry after the indicated seconds.",
+});
+const refusedReply = Buffer.from(
+  "HTTP/1.1 429 Too Many Requests\r\n" +
+    "content-type: application/json; charset=utf-8\r\n" +
+    "cache-control: no-store\r\n" +
+    "x-content-type-options: nosniff\r\n" +
+    "retry-after: 1\r\n" +
+    "connection: close\r\n" +
+    `content-length: ${Buffer.byteLength(refusedBody)}\r\n\r\n` +
+    refusedBody,
+);
 const maxResponseBytes = 12 * 1024 * 1024;
 const pageNumber = /^(?:[1-9]\d{0,2}|1000)$/;
 const paging = { page: pageNumber, per_page: /^(?:[1-9]\d?|100)$/ };
@@ -370,12 +387,41 @@ export function createPublicGithubReadServer() {
   );
   server.maxConnections = 48;
   const connections = new Map<string, number>();
-  server.on("connection", (socket) => {
-    const address = socket.remoteAddress;
-    const open = address === undefined ? 0 : (connections.get(address) ?? 0);
-    if (address === undefined || open >= maxConnectionsPerAddress) {
-      // Closed unanswered, as Node closes connections over maxConnections.
+  // Refused connections still closing. A few at a time wait for the client to read the answer;
+  // the rest close at once unanswered, so refused sockets cannot hold the server-wide limit.
+  let refusing = 0;
+  function refuse(socket: Socket) {
+    if (refusing >= maxRefusing) {
       socket.destroy();
+      return;
+    }
+    refusing++;
+    // Closing with the request unread would reset the connection before the client reads the
+    // answer, so drop what it sends and close when it does, or after one second.
+    const timer = setTimeout(() => socket.destroy(), 1000);
+    socket.once("close", () => {
+      clearTimeout(timer);
+      refusing--;
+    });
+    socket.on("error", () => socket.destroy());
+    socket.once("end", () => socket.destroy());
+    socket.resume();
+    socket.end(refusedReply);
+  }
+  // The HTTP server's own connection handling runs only for accepted connections, so a
+  // refused one is never parsed and cannot start a read.
+  const serveConnection = server.listeners("connection") as ((socket: Socket) => void)[];
+  server.removeAllListeners("connection");
+  server.on("connection", (socket: Socket) => {
+    const address = socket.remoteAddress;
+    if (address === undefined) {
+      // The socket already closed; an answer would go nowhere.
+      socket.destroy();
+      return;
+    }
+    const open = connections.get(address) ?? 0;
+    if (open >= maxConnectionsPerAddress) {
+      refuse(socket);
       return;
     }
     connections.set(address, open + 1);
@@ -387,6 +433,9 @@ export function createPublicGithubReadServer() {
         connections.delete(address);
       }
     });
+    for (const listener of serveConnection) {
+      listener.call(server, socket);
+    }
   });
   server.maxRequestsPerSocket = 16;
   server.keepAliveTimeout = 4000;
