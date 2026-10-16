@@ -1038,8 +1038,6 @@ const reservedSaveCases = [
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
     },
-    message:
-      "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
   },
   {
     name: "Configuration editor",
@@ -1051,8 +1049,6 @@ const reservedSaveCases = [
       await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
-    message:
-      "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
   },
   {
     name: "channel Secrets",
@@ -1061,7 +1057,6 @@ const reservedSaveCases = [
       await selectNewSlackSecrets(page, c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
-    message: "Credential metadata conflicts with the saved Agent state or selected Secrets.",
   },
 ];
 
@@ -1071,6 +1066,9 @@ for (const c of reservedSaveCases) {
     const { fixture, namespace, agent } = context;
     context.secondApp = await fixture.createSecret(namespace.id, "Second app token", "xapp-2");
     context.secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+    const refusal =
+      "The Configuration is reserved for provisioning and is not available for this operation.";
+    let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
         routed.route(`**${configurationPath(context)}`, async (route) => {
@@ -1078,14 +1076,14 @@ for (const c of reservedSaveCases) {
             await route.continue().catch(() => {});
             return;
           }
+          writes += 1;
           await route.fulfill({
             status: 409,
             contentType: "application/json",
             body: JSON.stringify({
               error: {
                 code: "RESOURCE_CONFLICT",
-                message:
-                  "The Configuration is reserved for provisioning and is not available for this operation.",
+                message: refusal,
               },
               meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
             }),
@@ -1095,7 +1093,8 @@ for (const c of reservedSaveCases) {
     await page.getByRole("heading", { name: `Reserved ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
     await c.act(page, context);
-    await page.getByText(c.message).first().waitFor();
+    await page.getByText(refusal).first().waitFor();
+    assert.equal(writes, 1);
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
     assert.equal(
       await page.getByText("The saved Configuration changed while you were editing.").count(),

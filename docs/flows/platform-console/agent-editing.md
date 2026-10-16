@@ -181,10 +181,10 @@ uncertain outcomes block retries until refresh. The
 recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
-Saving channels rereads Agent and Configuration; a changed association or
-generation, or a racing `409`, offers Reload draft. The PATCH sends
-`{ values, expectedGeneration }`, adding
-`secretBindings` only for changed selections. A rejected PATCH writes no Secret grant.
+Saving channels rereads the Agent and Configuration. A changed association or stale
+generation offers **Reload draft**; a provisioning reservation explains why saving is blocked.
+The PATCH sends `{ values, expectedGeneration }` and includes `secretBindings` only when
+changed. A rejected PATCH grants no Secret access.
 
 After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace

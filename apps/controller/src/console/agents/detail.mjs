@@ -24,6 +24,7 @@ import {
   rejectionMessage,
   assertReadableConfiguration,
   isStaleGeneration,
+  configurationConflictMessage,
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
@@ -2688,7 +2689,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               error.name === "TypeError"
             ) {
               if (!configurationSaved) {
-                error.message = rejectionMessage(error, mutationStarted);
+                error.message =
+                  configurationConflictMessage(error, mutationStarted) ??
+                  rejectionMessage(error, mutationStarted);
               }
             }
             error.outcomeUnknown =
@@ -3399,7 +3402,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           reloadRequired = true;
           return;
         }
-        feedback.textContent = rejectionMessage(error, mutationStarted);
+        feedback.textContent =
+          configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
+          rejectionMessage(error, mutationStarted);
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       } finally {

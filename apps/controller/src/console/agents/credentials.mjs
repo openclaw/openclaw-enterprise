@@ -1,8 +1,7 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
+import { configurationConflictMessage, isStaleGeneration, namespacePath } from "./list.mjs";
 import { ensureSecretOperateBinding } from "./secret-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
-import { isStaleGeneration } from "./list.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
@@ -93,7 +92,9 @@ function credentialError(error, mutation = false) {
   if (error.status === 403) {
     text = "Access denied. You do not have permission for this credential operation.";
   } else if (error.status === 409) {
-    text = "Credential metadata conflicts with the saved Agent state or selected Secrets.";
+    text =
+      configurationConflictMessage(error, mutation) ??
+      "Credential metadata conflicts with the saved Agent state or selected Secrets.";
   } else if (error.status === 400) {
     text = "Check the selected Secrets and reload this Agent.";
   } else if (error.status === 429) {

@@ -4089,7 +4089,7 @@ export const scenarios = {
     ],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
-      "The API refuses the write because the Configuration is reserved for provisioning. That 409 has no stale-generation detail, so the editor stays open with the refusal instead of offering a Reload draft that would meet it again.",
+      "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
   },
   channelSaveRejected: {
     group: "Components/Channels",

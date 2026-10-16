@@ -121,6 +121,14 @@ export function isStaleGeneration(error) {
   );
 }
 
+// For a refused Configuration write, show the reason the API gave this caller (for
+// example, reserved for provisioning). Never infer that a reload will fix it from the prose.
+export function configurationConflictMessage(error, submitted) {
+  if (submitted && error.status === 409 && error.code === "RESOURCE_CONFLICT") {
+    return error.serverMessage ?? "The Configuration could not be saved in its current state.";
+  }
+}
+
 // A rejected write shows the API's own sentence, which names the field to fix (for example
 // an inline model credential); other failures keep the generic status text.
 export function rejectionMessage(error, mutation = false) {
