@@ -124,12 +124,14 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
-from the list shows its destination immediately, without Agent data or detail actions.
-**Back to Agents** cancels the read and returns to the list; a second press does
+from the list immediately shows **Loading agent details…** and **Back to Agents**.
+Access checks finish before the Agent’s name, actions, and overview appear together.
+Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
-Refresh show loading after 250 ms. A return to a retained view or a refocus keeps the
-shown page inert and says **Still checking…** after one second. The Console retains up
-to 16 views by route, Namespace, and session owner, excluding passwords and discovery
+Refresh show loading after 250 ms. A held page keeps its own navigation and header.
+A return to a retained view or a refocus keeps the shown page inert and says
+**Still checking…** after one second. The Console retains up to 16 views by route,
+Namespace, and session owner, excluding passwords and discovery
 state. An interrupted return keeps its view; an interrupted Refresh discards it.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
@@ -364,19 +366,12 @@ refresh and inspection.
 ## Changelog
 
 - 2026-10-16 12:00: Paint Create Agent with its permission answer; keep a clicked Logs tab's strip in place. (ui-jank-code-9)
+- 2026-10-16 11:30: Hold the shown page in its own navigation and header; show an Agent’s heading and overview together when ready. (ui-jank-code-9)
 - 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
 - 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
 - 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
 - 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
-
-- 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
-- 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
-- 2026-10-07 12:30: Explain a disabled account's provider sign-in (`authReason=account-disabled`). (fix-member-1007/d534)
-
-- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
-- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
-- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

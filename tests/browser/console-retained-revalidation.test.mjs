@@ -64,6 +64,50 @@ function recordShownPages() {
   });
 }
 
+// Names, after every DOM change, the navigation's current page, the heading, whether the header
+// has a Namespace selector, and the content shown (findings 1515, 1516). A page held under
+// another page's navigation or header, or an Agent heading over an empty page, shows up here.
+function recordShownFrames() {
+  const seen = [];
+  globalThis.__shownFrames = seen;
+  const record = () => {
+    const document = globalThis.document;
+    const nav = document.querySelector('.nav [aria-current="page"]')?.dataset.nav ?? "none";
+    const heading = document.querySelector(".content h1")?.textContent ?? "none";
+    const selector = document.querySelector(".page-header #namespace-selector")
+      ? "selector"
+      : "no selector";
+    const view = document.querySelector('.content [aria-live="polite"]:not([hidden])');
+    const status = view?.querySelector('[role="status"]')?.textContent;
+    const body = !view
+      ? "none"
+      : view.classList.contains("agent-detail-pending")
+        ? "Agent toolbar only"
+        : view.querySelector(".agent-current-summary")
+          ? "Agent"
+          : view.querySelector(".agent-table")
+            ? "Agents"
+            : view.querySelector('ul.collection[aria-label="Namespaces"]')
+              ? "Namespaces"
+              : view.querySelector("dl.settings")
+                ? "Settings"
+                : (status ?? "other");
+    const state = `${nav} | ${heading} | ${selector} | ${body}${view?.inert ? " (held)" : ""}`;
+    if (seen.at(-1) !== state) {
+      seen.push(state);
+    }
+  };
+  record();
+  new globalThis.MutationObserver(record).observe(globalThis.document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+}
+
+const shownFrames = (page) => page.evaluate(() => globalThis.__shownFrames.splice(0));
+
 // Stops page timers, so the loading delay passes only when a test runs the clock.
 async function pauseClock(page) {
   const now = await page.evaluate(() => Date.now());
@@ -321,6 +365,128 @@ test("Opening Agent details acknowledges navigation immediately; other first vis
     "Agent",
     "Agent (held)",
     "Namespaces",
+  ]);
+});
+
+// Moving into Agents held the previous page under the Agents navigation and header: Agents
+// highlighted, with a disabled Namespace selector in the Namespaces header (finding 1515).
+test("A page held for Agents keeps its own navigation and header until Agents replaces it", async (t) => {
+  const { namespace, page } = await openList(t, "Own shell", ["Shell Agent"]);
+  const list = `**/namespaces/${namespace.id}/agents`;
+  const settled = (name) => page.locator(settledView).getByRole(name[0], name[1]).waitFor();
+  const agentsShown = "agents | Agents | selector | Agents";
+
+  // From Namespaces: the list read is held.
+  await page.getByRole("link", NAMESPACES).click();
+  await settled(["list", NAMESPACES]);
+  await page.evaluate(recordShownFrames);
+  const firstRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await firstRead.requested;
+  firstRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  assert.deepEqual(await shownFrames(page), [
+    "namespaces | Namespaces | no selector | Namespaces",
+    "namespaces | Namespaces | no selector | Namespaces (held)",
+    agentsShown,
+  ]);
+
+  // A return from Settings: the retained list revalidates while Settings is held.
+  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+  await page.getByRole("menuitem", { name: "Settings" }).click();
+  await page.locator(settledView).locator("dl.settings").waitFor();
+  await shownFrames(page);
+  const returnRead = await holdRequests(t, page, list, { once: true });
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await returnRead.requested;
+  returnRead.release();
+  await settled(["link", { name: "Shell Agent" }]);
+  // The first entry is the state the recorder re-reads after the previous splice.
+  assert.deepEqual(await shownFrames(page), [
+    "none | Settings | selector | Settings",
+    "none | Settings | selector | Settings (held)",
+    agentsShown,
+  ]);
+});
+
+// A click opens the destination immediately; the next visible state is the usable overview,
+// not its heading and toolbar alone (finding 1516).
+test("Opening an Agent shows the destination at once and reveals the heading with the overview", async (t) => {
+  const { namespace, agents, page } = await openList(
+    t,
+    "Opening frames",
+    ["Fast Agent", "Slow Agent"],
+    {
+      deploy: true,
+    },
+  );
+  await page.evaluate(recordShownFrames);
+
+  // Time stays paused: neither the acknowledgment nor a fast result waits for a timer.
+  await page.getByRole("link", { name: "Fast Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Fast Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Fast Agent" })), true);
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Slow Agent" }).waitFor();
+  await shownFrames(page);
+
+  // Hold the overview read. The destination must stay usable, including Back to Agents,
+  // for the whole wait; the half-rendered overview must never become visible.
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agents[1].id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Slow Agent" }).click();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  const main = page.getByRole("main");
+  await main.getByText("Loading agent details…", { exact: true }).waitFor();
+  assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Slow Agent | selector | Agent",
+  ]);
+  assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Slow Agent" })), true);
+});
+
+// A retained Agent can change between visits. Rebuild it behind the same opening panel.
+test("Reopening a changed Agent acknowledges the click before showing the new overview", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Reopen frames", ["Reopened Agent"], {
+    deploy: true,
+  });
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  await page.goBack();
+  await page.locator(settledView).getByRole("link", { name: "Reopened Agent" }).waitFor();
+  await page.route(`**/namespaces/${namespace.id}/agents/${agent.id}`, async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...(await response.json()), description: "changed" } });
+  });
+  await page.evaluate(recordShownFrames);
+  const record = await holdRequests(
+    t,
+    page,
+    `**/namespaces/${namespace.id}/agents/${agent.id}/deployments/*`,
+  );
+  await page.getByRole("link", { name: "Reopened Agent" }).click();
+  await record.requested;
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
+  await page.getByRole("main").getByText("Loading agent details…", { exact: true }).waitFor();
+  record.release();
+  await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
+  assert.deepEqual(await shownFrames(page), [
+    "agents | Agents | selector | Agents",
+    "agents | Agent details | selector | Loading agent details…",
+    "agents | Reopened Agent | selector | Agent",
   ]);
 });
 
