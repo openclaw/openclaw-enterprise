@@ -60,7 +60,7 @@ the native gateway port in this mode.
 All routing requires `gateway.auth.mode: trusted-proxy` and
 `userHeader: x-occ-identity`. Omission defaults `allowUsers` to
 `["occ-workspace-files"]` and its `identityScopes` grant to `["operator.admin"]`.
-Explicit policies may add humans but must retain machine entries.
+Human policies must retain machine entries.
 Empty allowlists and nonstring, blank, or untrimmed identities fail closed.
 
 Compute renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`
