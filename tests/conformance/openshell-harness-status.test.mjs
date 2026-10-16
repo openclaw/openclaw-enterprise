@@ -784,7 +784,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     assert.equal(call(handler, { authorization: `Bearer ${TOKEN}` }).status, 200);
   });
 
-  await t.test("the Compute status port answers before any route or token check", async () => {
+  await t.test("the Compute status port answers before any route or token check", () => {
     const { servers } = runCodexEntrypoint({
       env: {
         APP_SERVER_TOKEN: TOKEN,
@@ -837,7 +837,8 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
                 };
               }
               if (specifier === "node:fs") {
-                // Startup continues by preparing its private TMPDIR; the readiness server is up by then.
+                // The worker starts its readiness server, then prepares its private TMPDIR
+                // with mkdirSync; stopping there leaves only the readiness server running.
                 return {
                   ...nodeRequire("node:fs"),
                   mkdirSync() {

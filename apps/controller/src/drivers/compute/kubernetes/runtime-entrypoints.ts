@@ -3457,16 +3457,17 @@ function codexRateLimited(message) {
 // a credential marker or a Reconnecting notice the recovered-stream rule refused is
 // never transient: the provider account or the event shape failed, not the transport.
 // Nor is any provider 4xx, whatever its body says: the request itself was refused.
-// Codex reports a content-filter stop, a DNS name that does not resolve and a rejected
-// certificate as a dropped stream; they fail the same way again. Codex's HTTP client
-// prints a failed connection as "error sending request" without its cause, so a DNS
-// or TLS failure it reports only that way cannot be told from a dropped connection
-// and keeps its retry.
+// Codex prints a 400 as its bare body, so an invalid_request_error body counts as one.
+// Codex reports a content-filter stop, a host name its musl resolver cannot resolve
+// and a rejected certificate (also one a proxy's 5xx names) as a dropped stream or
+// error; they fail the same way again. Codex's HTTP client prints a failed connection
+// as "error sending request" without its cause, so a DNS or TLS failure it reports
+// only that way cannot be told from a dropped connection and keeps its retry.
 function codexTransientFailure(message, summary) {
   if (typeof message !== "string" || codexRateLimited(message) ||
     /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b|Reconnecting\.\.\./i.test(message)) return false;
   if (summary.providerStatus >= 400 && summary.providerStatus < 500) return false;
-  if (/content_filter|certificate|Name or service not known|No address associated with hostname/i.test(message)) return false;
+  if (/invalid_request_error|content_filter|certificate|Name does not resolve|Name has no usable address/i.test(message)) return false;
   return summary.providerStatus >= 500 ||
     /server_error|overloaded|at capacity|high demand|stream disconnected|error sending request|connection (?:failed|reset|refused|closed)|broken pipe/i.test(message);
 }

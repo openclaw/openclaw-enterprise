@@ -490,7 +490,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
     [
       "a DNS lookup that may recover",
       failedWith(
-        "stream disconnected before completion: failed to lookup address information: Temporary failure in name resolution",
+        "stream disconnected before completion: failed to lookup address information: Try again",
       ),
       "turn-failed",
     ],
@@ -506,26 +506,32 @@ test("Codex runtime retries a transient startup model probe failure once", async
   ];
   // Findings 1601 and 1602: each of these fails the same way again, even with a
   // transient word in its text, so it is held at once without a second model call.
+  // The messages follow what the pinned Codex build prints for each failure.
   const heldAtOnce = [
     [
       "a provider 404 that says overloaded",
-      failedWith("unexpected status 404 Not Found: overloaded"),
+      failedWith(
+        "unexpected status 404 Not Found: overloaded, url: https://provider.example/v1/responses",
+      ),
       "turn-failed",
       { status: 404 },
     ],
     [
       "a provider 402 with a server error body",
-      failedWith('unexpected status 402 Payment Required: {"error":{"type":"server_error"}}'),
+      failedWith(
+        'unexpected status 402 Payment Required: {"error":{"type":"server_error"}}, url: https://provider.example/v1/responses',
+      ),
       "turn-failed",
       { status: 402, code: "server_error" },
     ],
     [
-      "a provider 400 with a server error body",
+      // Codex prints a 400 as its bare body, without the status.
+      "a provider 400 body that says overloaded",
       failedWith(
-        'unexpected status 400 Bad Request: {"error":{"type":"server_error","message":"bad input"}}',
+        '{"error":{"message":"the server is overloaded","type":"invalid_request_error","code":"server_error"}}',
       ),
       "turn-failed",
-      { status: 400, code: "server_error" },
+      { code: "server_error" },
     ],
     [
       "a content-filter stop",
@@ -536,22 +542,20 @@ test("Codex runtime retries a transient startup model probe failure once", async
     ],
     [
       "a rejected provider certificate",
-      erroredWith(
-        "stream disconnected before completion: TLS error: rustls error: invalid peer certificate: UnknownIssuer",
-      ),
+      erroredWith("stream disconnected before completion: invalid peer certificate: UnknownIssuer"),
       "error-event",
     ],
     [
       "a provider host name that does not resolve",
       erroredWith(
-        "stream disconnected before completion: failed to lookup address information: Name or service not known",
+        "stream disconnected before completion: failed to lookup address information: Name does not resolve",
       ),
       "error-event",
     ],
     [
       "a provider host name with no address",
       erroredWith(
-        "stream disconnected before completion: failed to lookup address information: No address associated with hostname",
+        "stream disconnected before completion: failed to lookup address information: Name has no usable address",
       ),
       "error-event",
     ],
