@@ -110,18 +110,34 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
 });
 
-test("Harness completion guard follows its effective Sandbox workspace and refuses a lost marker", (t) => {
+test("workspace completion verification uses the Sandbox runtime path and retains edited files", (t) => {
   const f = fixture(t);
-  const relocated = join(f.root, "sandbox", "enterprise");
-  mkdirSync(relocated, { recursive: true });
-  writeFileSync(join(relocated, ".oce-workspace-setup.json"), JSON.stringify(identity));
-  // The Sandbox relocates the approved PVC mount; the command must inspect its runtime path.
-  const guard = workspaceSetupVerifier(identity);
-  const verified = f.execute(guard, "", { OPENCLAW_WORKSPACE_DIR: relocated });
+  const sandboxWorkspace = join(f.root, "sandbox-workspace");
+  mkdirSync(sandboxWorkspace);
+  // A prior successful initializer left this exact identity marker. Its workspace is
+  // now mounted at the Sandbox path rather than Compute's native path.
+  writeFileSync(join(sandboxWorkspace, ".oce-workspace-setup.json"), JSON.stringify(identity));
+  writeFileSync(join(sandboxWorkspace, "USER.md"), "edited after initialization");
+  const verify = workspaceSetupVerifier(identity, { environment: "OPENCLAW_WORKSPACE_DIR" });
+  const verified = f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace });
   assert.equal(verified.status, 0, verified.stderr);
-  failed(f.execute(guard, ""));
-  rmSync(join(relocated, ".oce-workspace-setup.json"));
-  failed(f.execute(guard, "", { OPENCLAW_WORKSPACE_DIR: relocated }));
+  assert.equal(
+    readFileSync(join(sandboxWorkspace, "USER.md"), "utf8"),
+    "edited after initialization",
+  );
+  assert.equal(
+    existsSync(f.workspace),
+    false,
+    "verification must not initialize the old mount path",
+  );
+  failed(f.execute(verify, ""));
+  writeFileSync(
+    join(sandboxWorkspace, ".oce-workspace-setup.json"),
+    JSON.stringify({ ...identity, agentId: "another-agent" }),
+  );
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }));
+  rmSync(join(sandboxWorkspace, ".oce-workspace-setup.json"));
+  failed(f.execute(verify, "", { OPENCLAW_WORKSPACE_DIR: sandboxWorkspace }));
 });
 
 const native = {

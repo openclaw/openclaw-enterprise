@@ -59,7 +59,6 @@ const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
-  "k3d-fixture-oauth",
 ]);
 // These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
 // Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
@@ -2622,8 +2621,7 @@ async function prepareLane({ lane, statePath }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
-    case "k3d-fixture-plugins":
-    case "k3d-fixture-oauth": {
+    case "k3d-fixture-plugins": {
       // PostgreSQL, the cluster and the fixture build are independent; the
       // fixture is imported only after the cluster passed its readiness gates.
       const [, cluster, built] = await timedPreparation(

@@ -964,7 +964,15 @@ test("Codex startup logs in, probes and starts the app server in each login mode
       flag: "--with-access-token",
       input: "at-fixture",
     },
-    oauth: { env: { OCE_CODEX_OAUTH_SOURCE_UID: "source", OCE_CODEX_OAUTH_VOLUME_UID: "volume" } },
+    chatgptAuthTokens: {
+      env: {
+        CODEX_ACCESS_TOKEN: "fixture-external-access-placeholder",
+        OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({
+          accountId: "fixture-account",
+          planType: "team",
+        }),
+      },
+    },
   };
   for (const [mode, { env, flag, input }] of Object.entries(login)) {
     const directory = mkdtempSync(join(tmpdir(), "oce-codex-login-mode-"));
@@ -973,19 +981,6 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     mkdirSync(join(directory, "bin"));
     mkdirSync(codexHome);
     writeFileSync(join(directory, "bin", "codex"), codexCallRecorder, { mode: 0o755 });
-    if (mode === "oauth") {
-      writeFileSync(
-        join(codexHome, ".oce-oauth.json"),
-        JSON.stringify({ sourceUid: "source", volumeUid: "volume" }),
-      );
-      writeFileSync(
-        join(codexHome, "auth.json"),
-        JSON.stringify({
-          auth_mode: "chatgpt",
-          tokens: { id_token: "id", access_token: "access", refresh_token: "refresh" },
-        }),
-      );
-    }
     const child = spawnSync(
       process.execPath,
       ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
@@ -1024,6 +1019,17 @@ test("Codex startup logs in, probes and starts the app server in each login mode
         args: ["-c", "cli_auth_credentials_store=file", "login", flag],
         input,
       });
+    }
+    if (mode === "chatgptAuthTokens") {
+      // OpenShell owns the real grant; the launcher writes only its injection
+      // placeholder and account metadata, without a native refresh credential.
+      const auth = JSON.parse(readFileSync(join(codexHome, "auth.json"), "utf8"));
+      assert.equal(auth.auth_mode, "chatgptAuthTokens");
+      assert.equal(auth.OPENAI_API_KEY, null);
+      assert.equal(auth.tokens.access_token, env.CODEX_ACCESS_TOKEN);
+      assert.equal(auth.tokens.refresh_token, "");
+      assert.equal(auth.tokens.account_id, "fixture-account");
+      assert.doesNotMatch(JSON.stringify(auth), /fixture-transport-token/);
     }
     const probe = calls.find(({ args }) => args.includes("exec")).args;
     assert.equal(probe[probe.indexOf("--model") + 1], "gpt-5");

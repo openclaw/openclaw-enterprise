@@ -270,7 +270,7 @@ async function fixture(
 
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });
-  // The real Driver advertises PATs and OAuth2 refresh sources. The Installation
+  // The real Driver advertises model login and OAuth2 refresh sources. The Installation
   // response must carry that catalog through Fastify serialization for Console discovery.
   const response = await f.request("GET", "/installation");
   assert.equal(response.status, 200, JSON.stringify(response.body));
@@ -283,10 +283,14 @@ test("Installation discovery serializes OpenShell model authentication and refre
         ...harnessAuth,
       })),
     [
+      { type: "codex-oauth", modelProvider: "openai", loginMode: "chatgptAuthTokens" },
       { type: "openai", modelProvider: "openai", loginMode: "api_key" },
       { type: "codex-pat", modelProvider: "openai", loginMode: "codex_pat" },
     ],
   );
+  assert.deepEqual(types.find(({ type }) => type === "codex-oauth")?.deviceAuthorization, {
+    harnessId: "codex",
+  });
   for (const type of OAUTH2_TYPES) {
     assert.equal(types.find((entry) => entry.type === type)?.rotation, "refresh", type);
   }

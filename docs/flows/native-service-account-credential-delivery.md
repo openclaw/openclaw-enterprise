@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-13
-last_updated_session: authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907
+updated: 2026-10-16
+last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
 ---
 
 # Harness Authentication Binding Flow
@@ -13,7 +13,7 @@ Deployment freezes the authorized binding; the worker rechecks it and Kubernetes
 renders the credential only into the model-executing workload, which
 authenticates before guarded activation. SSH `runtime` binds operator credentials and checks gateway readiness without model authentication.
 
-Codex OAuth device login and its one-time credential handoff are **Experimental**;
+Codex OAuth device login through an external credential source is **Experimental**;
 see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#oauth-launch-limits).
 
 ## Entry Points
@@ -31,16 +31,9 @@ see the [launch limits](../reference/drivers/kubernetes-compute/codex-oauth-stor
 ```mermaid
 graph TD
   A["Store key or separately issue account credential"] --> B["Save Agent harnessAuth reference"]
-  DA["Complete device login in OCE"] --> B
-  G -->|dedicated OAuth| OA["<b>Claim source</b><br/>Retire old writer, create Job"]
-  OA --> OC{"<b>Job condition</b>"}
-  OC -->|pending| OP["<b>Observe existing Job</b>"]
-  OP --> OC
-  OC -->|Complete| OB["<b>Consume source</b><br/>Erase seed, Job, Pods"]
-  OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist evidence and cleanup"]
-  OP -->|deadline| OF
-  OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]
-  OB --> J
+  DA["Refresh Driver completes device login"] -.-> B
+  G -->|external ChatGPT| OA["Sandbox supplies placeholder<br/>and account metadata"]
+  OA --> J
   R["Operator provisions protected host env"] --> B
   D -->|runtime| S["SSH starts embedded gateway using host env"]
   S --> T["Check gateway readiness; model auth remains unverified"]
@@ -61,11 +54,6 @@ graph TD
   H --> M{"Native primary model probe succeeds?"}
   M -->|no| N["Gateway stays unready; replacement may interrupt service"]
   M -->|yes| O["Gateway becomes ready; complete activation"]
-
-  classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
-  classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
-  class OA,OP,OB,OG operation
-  class OC,OF blocked
 ```
 
 ## Execution Trace
@@ -75,30 +63,34 @@ graph TD
 `packages/occ/src/index.ts:OpenClawController.startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `cancelAgentDeviceAuthorization`
 
-Device login persists actor, exact Namespace/optional Agent scope, provider state,
-and phase in the selected Secret backend; PostgreSQL stores only the Secret
-reference. The selected Compute Driver owns the provider protocol in
-`apps/controller/src/drivers/compute/device-auth.ts:startHarnessDeviceAuthorization`
-and `pollHarnessDeviceAuthorization`. A successful exchange stores a complete
-native bundle; HTTP responses expose only the reference and device instructions.
+Device login creates a credential source and asks its Credential Refresh Driver
+to start and poll authorization. The Secret-backed session records actor, exact Namespace
+and optional Agent scope, source identity, and an opaque Refresh Driver handle.
+The Refresh Driver hands the provider grant to the external service. Ready responses return a credential-source
+reference; Console saves a `credential_source` binding and grants the Agent
+principal exact source `operate`.
 
-Each poll verifies current scope and Secret authority; Secret compare-and-swap
-claims one exchange, so concurrent polls cannot consume the same code, and a late
-response cannot overwrite cancellation. Unknown exchange outcomes require a new
-login. Local discard never logs out or revokes upstream. Before handoff,
-a ready session can supply plugin discovery through the authorized catalog path;
-the Plugin Driver extracts native access and account metadata.
+Secret compare-and-swap permits one in-flight poll and fences cancellation. An
+uncertain exchange requires reconnect. Closing or expiring a session removes its
+handle without revoking the source. Plugin discovery uses the Gateway's
+`withSourceToken` callback with current source authorization; the service may
+refresh before returning a usable access token. It continues through
+the saved source after the login session closes.
 
 Console calls
 `apps/controller/src/drivers/compute/model-discovery.ts:discoverHarnessModels`
-without storing credentials. Discovery does not prove authentication.
+without storing credentials. OpenAI API-key discovery excludes models with a
+valid `shutdown_date` today or earlier in UTC; other dates and the Anthropic and
+service-account catalogs remain unfiltered. Discovery does not prove a model call.
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`,
 `authorizeHarnessAuthSource`
 
 Create and PATCH follow the [`harnessAuth` field semantics](../reference/agents.md#harness-authentication).
-API-key, imported `codex_pat`, and OAuth sources use stable OCC Secret references; the method remains distinct even for the same Secret. The actor
-needs exact Secret `operate`; a managed `codex_pat` source needs exact account `read`.
+API keys and imported `codex_pat` tokens use stable OCC Secret references and
+require exact Secret `operate`. Managed PATs use ServiceAccount references and
+require exact account `read`. OAuth uses a CredentialSource reference owned by
+the selected Credential Gateway and requires exact source `operate`.
 Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
@@ -119,10 +111,10 @@ access-token reference and private Backend, member Driver, and workspace
 ownership. `runtime` needs no source grant, lookup, or delivery metadata. The
 selected Compute validates the combination: SSH accepts only embedded OpenClaw
 with `runtime`. Kubernetes `validateHarnessAuth` requires dedicated Codex for
-both imported and managed `codex_pat` sources. OAuth additionally requires
-Compute-owned storage without a Sandbox Driver. Deployment and guided
-provisioning reject unsupported combinations before admitting work or stopping
-predecessors.
+both imported and managed `codex_pat` sources. External ChatGPT sources require
+dedicated Codex and the paired Sandbox and Credential Gateway. Deployment and
+guided provisioning reject unsupported combinations before admitting work or
+stopping predecessors.
 
 Host credential changes can affect a runtime revision after restart without
 redeployment; see the
@@ -151,7 +143,8 @@ backend ownership from OCC state and passes an ephemeral `ComputeRevisionContext
 without reading credential bytes or rewriting the revision. Compute then reads
 the canonical CP source, verifies the admitted Secret UID or managed-account
 ownership, and delivers only selected fields into the DP revision Secret.
-Missing or replaced sources fail preparation. Managed PATs retain the exact account-owned token source.
+Missing or replaced sources fail preparation. Managed ChatGPT accounts retain the exact
+token source; their private Backend binding owns workspace metadata.
 Inactive revision history keeps references without retaining their sources
 indefinitely; drafts, active revisions, and pending deployments block source deletion.
 
@@ -164,10 +157,10 @@ One workload-rendering step converts validated references to supported
 Secret projections and a closed login mode. Embedded OpenClaw receives the key
 in its combined workload as `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, derived
 from the immutable native model Configuration; admission requires every model
-selection, fallbacks included, to use the same supported provider. Dedicated Codex receives
-the key or account token through a revision-owned DP projection. Both
-imported and managed PATs deliver only `CODEX_ACCESS_TOKEN` as the
-model credential; its separate Gateway receives none.
+selection, including fallbacks, to use the same supported provider. Dedicated
+Codex receives the key or account token through a revision-owned DP projection.
+Managed and directly supplied service account tokens deliver only
+`CODEX_ACCESS_TOKEN` as the model credential; the separate Gateway receives none.
 Neither gateway-only Configuration secret bindings nor initial runtime
 provisioning, which creates only transport/channel groups, can supply model auth.
 
@@ -183,14 +176,15 @@ and Kubernetes workload identity credentials stay separate.
 `GATEWAY_RUNTIME_ENTRYPOINT`
 
 Codex consumes explicit `CODEX_LOGIN_MODE`: API-key login receives the key through
-stdin; both managed and imported PAT sources use `CODEX_LOGIN_MODE=codex_pat`
-and `--with-access-token`. Native whoami validates and hydrates identity;
-control-plane checks retain managed account and workspace ownership. Credential environment variables are deleted before the probe and app-server start. Missing or conflicting
+stdin; managed and directly supplied service account tokens both use `codex_pat`
+and `--with-access-token`. Native whoami validates and hydrates identity from the
+token, without a runtime workspace override. Credential environment variables
+are deleted before the probe and app-server start. Missing or conflicting
 inputs, failed login, or a failed bounded native turn against the primary model
 (under the restricted [probe policy](../reference/harness-execution.md#harness-authentication))
 prevent app-server startup and readiness. API-key and service-account login
-state remains in the bounded ephemeral home; OAuth reuses the persistent bundle
-(step 6).
+state remains in the bounded ephemeral home. External-token startup writes
+placeholder-only auth state instead of running native login (step 6).
 
 The dedicated wrapper retains `APP_SERVER_TOKEN` for local plugin
 authentication (with plugin status enabled, deriving it from the Agent revision
@@ -225,60 +219,40 @@ unchanged until preparation: deploy each consumer, verify a real turn, then
 revoke the previous key upstream. Revision history cannot restore historical
 Secret values.
 
-### 6. Transfer OAuth refresh ownership once
+### 6. Deliver externally managed OAuth authentication
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareOAuthCredentials`,
-`removeOAuthBootstrap`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:credentialSourceEnvironment`,
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`
 
-After predecessors stop, Compute atomically claims the source Secret's immutable
-UID for the Agent and PVC. Single-cluster source and seed share the tenant
-namespace; two-cluster sources use control, while seed, Job, and PVC use execution.
-A create-once Job runs
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:CODEX_OAUTH_BOOTSTRAP_ENTRYPOINT`
-and writes native auth and a generation receipt. Repeating that generation
-preserves the bundle; a new source empties `codex-home`, writes exclusive
-temporaries, and re-reads both files before successful exit. Kernel-owned
-`flock` serializes duplicate writers. The
-[bootstrap policy](../reference/drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job)
-defines retries and deadline; pending observations reuse the same Job, accepting
-equivalent Kubernetes resource quantities. `retireOAuthBootstrapDeployment`
-foreground-deletes any exact owned writer Deployment and waits for its Pods
-before admitting the Job; seed and claim remain available.
-A later non-OAuth revision's private-state init container removes `codex-home`.
+Compute checks that the returned attachments match the authorized sources exactly,
+with no missing, duplicate, or unexpected source IDs, before provisioning the
+Sandbox. It selects the attachment named by `harnessAuth.sourceId` for the Codex
+placeholder and trusted account metadata, and passes every attachment to the
+Sandbox. Attachment order does not select Harness authentication.
 
-Compute observes `Complete`, replaces the original Secret value with a consumed
-marker, removes the seed Secret, foreground-deletes the Job, and waits for its
-exact Pods to disappear; only then can Codex start. Recovery from a consumed
-marker repeats cleanup, never reseeding. Its OAuth startup branch opens existing
-auth, validates the receipt, and runs the ordinary model probe. Native refresh
-writes the same persistent file. Later revisions retain the source and reopen disk;
-a missing file or changed PVC fails with reconnect required.
+Compute sends the placeholder and account metadata only to the Harness. Its
+launcher writes ephemeral `chatgptAuthTokens` auth state without a refresh token and runs the normal native
+probe before app-server startup. The external service retains refresh ownership;
+the paired Sandbox injects a warm access token into authorized outgoing requests.
+There is no native-refresh or persistent-bundle fallback. Restarts reconstruct the
+same receiving state from a current attachment; sessions and workspace keep their
+independent persistence.
 
-For `Failed`, `oauthBootstrapFailureEvidence` captures bounded Job/Pod identities,
-fixed reasons, scheduling, and actual init/main container exits and timestamps;
-it excludes process output and credentials. Compute throws that evidence with
-the terminal preparation error. A Job still pending at the 900 s convergence
-deadline instead fails the candidate's own deployment work with
-`CONVERGENCE_DEADLINE_EXCEEDED`. Either way,
-`apps/controller/src/worker.ts:ControllerWorker.finalizeRevision` commits the
-failure and exact-revision retirement together through
-`packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`.
-`ControllerWorker.processRepositoryCleanup` resumes `stopRevision` after restart,
-removing the Job, Pods, and seed but keeping the PVC, and defers incomplete
-cleanup, including without repository credentials.
-The deployment status retains this evidence after cleanup and exposes cleanup's
-separate status and next attempt. Console polls unfinished cleanup even after
-failure.
+After withdrawal, OpenShell omits the credential binding when the same Sandbox
+restarts. `OPENSHELL_CHATGPT_AUTH_BOOTSTRAP` lets that absence reach the Harness
+launcher, which holds `AUTHENTICATION_FAILED` at the `login` phase through its
+authenticated status endpoint. The process stays alive and unready; it does not
+write auth state, start Codex, or use an earlier auth file. A present but malformed
+binding still fails the bootstrap check. Recovery requires a new authorized
+deployment, as described in the [withdrawal reference](../reference/credential-sources/withdrawal.md).
 
-Token brokerage remains deferred. Consumed markers and source seals prevent OCE from restoring or refreshing credentials.
+The [credential source lifecycle](credential-source-lifecycle.md) owns source
+registration, authorization, withdrawal and deletion. The experimental
+OpenShell source uses the paired Refresh Driver and upstream Gateway/Sandbox
+integration described in the [Driver reference](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 ## Debugging and Verification
 
-- `node --test tests/integration/kubernetes-oauth-bootstrap-real.test.mjs` with
-  the [fixture prerequisites](../testing/kubernetes.md#kubernetes-http-fixture)
-  proves Job handoff and retry exhaustion through the real API/worker and cluster
-  with synthetic provider credentials. PostgreSQL worker integration separately
-  checks that failed cleanup resumes after restart without preparing again.
 - `node --test tests/conformance/plugin-compute.test.mjs` checks the filtered
   Codex child environments, startup-derived listener hash, and retained wrapper
   token. The runtime-image startup test checks the native Codex shell without a
@@ -317,13 +291,26 @@ Token brokerage remains deferred. Consumed markers and source seals prevent OCE 
 
 ## Changelog
 
+- 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
+
+- 2026-10-14 21:28: Hold missing externally managed Codex authentication after a Sandbox restart in the accompanying fix. (authoring-run/62007ef0-44a1-467c-b24d-a61d42878897 - d4f744719e6e0b3bcb25f33bc13acf4aa81088ad)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
 - 2026-10-12 11:55: Retire owned Deployment writers before Jobs and persist bounded failure evidence before resumable cleanup. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
 
 - 2026-10-09 16:40: Replace the OAuth writer Deployment with a bounded Job and persist terminal failure with resumable cleanup in the accompanying change. (authoring-run/991ba230-4db6-45cb-8456-7561ee7bd446 - f92cf60b2ae4740a93bdd41e94e8f1c7fc92218f)
 
+- 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
+
+- 2026-10-07 16:05: Select Harness authentication by source ID and validate the complete credential attachment set. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 046c3d75e)
+
 - 2026-10-07 13:44: Reject imported and managed PAT bindings outside dedicated Codex during admission. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - 09be9c241)
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
 
+- 2026-10-07 17:36: Replace runtime-owned OAuth custody with source-owned device login and warm discovery; unify PAT sources. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
+
+- 2026-10-07 16:53: Normalize managed and supplied service-account credentials to token-only Codex login while preserving control-plane workspace ownership. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - daeb19dfb3aef5f083a73f25674bced40986f8d1)
 - 2026-10-03 15:38: Merge current credential flow while preserving shared-namespace source placement. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 94364ae9)
 
 - 2026-10-02: Clarify shared namespace source custody. (01a0fe72-58b2-7cc3-b770-7310f5401deb)

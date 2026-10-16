@@ -297,7 +297,7 @@ export function installFixture(scenario, evidence) {
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
             : scenario.auth === "oauth"
-              ? { method: "oauth", source: secretRef("sec_demo_oauth_deployed") }
+              ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
   let selectedRevisionId = null;
   if (scenario.candidateSuperseded) {
@@ -320,6 +320,10 @@ export function installFixture(scenario, evidence) {
     configurationId: config.id,
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
+    credentialSources: structuredClone(
+      scenario.credentialSources ??
+        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
+    ),
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
     ...(scenario.agentPluginApprovers !== undefined
       ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
@@ -347,13 +351,6 @@ export function installFixture(scenario, evidence) {
     const harnessId =
       configuration.values.agents?.defaults?.models?.[primaryModel]?.agentRuntime?.id ??
       (primaryModel?.startsWith("codex/") ? "codex" : "openclaw");
-    const source =
-      owner.harnessAuth?.method === "credential_source"
-        ? credentialSources.get(owner.harnessAuth.sourceId)
-        : undefined;
-    const sourceSnapshot = source
-      ? { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type }
-      : undefined;
     return {
       id,
       namespaceId,
@@ -366,15 +363,8 @@ export function installFixture(scenario, evidence) {
       createdAt,
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
-      harnessAuth: sourceSnapshot
-        ? {
-            ...owner.harnessAuth,
-            ...sourceSnapshot,
-            loginMode: scenario.credentialSourceTypes.find((type) => type.type === source.type)
-              .harnessAuth.loginMode,
-          }
-        : structuredClone(owner.harnessAuth),
-      ...(sourceSnapshot ? { credentialSources: [sourceSnapshot] } : {}),
+      harnessAuth: structuredClone(owner.harnessAuth),
+      credentialSources: structuredClone(owner.credentialSources),
       ...(owner.pluginApprovers !== undefined
         ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
         : {}),
@@ -775,20 +765,16 @@ export function installFixture(scenario, evidence) {
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const source = secretRef(nextId("sec"));
+          const session = secretRef(nextId("sec"));
           const login = {
-            source,
+            session,
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(source.id, login);
-          secrets.set(
-            source.id,
-            secretMetadata(source.id, "Codex OAuth login (Experimental, simulated)"),
-          );
+          deviceLogins.set(session.id, login);
           return response(login);
         }
         const login = deviceLogins.get(id);
@@ -798,6 +784,7 @@ export function installFixture(scenario, evidence) {
         if (poll && method === "POST") {
           if (!scenario.oauthPending) {
             login.status = "ready";
+            login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };
           }
           return response(login);
         }

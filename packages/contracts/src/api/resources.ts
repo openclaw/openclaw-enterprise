@@ -81,7 +81,8 @@ export const AgentDeviceAuthorizationResponse = Type.Object(
   {
     data: Type.Object(
       {
-        source: SecretReference,
+        session: SecretReference,
+        source: Type.Optional(CredentialSourceReference),
         status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
         verificationUrl: Type.String({ format: "uri" }),
         userCode: Type.String(),
@@ -269,11 +270,18 @@ const CredentialSourceCatalogSchema = Type.Object(
     config: Type.Array(CredentialSourceFieldSchema),
     secrets: Type.Array(CredentialSourceFieldSchema),
     rotation: Type.Union([Type.Literal("none"), Type.Literal("external"), Type.Literal("refresh")]),
+    deviceAuthorization: Type.Optional(
+      Type.Object({ harnessId: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+    ),
     harnessAuth: Type.Optional(
       Type.Object(
         {
           modelProvider: Type.String({ minLength: 1 }),
-          loginMode: Type.Union([Type.Literal("api_key"), Type.Literal("codex_pat")]),
+          loginMode: Type.Union([
+            Type.Literal("api_key"),
+            Type.Literal("codex_pat"),
+            Type.Literal("chatgptAuthTokens"),
+          ]),
         },
         { additionalProperties: false },
       ),

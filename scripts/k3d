@@ -2,9 +2,9 @@
 set -euo pipefail
 umask 077
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-cd "$repo_root"
+script_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
+CDPATH="" cd "$repo_root"
 
 usage() {
   cat <<'EOF'

@@ -1,6 +1,6 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
 import { isStaleGeneration } from "./list.mjs";
 
@@ -501,7 +501,7 @@ export function createChannelSecretsPanel({
         onConfigurationChange?.(state.configuration);
         const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
         for (const secret of grantTargets) {
-          await ensureSecretOperateBinding(context, state.agent, secret);
+          await ensureCredentialOperateBinding(context, state.agent, secret);
           markSecretGrantConfirmed(secret);
         }
         if (!context.isCurrent()) {

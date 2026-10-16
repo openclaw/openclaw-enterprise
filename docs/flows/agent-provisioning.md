@@ -8,7 +8,7 @@ last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 
 ## Overview
 
-Console saves Slack tokens and model credentials through the Secrets API, then submits inline Configuration and credential references. Presets retain their bindings. OCC queues setup work without creating placeholder resources. A worker creates the Configuration and Agent, grants the Agent access to accepted Secrets or its model source, provisions trusted-proxy runtime credentials, and admits the first deployment.
+Console saves Slack and model Secrets, submits inline Configuration and credential references, and retains Preset bindings. OCC queues setup without placeholder resources. The worker creates Configuration and Agent, grants exact Secret or source access, provisions trusted-proxy credentials, and admits the first deployment.
 
 The original provisioning handle follows the first deployment to activation or failure. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own runtime reconciliation; later deployments use separate handles.
 
@@ -60,7 +60,7 @@ Credentials read native model runtime policy through
 `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
 Service Accounts and Codex plugin browsing remain specific to Codex.
 
-The Slack channel setup modal sends each new token to ordinary `POST /namespaces/:namespaceId/secrets` immediately, before an Agent exists. It clears entered values after the save attempt. Applying channel settings stages the returned references and environment bindings in the form. Cancelling the drawer discards its selections but retains created namespace Secrets. Model discovery uses the entered API key or service account token without saving it. Create Agent saves that credential as an ordinary Namespace Secret, clears the input, and reuses its returned reference for provisioning retries. Bound Presets retain their credential and provider. A lost Secret-save response needs recovery rather than automatic repetition.
+The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
 
 A selected Credential Gateway's catalog directs Console to register the model
 Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
@@ -83,7 +83,7 @@ A selected Credential Gateway requires a supported model Credential Source for d
 
 After an Installation selects another Secret Driver, request, status and retry answer `503` for a Secret owned by the previous Driver, after authorization and lookup. The message asks the caller to save replacement Secrets and submit a new request. The worker fails that attempt with `PROVISIONING_REJECTED`; an unavailable Secret Driver still retries.
 
-Before admission, the ChannelDriver checks configured credentials through authorized Secret callbacks. Slack checks token roles and bot authentication; this neither pins Secret versions nor adds worker revalidation. The repository Driver validates Namespace selections before queueing and when creating the Agent. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Supported Sandbox initial workspace files use Compute's private PVC initializer; unsupported placement fails before delivery. Deployment checks the exact Harness topology.
+Before admission, the ChannelDriver checks configured credentials through authorized Secret callbacks. Slack checks token roles and bot authentication; this neither pins Secret versions nor adds worker revalidation. The repository Driver validates Namespace selections before queueing and when creating the Agent. Undeliverable repository bindings, including Sandbox repositories, keep Agent create's `409` on admission and retry ([Compute admission](../reference/drivers/compute-admission.md)). Initial workspace files require the selected Sandbox's `validateWorkspaceSetup` capability; Compute delegates validation or refuses unsupported placement before staging files. Deployment checks the exact Harness topology.
 
 OCC stores the accepted request and deduplication fingerprint in `agent_provisioning_work`, then queues `controller_work` with `work_kind = 'provisioning'`. Configuration and Agent creation happen later. The same actor, Namespace and request ID return the existing work; changed input conflicts.
 
@@ -113,12 +113,13 @@ with all required containment facets. The pinned runtime declares native support
 custom images still require an operator declaration in
 [Installation startup configuration](../reference/configuration.md#installation-startup-configuration).
 `packages/occ/src/index.ts:requireDedicatedNativeSupport` enforces both requirements.
-Kubernetes Compute initializes
-[private workspace inputs](workspace-files.md#2-deployment-initializes-storage-before-execution)
-on the approved Harness PVC before Sandbox startup. OpenShell still rejects
-ordinary Secret-backed environment projection; model sources and node enrollment
-use their separate delivery contracts. Admission proves no runtime readiness;
-see [OpenShell limits](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
+Admission does not prove workload delivery. Sandbox receives private setup
+identity and the exact Secret reference through `HarnessWorkloadRequirements.workspaceSetup`;
+OpenShell executes initialization through `ExecSandbox` before Harness startup.
+See [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
+Stock OpenShell rejects Secret-backed environment projection; the
+[OpenShell flow](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
+covers remaining limits and verification-only support.
 
 ### 5. Failures preserve useful outputs
 
@@ -159,9 +160,14 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 - 2026-10-15 06:30: Refused provisioning deletes its unrecorded Configuration. (fix-1395)
 - 2026-10-14 23:59: Name the Stop or deletion that cancelled provisioning. (fix-1375-1377)
 - 2026-10-14 20:21: Name a stopped initial deployment without changing its failed and non-retryable outcome. (authoring-run/b98d803a-436a-4437-84af-01be278a6460 - 8642bef0e3a39ff73459ef9e96a3404084135837)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
 - 2026-10-12 22:30: Provisioning refuses undeliverable repository bindings and Sandbox workspace files before queueing. (fix-1144-1145b - d34b4a8f7)
 
 - 2026-10-12 11:55: Follow the initial deployment on the original provisioning handle and retain its failure identity. (authoring-run/adccd418-cf61-4fbb-b3ba-0fcad194d907 - 040e7498ecd89e0e565af71f234776ecfaad2186)
+
+- 2026-10-09 13:59: Keep OpenShell initialization and current provisioning limits within the flow budget. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - a9298d2ed)
 
 - 2026-10-09 12:00: A Configuration create still absent 90 seconds after it began is resent. (fix-911)
 

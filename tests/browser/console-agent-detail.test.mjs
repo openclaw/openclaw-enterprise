@@ -1394,7 +1394,7 @@ test("Agent draft plugin browsing explains a missing hosted credential", async (
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   await dialog
     .getByText(
-      "Hosted plugin browsing requires a saved Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
+      "Hosted plugin browsing requires a saved ChatGPT login or Service Accounts token Secret. Select it under Credentials, or edit existing plugin selections.",
     )
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);

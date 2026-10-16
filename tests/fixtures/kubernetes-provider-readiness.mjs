@@ -106,7 +106,7 @@ export function providerReadinessFixture({
     undefined,
     preparedAuth(driver, namespace, false),
   );
-  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key");
+  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key", false);
   const requests = [];
   let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
   const core = {

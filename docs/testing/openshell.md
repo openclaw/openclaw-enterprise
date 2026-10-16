@@ -3,7 +3,9 @@
 ## Overview
 
 Use these tests to check OpenShell setup and real Agent execution. Run commands
-from the repository root.
+from the repository root. The current setup selects official OpenShell
+`v0.1.4`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
+for the exact versions and qualification boundary.
 
 ## Start a reusable development environment
 
@@ -65,10 +67,25 @@ Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
+The suite delivers initial workspace files through real `ExecSandbox` and reads
+them through the Agent API. Separate startup integration checks completion
+markers, uncertain acknowledgments and edit preservation with a local native
+initializer; those checks alone do not prove the OpenShell transport.
+
+<a id="external-chatgpt-authentication-boundary"></a>
+
+Experimental ChatGPT OAuth has separate [receiver fixtures and full-stack
+qualification](openshell-oauth.md#receiver-fixtures-and-full-stack-qualification).
+The [controlled-issuer proof](openshell-oauth.md) covers Gateway refresh and
+official operator-mTLS access-token retrieval. Synthetic issuer results do not
+prove real ChatGPT login or model execution; repeat credentialed qualification
+against the exact selected images.
+
 The CI lane needs an existing authorized `CODEX_ACCESS_TOKEN` for Codex and
 `OPENAI_API_KEY` for the native OpenClaw first-Agent case. Both must permit
 `OCC_TEST_OPENAI_MODEL`. Keep these credentials separate; a Codex PAT cannot
-authenticate native OpenClaw. Do not put either value in a command, logs, or shell history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
+authenticate native OpenClaw. Do not put either value in a command, logs, or shell
+history. It also needs Docker, k3d, kubectl, Helm, `openssl`, and
 network access to the pinned assets. The CI preparation creates a disposable
 cluster, installs the OpenShell and Agent Sandbox prerequisites, imports
 immutable images, and prepares PostgreSQL. A standard k3d cluster alone is not
@@ -165,6 +182,10 @@ then resumes the same session ID and key, requiring another model turn and `exec
 to read the original file with its original hash. Run placement must identify the
 replacement Harness and the required worker profile. A fresh session alone would
 miss lost worktrees even when session metadata survives.
+
+Previously captured guided live proof covers native OpenClaw only and predates
+the current Sandbox-owned initialization. It does not establish fresh proof
+for the merged images, guided Codex, or ChatGPT OAuth.
 
 For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select

@@ -673,14 +673,14 @@ export function requestFailure(error: unknown): RequestFailure {
     }
   }
   if (error instanceof DeviceAuthorizationStartError) {
-    // Device login starts at auth.openai.com from the API Pods, which the chart's default
-    // network policy does not allow, so name that cause when no connection was made.
+    // The Refresh Driver starts Codex login at auth.openai.com from the API Pods.
+    // Name that egress boundary only when its issuer request could not get a response.
     return failure(
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again."
-        : "The sign-in service could not start device login. Try again.",
+        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        : "Device login could not start. Try again.",
     );
   }
   if (error instanceof PluginDiscoveryError) {
