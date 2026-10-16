@@ -4991,8 +4991,9 @@ async function assertModelRouteRefusesUntrustedUpstream(topology) {
       rejected = true;
       observation = error instanceof Error ? error.message : String(error);
       // The kubectl error message starts with the whole probe script; its stderr says why.
-      rejection =
-        typeof error?.stderr === "string" && error.stderr.trim() !== "" ? error.stderr : undefined;
+      if (typeof error?.stderr === "string") {
+        rejection = error.stderr.trim() || "kubectl returned no stderr; probe command omitted.";
+      }
     }
   } catch (error) {
     failure = error;
