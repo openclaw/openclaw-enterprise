@@ -92,22 +92,20 @@ Its bodyless POST requires Agent `read`/`operate` and exact AgentRevision `read`
 Configuration and Agent plugin selections. **Edit current Configuration** does
 not copy historical values. Stop and deletion target the Agent.
 
-In the draft, **Edit Configuration** PATCHes only `{ values, expectedGeneration }`
-from a JSON object to the exact Namespace Configuration, preserving `secretBindings`.
-It rereads Agent and Configuration, rejecting changed ID or generation.
-A write racing these reads gets `409` and also requires Reload draft.
+**Edit Configuration** rereads the Agent and Configuration, then PATCHes only
+`{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
+generation (including a `409` from a racing save) requires **Reload draft**.
 
-**Enable gateway password access** stages `gateway.auth.password` referencing
-`OPENCLAW_GATEWAY_PASSWORD` through this editor. Other settings, Secret bindings, and
-admitted versions remain unchanged; Cancel discards the edit. On deployment, Kubernetes `gatewayConfiguration` detects the reference;
-`deployment` delivers the generated password environment variable.
+**Enable gateway password access** sets `gateway.auth.password` to reference
+`OPENCLAW_GATEWAY_PASSWORD`. Other settings and Secret bindings stay unchanged; **Cancel**
+discards the edit. Kubernetes `gatewayConfiguration` recognizes the reference;
+`deployment` supplies the generated password.
 
-Saving refreshes the draft in place, keeping scroll and focus; admitted snapshots stay. Invalid input,
-denial, and stale drafts retain editor text. Uncertain saves require readback.
-Unsaved edits block deployment; pending saves block tab and version changes.
-A `403` names that save's required grants, the same text for every refusal. Permission advice
-denying Agent `update` disables plugin, repository, and authentication saves with that reason;
-Configuration saves have no such advice.
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
+an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
+A `403` lists required grants without guessing which was missing. If the Console knows the caller
+lacks Agent `update`, it disables plugin, repository and authentication saves. It has no equivalent
+permission hint for Configuration saves.
 
 `agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
 **Save plugin selections** PATCHes the Agent map, preserving Configuration and
