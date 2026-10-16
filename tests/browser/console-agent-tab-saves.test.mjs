@@ -75,8 +75,45 @@ test("saving and reloading plugin selections update the Agent page in place", as
   const kept = await watchForReload(page);
   const requests = apiRequests(page, fixture.origin);
 
+  // Until the rebuilt tab mounts, the saved editor stays locked: an edit made there would be
+  // dropped by the rebuild (review of #2551).
+  let release;
+  const released = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  let held = false;
+  let requested;
+  const reread = new Promise((resolve) => {
+    requested = resolve;
+  });
+  await page.route(
+    `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route) => {
+      if (held || route.request().method() !== "GET") {
+        await route.fallback();
+        return;
+      }
+      held = true;
+      requested();
+      await released;
+      await route.continue().catch(() => {});
+    },
+  );
   await save.click();
+  await reread;
   await page.getByRole("status").filter({ hasText: "Plugin selections saved." }).waitFor();
+  // The plugin fields go inert while saving; the JSON stays in them.
+  assert.equal(
+    await json.evaluate((node) => node.disabled || node.closest("[inert]") !== null),
+    true,
+  );
+  assert.equal(await save.isDisabled(), true);
+  release();
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.getAttribute("role") === "status",
+  );
   await assertKeptPlace(page, kept, requests, scrollBefore);
   // Save is disabled with nothing left to save, so the saved status takes focus.
   assert.equal(await focusedText(page), "Plugin selections saved.");
