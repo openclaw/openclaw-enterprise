@@ -445,6 +445,15 @@ function openDrawer(section, state, provider, retained) {
       state.copy.drawerNotice ??
         "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before first deploy.",
     ),
+    ...(carried
+      ? [
+          element(
+            "p",
+            { className: "hint", role: "status" },
+            "Your edits are applied over the reloaded settings. Review them, then save.",
+          ),
+        ]
+      : []),
     enabled,
   );
   provider.appendFields(body, config, drawerContext);
@@ -482,15 +491,6 @@ function openDrawer(section, state, provider, retained) {
   state.captureDraft = captureDraft;
   state.carriedDraft = null;
   state.drawerContext.drafts?.track("channels", captureDraft);
-  if (carried) {
-    feedback.append(
-      element(
-        "p",
-        { className: "hint", role: "status" },
-        "Your edits are applied over the reloaded settings. Review them, then save.",
-      ),
-    );
-  }
   if (stale || unresolved) {
     submit.disabled = true;
     feedback.append(

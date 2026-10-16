@@ -181,15 +181,15 @@ recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
 Saving channels rereads Agent and Configuration; a changed association or
-generation offers Reload draft. The PATCH sends `{ values: updatedValues }`, adding
+generation offers Reload draft, which reapplies the editor's changes over the
+reread settings. The PATCH sends `{ values: updatedValues }`, adding
 `secretBindings` only for changed selections. A rejected PATCH writes no Secret grant.
 
 After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
 and asks a Namespace administrator to grant access without repeating the
-channel save. New Secrets remain Namespace-owned after cancellation or failure.
-Preflight reads cannot prevent a later race. An uncertain PATCH blocks another
+channel save. Preflight reads cannot prevent a later race. An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
