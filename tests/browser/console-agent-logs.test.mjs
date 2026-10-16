@@ -431,7 +431,7 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   }, observed);
   // The observation time sits outside every status region, with aria-live=off, because it
   // changes on every poll and a status region would announce each one (finding 1425).
-  const observedLine = page.locator(".agent-logs p[aria-live='off']");
+  const observedLine = page.locator(".agent-logs [aria-live='off']");
   assert.match(await observedLine.textContent(), /^Observed /);
 
   // Only the observation time changes; it shows outside the observed regions.
@@ -440,7 +440,7 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   await page.clock.runFor(10_000);
   await page.waitForFunction(
     (text) =>
-      globalThis.document.querySelector(".agent-logs p[aria-live='off']").textContent !== text,
+      globalThis.document.querySelector(".agent-logs [aria-live='off']").textContent !== text,
     before,
   );
   assert.deepEqual(await page.evaluate(() => globalThis.statusRewrites), []);

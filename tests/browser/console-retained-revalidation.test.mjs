@@ -694,11 +694,13 @@ for (const c of slowRecheckCases) {
 }
 
 // A held page stayed inert with no busy cue: at 400 ms latency a return sat 1.7-2.2 s with
-// clicks doing nothing and nothing saying why (finding 1447). Past 300 ms it now dims, with a
-// progress cursor, and nothing moves; a fast hold never shows the cue.
+// clicks doing nothing and nothing saying why (finding 1447). Past 300 ms a navigation's held
+// page now dims, with a progress cursor, and nothing moves; a fast hold never shows the cue.
+// A refocus recheck keeps the page's look and says Still checking after 1 s instead.
 for (const c of [
   {
     name: "A held return",
+    cue: true,
     async act(page, t) {
       await page.getByRole("link", { name: "Namespaces", exact: true }).click();
       await page
@@ -712,18 +714,26 @@ for (const c of [
   },
   {
     name: "A held first visit",
-    async act(page, t, namespace, agents) {
-      const read = await holdRead(t, page, `**/namespaces/${namespace.id}/agents/${agents[0].id}`, {
-        once: true,
-      });
-      await page.getByRole("link", { name: "Busy Agent" }).click();
+    cue: true,
+    async act(page, t) {
+      const read = await holdRead(t, page, "**/namespaces", { once: true });
+      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+      return read;
+    },
+  },
+  {
+    name: "A held refocus recheck",
+    cue: false,
+    async act(page, t) {
+      const read = await holdRead(t, page, "**/api/auth/session", { once: true });
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
       return read;
     },
   },
 ]) {
-  test(`${c.name} shows a delayed busy cue without moving`, async (t) => {
-    const { namespace, agents, page } = await openPausedList(t, c.name, ["Busy Agent"]);
-    const read = await c.act(page, t, namespace, agents);
+  test(`${c.name} ${c.cue ? "shows a delayed busy cue" : "keeps its look"} without moving`, async (t) => {
+    const { page } = await openPausedList(t, c.name, ["Busy Agent"]);
+    const read = await c.act(page, t);
     await read.requested;
     const held = page.locator(heldView);
     await held.waitFor();
@@ -742,12 +752,17 @@ for (const c of [
     const first = await look();
     // The cue waits 300 ms, so a fast hold never flashes it. CSS animations run on real time,
     // not the paused page clock.
-    assert.equal(first.delay, 300);
+    assert.equal(first.delay, c.cue ? 300 : null);
     await new Promise((resolve) => setTimeout(resolve, 700));
-    const busy = await look();
-    assert.ok(busy.opacity < 0.7, `the held page dims: ${busy.opacity}`);
-    assert.equal(busy.cursor, "progress");
-    assert.deepEqual(busy.box, first.box);
+    const later = await look();
+    if (c.cue) {
+      assert.ok(later.opacity < 0.7, `the held page dims: ${later.opacity}`);
+      assert.equal(later.cursor, "progress");
+    } else {
+      assert.equal(later.opacity, 1);
+      assert.equal(later.cursor, "auto");
+    }
+    assert.deepEqual(later.box, first.box);
     read.release();
     await page.locator(settledView).waitFor();
     assert.deepEqual(

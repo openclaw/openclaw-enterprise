@@ -305,8 +305,8 @@ export function renderAgentPlugins(
       });
       saved = true;
       if (context.isCurrent()) {
-        pending = false;
-        updateState();
+        // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
+        feedback.textContent = "Plugin selections saved.";
         context.drafts.forget("plugins");
         if (oauthLogin.capture()) {
           context.drafts.track("plugins", () => ({ oauthLogin: oauthLogin.capture() }));
@@ -335,7 +335,7 @@ export function renderAgentPlugins(
                   ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
                   : message(error, mutationStarted);
     } finally {
-      if (context.isCurrent()) {
+      if (context.isCurrent() && !saved) {
         pending = false;
         updateState();
       }

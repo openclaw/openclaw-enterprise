@@ -154,13 +154,13 @@ p {
   /* A load that settles within the loading delay never flashes its status (finding 1444). */
   animation: loading-delay 250ms;
 }
-/* A held page stays on screen, inert, while the next view's reads run. Past 300 ms it dims
-   and shows a progress cursor, so a slow return does not look stuck; opacity and cursor only,
-   so nothing moves (finding 1447). */
-.content:has(> [aria-live="polite"][inert]) {
+/* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
+   a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
+   moves (finding 1447). A refocus recheck does not set .holding and keeps its look. */
+.content.holding:has(> [aria-live="polite"][inert]) {
   cursor: progress;
 }
-.content > [aria-live="polite"][inert] {
+.content.holding > [aria-live="polite"][inert] {
   animation: held-busy 200ms ease-out 300ms both;
 }
 @keyframes held-busy {
@@ -172,7 +172,7 @@ p {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .content > [aria-live="polite"][inert] {
+  .content.holding > [aria-live="polite"][inert] {
     animation-duration: 1ms;
   }
 }

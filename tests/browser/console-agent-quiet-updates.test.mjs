@@ -5,47 +5,25 @@ import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/delet
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { detailUrl, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
 
-// Records, every frame, the latest-deployment summary text a reader can see: the 250 ms rule's
-// delayed loading text is hidden by visibility until then.
-function recordLatestDeployment() {
-  globalThis.__latestDeployment = [];
-  const tick = () => {
-    const value = globalThis.document.querySelector(
-      '[aria-label="Agent state at a glance"] > div:nth-child(2) > strong',
-    );
-    const text = value
-      ? [...value.childNodes]
-          .filter(
-            (node) =>
-              node.nodeType === 3 || globalThis.getComputedStyle(node).visibility === "visible",
-          )
-          .map((node) => node.textContent)
-          .join("")
-          .trim()
-      : "";
-    if (text && globalThis.__latestDeployment.at(-1) !== text) {
-      globalThis.__latestDeployment.push(text);
-    }
-    globalThis.requestAnimationFrame(tick);
-  };
-  globalThis.requestAnimationFrame(tick);
-}
-
 // The Agent summary showed "vN · Loading…" for a frame or more on every load while the newest
 // version's deployment record was read (finding 1438). Its loading text now follows the 250 ms
-// rule.
-test("the Agent summary shows no loading text for a deployment record read under 250 ms", async (t) => {
+// rule: it is hidden for the first 250 ms, so a read that settles sooner never shows it.
+test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Quiet summary", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Quiet Summary", nativeValues("v1"));
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  // A short record read, as on a near cluster; long enough to paint several frames.
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
     async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      await held;
       await route
         .fulfill({
           status: 200,
@@ -66,18 +44,34 @@ test("the Agent summary shows no loading text for a deployment record read under
         .catch(() => {});
     },
   );
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.getByRole("link", { name: "Quiet Summary" }).waitFor();
-  await page.addInitScript(recordLatestDeployment);
-  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
-  await summary.getByText("v1 · Completed", { exact: true }).waitFor();
-  const shown = await page.evaluate(() => globalThis.__latestDeployment);
-  assert.deepEqual(
-    shown.filter((text) => text.includes("Loading")),
-    [],
-    shown.join(" | "),
+  const value = summary.locator(":scope > div:nth-child(2) > strong");
+  await page.waitForFunction(() =>
+    globalThis.document
+      .querySelector('[aria-label="Agent state at a glance"] > div:nth-child(2) > strong')
+      ?.textContent.startsWith("v1 · "),
   );
+  // The version shows at once; only the loading word waits, hidden by a 250 ms animation.
+  const delayed = (node) =>
+    [...node.querySelectorAll("*")].map((child) => {
+      const style = child.ownerDocument.defaultView.getComputedStyle(child);
+      return {
+        text: child.textContent,
+        animation: `${style.animationName} ${style.animationDuration}`,
+      };
+    });
+  assert.equal(await value.textContent(), "v1 · Loading…");
+  assert.deepEqual(await value.evaluate(delayed), [
+    { text: "Loading…", animation: "loading-delay 0.25s" },
+  ]);
+  const note = summary.locator(":scope > div:nth-child(2) > p");
+  assert.deepEqual(await note.evaluate(delayed), [
+    { text: "Reading recorded deployment status.", animation: "loading-delay 0.25s" },
+  ]);
+
+  release();
+  await summary.getByText("v1 · Completed", { exact: true }).waitFor();
 });
 
 // While an Agent was deleting, every 3 s poll flipped "Refresh deletion status" to a disabled
@@ -97,6 +91,8 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   const dialog = page.getByRole("dialog", { name: "Delete Quiet Deletion?" });
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // Polls run only when the test advances the clock.
+  await page.clock.pauseAt(new Date("2026-10-16T12:00:01Z"));
   // The confirmation removes itself on its close event, a task after the request settles.
   await page.locator(".deletion-note dialog").waitFor({ state: "detached" });
   const refresh = page.getByRole("button", { name: "Refresh deletion status" });
@@ -131,22 +127,39 @@ test("deletion status polls leave Refresh and the deletion notice untouched", as
   assert.deepEqual(await page.evaluate(() => globalThis.deletionChanges), []);
   assert.equal(await refresh.evaluate((node) => node.matches(":focus")), true);
 
-  // A requested check still says it is checking.
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  t.after(() => release());
-  await page.route(agentUrl, async (route) => {
-    await held;
-    await route.continue().catch(() => {});
-  });
-  await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "Checking…" }).waitFor();
-  release();
-  await refresh.waitFor();
-  await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "BUTTON");
-  assert.equal(await refresh.evaluate((node) => node.matches(":focus")), true);
+  // Refresh pressed while a quiet poll reads turns that poll into a shown check, and focus
+  // comes back to Refresh when it ends.
+  for (const during of ["poll", "idle"]) {
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    t.after(() => release());
+    let requested;
+    const read = new Promise((resolve) => {
+      requested = resolve;
+    });
+    await page.route(
+      agentUrl,
+      async (route) => {
+        requested();
+        await held;
+        await route.continue().catch(() => {});
+      },
+      { times: 1 },
+    );
+    if (during === "poll") {
+      await page.clock.runFor(DELETION_POLL_MS);
+      await read;
+      assert.equal(await refresh.isEnabled(), true);
+    }
+    await page.keyboard.press("Enter");
+    await page.getByRole("button", { name: "Checking…" }).waitFor();
+    release();
+    await refresh.waitFor();
+    await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "BUTTON");
+    assert.equal(await refresh.evaluate((node) => node.matches(":focus")), true, during);
+  }
 });
 
 // Share Agent hid its form until the sharing policy loaded, so the form popped in and pushed

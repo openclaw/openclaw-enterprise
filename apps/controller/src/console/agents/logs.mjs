@@ -112,18 +112,16 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   }
   const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
-  const stripStatus = element(
-    "p",
-    { className: "muted", role: "status" },
-    "Loading runtime status…",
-  );
-  // The observed time changes on every 10 s poll. It sits outside the status region, and
-  // aria-live=off keeps the page view's live region from announcing it, so only loading,
-  // errors and recovery are announced (finding 1425).
-  const stripObserved = element("p", { className: "muted", "aria-live": "off", hidden: true });
+  // One line: a status region for loading and errors, and the observed time beside it. The
+  // time changes on every 10 s poll, so it sits outside the status region, and aria-live=off
+  // keeps the page view's live region from announcing it; only loading and errors are
+  // announced (finding 1425). The status region stays in the tree, empty when there is
+  // nothing to say, so a later error is announced.
+  const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
+  const stripObserved = element("span", { "aria-live": "off" });
+  const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
   function showStripStatus(text) {
-    stripObserved.hidden = true;
-    stripStatus.hidden = false;
+    setText(stripObserved, "");
     stripStatus.textContent = text;
   }
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
@@ -269,10 +267,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!description) {
       return;
     }
-    setText(stripObserved, `Observed ${displayDate(description.observedAt)}`);
-    stripObserved.hidden = false;
-    stripStatus.hidden = true;
     setText(stripStatus, "");
+    setText(stripObserved, `Observed ${displayDate(description.observedAt)}`);
     // The strip is a live region and status polls every 10 s, so rebuild it only on a change.
     replaceChildrenIfChanged(
       strip,
@@ -687,8 +683,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   section.append(
     element("h3", {}, "Runtime"),
-    stripStatus,
-    stripObserved,
+    stripLine,
     strip,
     element(
       "div",

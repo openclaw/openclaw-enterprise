@@ -1511,7 +1511,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       setDelayedText(latestDeploymentValue, `v${latest.revision} · `, "Loading…");
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
-      setText(latestDeploymentValue, `v${latest.revision} · ${label ?? "Unavailable"}`);
+      setText(
+        latestDeploymentValue,
+        `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`,
+      );
       setText(
         latestDeploymentNote,
         neutral
@@ -2245,17 +2248,31 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // request, so a tab left mid-read is rebuilt rather than retained; a failed read reloads the
   // page as before.
   async function reloadDraftInPlace(tabContext, options) {
+    if (refreshingDraft) {
+      return;
+    }
+    // Tabs and versions wait from the click, not only once the reread is back.
+    refreshingDraft = true;
+    updateNavigationControls();
+    const tab = mountedTab;
+    const current = () => tabContext.isCurrent() && mountedTab === tab && !deleting;
     let fresh;
     try {
       fresh = await tabContext.request(path);
     } catch {
-      if (tabContext.isCurrent()) {
-        context.navigate(target("draft", selectedTab), namespaceId, true);
+      fresh = null;
+    }
+    refreshingDraft = false;
+    if (!current()) {
+      if (context.isCurrent()) {
+        updateNavigationControls();
       }
       return;
     }
-    if (tabContext.isCurrent()) {
+    if (fresh) {
       await refreshDraftInPlace({ agent: fresh, ...options });
+    } else {
+      context.navigate(target("draft", selectedTab), namespaceId, true);
     }
   }
 
@@ -2836,6 +2853,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     function rebuild(saved, focus) {
       reload.disabled = true;
       cancel.disabled = true;
+      // A Save during the reread would write the edit being discarded.
+      save.disabled = true;
+      fields.setDisabled(true);
       void reloadDraftInPlace(context, { saved, focus });
     }
     const reload = button("Reload draft", () => rebuild("Draft reloaded."));

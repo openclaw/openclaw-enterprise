@@ -105,7 +105,19 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }, DELETION_POLL_MS);
   }
 
+  // Whether the running check returns focus to this section when it ends.
+  let focusedHere = false;
+  const focusIsHere = () =>
+    section.contains(document.activeElement) || document.activeElement === document.body;
+
   async function refreshStatus({ poll = false } = {}) {
+    if (!poll && state.polling && context.isCurrent()) {
+      // Refresh during a quiet poll shows that poll as the requested check.
+      focusedHere = focusIsHere();
+      state.polling = false;
+      render();
+      return;
+    }
     if (state.pending || !context.isCurrent()) {
       if (poll && state.deleting && context.isCurrent()) {
         schedulePoll();
@@ -114,8 +126,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }
     // Disabling or detaching Refresh can drop focus to body without leaving the check.
     // A new focus outside the section relinquishes that return, even if later blurred.
-    let focusedHere =
-      section.contains(document.activeElement) || document.activeElement === document.body;
+    focusedHere = focusIsHere();
     const trackFocus = (event) => {
       if (event.target !== document.body && !section.contains(event.target)) {
         focusedHere = false;
@@ -170,6 +181,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     } finally {
       document.removeEventListener("focusin", trackFocus, true);
       if (context.isCurrent()) {
+        const quiet = state.polling;
         state.pending = false;
         state.polling = false;
         render();
@@ -178,7 +190,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
           if (focusedHere) {
             heading.focus({ preventScroll: true });
           }
-        } else if (!poll && focusedHere) {
+        } else if (!quiet && focusedHere) {
           (state.deleting || state.needsRefresh ? refresh : remove).focus({ preventScroll: true });
         }
       }
@@ -264,7 +276,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   }
 
   function openConfirmation() {
-    if (state.forbidden || state.pending || state.needsRefresh) {
+    if (state.forbidden || (state.pending && !state.polling) || state.needsRefresh) {
       return;
     }
     const retry = state.deleting;
@@ -290,7 +302,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
-      if (!dialog.open || state.pending) {
+      if (!dialog.open || (state.pending && !state.polling)) {
         return;
       }
       confirm.disabled = true;
@@ -309,7 +321,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
-      if (state.pending) {
+      if (state.pending && !state.polling) {
         event.preventDefault();
       }
     });
@@ -323,7 +335,11 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         // The close event comes after a sent request has already placed focus on its outcome
         // (finding 1421: it moved back to "Request deletion again"), and after Cancel the browser
         // returns focus to the invoker. Only take focus that was dropped to the page.
-        if (context.isCurrent() && !state.pending && document.activeElement === document.body) {
+        if (
+          context.isCurrent() &&
+          !(state.pending && !state.polling) &&
+          document.activeElement === document.body
+        ) {
           (state.forbidden ? heading : state.needsRefresh ? refresh : remove).focus();
         }
       },
