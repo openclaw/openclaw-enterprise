@@ -61,7 +61,7 @@ func (app *application) agentRevision(
 		if err != nil {
 			return "", nil, err
 		}
-		noticef(notices, "agent %s has no active revision; using latest revision %s", agentID, latest)
+		noticef(notices, "notice: agent %s has no active revision; using latest revision %s", agentID, latest)
 		return latest, nil, nil
 	}
 	// A newer revision than the active one is being deployed or has failed; while
@@ -78,11 +78,20 @@ func (app *application) agentRevision(
 		return probe.latest, probe.description, nil
 	case probe.err != nil:
 		// The runtime probe needs more permission than reading logs, so a log
-		// reader may be refused here yet allowed to read the newer revision.
+		// reader may be refused here yet allowed to read the other revision.
+		// Revision lists are permission-filtered, so it can be older than the
+		// active one: name its order only when exact active metadata proves it.
+		other := "another readable revision"
+		switch order, _ := revisionOrder(client, namespace, agentID, active, probe.number); order {
+		case "newer":
+			other = "a newer revision"
+		case "older":
+			other = "an older revision"
+		}
 		noticef(
 			notices,
-			"notice: reading the active revision %s; a newer revision %s exists but its runtime could not be read (%v); pass --revision %s to read it",
-			active, probe.latest, probe.err, probe.latest,
+			"notice: reading the active revision %s; %s %s exists but its runtime could not be read (%v); pass --revision %s to read it",
+			active, other, probe.latest, probe.err, probe.latest,
 		)
 	default:
 		noticef(notices, "notice: reading the active revision %s", active)
@@ -94,6 +103,8 @@ func (app *application) agentRevision(
 type newerRevision struct {
 	// latest is the newer revision, or "" when there is none or the list failed.
 	latest string
+	// number is latest's revision number from the revision list.
+	number float64
 	// hasRuntime reports Pods or a concrete provider-owned Harness status.
 	hasRuntime bool
 	// description is latest's runtime description when it was read.
@@ -112,7 +123,7 @@ func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, acti
 	}
 	description, err := client.GetAgentRuntime(namespace, agentID, latest)
 	if err != nil {
-		return newerRevision{latest: latest, err: err}
+		return newerRevision{latest: latest, number: number, err: err}
 	}
 	resource, _ := description.(map[string]any)
 	pods, _ := resource["pods"].([]any)
@@ -134,6 +145,29 @@ func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, acti
 	return newerRevision{
 		latest: latest, hasRuntime: hasRuntime,
 		description: description,
+	}
+}
+
+// revisionOrder reports whether the revision numbered number is "newer" or
+// "older" than the active revision, from the active revision's exact metadata.
+// It returns "" with the read error when that metadata is unreadable, and ""
+// alone when it is invalid or the numbers do not order the two revisions.
+func revisionOrder(client *occclient.Client, namespace, agentID, active string, number float64) (string, error) {
+	activeRevision, err := client.GetAgentRevision(namespace, agentID, active)
+	if err != nil {
+		return "", err
+	}
+	resource, _ := activeRevision.(map[string]any)
+	activeID, _ := resource["id"].(string)
+	activeNumber, ok := resource["revision"].(float64)
+	whole := func(value float64) bool { return value > 0 && value <= 1<<53-1 && math.Trunc(value) == value }
+	switch {
+	case activeID != active || !ok || !whole(activeNumber) || !whole(number) || number == activeNumber:
+		return "", nil
+	case number > activeNumber:
+		return "newer", nil
+	default:
+		return "older", nil
 	}
 }
 

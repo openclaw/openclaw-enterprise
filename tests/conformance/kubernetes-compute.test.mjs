@@ -15706,173 +15706,189 @@ for (const [reason, code] of [
   });
 }
 
-test("Kubernetes OAuth handoff still removes the seed Job and Secret after a Job write conflicts with the delete", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+// Stages a ready OAuth source and runs the first pass, which creates the bootstrap Job
+// and seed Secret and stays pending. Tests then fail chosen requests on `transport`.
+async function startOAuthHandoff() {
+  const fixture = workspaceSetupFixture(false);
+  const { driver, revision, namespace, objects, context } = fixture;
   const sourceKey = stageReadyOAuthSource(objects, revision, context);
   assert.equal((await driver.prepareRevision(revision, context)).ready, false);
   const job = [...objects.values()].find(
     ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
   );
-  const jobKey = `Job:${namespace}:${job.metadata.name}`;
-
-  // Like the API server, the delete honors its resourceVersion precondition. Another
-  // writer (for example a mutating policy controller) updates the Job once, after the
-  // Driver read it and before its delete arrives.
-  const transport = await driver.apiClients;
-  const deleteJob = transport.batch.deleteNamespacedJob;
-  let conflicts = 0;
-  transport.batch.deleteNamespacedJob = async (request) => {
-    const stored = objects.get(jobKey);
-    if (conflicts === 0) {
-      stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
-    }
-    if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
-      conflicts += 1;
-      throw Object.assign(new Error("Conflict"), { statusCode: 409 });
-    }
-    return deleteJob(request);
+  const name = job.metadata.name;
+  return {
+    ...fixture,
+    job,
+    name,
+    jobKey: `Job:${namespace}:${name}`,
+    seedKey: `Secret:${namespace}:${name}`,
+    deploymentKey: `Deployment:${namespace}:${name}`,
+    transport: await driver.apiClients,
+    pass: () => driver.prepareRevision(revision, context),
+    phase: () => objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
   };
+}
 
-  // The Job completes, so this pass consumes the source. If the conflict failed the
-  // pass and it was the deployment's last attempt, no later pass would remove the
-  // seed Secret that still holds the token bundle.
-  state.ready = true;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(conflicts, 1);
-  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-});
+function apiError(statusCode, message = `HTTP ${statusCode}`) {
+  return Object.assign(new Error(message), { statusCode });
+}
 
-test("Kubernetes OAuth handoff fails its pass after three conflicting Job deletes and a later pass cleans up", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  const jobKey = `Job:${namespace}:${job.metadata.name}`;
-
-  // A writer that changes the Job before every delete is not outwaited: after three
-  // fresh reads the pass fails as before, and the next pass repeats the cleanup.
-  const transport = await driver.apiClients;
-  const deleteJob = transport.batch.deleteNamespacedJob;
-  let conflicts = 0;
-  transport.batch.deleteNamespacedJob = async (request) => {
-    const stored = objects.get(jobKey);
-    if (conflicts < 3) {
-      conflicts += 1;
-      stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
-    }
-    if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
-      throw Object.assign(new Error("Conflict"), { statusCode: 409 });
-    }
-    return deleteJob(request);
-  };
-  state.ready = true;
-  await assert.rejects(driver.prepareRevision(revision, context), /Conflict/);
-  assert.equal(conflicts, 3);
-  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-});
-
-test("Kubernetes OAuth handoff removes the seed Secret first, so a failed Job delete after consumption cannot leave it", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(
-    ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
-  );
-  const seedKey = `Secret:${namespace}:${job.metadata.name}`;
-  assert.ok(objects.has(seedKey));
-
-  // The Job completes and this pass consumes the source, then the API server fails the
-  // Job delete with a non-conflict error. If this was the deployment's last attempt (or
-  // its convergence deadline passed), no later pass runs, so the seed Secret holding
-  // the token bundle must already be gone. Its own delete is retried after a 503.
-  const transport = await driver.apiClients;
-  const deleteJob = transport.batch.deleteNamespacedJob;
-  let jobDeletes = 0;
-  transport.batch.deleteNamespacedJob = async () => {
-    jobDeletes += 1;
-    throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
-  };
-  const deleteSecret = transport.core.deleteNamespacedSecret;
-  let secretFailures = 0;
-  transport.core.deleteNamespacedSecret = async (request) => {
-    if (request.name === job.metadata.name && secretFailures === 0) {
-      secretFailures += 1;
-      throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
-    }
-    return deleteSecret(request);
-  };
-  state.ready = true;
-  await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
-  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
-  assert.equal(secretFailures, 1);
-  assert.equal(jobDeletes, 1, "only a conflict or a Job already gone is read again");
-  assert.equal(objects.has(seedKey), false);
-  assert.ok(objects.has(`Job:${namespace}:${job.metadata.name}`));
-
-  // A later pass, when one runs, still removes the completed Job.
-  transport.batch.deleteNamespacedJob = deleteJob;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-});
-
-test("Kubernetes OAuth handoff re-reads a legacy bootstrap Deployment when its delete conflicts", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(
-    ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
-  );
-  // A bootstrap Deployment left by an earlier release, owned by the same revision.
-  const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
-  objects.set(deploymentKey, {
+// A bootstrap Deployment left by an earlier release, owned by the same revision.
+function legacyBootstrapDeployment(job, metadata = {}) {
+  return {
     apiVersion: "apps/v1",
     kind: "Deployment",
-    metadata: {
-      ...structuredClone(job.metadata),
-      uid: "legacy-bootstrap-uid",
-      resourceVersion: "1",
-    },
+    metadata: { ...structuredClone(job.metadata), uid: "legacy-bootstrap-uid", ...metadata },
     spec: {},
-  });
-
-  // Like the API server, the delete honors its resourceVersion precondition. Another
-  // writer updates the Deployment once, after the Driver read it and before its delete.
-  const transport = await driver.apiClients;
-  const deleteDeployment = transport.apps.deleteNamespacedDeployment;
-  let conflicts = 0;
-  transport.apps.deleteNamespacedDeployment = async (request) => {
-    const stored = objects.get(deploymentKey);
-    if (conflicts === 0) {
-      stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
-    }
-    if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
-      conflicts += 1;
-      throw Object.assign(new Error("Conflict"), { statusCode: 409 });
-    }
-    assert.equal(request.body.preconditions.uid, "legacy-bootstrap-uid");
-    return deleteDeployment(request);
   };
-  state.ready = true;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(conflicts, 1);
-  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+}
+
+function assertNoOAuthBootstrap(objects) {
   assert.equal(
     [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
     false,
   );
-});
+}
+
+// The pass that consumes the source deletes the bootstrap Job (or a legacy Deployment) from
+// a fresh read. A write between that read and the delete (409), or an object already gone
+// (404), is read again, at most three times: after consumption a failed last attempt has
+// no later pass.
+for (const { title, kind, gone = false, writes = 0, completes = true } of [
+  {
+    title: "still removes the seed Job and Secret after a Job write conflicts with the delete",
+    kind: "Job",
+    writes: 1,
+  },
+  {
+    // A writer that changes the Job before every delete is not outwaited: the pass fails as
+    // before, and the next pass repeats the cleanup.
+    title: "fails its pass after three conflicting Job deletes and a later pass cleans up",
+    kind: "Job",
+    writes: 3,
+    completes: false,
+  },
+  {
+    title: "re-reads a legacy bootstrap Deployment when its delete conflicts",
+    kind: "Deployment",
+    writes: 1,
+  },
+  {
+    // Another actor (a TTL controller, say) removes the Job between the read and the delete.
+    title: "reads a bootstrap Job again when it is gone at its delete",
+    kind: "Job",
+    gone: true,
+  },
+]) {
+  test(`Kubernetes OAuth handoff ${title}`, async () => {
+    const { objects, state, job, jobKey, deploymentKey, transport, pass, phase } =
+      await startOAuthHandoff();
+    const key = kind === "Job" ? jobKey : deploymentKey;
+    if (kind === "Deployment") {
+      objects.set(key, legacyBootstrapDeployment(job, { resourceVersion: "1" }));
+    }
+    // Like the API server, the delete honors its preconditions. Another writer (for example
+    // a mutating policy controller) updates the object after the Driver read it, or another
+    // actor removes it (404).
+    const client = kind === "Job" ? transport.batch : transport.apps;
+    const method = `deleteNamespaced${kind}`;
+    const remove = client[method];
+    let failures = 0;
+    let written = 0;
+    client[method] = async (request) => {
+      if (gone) {
+        failures += 1;
+        objects.delete(key);
+        throw apiError(404, "Not Found");
+      }
+      const stored = objects.get(key);
+      if (written < writes) {
+        written += 1;
+        stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
+      }
+      if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
+        failures += 1;
+        throw apiError(409, "Conflict");
+      }
+      assert.equal(request.body.preconditions.uid, stored.metadata.uid);
+      return remove(request);
+    };
+    state.ready = true;
+    if (completes) {
+      assert.equal((await pass()).ready, true);
+    } else {
+      await assert.rejects(pass(), /Conflict/);
+    }
+    assert.equal(failures, gone ? 1 : writes);
+    assert.equal(phase(), "consumed");
+    if (!completes) {
+      assert.equal((await pass()).ready, true);
+    }
+    assertNoOAuthBootstrap(objects);
+  });
+}
+
+// The pass that consumes the source, or a later one that finds it consumed, removes the
+// seed Secret before the bootstrap Job. If the Job delete then fails with a non-conflict
+// error on the deployment's last attempt (or after its convergence deadline), no later
+// pass runs, so the seed Secret holding the token bundle must already be gone.
+for (const { title, alreadyConsumed } of [
+  {
+    title:
+      "removes the seed Secret first, so a failed Job delete after consumption cannot leave it",
+    alreadyConsumed: false,
+  },
+  {
+    title: "on an already consumed source still removes the seed Secret first",
+    alreadyConsumed: true,
+  },
+]) {
+  test(`Kubernetes OAuth handoff ${title}`, async () => {
+    const { objects, state, job, name, jobKey, seedKey, deploymentKey, transport, pass, phase } =
+      await startOAuthHandoff();
+    assert.ok(objects.has(seedKey));
+    state.ready = true;
+    if (alreadyConsumed) {
+      // The seed Secret delete fails on all three attempts, so the pass that consumed the
+      // source fails with the token bundle still stored.
+      const deleteSecret = transport.core.deleteNamespacedSecret;
+      let seedDeletes = 0;
+      transport.core.deleteNamespacedSecret = async (request) => {
+        if (request.name !== name) {
+          return deleteSecret(request);
+        }
+        seedDeletes += 1;
+        throw apiError(503, "Service Unavailable");
+      };
+      await assert.rejects(pass(), /HTTP 503/);
+      assert.equal(seedDeletes, 3);
+      assert.equal(phase(), "consumed");
+      assert.ok(objects.has(seedKey));
+      transport.core.deleteNamespacedSecret = deleteSecret;
+      objects.set(deploymentKey, legacyBootstrapDeployment(job));
+    }
+    const deleteJob = transport.batch.deleteNamespacedJob;
+    let jobDeletes = 0;
+    transport.batch.deleteNamespacedJob = async () => {
+      jobDeletes += 1;
+      throw apiError(503, "Service Unavailable");
+    };
+    await assert.rejects(pass(), /HTTP 503/);
+    assert.equal(jobDeletes, 1, "only a conflict or a Job already gone is read again");
+    assert.equal(phase(), "consumed");
+    assert.equal(objects.has(seedKey), false);
+    if (alreadyConsumed) {
+      assert.equal(objects.has(deploymentKey), false);
+    }
+    assert.ok(objects.has(jobKey));
+
+    // A later pass, when one runs, still removes the completed Job.
+    transport.batch.deleteNamespacedJob = deleteJob;
+    assert.equal((await pass()).ready, true);
+    assertNoOAuthBootstrap(objects);
+  });
+}
 
 test("Kubernetes OAuth handoff retries a consumed seed Secret delete on timeouts, conflicts, gone, throttling and server errors, never on a refusal", async (t) => {
   // request() makes its deadline right before each call, so the latest one is the delete's.
@@ -15890,16 +15906,11 @@ test("Kubernetes OAuth handoff retries a consumed seed Secret delete on timeouts
     [[500, 503], true],
     [[403], false],
   ]) {
-    const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-    const sourceKey = stageReadyOAuthSource(objects, revision, context);
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    const job = [...objects.values()].find(({ kind }) => kind === "Job");
-    const seedKey = `Secret:${namespace}:${job.metadata.name}`;
-    const transport = await driver.apiClients;
+    const { objects, state, name, seedKey, transport, pass, phase } = await startOAuthHandoff();
     const deleteSecret = transport.core.deleteNamespacedSecret;
     let attempts = 0;
     transport.core.deleteNamespacedSecret = async (request) => {
-      if (request.name !== job.metadata.name) {
+      if (request.name !== name) {
         return deleteSecret(request);
       }
       const failure = failures[attempts++];
@@ -15908,144 +15919,44 @@ test("Kubernetes OAuth handoff retries a consumed seed Secret delete on timeouts
         throw deadline.signal.reason;
       }
       if (failure !== undefined) {
-        throw Object.assign(new Error(`HTTP ${failure}`), { statusCode: failure });
+        throw apiError(failure);
       }
       return deleteSecret(request);
     };
     state.ready = true;
-    const pass = driver.prepareRevision(revision, context);
     if (retried) {
-      assert.equal((await pass).ready, true, String(failures));
+      assert.equal((await pass()).ready, true, String(failures));
       assert.equal(attempts, failures.length + 1, String(failures));
     } else {
       // A refusal is not retried; the token bundle stays for a later pass to remove.
-      await assert.rejects(pass, /HTTP 403/);
+      await assert.rejects(pass(), /HTTP 403/);
       assert.equal(attempts, 1, String(failures));
     }
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "consumed",
-    );
+    assert.equal(phase(), "consumed");
     assert.equal(objects.has(seedKey), !retried, String(failures));
   }
 });
 
-test("Kubernetes OAuth handoff on an already consumed source still removes the seed Secret first", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  const seedKey = `Secret:${namespace}:${job.metadata.name}`;
-  const jobKey = `Job:${namespace}:${job.metadata.name}`;
-
-  // The seed Secret delete fails on all three attempts, so the pass that consumed the
-  // source fails with the token bundle still stored.
-  const transport = await driver.apiClients;
-  const deleteSecret = transport.core.deleteNamespacedSecret;
-  let seedDeletes = 0;
-  transport.core.deleteNamespacedSecret = async (request) => {
-    if (request.name === job.metadata.name) {
-      seedDeletes += 1;
-      throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
-    }
-    return deleteSecret(request);
-  };
-  state.ready = true;
-  await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
-  assert.equal(seedDeletes, 3);
-  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
-  assert.ok(objects.has(seedKey));
-
-  // The next pass finds the source consumed. It removes the seed before the Job, whose
-  // delete now fails, and a legacy bootstrap Deployment left by an earlier release.
-  transport.core.deleteNamespacedSecret = deleteSecret;
-  const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
-  objects.set(deploymentKey, {
-    apiVersion: "apps/v1",
-    kind: "Deployment",
-    metadata: { ...structuredClone(job.metadata), uid: "legacy-bootstrap-uid" },
-    spec: {},
-  });
-  const deleteJob = transport.batch.deleteNamespacedJob;
-  transport.batch.deleteNamespacedJob = async () => {
-    throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
-  };
-  await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
-  assert.equal(objects.has(seedKey), false);
-  assert.equal(objects.has(deploymentKey), false);
-  assert.ok(objects.has(jobKey));
-
-  transport.batch.deleteNamespacedJob = deleteJob;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-});
-
-test("Kubernetes OAuth handoff reads a bootstrap Job again when it is gone at its delete", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  const jobKey = `Job:${namespace}:${job.metadata.name}`;
-  // Another actor (a TTL controller, say) removes the Job between the read and the delete.
-  const transport = await driver.apiClients;
-  let deletes = 0;
-  transport.batch.deleteNamespacedJob = async () => {
-    deletes += 1;
-    objects.delete(jobKey);
-    throw Object.assign(new Error("Not Found"), { statusCode: 404 });
-  };
-  state.ready = true;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  assert.equal(deletes, 1);
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-});
-
 test("Kubernetes OAuth handoff refuses, and keeps, a bootstrap Deployment it does not own", async () => {
-  const { driver, revision, namespace, objects, context } = workspaceSetupFixture(false);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
-  const metadata = structuredClone(job.metadata);
-  metadata.labels["openclaw.dev/agent"] = "another-agent";
-  objects.set(deploymentKey, { apiVersion: "apps/v1", kind: "Deployment", metadata, spec: {} });
-  await assert.rejects(
-    driver.prepareRevision(revision, context),
-    /Refusing unowned Kubernetes Deployment/,
-  );
+  const { objects, job, deploymentKey, pass, phase } = await startOAuthHandoff();
+  const deployment = legacyBootstrapDeployment(job);
+  deployment.metadata.labels["openclaw.dev/agent"] = "another-agent";
+  objects.set(deploymentKey, deployment);
+  await assert.rejects(pass(), /Refusing unowned Kubernetes Deployment/);
   assert.ok(objects.has(deploymentKey));
-  assert.notEqual(
-    objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-    "consumed",
-  );
+  assert.notEqual(phase(), "consumed");
 });
 
 test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Deployment's Pods stop", async (t) => {
   // The Driver deletes the Deployment, or finds it already deleted by someone else.
   for (const goneAtDelete of [false, true]) {
     await t.test(goneAtDelete ? "already deleted" : "deleted", async () => {
-      const { driver, revision, namespace, objects, context } = workspaceSetupFixture(false);
-      stageReadyOAuthSource(objects, revision, context);
-      assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+      const { namespace, objects, job, name, jobKey, seedKey, deploymentKey, transport, pass } =
+        await startOAuthHandoff();
       // An earlier release ran the bootstrap as a Deployment; its writer Pod still runs.
-      const job = [...objects.values()].find(({ kind }) => kind === "Job");
-      const name = job.metadata.name;
-      const deploymentKey = `Deployment:${namespace}:${name}`;
-      objects.delete(`Job:${namespace}:${name}`);
-      objects.delete(`Secret:${namespace}:${name}`);
-      objects.set(deploymentKey, {
-        apiVersion: "apps/v1",
-        kind: "Deployment",
-        metadata: { ...structuredClone(job.metadata), uid: "legacy-bootstrap-uid" },
-        spec: {},
-      });
-      const transport = await driver.apiClients;
+      objects.delete(jobKey);
+      objects.delete(seedKey);
+      objects.set(deploymentKey, legacyBootstrapDeployment(job));
       const listPods = transport.core.listNamespacedPod;
       let podRunning = true;
       let deploymentDeleted = false;
@@ -16079,7 +15990,7 @@ test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Depl
         deploymentDeleted = true;
         if (goneAtDelete) {
           objects.delete(deploymentKey);
-          throw Object.assign(new Error("Not Found"), { statusCode: 404 });
+          throw apiError(404, "Not Found");
         }
         return deleteDeployment(request);
       };
@@ -16088,10 +15999,10 @@ test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Depl
         assert.equal(podRunning, false, "the earlier writer must leave the volume first");
         return createJob(request);
       };
-      assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+      assert.equal((await pass()).ready, false);
       assert.equal(deploymentDeleted, true);
       assert.equal(objects.has(deploymentKey), false);
-      assert.ok(objects.has(`Job:${namespace}:${name}`));
+      assert.ok(objects.has(jobKey));
     });
   }
 });
