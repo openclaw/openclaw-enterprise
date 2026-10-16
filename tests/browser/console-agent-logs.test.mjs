@@ -1546,3 +1546,411 @@ test("Back rebuilds an Agent view whose runtime status or version read was refus
   await page.getByText(/you cannot read this version/).waitFor();
   assert.equal(await viewKept(page), false);
 });
+
+// A member with `agentPermissions` on the Agent, plus read on its Namespace, Configuration and
+// versions. Tests change `role.permissions` to grant or revoke while the page is open.
+async function logsMember(fixture, namespace, name, agentPermissions) {
+  let role;
+  const account = await fixture.createAccountWithPolicy(name, (principal) => {
+    ({ role } = grantRole(fixture.policy, principal.id, {
+      id: `role-${name}`,
+      bindingId: `binding-${name}`,
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: agentPermissions,
+        configuration: ["read"],
+        agent_revision: ["read"],
+      },
+    }));
+  });
+  return { account, role };
+}
+
+const changeGrant = (role, action, granted) => {
+  const others = role.permissions.filter(
+    (permission) => !(permission.resourceKind === "agent" && permission.action === action),
+  );
+  const agentGrant = role.permissions.find(({ resourceKind }) => resourceKind === "agent");
+  role.permissions = granted ? [...others, { ...agentGrant, action }] : others;
+};
+
+// Opens the version's Logs tab (or `tab`) on a paused clock. The deployment read answers with
+// `deployment.response`, a recorded result by default, which keeps the view cacheable for Back.
+async function openRetainedLogs(
+  t,
+  { fixture, namespace, agent, revisionId },
+  credentials,
+  { tab = "logs", firstDeployment = succeededDeployment(namespace, agent, revisionId) } = {},
+) {
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const deployment = { response: firstDeployment };
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+    (route) => route.fulfill(deployment.response),
+  );
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revisionId, tab),
+    credentials,
+  );
+  const leave = async () => {
+    await waitForIdleFetches(page);
+    // The Logs tab settles a frame after its output shows; only a settled page is retained.
+    await page.clock.runFor(100);
+    await waitForIdleFetches(page);
+    await tagView(page);
+    await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await waitForIdleFetches(page);
+  };
+  return { page, requests, deployment, leave };
+}
+
+// Records whether `text` is painted anywhere from now on, a cached view mounted for a frame
+// included.
+const watchPainted = (page, text) =>
+  page.evaluate((needle) => {
+    const seen = [];
+    globalThis.__painted = seen;
+    new globalThis.MutationObserver(() => {
+      if (globalThis.document.body.textContent.includes(needle)) {
+        seen.push("painted");
+      }
+    }).observe(globalThis.document, { subtree: true, childList: true, characterData: true });
+  }, text);
+
+const refusedRoute = (status) => ({
+  status,
+  contentType: "application/json",
+  body: JSON.stringify({ error: { code: status === 403 ? "FORBIDDEN" : "NOT_FOUND" } }),
+});
+
+// A follow poll refused on the page drops the output read before the refusal, and Back
+// rebuilds the view rather than mount it again (findings 1562, 1565).
+test("a refused follow poll clears the shown output, and Back rebuilds the view", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "read before revoke")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "refused-poll", [
+    "read",
+    "read_logs",
+  ]);
+  const { page, requests, leave } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("read before revoke").waitFor();
+  await page.getByText(/Showing gateway in/).waitFor();
+  await page.getByRole("button", { name: "Follow" }).click();
+  changeGrant(role, "read_logs", false);
+  await page.clock.runFor(2_000);
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  assert.equal(await page.getByText("read before revoke").count(), 0);
+  assert.equal(await pane.locator(":scope > *").count(), 0);
+  assert.equal(await page.getByText(/Showing gateway in/).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Follow" }).isDisabled(), true);
+  const logReads = () => logRequests(requests, logs.revisionId).length;
+  const readsAfterRefusal = logReads();
+
+  await leave();
+  await watchPainted(page, "read before revoke");
+  await page.goBack();
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewKept(page), false);
+  assert.deepEqual(await page.evaluate(() => globalThis.__painted), []);
+  // The refusal is remembered: neither Back's check nor the rebuilt view asks again.
+  assert.equal(logReads(), readsAfterRefusal);
+});
+
+// Hold a real, authorized response in transit. The other read then gets a real 403 after
+// read_logs is revoked; neither an old page nor an old download may undo that refusal.
+for (const delayed of ["follow", "download"]) {
+  test(`a log access refusal wins over a delayed successful ${delayed}`, async (t) => {
+    const logs = await logsFixture(t);
+    logs.computeDriver.state.lines = [line(1, "shown before revocation")];
+    const { account, role } = await logsMember(logs.fixture, logs.namespace, `late-${delayed}`, [
+      "read",
+      "read_logs",
+    ]);
+    const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    await pane.getByText("shown before revocation").waitFor();
+    logs.computeDriver.state.lines.push(line(2, "authorized before revocation"));
+
+    const follow = page.getByRole("button", { name: "Follow", exact: true });
+    const download = page.getByRole("button", { name: "Download" });
+    const startFollow = async () => {
+      await follow.click();
+      await page.clock.runFor(2_000);
+    };
+    const url =
+      delayed === "follow" ? "**/runtime/logs?*cursor=*" : "**/runtime/logs?*download=true*";
+    const held = await holdRequests(t, page, url, { once: true, afterServer: true });
+    // Observe the download link click synchronously, without preventing it or relying on
+    // when the browser reports a completed file. Do not count the user's Download button.
+    await page.evaluate(() => {
+      globalThis.document.addEventListener(
+        "click",
+        (event) => {
+          if (
+            event.target instanceof globalThis.HTMLAnchorElement &&
+            event.target.hasAttribute("download")
+          ) {
+            globalThis.document.documentElement.dataset.logDownloaded = "true";
+          }
+        },
+        true,
+      );
+    });
+    if (delayed === "follow") {
+      await startFollow();
+    } else {
+      await download.click();
+    }
+    await held.requested;
+
+    changeGrant(role, "read_logs", false);
+    const refusal = page.waitForResponse(
+      (response) => response.url().includes("/runtime/logs?") && response.status() === 403,
+    );
+    if (delayed === "follow") {
+      await download.click();
+    } else {
+      await startFollow();
+    }
+    await refusal;
+    const denied = page.getByText(/Log text requires Agent read_logs/);
+    await denied.waitFor();
+    const arriving = page.waitForResponse(url);
+    held.release();
+    const ok = await arriving;
+    assert.equal(ok.status(), 200);
+    assert.match(await ok.text(), /authorized before revocation/);
+    await waitForIdleFetches(page);
+
+    assert.equal(
+      await pane.locator(":scope > *").count(),
+      0,
+      "discard rows, including the delayed page",
+    );
+    assert.equal(
+      await page.locator("[data-log-downloaded]").count(),
+      0,
+      "discard the delayed download",
+    );
+    assert.equal(await denied.isVisible(), true);
+    assert.equal(await download.isDisabled(), true);
+    const reads = logRequests(requests, logs.revisionId).length;
+    await page.clock.runFor(4_000);
+    assert.equal(logRequests(requests, logs.revisionId).length, reads, "do not retry the refusal");
+  });
+}
+
+// Back checks runtime status itself, not only through the permission answer: a status read
+// refused since, with that answer unchanged, keeps the cached Pod cards off screen. The answer
+// still allows operate, so the refusal is not a lost grant: nothing asks again.
+test("Back rebuilds a Logs view whose status read alone is refused since", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "operator output")];
+  const { account } = await logsMember(logs.fixture, logs.namespace, "status-refused", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, leave } = await openRetainedLogs(t, logs, account.credentials);
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("operator output")
+    .waitFor();
+  await page.locator(".runtime-pod").first().waitFor();
+  await leave();
+  let refusals = 0;
+  await page.route(
+    `${logs.fixture.origin}/namespaces/${logs.namespace.id}/agents/${logs.agent.id}/deployments/${logs.revisionId}/runtime`,
+    (route) => {
+      refusals += 1;
+      return route.fulfill(refusedRoute(403));
+    },
+  );
+  await page.evaluate(() => {
+    const seen = [];
+    globalThis.__podSeen = seen;
+    new globalThis.MutationObserver(() => {
+      if (globalThis.document.querySelector(".runtime-pod")) {
+        seen.push("painted");
+      }
+    }).observe(globalThis.document, { subtree: true, childList: true, attributes: true });
+  });
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewKept(page), false);
+  assert.deepEqual(await page.evaluate(() => globalThis.__podSeen), []);
+  // Only Back's check asked: the rebuilt view takes its refusal.
+  assert.equal(refusals, 1);
+  await leave();
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  await page.clock.runFor(10_000);
+  await waitForIdleFetches(page);
+  assert.equal(refusals, 1);
+});
+
+// Losing operate hides the last status, not log text the member still has permission to read.
+test("a refused status poll clears the Pod details and keeps authorized log reads", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "before losing operate")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "lose-operate", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("before losing operate").waitFor();
+  const pods = page.locator(".runtime-pod");
+  await pods.first().waitFor();
+  const reads = () => logRequests(requests, logs.revisionId);
+  const initialReads = reads().length;
+
+  changeGrant(role, "operate", false);
+  const denied = page.waitForResponse(
+    (response) => response.url().endsWith("/runtime") && response.status() === 403,
+  );
+  await page.clock.runFor(10_000);
+  await denied;
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await pods.count(), 0, "do not keep showing the last authorized Pod status");
+  assert.equal(await page.locator("#runtime-log-pod option").count(), 0);
+  assert.equal(reads().length, initialReads, "a status denial must not spend a log read");
+
+  logs.computeDriver.state.lines.push(line(2, "after losing operate"));
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await pane.getByText("after losing operate").waitFor();
+  assert.equal(await pane.getByText("before losing operate").count(), 1, "keep the log cursor");
+  const next = new URL(reads().at(-1).path, logs.fixture.origin).searchParams;
+  assert.equal(next.has("pod"), false, "read logs without the old status-only Pod choice");
+  assert.ok(next.get("cursor"));
+});
+
+// Back compares a read the view shows as refused or missing like data (finding 1553): an
+// unchanged 404 keeps the view, a 403 granted since and a shown read refused since rebuild it
+// (finding 1562). The Configuration tab keeps rate-limited runtime reads out of it.
+test("Back keeps a view whose refusal is unchanged and rebuilds one granted or refused since", async (t) => {
+  const logs = await logsFixture(t);
+  const { page, deployment, leave } = await openRetainedLogs(t, logs, logs.fixture.credentials, {
+    tab: "configuration",
+    firstDeployment: refusedRoute(404),
+  });
+  const refresh = page.getByRole("button", { name: "Refresh deployment" });
+  const back = async () => {
+    await page.goBack();
+    // A rebuilt page reveals once its first reads settle or the reveal wait passes.
+    await waitForIdleFetches(page);
+    await page.clock.runFor(2_000);
+    await refresh.waitFor();
+    await waitForIdleFetches(page);
+    return viewKept(page);
+  };
+  await refresh.waitFor();
+
+  // A missing deployment record is the read's answer, not a failure: Back reuses the view.
+  await leave();
+  assert.equal(await back(), true);
+
+  // A refusal this tab does not remember is asked again: once granted, Back rebuilds.
+  deployment.response = refusedRoute(403);
+  await leave();
+  assert.equal(await back(), false);
+  await leave();
+  deployment.response = succeededDeployment(logs.namespace, logs.agent, logs.revisionId);
+  assert.equal(await back(), false);
+
+  // A read refused after it showed data: Back rebuilds, even though the refusal still stands.
+  deployment.response = refusedRoute(403);
+  await refresh.click();
+  await waitForIdleFetches(page);
+  await leave();
+  assert.equal(await back(), false);
+});
+
+// Log denials last for a sign-in, not for the tab. A status denial is asked once more when the
+// permission answer allows operate again (finding 1563).
+test("a restored operate grant shows status on Back, and a new sign-in asks for log text again", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "granted output")];
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "restored", ["read"]);
+  const { page, requests, leave } = await openRetainedLogs(t, logs, account.credentials);
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+  const statusReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
+  const logReads = () => logRequests(requests, logs.revisionId).length;
+  assert.equal(statusReads(), 1);
+  assert.equal(logReads(), 1);
+
+  await leave();
+  changeGrant(role, "operate", true);
+  await page.goBack();
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), 2);
+  // The permission answer has no read_logs bit, so the log text denial stands for this sign-in.
+  assert.equal(logReads(), 1);
+  await page.getByText(/Log text requires Agent read_logs/).waitFor();
+
+  // Operate revoked: the status read is refused once, then remembered across Backs.
+  await leave();
+  changeGrant(role, "operate", false);
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), 3);
+  await leave();
+  await page.goBack();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(statusReads(), 3);
+
+  // Sign out and in again as the same member, without reloading the tab.
+  changeGrant(role, "read_logs", true);
+  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByLabel("Username").fill(account.credentials.email);
+  await page.getByLabel("Password").fill(account.credentials.password);
+  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.waitForURL(/\/console\/agents/);
+  const url = detailUrl(logs.fixture, logs.namespace.id, logs.agent.id, logs.revisionId, "logs");
+  await page.evaluate((target) => {
+    globalThis.history.pushState(null, "", target);
+    globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
+  }, url.pathname + url.search);
+  await page.getByRole("log", { name: "Runtime log output" }).getByText("granted output").waitFor();
+  assert.equal(await page.getByText(/Log text requires Agent read_logs/).count(), 0);
+});
+
+// An unfollowed view's Back check reads on from its cursor; the view shows that page instead
+// of discarding an audited read (finding 1564).
+test("Back shows the lines its check read in an unfollowed Logs view", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "before leaving")];
+  const { page, requests, leave } = await openRetainedLogs(t, logs, logs.fixture.credentials);
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("before leaving").waitFor();
+  await leave();
+  const logReads = () => logRequests(requests, logs.revisionId).length;
+  const before = logReads();
+  logs.computeDriver.state.lines = [...logs.computeDriver.state.lines, line(2, "while away")];
+  await page.goBack();
+  await pane.getByText("while away").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await viewKept(page), true);
+  assert.equal(logReads() - before, 1);
+  assert.equal(await pane.getByText("before leaving").count(), 1);
+});
