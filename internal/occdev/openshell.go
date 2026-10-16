@@ -35,7 +35,8 @@ const (
 	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:a4c848adbddd0b4732fd70ddcf8a563a5b1e9317@sha256:52d345c567a881fc1fc0d17b960a7be68ce92ba510f721831a917f77870c4435"
 	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:a4c848adbddd0b4732fd70ddcf8a563a5b1e9317@sha256:6bf16794603d7338bbad8a3caecaeec99d0e7b460d69bac260b8f55c21220b20"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
-	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver.
+	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
