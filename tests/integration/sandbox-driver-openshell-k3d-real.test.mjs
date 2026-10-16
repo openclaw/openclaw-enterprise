@@ -21,6 +21,7 @@ import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
+import { followContainerLog } from "../helpers/container-log-capture.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createOpenShellInstallationConfiguration,
@@ -5269,7 +5270,64 @@ test(
       process.stderr.write(
         "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
       );
-      await requestGatewayTurns(context, topology, "codex");
+      const turnLogs = [
+        {
+          namespace: topology.gatewayPlacement,
+          pod: topology.gatewayPod.metadata.name,
+          container: "gateway",
+        },
+        {
+          namespace: topology.placement,
+          pod: topology.harnessPod.metadata.name,
+          container: "agent",
+        },
+      ].map((target) => {
+        const follow = followContainerLog({
+          args: fixture.kubectlArguments([
+            "logs",
+            "--follow",
+            "--timestamps",
+            "--namespace",
+            target.namespace,
+            target.pod,
+            "--container",
+            target.container,
+          ]),
+          env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: "C.UTF-8" },
+          target,
+          snapshot: async () => ({
+            pods: await resources(
+              "pods",
+              target.namespace,
+              "--field-selector",
+              `metadata.name=${target.pod}`,
+              "--request-timeout=15s",
+            ),
+            events: await resources(
+              "events",
+              target.namespace,
+              "--field-selector",
+              `involvedObject.name=${target.pod}`,
+              "--request-timeout=15s",
+            ),
+          }),
+        });
+        context.after(() => follow.stop());
+        return follow;
+      });
+      // Both collectors observe the same operation; neither replays a model request.
+      const turns = requestGatewayTurns(context, topology, "codex");
+      const capturedTurns = await Promise.allSettled(
+        turnLogs.map((log) =>
+          log.attachOnFailure(context, "real Gateway shell turns", () => turns, {
+            waitForExitMs: 0,
+          }),
+        ),
+      );
+      const failedTurns = capturedTurns.find(({ status }) => status === "rejected");
+      if (failedTurns) {
+        throw failedTurns.reason;
+      }
       process.stderr.write(
         "OpenShell integration: regular Gateway shell turns passed; testing actual filesystem and network enforcement.\n",
       );

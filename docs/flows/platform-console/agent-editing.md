@@ -8,8 +8,8 @@ last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 
 ## Overview
 
-Trace authorized Agent detail edits, credentials, workspace, stopping, and deletion
-from exact Agent selection through API response or confirmed deletion. See the
+Trace authorized Agent edits, credentials, workspace, stop, and deletion from selection
+through API response or confirmed deletion. See the
 [parent flow](../platform-console.md).
 
 ## Entry Points
@@ -81,9 +81,9 @@ details without activating it. **Deployment activity** shows the newest readable
 version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
 health. Routine completion folds; pending work, read errors, warnings, and cleanup
 stay visible. Failed deployments link Logs unless denied in this tab, and draft
-settings when `update` is allowed, even with an older selected version. Unreadable
-current versions hide recovery. Viewed versions show their own results.
-Pending activity is reread every
+settings once `update` is confirmed, even with an older selected version.
+Hidden or unlisted current versions suppress recovery. Viewed versions show their
+own results. Pending activity is reread every
 `DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
 result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection. **Current observations** requests timestamped
