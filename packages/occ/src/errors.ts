@@ -498,6 +498,20 @@ export class ResourceStateConflictError extends ResourceConflictError {
   }
 }
 
+/**
+ * The Configuration moved past the generation the update named. HTTP marks it with an
+ * `/expectedGeneration` detail, so a caller can tell it from other Configuration conflicts,
+ * such as one reserved for provisioning, and reread before saving again.
+ */
+export class ConfigurationGenerationConflictError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The Configuration changed since it was read. Read its current generation before updating it.",
+    );
+    this.name = "ConfigurationGenerationConflictError";
+  }
+}
+
 const SECRET_CONSUMER_LABELS = [
   ["agents", "Agent", "Agents"],
   ["configurations", "Configuration", "Configurations"],

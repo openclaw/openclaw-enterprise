@@ -425,6 +425,11 @@ test("Configuration HTTP PATCH refuses a stale expectedGeneration and keeps the 
     stale.body.error.message,
     "The Configuration changed since it was read. Read its current generation before updating it.",
   );
+  // The detail tells a stale read apart from other Configuration conflicts, such as a
+  // provisioning reservation, which a reread does not fix (finding 1511).
+  assert.deepEqual(stale.body.error.details, [
+    { path: "/expectedGeneration", code: "INVALID_VALUE" },
+  ]);
   const read = await request(context.app, "GET", pathname);
   assert.equal(read.body.data.generation, 2);
   assert.deepEqual(read.body.data.values, { model: "first" });

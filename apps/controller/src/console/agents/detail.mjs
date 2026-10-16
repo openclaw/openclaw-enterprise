@@ -12,6 +12,7 @@ import { pluginWarningText, renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
+import { carryDocument } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { logTextDenied, renderAgentLogs } from "./logs.mjs";
 import {
@@ -22,6 +23,7 @@ import {
   message,
   rejectionMessage,
   assertReadableConfiguration,
+  isStaleGeneration,
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
@@ -902,6 +904,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let deployInFlight = false;
   let authenticationSaveState = "idle";
   let activeCredentials = null;
+  // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512).
+  let carriedChannelSecrets = null;
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
   const change = (revision, tab) => {
@@ -1958,6 +1962,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             configuration: snapshot,
             values,
             revisionsLoaded: revisionResult.status === "fulfilled",
+            carried: carriedChannelSecrets,
             onChange() {
               updateNavigationControls();
               updateDeployControls();
@@ -1968,13 +1973,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               viewedSnapshot = configuration;
               renderDetailHeading();
             },
-            onReload: () =>
-              reloadDraftInPlace(context, {
+            onReload: (carried = null) => {
+              carriedChannelSecrets = carried;
+              return reloadDraftInPlace(context, {
                 saved: "Draft reloaded.",
                 focus: "Save channel Secrets",
-              }),
+              });
+            },
           })
         : null;
+    // The carried choices apply once, to the panel built from the reread.
+    carriedChannelSecrets = null;
     activeCredentials = credentials;
     function editedSubject() {
       if (selectedTab === "repositories") {
@@ -2668,12 +2677,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               context.onExpired();
               throw new Error("Your session has expired.");
             }
-            if (
-              error.status === 409 &&
-              error.code === "RESOURCE_CONFLICT" &&
-              mutationStarted &&
-              !configurationSaved
-            ) {
+            if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
               // The PATCH found a newer generation than the reread: the same recovery applies.
               throw Object.assign(new Error(CONFIGURATION_CHANGED), { reloadRequired: true });
             }
@@ -3091,10 +3095,58 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
   }
 
+  // Edits carried through a save conflict, merged over the Configuration Reload draft reread
+  // (finding 1512). Returns the editor draft to open and a note on what was applied.
+  function carriedConfigurationDraft(context, snapshot, values) {
+    const retained = context.drafts.get("configuration");
+    if (!retained?.carried) {
+      return { retained, note: "" };
+    }
+    const initialText = JSON.stringify(values, null, 2);
+    if (retained.baseline?.id !== snapshot.id) {
+      context.drafts.forget("configuration");
+      return {
+        retained: undefined,
+        note: "Your Configuration edits were not reapplied: this Agent now uses another Configuration.",
+      };
+    }
+    const merged = carryDocument(
+      JSON.parse(retained.initialText),
+      JSON.parse(retained.text),
+      values,
+    );
+    const text = JSON.stringify(merged.value, null, 2);
+    const shown = (value) => {
+      const json = value === undefined ? "removed" : JSON.stringify(value);
+      return json.length > 60 ? `${json.slice(0, 59)}…` : json;
+    };
+    const conflicts = merged.conflicts
+      .slice(0, 5)
+      .map(({ path, saved }) => `${path} (saved: ${shown(saved)})`);
+    const more = merged.conflicts.length > 5 ? ` and ${merged.conflicts.length - 5} more` : "";
+    return {
+      retained: {
+        text,
+        initialText,
+        baseline: { id: snapshot.id, generation: snapshot.generation },
+        outcomeUnknown: false,
+        reloadRequired: false,
+      },
+      note:
+        text === initialText
+          ? "The reloaded Configuration already includes your edits."
+          : `Your edits are applied over the reloaded Configuration.${
+              conflicts.length
+                ? ` Another browser also changed ${conflicts.join(", ")}${more}; yours are shown.`
+                : ""
+            } Review them, then save.`,
+    };
+  }
+
   function renderDraftConfigurationEditor(context, data) {
     const { snapshot, values, setDraftEditorState } = data;
     const container = element("div", { className: "configuration-draft-editor" });
-    const retained = context.drafts.get("configuration");
+    const { retained, note: carriedNote } = carriedConfigurationDraft(context, snapshot, values);
     let baseline = retained?.baseline ?? { id: snapshot.id, generation: snapshot.generation };
     let editing = Boolean(retained);
     let pending = false;
@@ -3122,8 +3174,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         : undefined,
     );
-    const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
-    let feedbackLocked = false;
+    const feedback = element(
+      "p",
+      { className: "hint", role: "status" },
+      [savedNotice, carriedNote].filter(Boolean).join(" "),
+    );
+    // The carried-edits note stays until the reader edits again.
+    let feedbackLocked = Boolean(carriedNote);
     const edit = button("Edit Configuration", () => {
       editing = true;
       render();
@@ -3181,9 +3238,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       edit.focus();
     });
     const reload = button("Reload draft", () => {
-      context.drafts.forget("configuration");
+      // After a save conflict the edits are merged over the reread Configuration instead of
+      // dropped (finding 1512); an unknown outcome starts from the saved state.
+      const carry =
+        reloadRequired && !outcomeUnknown && currentDirty() && parseEditor() !== undefined;
+      if (carry) {
+        const carried = { carried: true, text: editor.value, initialText, baseline };
+        context.drafts.track("configuration", () => carried);
+      } else {
+        context.drafts.forget("configuration");
+      }
       reload.disabled = true;
-      void reloadDraftInPlace(context, { saved: "Draft reloaded.", focus: "Edit Configuration" });
+      void reloadDraftInPlace(context, {
+        saved: "Draft reloaded.",
+        focus: carry ? "Save Configuration" : "Edit Configuration",
+      });
     });
 
     function currentDirty() {
@@ -3319,12 +3388,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
           return;
         }
-        if (
-          error.status === 409 &&
-          error.code === "RESOURCE_CONFLICT" &&
-          mutationStarted &&
-          !configurationSaved
-        ) {
+        if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
           reloadRequired = true;

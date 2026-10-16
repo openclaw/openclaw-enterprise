@@ -133,7 +133,7 @@ Every JSON route shares this parser and limit. Creation requires `kind: "agent"`
 root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
-a stale one with `409` under the row lock. `kind`, `generation`, and ownership
+a stale one with `409` and an `/expectedGeneration` detail under the row lock. `kind`, `generation`, and ownership
 are server-owned. OCC preserves nested values and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
 `503`.

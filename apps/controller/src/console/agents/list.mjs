@@ -110,6 +110,17 @@ export function message(error, mutation = false) {
       : "Service unavailable. The read could not be completed. Try again.";
 }
 
+// The API refused a Configuration update because another save moved its generation, which a
+// reread recovers from. Other Configuration conflicts, such as a provisioning reservation, carry
+// no such detail and a reread meets them again (finding 1511).
+export function isStaleGeneration(error) {
+  return (
+    error?.status === 409 &&
+    error.code === "RESOURCE_CONFLICT" &&
+    (error.detailPaths ?? []).includes("/expectedGeneration")
+  );
+}
+
 // A rejected write shows the API's own sentence, which names the field to fix (for example
 // an inline model credential); other failures keep the generic status text.
 export function rejectionMessage(error, mutation = false) {

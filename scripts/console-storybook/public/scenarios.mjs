@@ -4028,11 +4028,33 @@ export const scenarios = {
         method: "PATCH",
         status: 409,
         code: "RESOURCE_CONFLICT",
+        message:
+          "The Configuration changed since it was read. Read its current generation before updating it.",
+        details: [{ path: "/expectedGeneration", code: "INVALID_VALUE" }],
       },
     ],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
       "The API refuses the Configuration write with 409: another save landed after the page's reread. The editor closes and the section offers Reload draft, with focus on it.",
+  },
+  channelProvisioningReserved: {
+    group: "Components/Channels",
+    name: "Save refused during provisioning",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The Configuration is reserved for provisioning and is not available for this operation.",
+      },
+    ],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "The API refuses the write because the Configuration is reserved for provisioning. That 409 has no stale-generation detail, so the editor stays open with the refusal instead of offering a Reload draft that would meet it again.",
   },
   channelSaveRejected: {
     group: "Components/Channels",
