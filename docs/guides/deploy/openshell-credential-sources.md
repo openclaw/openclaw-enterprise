@@ -140,12 +140,11 @@ JSON
 CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o json | jq -r .id)"
 ```
 
-For PAT sources, the OpenShell Sandbox Driver freezes `"sandbox": "workspace-write"` and
-`"approvalsReviewer": "user"` for dedicated Codex revisions. `approvalPolicy`
-stays configured. Managed account requirements and OpenShell enforcement remain
-active; forbidden native settings fail closed. The pinned runtimes currently
-conflict on nested shell sandboxing, so model readiness alone does not qualify
-shell-tool execution.
+The OpenShell Sandbox Driver freezes `"sandbox": "danger-full-access"` and
+`"approvalsReviewer": "user"` for dedicated Codex revisions and removes
+`appServer.networkProxy`. `approvalPolicy` stays configured. The bridge selects the native `:danger-full-access` profile,
+which the Codex account must allow. OpenShell enforces the outer sandbox;
+restricted native profiles require nested bubblewrap namespaces that it blocks.
 See [OpenShell Sandbox configuration](../../reference/drivers/openshell-sandbox.md#configuration).
 
 Create the Agent with the source as its Harness authentication:

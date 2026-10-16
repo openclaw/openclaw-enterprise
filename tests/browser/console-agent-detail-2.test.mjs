@@ -38,6 +38,7 @@ import {
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
+  withholdPermissionSummary,
   assertRevisionUrl,
   agentDeleteRequests,
   agentStopRequests,
@@ -83,6 +84,11 @@ test("Agent delete confirmation can be canceled without sending a write request"
   );
   await cancel.click();
   await assert.rejects(unexpectedDelete, /Timeout/);
+  // Cancel returns focus to the control that opened the dialog.
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Delete Agent",
+  );
 
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
@@ -119,6 +125,14 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
+  // The dialog's close event arrives after the request put focus on the status check. It must
+  // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).
+  // A closed dialog has no dialog role, so wait for the close handler to remove the element.
+  await page.locator("dialog.agent-delete-dialog").waitFor({ state: "detached" });
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Refresh deletion status",
+  );
   assert.deepEqual(
     agentDeleteRequests(requests, namespace.id, agent.id).map((request) => [
       request.method,
@@ -139,7 +153,13 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
     .waitFor();
 });
 
-test("Agent deletion says access ended when the deleter can no longer read the Agent", async (t) => {
+test("Agent deletion says access ended when the deleter can no longer read the Agent", (t) =>
+  checkScopedDeletionEnd(t, { moveFocusDuringPoll: false }));
+
+test("A deletion status poll that ends scoped access respects focus moved during the read", (t) =>
+  checkScopedDeletionEnd(t, { moveFocusDuringPoll: true }));
+
+async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
@@ -214,12 +234,18 @@ test("Agent deletion says access ended when the deleter can no longer read the A
     `${policyPath}/access-bindings/${agentBinding.id}`,
   );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-  const denied = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}${agentPath}` && response.request().method() === "GET",
-  );
+  await page.getByRole("button", { name: "Refresh deletion status" }).focus();
+  const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
   await page.clock.runFor(DELETION_POLL_MS);
-  assert.equal((await denied).status(), 403);
+  const status = await denied.status;
+  const expectedFocus = moveFocusDuringPoll
+    ? page.getByRole("link", { name: "← Agents", exact: true })
+    : page.getByRole("heading", { name: "Delete Agent", exact: true });
+  if (moveFocusDuringPoll) {
+    await expectedFocus.focus();
+  }
+  denied.release();
+  assert.equal(status, 403);
   await page
     .getByRole("status")
     .getByText(
@@ -228,19 +254,14 @@ test("Agent deletion says access ended when the deleter can no longer read the A
     .waitFor();
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Refresh deletion status" }).count(), 0);
-  assert.equal(
-    await page
-      .getByRole("heading", { name: "Delete Agent", exact: true })
-      .evaluate((node) => node.ownerDocument.activeElement === node),
-    true,
-  );
+  assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
 
   // Polling stops: no further reads, however long the page stays open.
   const settled = reads();
   await page.clock.runFor(DELETION_POLL_MS * 3);
   assert.equal(reads(), settled);
   assert.equal((await fixture.request("GET", agentPath)).data.status, "deleting");
-});
+}
 
 test("Agent delete uncertainty requires refresh before another destructive request", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -311,6 +332,7 @@ test("An already deleting Agent permits only a confirmed manual repeat DELETE", 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
   requests.length = 0;
+  await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh deletion status");
   const open = () =>
     page.getByRole("button", { name: "Request deletion again", exact: true }).click();
   await open();
@@ -741,6 +763,7 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
 
+  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
   await login(
     page,
     fixture,
@@ -983,7 +1006,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await page.goto(detail().href);
   await page.getByRole("heading", { name: "Native admin Agent" }).waitFor();
-  await page.getByText("OpenClaw is available for this Agent’s current version.").waitFor();
+  await page.getByRole("link", { name: "Open OpenClaw" }).waitFor();
   const expectedAccess = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`,
@@ -1016,7 +1039,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
 
   // Viewing an older configuration snapshot must still open the current active gateway.
   await page.getByLabel("Available versions").selectOption(historicalRevisionId);
-  await page.getByText("OpenClaw is available for this Agent’s current version.").waitFor();
+  await page.getByRole("link", { name: "Open OpenClaw" }).waitFor();
   assertRevisionUrl(page, historicalRevisionId);
   assert.equal(
     await page.getByRole("link", { name: "Open OpenClaw" }).getAttribute("href"),
@@ -1664,7 +1687,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
-  await page.getByRole("heading", { name: "Deployment activity", exact: true }).waitFor();
+  await page.getByText("No readable deployment records.").waitFor();
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),
@@ -1941,6 +1964,15 @@ test("Agent sharing grants existing people exact discovery and native access, th
     },
   });
   assert.equal(operateBinding.status, 201);
+  // Stop was granted independently; reloading obtains the new advice without granting version read.
+  const refreshedAdvice = recipient.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/agents/${agent.id}/permissions`),
+  );
+  await recipient.reload();
+  const advice = await refreshedAdvice;
+  assert.equal(advice.status(), 200);
+  assert.equal((await advice.json()).data.operate, true);
+  await recipient.getByRole("heading", { name: "You cannot read this version" }).waitFor();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")
@@ -2970,7 +3002,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
-  await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
+  await page.getByRole("button", { name: "Open version draft", exact: true }).last().click();
   await page.getByRole("button", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
@@ -3473,6 +3505,8 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   );
   await page.getByRole("heading", { name: "Repeat Stop", exact: true }).waitFor();
   const repeat = page.getByRole("button", { name: "Request Stop again", exact: true });
+  // Stop shows with the rest of the page once Deployment activity settles.
+  await repeat.waitFor();
   assert.equal(await repeat.count(), 1, "the existing Stop API permits another authorized intent");
   assert.equal(await repeat.isEnabled(), true);
   await repeat.focus();
@@ -3507,6 +3541,7 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   assert.equal(after.data.activeRevisionId, active.revision.id);
   assert.equal(after.data.desiredRuntimeState, "stopped");
   assert.equal(after.data.configurationId, agent.configurationId);
+  await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh stop status");
   // No selected version does not prove candidate/history cleanup completed.
   await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -3736,6 +3771,7 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   const panel = page.locator(".agent-access");
   const roles = panel.locator("#share-runtime-role");
   await panel.getByText(/The configured OpenClaw role catalog is unavailable/).waitFor();
+  await page.locator(".deployment-status summary").click();
   await page.locator(".deployment-status").getByText("Recorded status: succeeded").waitFor();
   assert.equal(await roles.isDisabled(), true);
   const retained = await panel.elementHandle();
@@ -3755,3 +3791,36 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
     0,
   );
 });
+async function checkStatusRefreshFocus(page, url, name) {
+  const refresh = page.getByRole("button", { name, disabled: false });
+  const agentsLink = page.getByRole("link", { name: "← Agents", exact: true });
+  for (const expectedFocus of [refresh, agentsLink]) {
+    const held = await holdNextStatusResponse(page, url);
+    await refresh.press("Enter");
+    const status = await held.status;
+    if (expectedFocus === agentsLink) {
+      await agentsLink.focus();
+    }
+    held.release();
+    assert.equal(status, 200);
+    await refresh.waitFor();
+    assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
+  }
+}
+
+// Hold the real status response so focus can move before the Console handles it.
+async function holdNextStatusResponse(page, url) {
+  const held = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  await page.route(
+    url,
+    async (route) => {
+      const response = await route.fetch();
+      held.resolve(response.status());
+      await release.promise;
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
+  return { status: held.promise, release: release.resolve };
+}

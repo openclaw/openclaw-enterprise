@@ -115,6 +115,10 @@ RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp
 COPY deploy/runtime/openclaw-trusted-proxy-role.patch /tmp/openclaw-trusted-proxy-role.patch
 RUN echo '782200074a3f917dca48d63ac6faa6c5ade24ad23e9409452ccf607a7d287de6  /tmp/openclaw-trusted-proxy-role.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-trusted-proxy-role.patch
+# TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
+COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
+RUN echo 'bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-codex-full-access-profile.patch
 # TODO: Remove this dependency pin when the selected OpenClaw source supports plugin defaults.
 COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
 RUN echo '7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \

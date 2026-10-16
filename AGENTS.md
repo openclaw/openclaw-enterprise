@@ -249,6 +249,10 @@ for browsing and search. Keep it generated from the OpenAPI contract; the checke
 reports its word count without requiring a split. This exception covers no other
 page.
 
+Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
+The user approved keeping CI configuration and test coverage in one guide. The
+checker still reports its word count. This exception applies only to that page.
+
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
 counts. Exemptions follow the resolved file: an `AGENTS.md` symlink pointing to

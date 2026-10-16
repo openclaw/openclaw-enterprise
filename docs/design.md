@@ -198,7 +198,7 @@ Operators must configure disjoint trusted Gateway and untrusted Harness node
 pools. Sharing a namespace trusts its workload managers with both roles; credential
 mounts and NetworkPolicies do not restrict a namespace administrator. The default
 placement uses one Kubernetes cluster; a second execution cluster is an
-[experimental profile](testing/two-cluster-local.md), with incomplete runtime
+[experimental profile](testing/kubernetes.md#two-cluster-validation), with incomplete runtime
 acceptance. See [Harness execution](reference/harness-execution.md) and
 [Kubernetes Compute](reference/drivers/kubernetes-compute.md).
 

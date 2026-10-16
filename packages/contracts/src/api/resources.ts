@@ -600,6 +600,57 @@ export const AgentRuntimeImagesResponse = Type.Object(
   { additionalProperties: false },
 );
 
+// Caller-permission summaries let clients gate controls; the API still authorizes every
+// request. Each flag reports only the primary IAM action of the named operation.
+export const AgentCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        update: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent update now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        deploy: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent deploy now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        operate: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent operate (used for Stop) now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+        delete: Type.Boolean({
+          description:
+            "Whether the selected IAM Driver allows Agent delete now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+        }),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const NamespaceCallerPermissionsResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        agents: Type.Object(
+          {
+            create: Type.Boolean({
+              description:
+                "Whether the selected IAM Driver allows Agent creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation.",
+            }),
+          },
+          { additionalProperties: false },
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 export const AgentProvisioningStatusSchema = Type.Object(
   {
     workId: Type.String({ minLength: 1, maxLength: 200 }),

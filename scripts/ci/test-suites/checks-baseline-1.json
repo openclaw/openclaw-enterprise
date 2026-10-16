@@ -17,6 +17,7 @@
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
+    "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
@@ -34,6 +35,7 @@
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/node-enrollment-client.test.mjs",
@@ -148,6 +150,9 @@
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
+    },
+    {
       "path": "tests/conformance/node-enrollment-client.test.mjs"
     },
     {
@@ -242,6 +247,12 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/profile-public-github-read.test.mjs",
+      "expectedTests": [
+        "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
+      ]
+    },
+    {
       "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
       "expectedTests": [
         "trusted proxy CIDRs get the same verdict from the preflight and the chart",
@@ -334,6 +345,10 @@
     },
     {
       "path": "tests/integration/common-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/dev-entry-cdpath.test.mjs",
+      "expectedTests": ["development wrappers resolve relative paths without changing CDPATH"]
     },
     {
       "path": "tests/integration/dev-up.test.mjs",

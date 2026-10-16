@@ -36,7 +36,7 @@ graph TD
   OA --> OC{"<b>Job condition</b>"}
   OC -->|pending| OP["<b>Observe existing Job</b>"]
   OP --> OC
-  OC -->|Complete| OB["<b>Consume source</b><br/>Erase Job, Pods, seed"]
+  OC -->|Complete| OB["<b>Consume source</b><br/>Erase seed, Job, Pods"]
   OC -->|Failed| OF["<b>Terminal failure</b><br/>Persist evidence and cleanup"]
   OP -->|deadline| OF
   OF --> OG["<b>Retire failed revision</b><br/>Resume after restart"]
@@ -247,8 +247,8 @@ before admitting the Job; seed and claim remain available.
 A later non-OAuth revision's private-state init container removes `codex-home`.
 
 Compute observes `Complete`, replaces the original Secret value with a consumed
-marker, foreground-deletes the Job, waits for its exact Pods to disappear, and
-removes the seed Secret; only then can Codex start. Recovery from a consumed
+marker, removes the seed Secret, foreground-deletes the Job, and waits for its
+exact Pods to disappear; only then can Codex start. Recovery from a consumed
 marker repeats cleanup, never reseeding. Its OAuth startup branch opens existing
 auth, validates the receipt, and runs the ordinary model probe. Native refresh
 writes the same persistent file. Later revisions retain the source and reopen disk;
@@ -292,7 +292,7 @@ Token brokerage remains deferred. Consumed markers and source seals prevent OCE 
   `OCC_TEST_HARNESS_K3D_REAL=1` exercises the API binding/deploy path with
   disposable Kubernetes/PostgreSQL, genuine images, and an authorized API key,
   requiring a provider-backed turn from both dedicated Codex and embedded OpenClaw.
-- [Managed-account testing](../testing/service-accounts.md) separately requires
+- [Managed-account testing](../testing/slack.md#chatgpt-service-accounts) separately requires
   provider authorization, an issued ChatGPT credential, and a real Codex turn;
   API fixtures prove only admission or persistence.
 - Verify Secret projections only on intended consumers, source-deletion guards,

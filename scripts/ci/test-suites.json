@@ -103,7 +103,9 @@
       "repository-credentials-platform",
       "k3d-observability",
       "k3d-observability-demo",
-      "keycloak-oidc"
+      "keycloak-oidc",
+      "qa-matrix",
+      "dev-up-k3d"
     ]
   }
 }

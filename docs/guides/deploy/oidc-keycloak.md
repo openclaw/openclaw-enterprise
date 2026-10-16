@@ -96,7 +96,7 @@ The checked-in realm and its fixed identities are **disposable CI/local fixtures
 Do not import the fixture realm as a production provisioning shortcut: its test
 users and placeholder credentials are not production identities or secrets. For
 the test-only import and generated credentials, see the
-[Keycloak OIDC lane](../../testing/keycloak.md).
+[Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests).
 
 ## Configure and enable OCE
 
@@ -176,7 +176,7 @@ test-only CI runs it when its test changes.
 The lane checks discovery and the signing key, attached sign-in with both client
 authentication methods, signing-key rotation, refusal of an unattached user, and
 local sign-out and user disablement behavior. See the
-[Keycloak OIDC lane](../../testing/keycloak.md#verified-flows) for each test and
+[Keycloak OIDC lane](../../testing/kubernetes.md#verified-keycloak-flows) for each test and
 its evidence. Keycloak behind a TLS proxy, Keycloak in the same cluster as the API,
 other major versions, and a production `start` deployment with a persistent external
 database are not qualified by this fixture. Operator browser and recovery checks
@@ -186,4 +186,4 @@ remain necessary for the actual deployment.
 
 - [Enable OIDC sign-in](oidc-sign-in.md)
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
-- [Keycloak OIDC lane](../../testing/keycloak.md)
+- [Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests)

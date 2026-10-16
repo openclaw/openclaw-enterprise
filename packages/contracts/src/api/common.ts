@@ -630,7 +630,18 @@ export const CreateConfigurationBody = Type.Object(
 );
 
 export const UpdateConfigurationBody = Type.Object(
-  { values: ConfigurationValues, secretBindings: Type.Optional(SecretBindings) },
+  {
+    values: ConfigurationValues,
+    secretBindings: Type.Optional(SecretBindings),
+    expectedGeneration: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description:
+          "The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and keeps its content. Omitted, the update replaces whatever generation is current.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 
@@ -896,6 +907,7 @@ export const ERROR_CODES = Object.freeze([
   "RUNTIME_LOGS_CURSOR_INVALID",
   "RUNTIME_LOGS_POD_INVALID",
   "RUNTIME_LOGS_SOURCE_UNAVAILABLE",
+  "NATIVE_ADMIN_RETURN_RATE_LIMITED",
   "RUNTIME_LOGS_RATE_LIMITED",
   "RUNTIME_LOGS_CLUSTER_RBAC",
   "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
@@ -981,6 +993,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_LOGS_CURSOR_INVALID"),
           Type.Literal("RUNTIME_LOGS_POD_INVALID"),
           Type.Literal("RUNTIME_LOGS_SOURCE_UNAVAILABLE"),
+          Type.Literal("NATIVE_ADMIN_RETURN_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_CLUSTER_RBAC"),
           Type.Literal("RUNTIME_LOGS_SANDBOX_NOT_FOUND"),

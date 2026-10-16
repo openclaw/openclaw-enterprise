@@ -2,7 +2,7 @@ import { button, element } from "../dom.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "OpenClaw uses your assigned role to control conversations, tools and settings. Use OCE for durable configuration; native changes are not recorded in Agent versions and may be overwritten by deployment.";
+  "Use OCE for durable configuration; native changes are not recorded in Agent versions and may be overwritten by deployment.";
 
 function unavailableText(status, reason) {
   switch (status) {
@@ -32,21 +32,39 @@ export function renderRuntimeAccess(context, path) {
   const error = element("p", { className: "error", role: "alert" });
   const launch = element(
     "a",
-    { className: "primary", target: "_blank", rel: "noopener noreferrer", hidden: true },
+    {
+      className: "overview-primary",
+      target: "_blank",
+      rel: "noopener noreferrer",
+      "aria-describedby": "native-admin-scope native-admin-warning",
+      hidden: true,
+    },
     "Open OpenClaw",
+    element("span", { "aria-hidden": "true" }, "↗"),
   );
-  const reload = button("Refresh access", () => {
-    context.deniedReads?.forget(statusPath);
-    void load();
-  });
+  const reload = button(
+    "Refresh access",
+    () => {
+      context.deniedReads?.forget(statusPath);
+      void load();
+    },
+    { className: "overview-text-button" },
+  );
+  const scope = element(
+    "p",
+    { id: "native-admin-scope" },
+    "Your assigned OpenClaw role controls access to conversations, tools and settings.",
+  );
+  const caution = element("p", { id: "native-admin-warning" }, warning);
   const section = element(
     "section",
-    { className: "agent-card native-admin-access" },
-    element("h2", {}, "OpenClaw"),
-    element("p", { className: "notice" }, warning),
+    { className: "native-admin-access", "aria-label": "OpenClaw access" },
+    element("div", { className: "native-admin-heading" }, element("h2", {}, "OpenClaw"), launch),
+    scope,
+    caution,
     status,
     error,
-    element("div", { className: "form-actions" }, reload, launch),
+    reload,
   );
 
   let current;
@@ -65,6 +83,9 @@ export function renderRuntimeAccess(context, path) {
     } else {
       launch.href = current.url;
     }
+    scope.hidden = launch.hidden;
+    caution.hidden = launch.hidden;
+    status.hidden = !launch.hidden;
     section.hidden =
       !failed &&
       !assignmentRequired &&
@@ -139,9 +160,9 @@ export function renderRuntimeAccess(context, path) {
     }
   }
 
-  void load();
   return {
     section,
+    ready: load(),
     // Rereads access once, for example after the active version or runtime state changes.
     refresh() {
       if (pending) {

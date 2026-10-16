@@ -795,6 +795,8 @@ export interface AgentRevision extends Scope {
   readonly compute: {
     readonly id: string;
     readonly implementation: string;
+    /** Private, immutable admission state owned by the selected Compute Driver. */
+    readonly admission?: string;
   };
   readonly sandboxDriverId?: string;
   readonly secretDriverId?: string;
@@ -1149,6 +1151,8 @@ export interface SandboxHarnessEndpoint {
   readonly url: string;
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
+  /** Request this native Codex profile when the provider supplies the sandbox boundary. */
+  readonly codexPermissionProfile?: ":danger-full-access";
 }
 
 export interface SandboxNamespaceContext {
@@ -1534,8 +1538,6 @@ export interface SandboxDriver extends Driver {
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
-    /** Admitted catalog metadata; unavailable during pre-admission configuration checks. */
-    credentialSourceLoginMode?: CredentialSourceLoginMode,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
@@ -1852,6 +1854,8 @@ export interface ComputeDriver extends Driver {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;
+  /** Side-effect-free, bounded Driver-owned facts frozen into a new revision. */
+  admitRevision?(revision: Readonly<AgentRevision>): string | undefined;
   /**
    * Opt into exclusive replacement: the worker stops all earlier revisions before
    * preparation and supersedes their reconciliation once a newer exclusive

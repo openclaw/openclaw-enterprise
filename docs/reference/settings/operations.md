@@ -91,9 +91,11 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; `preRuntimeRoles` has 55 through
-`0055_held_authentication_session`. `completed` has all 56 receipts through
-`0056_agent_runtime_roles`.
+through `0050_agent_credential_sources`; `preComputeRevisionAdmission` has 54
+through `0054_credential_source_pat`; `preHeldAuthenticationSession` has 55 through
+`0055_compute_revision_admission`; `preRuntimeRoles` has 56 through
+`0056_held_authentication_session`. `completed` has all 57 receipts through
+`0057_agent_runtime_roles`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's `CREATE` and

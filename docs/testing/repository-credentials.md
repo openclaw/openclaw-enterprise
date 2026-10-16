@@ -1,255 +1,174 @@
+---
+doc-schema-version: 1
+---
+
 # Repository credential tests
 
-Run these tests from the repository root with Node.js 24, Git, OpenSSL, Docker,
-and the prepared workspace dependencies. The fixtures generate fresh RSA and
-TLS material, start bounded local upstreams, and remove their temporary files,
-listeners and containers when the tests finish. They do not load ambient
-GitHub credentials.
+## Overview
 
-## Reuse fixtures by ownership
-
-Fixtures under `tests/fixtures/repository-credentials/` separate data builders,
-cleanup, service assembly and controlled provider behavior. Keep fault ordering,
-expected values and observable assertions explicit in each scenario. Share setup
-by its production owner; fixtures do not establish production authority.
-
-The [fixture ownership checks](../../tests/conformance/repository-credentials-fixture-ownership.test.mjs)
-run in `test:conformance` and the CI `checks-baseline-*` lanes. Run them directly
-with Node.js 24; they need no Docker daemon or provider credentials:
-
-```sh
-node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs
-```
-
-They exercise actual subprocess cancellation and the isolation fixture's network
-cleanup against controlled command responses. These checks qualify the fixture's
-ownership rules; service, container isolation and live-provider proof remain in
-their separate suites.
-
-## Check source authority boundaries
-
-Run `node scripts/verify-repository-credentials-boundary.mjs` after changing the
-service. The same check runs through `pnpm check:workspace` in baseline CI. It
-parses `composition/repository-credentials/`, `drivers/repo/credentials/`,
-`drivers/repo/github/` and `backends/repository-credentials/` beneath
-`apps/controller/src/`, plus
-`repository-credentials.ts` and `repository-credentials.mjs`, using the workspace's
-pinned Prettier TypeScript parser. Runtime imports and re-exports must stay within the
-scanned source or use reviewed external modules and named members. Erased
-`import type` and `export type` declarations remain available; inline type
-specifiers can preserve a runtime module load. Provider, metadata and Agent
-upstream HTTPS owners have consumer lists; listener, private-file, signing and
-client-command owners have separate I/O allowances. New network packages, raw global network or loader
-access, and new process-output owners fail the check.
-
-Maintainers own the [source guard](../../scripts/verify-repository-credentials-boundary.mjs)
-allowlists. New privileged members, owners, sender consumers or dependencies
-require explicit security review: identify the authority, caller, scope and
-protecting negative test. Never substitute wildcard allowances. The [guard regression test](../../tests/conformance/repository-credentials-source-boundary.test.mjs)
-adds forbidden capabilities to a disposable copy of the real source tree.
-
-Only credential-service configuration may use the GitHub metadata sender: one
-bounded HTTPS GET per approved repository with a metadata-only token, checking the
-returned repository ID. Metadata tests cover filtering, routes, retirement and
-timeouts.
-
-The native hook dispatcher can inspect Git configuration and executable hooks,
-read Git's hook input and delegate ordinary hooks. It has no direct credential-file
-reader or network sender. The detached client includes the pure private
-client-contract validator; negative checks protect these specific I/O boundaries.
-
-This is an accidental-regression guard for reviewed source. It does not perform
-whole-program dataflow analysis, prove that allowed owners handle secrets
-correctly, or sandbox malicious code. It does not replace capability design,
-runtime isolation, or the controlled and live tests below.
-
-For image-pair verification, use the [controller and broker compatibility probe](repository-credentials-platform.md#controller-and-broker-image-compatibility-probe).
+Use these checks to verify repository credential changes at the source, package,
+container, platform, or live-provider boundary. Run commands from the repository
+root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.
+The controlled tests use disposable fixtures and do not use ambient GitHub credentials.
 
 ## Run controlled tests
 
 ```sh
-node --test tests/conformance/repository-credentials-backend-conformance.test.mjs
-node --test tests/integration/repository-credentials-git.test.mjs
-node --test tests/integration/repository-credentials-gh.test.mjs
-node --test tests/integration/repository-credentials-long-session.test.mjs
+node scripts/verify-repository-credentials-boundary.mjs
+node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
+  tests/conformance/repository-credentials-backend-conformance.test.mjs
+node --test tests/integration/repository-credentials-git.test.mjs \
+  tests/integration/repository-credentials-gh.test.mjs \
+  tests/integration/repository-credentials-native-paths.test.mjs \
+  tests/integration/repository-credentials-long-session.test.mjs \
+  tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The client integration files create a disposable `node:24-bookworm` fixture container,
-mount the source read-only and mount `/usr/bin/gh` read-only after checking its
-version is exactly **2.100.0**. Override the prepared binary with
-`REPOSITORY_CREDENTIALS_GH_BINARY` and the prepared Node image with
-`REPOSITORY_CREDENTIALS_NODE_IMAGE`. These tests require the prerequisites and
-fail if they are unavailable. They never install dependencies.
+The Git and `gh` tests require a `node:24-bookworm` image and `gh` **2.100.0**
+at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
+`REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
+fixtures use a controlled provider and verified TLS; they do not prove live GitHub
+access. The long-session test advances controlled clocks; it is not a 13-hour soak.
 
-The container resolves `credentials.example.test` to its own loopback address.
-Its network is disabled; every controlled service shares that loopback namespace.
-The generated certificate includes that DNS SAN; clients verify it using the
-generated public CA. The gateway listens on HTTPS port 443 and `gh` retains
-`GH_HOST=github.com`. The generated production client configuration and launcher
-own authentication, clean environment setup and the Git helper. No insecure
-TLS switch or localhost `GH_HOST` substitute is used.
+The source boundary check also runs in `pnpm check:workspace`. Changes to its
+privileged allowlists require security review of the authority, caller, scope,
+and negative coverage. It is a regression guard, not a sandbox or a dataflow proof.
 
-## Characterize service loss
+The separate [public GitHub reader](../reference/public-github-reads.md) owns an
+HTTP listener and permits anonymous HTTPS GET requests to a fixed origin. The source guard forbids imports
+between the reader and credential owners; its boundary test uses a local TLS
+provider. PR CI's Image Runtime Startup lane checks that stock Codex reads the
+projected skill through its limited native proxy, with local binding disabled,
+and returns a random title available only at the TLS provider. This needs no
+model or repository credentials.
 
-```sh
-node --test tests/integration/repository-credentials-service-loss.test.mjs
-```
+Full Integration's Gateway Routing journey checks the dedicated Agent, managed
+skill, and native network path with a substituted external provider. The Agent
+must return a pull request title absent from its prompt. Record a pass with no
+skips on the reviewed source. The hosted lane accepts only approved main
+revisions; verify the full conversation and cluster policy there or in an
+authorized equivalent environment.
 
-These cases run the service and GitHub factory in a child process against a
-controlled provider. They cover stale-bearer denial, uncertain issuance, a lost
-revocation response and monotonic cleanup time. Bound admission fails closed
-without the durable journal. These cases do not prove PostgreSQL recovery.
-
-The fixture joins each child death and removes only its verified stale socket
-before replacement. This setup does not prove automatic stale-socket recovery.
-These cases use synthetic keys and controlled time, with no live GitHub, database,
-Kubernetes or model execution. Safety failures and cleanup failures fail normally.
-
-## Verify Agent admission and durable ownership
-
-See [platform qualification](repository-credentials-platform.md#verify-agent-admission-and-durable-ownership)
-for prerequisites, commands and proof limits.
-
-## Exercise the controlled platform path
-
-See [platform qualification](repository-credentials-platform.md#exercise-the-controlled-platform-path)
-for prerequisites, commands and proof limits.
-
-## What the controlled service tests prove
-
-The Git upstream runs the actual `git-http-backend` against a disposable bare
-repository. Contributor (`git-write`) coverage exercises clone, fetch, branch
-checkout, push and PR work. Reader (`git-read`) coverage admits reads, rejects
-push and REST writes before token acquisition or upstream access, and checks
-that a denied push leaves remote refs unchanged. Collaborator (`git-full`)
-adds ordinary issue management.
-A fault case drops the response after receive-pack finishes and checks that the
-service sends the push once while the remote ref records the accepted commit.
-
-The API upstream verifies RSA signatures, App identity, current JWT time,
-repository selection and complete permission maps. It maintains independent
-PR, issue and comment state. The pinned CLI runs REST creation/read/update,
-paginated comments and issues using native repository-ID links and opaque issue
-cursors, individual comment operations and native GraphQL PR
-creation. It checks bodyless deletion and unchanged human text. Unknown routes
-and lost mutation responses exercise denial and no-replay behavior.
-
-The access-level cases send requests through the real TLS listener, acquisition
-and forwarding path. They cover exact permission maps, rejection of an older
-grant through the private control API, bounded README/diff replies and
-possible-write/no-replay accounting for Reader GraphQL. The controlled upstream
-models GitHub responses; it does not establish live GitHub authorization or
-installed-Agent qualification.
-
-The alternate adapter uses a nonnumeric repository ID, nested repository path,
-different native authentication and permissions, short access expiry, and a
-separately bounded private renewal secret. The production service supplies
-custody, original attempts, leases, settlement, expiry and finalization.
-The HTTP case uses the same production listener and sender as GitHub.
-Passing this test does not claim support for another production provider.
-
-The long-session test clones once, advances trusted wall and monotonic clocks
-past hour thirteen, then pushes and performs the API workflows through the same
-running service and unchanged client files. The upstream checks that expired
-token A receives no later authentication attempts, including rejected attempts
-at the Git and API boundaries, and token B has a fresh JWT with the same
-repository and profile. It then checks local closure and provider retirement
-separately. There is no long sleep and no Agent-facing clock control.
-
-The control integration suite loses an admission response through an actual Unix
-socket relay, then reconciles public status with the original admission ID.
-It also destroys the listener socket during construction to distinguish known
-nondelivery from ambiguous response loss. Owner regressions cover delayed
-settlement, frozen or adjusted wall clocks, short configured safety margins,
-and cleanup retaining credential material after authentication becomes ineligible.
-
-## Check native Git selection
-
-The client configuration and router cases use stock Git with generated native
-configuration. They cover endpoint case and optional `.git` spelling, exact
-host/port/username, staged preparation, private files and CA agreement. Duplicate
-bindings require explicit valid pins; stale pins, expired selections and
-generation replacement release no bearer. Local hooks, aliases, moves, removals
-and worktrees remain native Git behavior. Run both files directly:
+For native selection and routing, run:
 
 ```sh
 node --test tests/integration/repository-credentials-client-config.test.mjs \
   tests/integration/repository-credentials-router.test.mjs
 ```
 
-The real Git journey verifies committed moves/removals and upstream refs. The gh
-case records native child Git through private HOME configuration. The installed
-image's system include, multi-repository registry and Compute publication require
-separate platform qualification; helper selection alone does not prove them.
+## Verify Agent admission and durable ownership
 
-Run the gateway normalization cases with the same prepared image and pinned gh:
+Build before running the source and materialization checks:
 
 ```sh
-node --test tests/integration/repository-credentials-native-paths.test.mjs
+pnpm build
+node --test tests/integration/repository-credentials-admission.test.mjs \
+  tests/integration/repository-credentials-driver.test.mjs \
+  tests/integration/repository-runtime-materialization.test.mjs \
+  tests/integration/repository-credentials-router.test.mjs
 ```
 
-Five container cases exercise stock Git through canonical GitHub URLs with mixed
-owner/repository case, with and without `.git`. They verify fetched objects,
-accepted refs/content and canonical upstream paths through the real classifier,
-HTTPS sender and `git-http-backend`. Cold discovery challenges issue no token;
-read-only receive-pack and raw-path/API denials contact no upstream. These cases
-do not establish literal-`.git` repository or multi-repository registry runtime
-support. Count the child cases separately from the host wrapper.
-
-The `repository-credentials-container` CI lane selects this file through the
-[suite map](../../scripts/ci/test-suites.json), alongside the other controlled
-client tests. Selected prerequisites, failures, skips and cleanup outcomes remain
-part of [CI result accounting](ci.md).
+For durable session and recovery checks, prepare a migrated disposable database
+with an application role as described in [PostgreSQL testing](postgresql.md).
+Run `postgres-repository-sessions.test.mjs`,
+`postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
+worker revision tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
+a running Kubernetes Pod or model turn.
 
 ## Qualify emitted artifacts
 
-Build the detached service and client closures, then qualify them in a combined test image. See [qualify emitted artifacts](repository-credentials-artifacts.md#qualify-emitted-artifacts).
+```sh
+pnpm credentials:build
+node --test tests/integration/repository-credentials-package.test.mjs
+```
+
+This verifies the emitted service and client without workspace source or runtime
+`node_modules`. To test those artifacts together, build both images as described in
+the [operator guide](../guides/repository-credentials/standalone-service.md#container-images),
+then run:
+
+```sh
+docker build --builder default --load --pull=false \
+  --build-arg SERVICE_IMAGE=repository-credentials:local \
+  --build-arg CLIENT_IMAGE=repository-credentials-client:local \
+  -f tests/fixtures/repository-credentials/Dockerfile.qualification \
+  -t repository-credentials-qualification:test .
+REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
+  node --test tests/integration/repository-credentials-container.test.mjs
+```
+
+The qualification image runs the emitted components against a controlled provider.
+The Compose check only renders the configuration; it does not start the services.
+An unset image selector skips the container cases.
 
 ## Check the runtime image's private material volume
 
-See [the runtime image's private material volume](repository-credentials-artifacts.md#check-the-runtime-images-private-material-volume).
+Build the runtime image from the candidate source and follow the
+[runtime volume test prerequisites](docker.md#repository-runtime-volume-test-environment):
+
+```sh
+OCC_TEST_RUNTIME_IMAGE=openclaw-enterprise-runtime:test \
+  node --test tests/integration/repository-runtime-volume.test.mjs
+```
+
+This tests the image-installed client and Docker mounts. An unset selector skips
+the test; the `images-packaging` CI lane requires it to run.
 
 ## Verify separate running containers
 
-See [verify separate running containers](repository-credentials-artifacts.md#verify-separate-running-containers).
+With both delivered images built, run:
 
-## Record each evidence boundary
+```sh
+REPOSITORY_CREDENTIALS_SERVICE_IMAGE=repository-credentials:local \
+REPOSITORY_CREDENTIALS_CLIENT_IMAGE=repository-credentials-client:local \
+  node --test tests/integration/repository-credentials-isolation.test.mjs
+```
 
-| Check                         | Evidence it can establish                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Source tests and source guard | Behavior of real owners against named protocol fixtures; reviewed import/I/O boundaries.                           |
-| Detached package check        | Emitted entrypoints and runtime dependency closure without source fallback.                                        |
-| Runtime private volume        | Image-installed client with real Docker tmpfs and private subPath mounts; ownership, retry and read-only delivery. |
-| Combined qualification image  | Emitted service/client composition, controlled hour-13 push/API operations and alternate-backend conformance.      |
-| Rendered Compose              | Declared paths and mount separation.                                                                               |
-| Separate running containers   | Delivered image identity and observed client/service custody for the exercised commands.                           |
-| Authorized live smoke         | Real provider behavior and cleanup for the selected repository, grant and client version.                          |
-| Installed Agent turn          | The configured Agent executes Git through its own Harness, tool policy, network path and repository authorization. |
+The test checks credential custody and Git/`gh` access through separate running
+containers against a controlled provider. It does not prove network confinement
+or live GitHub access. Supplying neither selector skips the test; supplying only
+one fails it. Record both image IDs and the cleanup result.
 
-Retain selectors, versions, source/artifact/image identities, pass/fail/skip counts
-and cleanup results. Missing selectors leave evidence unavailable; they do not
-qualify the corresponding boundary. Historical installed or live results stay
-bound to their original artifacts. After changes, record justified equivalence
-for each affected assertion or rerun its owning check. These packaging checks do
-not establish OCC/worker/Compute integration, an installed ordinary-Agent model
-contribution, a real-time thirteen-hour soak or release readiness.
+## Exercise the controlled platform path
 
-For Codex consumers, do not substitute operator `kubectl exec`, direct container
-Git commands, or runtime-image smoke tests for the installed Agent turn. Those
-checks can prove material delivery, Git configuration and broker authorization
-outside Codex. Exercise stock Codex's generated broker allowance,
-`allow_local_binding = true`, and `mode = "full"` separately. Cover bound/unbound
-dedicated/embedded consumers, broker-host denies, and unallowed hosts. Otherwise allowed private
-addresses are permitted. Require real reads, an authorized temporary write, and
-an unauthorized operation denied by broker authorization.
-For Slack-enabled Agents, start the installed-Agent proof from Slack and verify
-the threaded Agent response instead of using a direct native UI prompt.
+With the [CI runner prerequisites](ci.md) installed, run the prepared lane:
+
+```sh
+(
+  set -e
+  CREDENTIAL_TEST_RUN="$(mktemp -d)"
+  printf 'Evidence directory: %s\n' "$CREDENTIAL_TEST_RUN"
+  trap 'cleanup_exit_code=$?; trap - EXIT; node scripts/ci/cleanup.mjs --state "$CREDENTIAL_TEST_RUN/state.json" || cleanup_exit_code=1; exit "$cleanup_exit_code"' EXIT
+  node scripts/ci/prepare.mjs --lane repository-credentials-platform \
+    --state "$CREDENTIAL_TEST_RUN/state.json"
+  node scripts/ci/run-tests.mjs run repository-credentials-platform \
+    --state "$CREDENTIAL_TEST_RUN/state.json" \
+    --results "$CREDENTIAL_TEST_RUN/results.json"
+)
+```
+
+The lane creates a disposable k3d cluster and PostgreSQL database. It tests OCC
+admission, worker recovery, Kubernetes material delivery, and repository
+operations against controlled repositories. It uses a fixture Harness, not a
+model or live GitHub. The command fails if preparation, a test, or cleanup fails.
+If cleanup fails, retain the private state and inspect owned containers, networks,
+and volumes before retrying cleanup.
+
+## Controller and broker image compatibility probe
+
+Run the `image-pair-qualification` lane using the
+[image-pair procedure](docker.md#repository-image-pair-qualification). It stages
+current and incompatible older controller and broker images against disposable
+fixtures, checks the admission protocol, and rejects incompatible pairs. It does
+not prove credential disposal or a live Agent workflow. See the
+[qualification test](../../tests/integration/production-image-real-qualification.test.mjs)
+for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
 
-Prepare a running gateway on valid DNS/TLS port 443, its private operator socket,
-and a disposable repository explicitly authorized for temporary branch, PR,
-issue and comment writes. Use the exact pinned client. Select only this file:
+Use a deployed gateway with valid DNS and TLS on port 443, its private control
+socket and public CA, pinned clients, and a disposable repository explicitly
+authorized for temporary branch, pull request, issue, and comment writes:
 
 ```sh
 REPOSITORY_CREDENTIALS_LIVE=1 \
@@ -259,33 +178,29 @@ REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
   node --test tests/integration/repository-credentials-live.test.mjs
 ```
 
-The smoke admits a five-minute `git-full` session through the real control API.
-It clones and pushes unique temporary branches, exercises REST and native PR
-creation plus issue/comments. Before each create, it registers reconciliation
-using a unique run marker and, for PRs, the unique head branch. Cleanup inspects
-at most five pages of 100 resources through existing routes in the admitted
-repository; it closes or deletes only a single matching owned resource. A lost
-creation response never causes creation to be replayed. Missing, ambiguous or
-truncated identity inspection fails cleanup and reports the run marker for
-operator reconciliation.
-
-Work commands have a 90-second overall budget and terminate their owned process
-groups on timeout, output overflow or cancellation. Resource cleanup has a
-separate 60-second budget. Session cleanup always runs afterward, validates the
-close acknowledgement, and polls status for disposal under a 10-second polling
-budget; each control request also has its production five-second deadline.
-Local `CLOSED` status is distinct from `DISPOSED`: active uses, pending or
-uncertain credentials, and auxiliary obligations must all resolve. Cleanup
-failures fail the test and require operator review of the disposable repository. Keep provider keys and installation tokens on the
-service side; the test client receives only the gateway bearer.
-
-Without the live selector the case explicitly reports unavailable live-provider
-evidence. If selected, missing authorization, socket, CA, routing or credentials
-fails. Controlled upstream success proves service behavior against those
-protocol fixtures; it does not establish live GitHub compatibility or a real
-thirteen-hour provider soak.
+This exercises a real provider through the gateway, not OCC Agent admission or a
+model. Provider keys and installation tokens stay on the service side. The test
+creates unique resources and attempts bounded cleanup. Ambiguous or incomplete
+cleanup fails the test: reconcile the reported run marker and repository manually.
+A closed session is not disposed until its active and pending credential
+obligations are resolved. An unset selector skips the test; selecting it without
+required authorization or inputs fails.
 
 ## Qualify an installed Agent against GitHub
 
-See [platform qualification](repository-credentials-platform.md#qualify-an-installed-agent-against-github)
-for prerequisites, commands and proof limits.
+The dedicated installed qualification is **disabled**. Its old automatic cleanup
+could race with changes to a branch or pull request. Preparation and selected
+tests fail before creating resources. Do not use that lane for qualification.
+
+Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
+requires an authorized disposable repository and independent provider readback;
+check the commit, pull request, credential disposal, and cleanup results. A direct
+container command or ready Pod does not prove an Agent model turn.
+
+## Record each evidence boundary
+
+Record the source revision, selected test and pass/fail/skip counts, artifact and
+image IDs where applicable, and cleanup results. A skip is not a pass. Source,
+packaged artifacts, controlled provider, separate containers, installed Agent,
+and live provider results establish different things; do not substitute one for
+another. Historical results apply to the artifacts that produced them.

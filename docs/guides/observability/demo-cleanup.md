@@ -177,4 +177,4 @@ ambiguous readback.
 
 Stop the port-forward and follow
 [cleanup](#recover-an-incomplete-setup) for the release and remaining resources.
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

@@ -54,9 +54,13 @@ Changing Compute selection does not migrate revisions. After lifecycle and nativ
 
 Refreshing cannot resolve a mismatch. Each API process logs one `native_admin.compute_owner_mismatch` warning per revision and selected Driver, naming both owners. Restore the revision's Driver ID and implementation.
 
+A user-activated top-level HTML navigation to `/chat/main` or `/chat/main/<32-lowercase-hex>` without a valid session gets a `302` to the configured console. Only the opaque Agent host key travels, in a fragment; the chat segment and query are dropped. The response sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer` without checking existence.
+
+After sign-in, `GET /native-admin/return/<key>` requires exact Agent `use` and a runtime assignment. It returns Namespace and Agent IDs even while stopped; unknown and unauthorized keys both return `404`. Recovery opens Agent detail; launching chat remains separate. Previews, API/WebSocket requests and actual authorization denials retain their refusal behavior.
+
 ## Agent host identity
 
-OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.
+OCC derives an opaque browser host from the Installation, Namespace and Agent IDs and `agentNativeAdmin.domain`. Each Agent has a separate browser origin; never reuse its hostname for another identity.
 
 An Agent URL uses the derived host directly:
 
@@ -64,7 +68,7 @@ An Agent URL uses the derived host directly:
 https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 ```
 
-The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
+Admission resolves the opaque host through platform state. Unknown hosts, wrong suffixes, deleted Agents and ambiguous matches fail closed; no separate registry or cache is needed.
 
 The Kubernetes human route uses a separate `/people` path:
 
@@ -76,7 +80,7 @@ For browser proxying, OCC maps that value to the same authority and Agent path o
 
 ## Shared session boundary
 
-The console and Agent hosts share the ordinary OCE session cookie through the configured cookie parent domain. That expands the cookie trust boundary: every host under the console and Agent subdomains that can receive the cookie must be a trusted OCE ingress endpoint. Public Agent hosts route to OCC, not Envoy or tenant gateway Services. OCC strips browser cookies, `Authorization`, API keys, forwarded identity, scope headers, and native `Set-Cookie` before forwarding upstream, so the native gateway never receives the OCE session cookie.
+Every host receiving the shared OCE session cookie must be a trusted OCE ingress endpoint. Public Agent hosts route to OCC, not Envoy or tenant gateway Services. OCC strips browser cookies, `Authorization`, API keys, forwarded identity, scope headers, and native `Set-Cookie` before forwarding upstream, so the native gateway never receives the OCE session cookie.
 
 Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal, role changes, pilot disablement, Agent unavailability, or a revision change closes active WebSockets during the authorization lease. Reconnecting uses the same stable Agent host and the current active revision when the shared OCE session, exact Agent permission, and native configuration remain valid.
 
@@ -96,10 +100,7 @@ Kubernetes retains the separate `occ-workspace-files` identity with the reserved
 
 The bridge computes its policy digest as SHA-256 of the UTF-8 JSON role definition. It recursively sorts object keys with English locale comparison and preserves array order. The Driver and runtime use the same rules; the digest checks agreement with native policy, while verified proxy authentication establishes authority.
 
-Native admin changes affect gateway-local state outside OCE Configurations and
-immutable AgentRevisions. Manage durable configuration through OCE. In the
-Kubernetes pilot, native configuration edits affect a Pod-local copy that resets
-from the managed snapshot when the Pod is recreated or the Agent is redeployed.
+Manage durable configuration through OCE. Native edits change a Pod-local copy outside AgentRevisions; Pod recreation or redeployment restores the managed snapshot.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
 for the opt-in predicate, mounts, and copy lifecycle.
 

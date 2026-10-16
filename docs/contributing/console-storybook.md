@@ -57,9 +57,9 @@ Stories reach error states through real controls after loading fixture data.
 
 | Group                   | Coverage                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, session-read failure, loading, unconfirmed logout.                                                                                                                                                                                                                                              |
+| Sign in                 | Password and GitHub sign-in, discovery failure, GitHub errors, disabled account, rejected login, expired session, delayed session status, failure and retry, unconfirmed logout.                                                                                                                                                                                                                                  |
 | Agents                  | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                                                                     |
-| Backends                | Configured, empty, and discovery failure.                                                                                                                                                                                                                                                                                                                                                                         |
+| Backends                | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | Namespaces              | Ready and provisioning, empty, permission denial.                                                                                                                                                                                                                                                                                                                                                                 |
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                                              |
 | Create Agent            | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
@@ -82,9 +82,9 @@ the hint.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages** and **Return to Agent panels**.
-Search, expanded configuration, native admin access, and Credentials should survive
-Back/Forward and tab changes. Refresh reloads.
+Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
+**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
+survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
 
 ## Agent flows and UI gaps
 
@@ -120,8 +120,7 @@ generation is simulated.
 
 Choose a Preset, fill variables, review seeded files, and create a Codex Agent.
 The Console submits Configuration and Secret references, then simulates
-provisioning. The default-Preset flow uses OpenAI Codex, a model Secret and model;
-edit IDENTITY.md and clear USER.md before creation.
+provisioning. The default Preset uses Codex and a model Secret; edit IDENTITY.md and clear USER.md.
 OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
 
@@ -131,9 +130,7 @@ service-account token. Workspace and Standard OpenClaw stories preview file and
 harness settings. Preset Secret stories cover existing, pending, denied, and empty
 results while keeping new-token entry.
 
-The [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md)
-covers creating an Agent from the SWE Agent Preset and opening `oceclaw`'s
-simulated Admin UI, connected to no gateway, Slack, credential, or model.
+The [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md) covers SWE Agent creation and a simulated Admin UI without gateway, Slack, credentials or model connections.
 
 **Choose provider, harness, and authentication** covers the supported
 combinations; models appear before credentials. **Enter another model ID**

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-15"
-last_updated_session: "authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3"
+updated: "2026-10-16"
+last_updated_session: "authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b"
 ---
 
 # Agent Native Admin UI Flow
@@ -139,15 +139,15 @@ Host admission checks existing platform state without a registry. Unknown hosts,
 
 `apps/controller/src/auth/index.ts:createControllerAuth`
 
-Startup passes `nativeAdmin.sharedCookieDomain` to Better Auth as `OCC_AUTH_COOKIE_DOMAIN`. The session cookie uses that explicit parent; startup rejects public suffixes, malformed domains and hosts outside its DNS-label boundary. Disabled native access keeps the host-only `openclaw_occ` cookie and ignores leftover shared-domain configuration.
-
-Shared-domain cookies cannot use a `__Host-` prefix. One canonical cookie name and scope avoids ambiguous session selection.
+When enabled, native admin passes the configured shared cookie domain to Better Auth. The controller validates that the console and Agent hosts fit that parent on DNS-label boundaries, rejecting public suffixes and malformed domains. It never infers a parent domain. When disabled, the console uses the host-only `openclaw_occ` cookie. A shared-domain cookie cannot use the `__Host-` prefix; one canonical name and scope prevents ambiguous duplicates.
 
 ### 6. OCC intercepts native-host HTTP requests
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
 `onRequest` intercepts native Agent hosts before OCC routing, preventing those origins from exposing console/API routes. OCC authenticates the shared session, resolves the exact Agent and IAM principal, revalidates `use` and the assignment, then checks the active revision and native configuration. Denials retain attributable human IAM audit evidence.
+
+An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. After sign-in, the lookup requires exact Agent `use` and an assignment; unknown and unauthorized keys return `404`.
 
 Admission returns the verified identity and session once for expiry checks and attribution. Each WebSocket lease repeats admission and Compute-owner checks. A mismatch returns Agent-host HTTP `403`, destroys new WebSockets before key lookup or connection, and closes existing sockets through failed-lease handling. Earlier lifecycle and unsupported-configuration outcomes retain precedence.
 
@@ -208,11 +208,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Debugging and Verification
 
-- `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
-- `disabled` means the Installation has not enabled the feature.
-- `stopped` means the exact Agent is not desired running. Its response has no origin or revision after stop reconciliation clears the active revision, or before the first deployment.
-- `unavailable`: no active revision or an exclusive replacement is in progress. Check Deployment activity, including failed replacements, then refresh. Other dependency outages return `503`.
-- `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the active revision.
+- For startup codes, availability states and recovery, see [failure behavior](../reference/agent-native-admin.md#failure-behavior).
 - Wrong/unknown hosts fail before proxying; check host derivation, lifecycle and `agentNativeAdmin.domain`.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
 - A TCP reset during WebSocket admission leaves the API running and preserves a later authorization-denial audit without opening an upstream connection.
@@ -234,6 +230,10 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-16 13:04: Use runtime assignments for copied-link recovery and retain the updated Agent overview. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)
+
+- 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
+- 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
 - 2026-10-15 13:36: Preserve Compute ownership checks and shared hostname derivation with per-person runtime admission. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
 
 - 2026-10-14 11:53: Extracted shared hostname derivation so the first-Agent script starts without installed workspace dependencies. (authoring-run/fba0a85c-ba37-4764-871e-9fdf80ee1083 - 5511d28d1)
