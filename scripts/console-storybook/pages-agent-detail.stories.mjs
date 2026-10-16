@@ -45,6 +45,7 @@ export const CurrentVersionDuringDeployment = story("currentVersionDuringDeploym
 export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
+export const DeploymentModelProbeRetried = story("deploymentModelProbeRetried");
 export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
 export const DeploymentModelProbeFailedDeployOnly = story("deploymentModelProbeFailedDeployOnly");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");

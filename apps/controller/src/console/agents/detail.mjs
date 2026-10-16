@@ -172,14 +172,27 @@ const PROBE_STATUS_DETAIL_TEXT = {
     "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
 };
 
+// A Codex check retried once, after a timeout or a transient failure, holds its second
+// attempt's detail with this suffix; the advice is the same as for the bare token.
+const RETRIED_DETAIL_SUFFIX = "-attempt2";
+
 function runtimeFailureCauseText(cause) {
-  if (cause.kind === "PROBE_STATUS" && Object.hasOwn(PROBE_STATUS_DETAIL_TEXT, cause.detail)) {
-    return PROBE_STATUS_DETAIL_TEXT[cause.detail];
+  const retried =
+    typeof cause.detail === "string" &&
+    cause.detail.length > RETRIED_DETAIL_SUFFIX.length &&
+    cause.detail.endsWith(RETRIED_DETAIL_SUFFIX);
+  const detail = retried ? cause.detail.slice(0, -RETRIED_DETAIL_SUFFIX.length) : cause.detail;
+  const retry = retried ? " The check was retried once and failed again." : "";
+  if (cause.kind === "PROBE_STATUS" && Object.hasOwn(PROBE_STATUS_DETAIL_TEXT, detail)) {
+    return PROBE_STATUS_DETAIL_TEXT[detail] + retry;
   }
   const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
     ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
     : cause.kind;
-  return cause.detail ? `${label} (${cause.detail})` : label;
+  if (!detail) {
+    return label;
+  }
+  return retried ? `${label} (${detail}).${retry}` : `${label} (${detail})`;
 }
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {

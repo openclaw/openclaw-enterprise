@@ -3313,6 +3313,20 @@ export const scenarios = {
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
   },
+  deploymentModelProbeRetried: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check after a retry",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit-attempt2" },
+    description:
+      "v7's startup model check hit a provider rate limit, was retried once and failed again. The cause gives the rate-limit advice and says the retry also failed, instead of the generic label.",
+    steps: [
+      "In the failed deployment, confirm the Cause gives the rate or usage limit advice and says the check was retried once and failed again.",
+    ],
+    gap: "The failure is simulated; it does not prove the runtime's retry or the provider's limit.",
+  },
   deploymentModelProbeFailedReadOnly: {
     group: "Pages/Agent detail",
     name: "New version failed, viewer cannot edit",
