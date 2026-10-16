@@ -728,7 +728,9 @@ test("a failed version's banner does not move the overview on a slow link", asyn
 // The version's detail is in view: its top edge at (or, where the page cannot scroll that far,
 // below) the window's top, inside the upper half of the window.
 function versionDetailInView() {
-  const top = globalThis.document.querySelector(".agent-version-detail").getBoundingClientRect().top;
+  const top = globalThis.document
+    .querySelector(".agent-version-detail")
+    .getBoundingClientRect().top;
   return globalThis.scrollY > 0 && top >= -1 && top < globalThis.innerHeight / 2;
 }
 
@@ -807,13 +809,14 @@ for (const c of [
       assert.ok(below > 0, `the version's detail starts ${below} px below the fold`);
 
       await open.click();
-      await page.waitForURL(
-        (next) =>
-          c.entry === "draft" && c.tab === "configuration"
-            ? true
-            : next.searchParams.get("revision") === "draft" &&
-              next.searchParams.get("tab") === "configuration",
-      );
+      // The draft already open below keeps its address.
+      if (c.entry !== "draft" || c.tab !== "configuration") {
+        await page.waitForURL(
+          (next) =>
+            next.searchParams.get("revision") === "draft" &&
+            next.searchParams.get("tab") === "configuration",
+        );
+      }
       await page.getByRole("heading", { name: "Configuration draft" }).waitFor();
       await page.waitForFunction(versionDetailInView);
       assert.equal(await focusedTab(page), "Configuration");

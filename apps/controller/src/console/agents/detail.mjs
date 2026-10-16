@@ -1,12 +1,4 @@
-import {
-  button,
-  element,
-  focusSaveOutcome,
-  patchChildren,
-  replaceChildrenIfChanged,
-  setHidden,
-  setText,
-} from "../dom.mjs";
+import { button, element, focusSaveOutcome, patchChildren, setHidden, setText } from "../dom.mjs";
 import {
   configuredHarnessId,
   createHarnessAuthFields,
@@ -1279,8 +1271,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
   function scrollToVersionDetail({ animate = false } = {}) {
-    const smooth =
-      animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    const smooth = animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     detailPane.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
   }
   function openVersionDetail(options) {
