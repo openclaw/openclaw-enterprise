@@ -233,6 +233,51 @@ async function disableProvider(state, provider) {
   await save(state, withProvider(state.values, provider.id, config), null, null, null, provider);
 }
 
+// The plain fields the reader changed from what the editor first showed (Secret and directory
+// search boxes are not among them), and the Secrets they chose.
+function draftChanges(draft) {
+  const fields = Object.keys(draft?.initial ?? {}).filter((id) => {
+    const field = draft.fields?.[id];
+    const initial = draft.initial[id];
+    return field && (field.value !== initial.value || field.checked !== initial.checked);
+  });
+  return {
+    fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]])),
+    secrets: Object.keys(draft?.changedSecrets ?? {}),
+  };
+}
+
+// A save conflict keeps the editor's changes: Reload draft reopens them over the reread
+// settings instead of dropping them with the closed editor (finding 1504).
+function carryDraft(state, dialog, provider) {
+  const draft = dialog ? state.captureDraft?.() : undefined;
+  const changes = draftChanges(draft);
+  state.carriedDraft = null;
+  if (
+    draft?.provider !== provider?.id ||
+    (!Object.keys(changes.fields).length && !changes.secrets.length)
+  ) {
+    state.drawerContext.drafts?.forget("channels");
+    return;
+  }
+  const carried = { ...draft, carried: true, unresolved: false };
+  state.carriedDraft = carried;
+  state.drawerContext.drafts?.track("channels", () => carried);
+}
+
+function carriedNotice(draft, provider) {
+  if (!draft) {
+    return "";
+  }
+  const names = Object.values(draft.changedSecrets ?? {})
+    .map((secret) => secret?.name)
+    .filter((name) => typeof name === "string" && name.length);
+  const secrets = names.length
+    ? `, including the ${names.length === 1 ? "Secret" : "Secrets"} ${names.map((name) => `“${name}”`).join(" and ")}`
+    : "";
+  return ` Reload draft reopens your ${provider.name} edits over the saved settings${secrets}.`;
+}
+
 async function save(state, values, dialog, targetError, secretBindingUpdate, provider) {
   if (state.pending || state.outcomeUnknown || state.reloadRequired) {
     return;
@@ -269,17 +314,21 @@ async function save(state, values, dialog, targetError, secretBindingUpdate, pro
     // way, so the section offers Reload draft instead of the editor (finding 1480).
     state.reloadRequired = !state.outcomeUnknown && Boolean(error.reloadRequired && state.onReload);
     const sectionError = state.outcomeUnknown || state.reloadRequired;
-    (sectionError ? state.error : errorNode).replaceChildren(
-      element("p", { className: "error", role: "alert" }, errorText(error)),
-    );
     if (sectionError) {
       if (state.reloadRequired) {
-        // Reload draft rebuilds the editor from the saved state; the stale draft goes with it.
-        state.drawerContext.drafts?.forget("channels");
+        carryDraft(state, dialog, provider);
       }
       dialog?.close();
       dialog?.remove();
     }
+    (sectionError ? state.error : errorNode).replaceChildren(
+      element(
+        "p",
+        { className: "error", role: "alert" },
+        errorText(error) +
+          (state.reloadRequired ? carriedNotice(state.carriedDraft, provider) : ""),
+      ),
+    );
   } finally {
     state.pending = false;
     state.onStateChange({
@@ -343,9 +392,21 @@ function openDrawer(section, state, provider, retained) {
         ? undefined
         : structuredClone(state.drawerContext.secretBindings),
   };
-  const stale = retained && retained.baseline !== state.drawerContext.baseline;
+  // A draft carried through a save conflict applies over the reread settings (finding 1504).
+  const carried = retained?.carried ? draftChanges(retained) : null;
+  const stale = retained && !carried && retained.baseline !== state.drawerContext.baseline;
   const unresolved = retained?.unresolved;
-  if (retained) {
+  if (carried) {
+    if (carried.secrets.length) {
+      drawerContext.draftSecretBindings = {
+        ...clone(state.drawerContext.secretBindings),
+        ...Object.fromEntries(
+          carried.secrets.map((key) => [key, clone(retained.secretBindings?.[key])]),
+        ),
+      };
+      drawerContext.draftChangedSecrets = clone(retained.changedSecrets);
+    }
+  } else if (retained) {
     drawerContext.draftSecretBindings = clone(retained.secretBindings);
     drawerContext.draftChangedSecrets = clone(retained.changedSecrets);
   }
@@ -391,8 +452,17 @@ function openDrawer(section, state, provider, retained) {
   const fields = [
     ...body.querySelectorAll("input[id]:not([type=password]), select[id], textarea[id]"),
   ];
+  const fieldValues = (list) =>
+    Object.fromEntries(
+      list.map((field) => [field.id, { value: field.value, checked: field.checked }]),
+    );
+  // What the plain fields first showed, so a conflict carries only the reader's changes.
+  const initial =
+    retained && !carried
+      ? retained.initial
+      : fieldValues(fields.filter((field) => field.getAttribute("role") !== "combobox"));
   for (const field of fields) {
-    const saved = retained?.fields[field.id];
+    const saved = (carried ? carried.fields : retained?.fields)?.[field.id];
     if (saved) {
       field.value = saved.value;
       field.checked = saved.checked;
@@ -400,16 +470,27 @@ function openDrawer(section, state, provider, retained) {
       field.dispatchEvent(new Event("change"));
     }
   }
-  state.drawerContext.drafts?.track("channels", () => ({
+  const captureDraft = () => ({
     provider: provider.id,
-    baseline: retained?.baseline ?? state.drawerContext.baseline,
-    fields: Object.fromEntries(
-      fields.map((field) => [field.id, { value: field.value, checked: field.checked }]),
-    ),
+    baseline: (!carried && retained?.baseline) || state.drawerContext.baseline,
+    initial,
+    fields: fieldValues(fields),
     secretBindings: clone(drawerContext.draftSecretBindings),
     changedSecrets: clone(drawerContext.draftChangedSecrets),
     unresolved: unresolved || state.pending || state.outcomeUnknown,
-  }));
+  });
+  state.captureDraft = captureDraft;
+  state.carriedDraft = null;
+  state.drawerContext.drafts?.track("channels", captureDraft);
+  if (carried) {
+    feedback.append(
+      element(
+        "p",
+        { className: "hint", role: "status" },
+        "Your edits are applied over the reloaded settings. Review them, then save.",
+      ),
+    );
+  }
   if (stale || unresolved) {
     submit.disabled = true;
     feedback.append(
@@ -546,6 +627,10 @@ export function renderChannelSection(
       "Reload draft",
       () => {
         reload.disabled = true;
+        if (!(state.reloadRequired && state.carriedDraft)) {
+          // Nothing carried: the reloaded section starts from the saved state.
+          state.drawerContext.drafts?.forget("channels");
+        }
         void state.onReload();
       },
       { className: "channel-reload" },

@@ -690,6 +690,71 @@ test("a Channels conflict offers Reload draft, which recovers in place", async (
   assert.equal((await fixture.request("GET", configurationPath(context))).data.generation, 3);
 });
 
+// A Channels conflict closed the editor and dropped its edits with no warning: DM policy,
+// allowlists and a Secret chosen there (finding 1504). The conflict now names the chosen
+// Secret, and Reload draft reopens only the reader's edits over the reread settings, so the
+// other browser's changes are kept too.
+test("a Channels conflict keeps the editor's edits for Reload draft", async (t) => {
+  const context = await slackAgent(t, "Channels Carry");
+  const { fixture, namespace, agent } = context;
+  const carriedBot = await fixture.createSecret(namespace.id, "Carried bot token", "xoxb-carry");
+  const otherApp = await fixture.createSecret(namespace.id, "Other app token", "xapp-other");
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  await page.getByRole("heading", { name: "Channels Carry" }).waitFor();
+  const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await edit.click();
+  await dialog.getByLabel("Direct-message policy").selectOption("disabled");
+  await selectSecret(dialog, "Slack bot token", carriedBot);
+  // Another browser turns off mentions and swaps the app token Secret.
+  const current = await fixture.request("GET", configurationPath(context));
+  const changed = await fixture.request("PATCH", configurationPath(context), {
+    body: {
+      values: {
+        ...current.data.values,
+        channels: {
+          slack: { ...current.data.values.channels.slack, requireMention: false },
+        },
+      },
+      secretBindings: {
+        ...current.data.secretBindings,
+        SLACK_APP_TOKEN: { source: otherApp.ref, delivery: { type: "env" } },
+      },
+    },
+  });
+  assert.equal(changed.status, 200);
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  const message =
+    "The saved Configuration changed while you were editing. Reload this draft before saving. Reload draft reopens your Slack edits over the saved settings, including the Secret “Carried bot token”.";
+  await page.getByRole("alert").filter({ hasText: message }).waitFor();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await focusedText(page), "Reload draft");
+  assert.equal(await focusedDescription(page), message);
+
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await dialog.waitFor();
+  await dialog
+    .getByRole("status")
+    .filter({ hasText: "Your edits are applied over the reloaded settings." })
+    .waitFor();
+  assert.equal(await dialog.getByLabel("Direct-message policy").inputValue(), "disabled");
+  assert.equal(await dialog.getByLabel("Require a mention").isChecked(), false);
+  await dialog.getByRole("button", { name: "Save configuration" }).click();
+  await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
+  const saved = (await fixture.request("GET", configurationPath(context))).data;
+  assert.equal(saved.generation, 3);
+  assert.equal(saved.values.channels.slack.dmPolicy, "disabled");
+  assert.equal(saved.values.channels.slack.requireMention, false);
+  assert.deepEqual(saved.secretBindings.SLACK_APP_TOKEN, {
+    source: otherApp.ref,
+    delivery: { type: "env" },
+  });
+  assert.deepEqual(saved.secretBindings.SLACK_BOT_TOKEN, {
+    source: carriedBot.ref,
+    delivery: { type: "env" },
+  });
+});
+
 // After Save Configuration the rebuilt summary showed "Bound Secret · sec_… · Loading
 // metadata…" on two lines until the Secret was reread, then collapsed to its name and moved the
 // cards below (CLS 0.073, finding 1482). It now keeps the name it already showed.

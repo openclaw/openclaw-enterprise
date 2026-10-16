@@ -2694,10 +2694,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         savedNotice,
         // The section calls these once its dialog has closed; both rebuild the tab in place.
         onSaved: (focus) => refreshDraftInPlace({ saved: "Channels saved.", focus }),
-        onReload: () => {
-          context.drafts.forget("channels");
-          return reloadDraftInPlace(context, { saved: "Draft reloaded." });
-        },
+        // The section forgets its editor draft first unless a save conflict carried it.
+        onReload: () => reloadDraftInPlace(context, { saved: "Draft reloaded." }),
       });
       const navigationFeedback = element("p", { className: "hint", role: "status" });
       showDraftEditorNavigationBlock = () => {
