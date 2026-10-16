@@ -46,11 +46,11 @@ const secretShapes = [
 // the safe side.
 const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
-// A JSON document embedded in a string escapes its quotes ({\"password\":\"value\"}), up to
-// three levels deep, so backslashes may precede the quotes around the key and the value
-// (finding 1551). A value may hold a backslash, but not one that escapes its closing quote.
+// A JSON document embedded in a string escapes its quotes ({\"password\":\"value\"}); up to
+// three levels deep that is 1, 3 or 7 backslashes before the quotes around the key and the
+// value (finding 1551). A value may hold a backslash, but not one that escapes its closing quote.
 const secretAssignment =
-  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?\\{0,3}["']?\s*[:=]\s*\\{0,3}["']?)(?:[^\s"'\\,;}&]|\\(?!\\{0,3}["']))+/giu;
+  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?\\{0,7}["']?\s*[:=]\s*\\{0,7}["']?)(?:[^\s"'\\,;}&]|\\(?!\\{0,7}["']))+/giu;
 
 function isPublicEnvName(name) {
   return (

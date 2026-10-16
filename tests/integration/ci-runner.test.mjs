@@ -2162,6 +2162,10 @@ test("the redactor removes secrets inside escaped JSON and keys from filtered lo
       String.raw`{\\\"api_key\\\":\\\"syntheticApiValue456\\\"}`,
       String.raw`{\\\"api_key\\\":\\\"[redacted]\\\"}`,
     ],
+    [
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"syntheticDeepValue789\\\\\\\"}`,
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"[redacted]\\\\\\\"}`,
+    ],
     // Unescaped forms keep their behaviour, and a backslash inside a value is redacted with it.
     [`{"password":"plainvalue123"}`, `{"password":"[redacted]"}`],
     [String.raw`password=synthetic\value tail`, "password=[redacted] tail"],

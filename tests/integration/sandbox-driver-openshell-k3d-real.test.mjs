@@ -4,6 +4,7 @@ import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   failureSecrets,
+  maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
@@ -2561,36 +2562,43 @@ async function prepareProductionInstallation(
         GATEWAY_API_KEY: workspaceGateway.apiKey,
       },
     ]);
-    for (const namespace of new Set([placement, gatewayPlacement])) {
-      try {
-        for (const pod of await resources("pods", namespace)) {
-          for (const container of pod.spec.containers) {
-            if (!["agent", "gateway", "supervisor"].includes(container.name)) {
-              continue;
-            }
-            const logs = await kubectl(
-              "logs",
-              pod.metadata.name,
-              "--namespace",
-              namespace,
-              "--container",
-              container.name,
-              "--tail=80",
-            ).catch(() => "Pod logs unavailable");
-            const lines = logs
-              .split("\n")
-              .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
-              .slice(-12);
-            for (const line of lines) {
-              process.stderr.write(
-                `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
-              );
+    const startupDiagnostic = async () => {
+      for (const namespace of new Set([placement, gatewayPlacement])) {
+        try {
+          for (const pod of await diagnosticResources("pods", namespace)) {
+            for (const container of pod.spec.containers) {
+              if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+                continue;
+              }
+              const logs = await diagnosticKubectl(
+                "logs",
+                pod.metadata.name,
+                "--namespace",
+                namespace,
+                "--container",
+                container.name,
+                "--tail=80",
+              ).catch(() => "Pod logs unavailable");
+              const lines = maskPrivateKeyLines(logs.split("\n"))
+                .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+                .slice(-12);
+              for (const line of lines) {
+                process.stderr.write(
+                  `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+                );
+              }
             }
           }
+        } catch {
+          process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
         }
-      } catch {
-        process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
       }
+      return false;
+    };
+    if (await withinDiagnosticDeadline(startupDiagnostic(), { timedOut: true })) {
+      process.stderr.write(
+        `OpenShell startup Pod diagnostics timed out after ${diagnosticDeadlineMs / 1_000} s\n`,
+      );
     }
     const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
     if (provisioningFailure !== undefined) {
@@ -4194,9 +4202,10 @@ function turnDiagnosticLines(logs, pattern, budget, secrets) {
 }
 
 // Failure diagnostics read with a request timeout, so a stalled API server or log stream
-// cannot hold them (finding 1550). A read still retries a dropped transport.
+// cannot hold them (finding 1550). A read retries a dropped transport once: kubectl reports
+// its own request timeout as a transient failure, and each attempt may take the whole timeout.
 function diagnosticKubectl(...args) {
-  return retryKubectlRead(() => kubectl(diagnosticRequestTimeout, ...args));
+  return retryKubectlRead(() => kubectl(diagnosticRequestTimeout, ...args), { attempts: 2 });
 }
 
 async function diagnosticResource(kind, name, namespace) {
@@ -4245,7 +4254,14 @@ function turnFailureSecrets(topology, gatewayPassword) {
 
 // `budgets` lets a caller that adds its own sections keep the whole message under 16 KiB.
 // Without a Harness Pod (a replacement that never started one) only the Gateway is read.
-async function gatewayTurnFailureDiagnostic(
+function gatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets) {
+  return withinDiagnosticDeadline(
+    readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
+    { timedOut: `\nGateway turn diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+  );
+}
+
+async function readGatewayTurnFailureDiagnostic(
   topology,
   gatewayPassword,
   { gateway = 5_000, harness = 4_000, supervisor = 4_000 } = {},
