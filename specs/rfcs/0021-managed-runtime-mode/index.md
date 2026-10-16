@@ -4,7 +4,7 @@ implementation_status: Not implemented
 author: stevenlee-oai
 ---
 
-# RFC-0021: Managed-mode contract for OCE runtimes
+# RFC-0021: Runtime contract for OCE-managed deployments
 
 > This working draft proposes a managed-runtime boundary and an initial restriction
 > on administrative Gateway tools. Findings describe inspected sources; proposed
@@ -37,13 +37,13 @@ Sources: [Harness placement and execution](https://github.com/openclaw/openclaw-
 
 OCE owns deployment configuration and lifecycle for both Harnesses. The difference is where native session state lives and where restrictions must be enforced.
 
-**Codex:** Codex app-server owns native execution threads inside the Harness workload. The Gateway coordinates those threads, maintains OC Agent/session state, and supplies Gateway tools. Managed mode needs restrictions on those tools and protection for Codex's local configuration and administrative interfaces.
+**Codex:** Codex app-server owns native execution threads inside the Harness workload. The Gateway coordinates those threads, maintains OC Agent/session state, and supplies Gateway tools. OCE-managed deployments need restrictions on those tools and protection for Codex's local configuration and administrative interfaces.
 
 **OpenClaw:** The Gateway owns OC sessions and assigns execution to a dedicated worker. It can enforce restrictions on model-accessible tools and RPCs outside the Harness workload. The worker's local configuration, credentials and processes still need separate protection.
 
 ## Gateway RPC categories
 
-These categories group Gateway RPCs by the resources and permissions they affect. They describe the broader boundary for model-directed work; inclusion in the table does not mean the Harness can invoke every listed RPC. P0 combines the existing whole-tool filters with the proposed action and automation controls below. Authorized human administration remains governed by Gateway permissions.
+These categories group Gateway RPCs by the resources and permissions they affect. They describe the broader boundary for model-directed work; inclusion in the table does not mean the Harness can invoke every listed RPC. P0 uses the proposed Gateway tool allowlist, action filtering and automation controls below. Authorized human administration remains governed by Gateway permissions.
 
 | Category                                  | What it affects                                                                                        | Representative OC Gateway calls                                                                                           | Managed boundary to establish                                                                                                                                           |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -53,103 +53,65 @@ These categories group Gateway RPCs by the resources and permissions they affect
 | **Runtime and software lifecycle**        | Changes the deployed runtime process, installed runtime code, loaded extensions, or service ownership. | `update.run`, `gateway.restart.request`, `gateway.stop.request`, `plugins.install`, `plugins.uninstall`, `plugins.reload` | OCE owns deployed runtime software and service lifecycle. Any delegated recovery action needs explicit bounds; task cancellation is separate from stopping the runtime. |
 | **Authority, trust, and credentials**     | Changes trusted callers/nodes, permissions, approval policy, or credential bindings.                   | `device.pair.approve`, `exec.approvals.set`, `exec.approval.resolve`, `models.authSetApiKey`, `models.authRefresh`        | OCE owns standing authority and credential bindings. Refreshing an approved credential and resolving a bounded approval differ from granting new authority.             |
 
-## Managed harness boundary
+## OCE-managed deployment boundary
 
-OCE owns the deployed Agent's configuration and permission limits. The Harness executes model-directed work within those limits. Managed mode must prevent that work from changing the deployment configuration, credentials, installed capabilities and runtime processes that determine its authority.
+OCE owns the deployed Agent's configuration and permission limits. The Harness executes model-directed work within those limits. OCE-managed deployments must prevent that work from changing the deployment configuration, credentials, installed capabilities and runtime processes that determine its authority.
 
-This boundary applies to both dedicated OC and dedicated Codex. **P0 blocks the reviewed Gateway administrative tools from model-directed work**, including administrator-started chats, children and scheduled jobs. Trusted human Gateway UI/CLI administration remains available under existing authorization. Harness-local configuration, credentials and processes need separate runtime protection; Gateway filtering does not establish the complete managed-runtime guarantee. Human-edit persistence and automatic drift repair are separate policy decisions.
+This boundary applies to both dedicated OC and dedicated Codex. **P0 restricts model-directed work to an explicit Gateway tool allowlist**, including administrator-started chats, children and scheduled jobs. Trusted human Gateway UI/CLI administration remains available under existing authorization. Harness-local configuration, credentials and processes need separate runtime protection; Gateway filtering does not establish the complete managed-runtime guarantee. Human-edit persistence and automatic drift repair are separate policy decisions.
 
-Normal work remains useful: scoped reads and tool discovery, session metadata and history, permitted session model/thinking choices, child tasks, session messaging, ordinary scheduled Agent turns, and shell/file work inside the Harness's execution boundary. The full managed-runtime contract must prevent model-directed work from changing deployed defaults, persistent Agent definitions, plugins, standing permissions, credential bindings or the deployed runtime lifecycle. P0 addresses the reviewed Gateway administrative tools; Harness-local protection and end-to-end qualification remain separate work. Cancelling a task is different from stopping the runtime; creating a child task is different from deploying an Agent. Agent document content remains out of scope.
+Normal work remains useful: scoped reads and tool discovery, session metadata and history, permitted session model/thinking choices, child tasks, session messaging, ordinary scheduled Agent turns, and shell/file work inside the Harness's execution boundary. The full managed-runtime contract must prevent model-directed work from changing deployed defaults, persistent Agent definitions, plugins, standing permissions, credential bindings or the deployed runtime lifecycle. P0 restricts Gateway-provided capabilities; Harness-local protection and end-to-end qualification remain separate work. Cancelling a task is different from stopping the runtime; creating a child task is different from deploying an Agent. Agent document content remains out of scope.
 
-The implementation below is proposed work built on inspected native controls. It is not a completed end-to-end qualification.
+The implementation below proposes an enforced allowlist using OC filtering machinery and new policy support. It is not a completed end-to-end qualification.
 
-### Gateway controls shared by both harnesses
+### Gateway tool policy
 
-**OCE should configure a denylist using existing controls:** global `tools.deny` for dedicated OC, and `plugins.entries.codex.config.codexDynamicToolsExclude` for dedicated Codex. Both block the six tools below. P0 also adds OC action-level filtering and managed automation restrictions, listed in the work items below. The per-harness settings below preserve their different execution and tool arrangements.
+**Under this proposal, OCE automatically applies a required Gateway tool policy to every dedicated OC and Codex deployment.** The baseline is part of OCE-generated configuration; no separate OC mode switch or administrator opt-in is proposed.
 
-| Blocked model tool | Reason                                                                                          |
-| ------------------ | ----------------------------------------------------------------------------------------------- |
-| `gateway`          | Can run a runtime update. Whole-tool exclusion also removes configuration reads.                |
-| `plugins`          | Can install, activate, remove or reload plugins. Inspection through this tool is also excluded. |
-| `openclaw`         | Delegates to a privileged setup/repair agent.                                                   |
-| `nodes`            | Can change pairing and device authority.                                                        |
-| `terminal`         | Can send input to Gateway operator terminals.                                                   |
-| `secrets`          | Can delete team secrets. Its credential-request and read actions are also excluded.             |
+The policy is an explicit allowlist of tools and their permitted actions. OC enforces it after ordinary Agent and plugin grants are composed, and checks it during invocation. A new tool or action stays unavailable until OCE explicitly includes it. Existing stricter restrictions still apply. An empty allowlist permits nothing.
 
-**Task/session work and observation remain available under existing policy.** This includes permitted session operations, child tasks, ordinary scheduled Agent turns, discovery and configured task tools. Local commands and files stay within the assigned Harness execution boundary.
+The initial baseline retains scoped task, session and observation tools. The concrete names and action sets are listed in [the proposed initial allowlist](remaining-work.md#initial-gateway-tool-allowlist). Approved plugin task tools can be added by concrete identity; loading a plugin does not grant its tools automatically. The administrative tools `gateway`, `plugins`, `openclaw`, `nodes`, `terminal` and `secrets` are not included.
+
+Discovery and invocation helpers expose only the permitted catalog. `tool_search`, `tool_describe`, `tool_call` and Code Mode cannot recover an unapproved tool or action. Ordinary shell/file work remains within the Harness's execution boundary.
 
 Keep `agents.defaults.modelSelectionScope: "session"` so session model choices do not become deployed defaults. This setting also applies to the human model picker.
 
-Set `cron.triggers.enabled: false` to disable stream schedules, condition triggers and cron script payloads. This prevents stream commands from executing on the Gateway and also disables the other scripting features controlled by this setting. The restriction applies to both model-created and human-created jobs; ordinary timed Agent turns remain available.
+Set `cron.triggers.enabled: false` to disable stream schedules, condition triggers and cron script payloads. This applies to human-created and model-created jobs. Ordinary timed Agent turns remain available; command jobs require the separate automation restriction in the work items.
 
-**Direct human administration remains available.** A human administrator can still use Gateway Console forms, CLI commands or RPCs to change configuration and plugins, subject to existing role/scopes and write rules. An administrator asking the Agent to do the same work remains subject to the model-tool restriction. The Console tool tester honors ordinary OC tool policies, including global `tools.deny`. Codex's `codexDynamicToolsExclude` filters tools supplied to Codex and does not filter the Console tool tester. The denylist affects callable tools, not only the descriptions shown to the model. [Gateway authorization](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/server-methods/method-authorization.ts#L29), [tool tester](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/tools-invoke-shared.ts#L400).
+**Direct human administration remains available.** Gateway Console forms, CLI commands and RPCs retain their existing authorization. An administrator asking the Agent to perform the same action remains subject to the Gateway tool policy.
 
-#### Relationship to plugins
+#### Tools, plugins and administration
 
-`plugins.allow` and `plugins.entries` control which plugins load and how they are configured. `tools.allow`, `tools.alsoAllow` and `tools.deny` control model tools, including tools supplied by plugins. The tool named `plugins` is the model's plugin-management interface; excluding it does not unload configured plugins or disable their other task tools.
+A tool is an operation the model can request. OC provides core tools and loads plugins that can contribute additional tools. A plugin is extension code; it can also provide hooks, services and Gateway handlers. The Gateway tool policy controls model tool calls, not all behavior of loaded plugin code.
 
-OCE's plugin merge adds tool grants, but preserves denials, and OC checks deny before allow. A plugin grant therefore cannot restore a tool blocked by `tools.deny`. Codex's separate exclusion list removes matching Gateway tools from its dynamic-tool set. OCE must preserve these restrictions when composing the final configuration. [Plugin merge test](https://github.com/openclaw/openclaw-enterprise/blob/04514330688378316bd0641b8d5560da56aeff85/tests/conformance/plugin-runtime-policy.test.mjs#L578), [deny precedence](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy-match.ts#L48), [Codex exclusions](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/dynamic-tool-profile.ts#L99).
+Here, **OC plugins** means the extensions shown in the Gateway's Plugins page. The model tool named `plugins` administers those extensions. It is separate from the task tools they contribute and from Codex apps or integrations connected through a ChatGPT account. For example, OCE can load the Diffs plugin and allow its `diffs` tool without allowing the `plugins` administration tool. [Plugin tool](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tools/plugins-tool.ts#L75), [plugin API](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/plugins/plugin-api.types.ts#L225).
 
-**This is a denylist of reviewed tools.** Other configured tools retain their existing policy; a newly introduced administrative tool is not blocked automatically. Review tool/plugin additions and update the list when their capabilities require it.
+| Resource                                                  | OCE / OCC responsibility                         | Model-directed work in P0                                          | Direct human administration                          |
+| --------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------ | ---------------------------------------------------- |
+| Gateway tools                                             | Publish the tool/action allowlist automatically. | Invoke only allowed tools/actions.                                 | Existing Gateway authorization applies.              |
+| Deployment configuration, Agent definitions and lifecycle | Define and deploy desired state.                 | Administrative mutations unavailable through Gateway tools.        | Authorized Console/CLI/RPC actions remain available. |
+| OC plugin packages                                        | Select and configure extensions.                 | Use explicitly allowed task tools; no plugin-management mutations. | Authorized plugin administration remains available.  |
+| Sessions and ordinary schedules                           | Set deployment limits.                           | Scoped task operations; no Gateway command-job authority.          | Existing authorization applies.                      |
+| Codex native tools, apps and MCP                          | Configure through separate Harness controls.     | Governed by native runtime policy.                                 | Outside this Gateway tool policy.                    |
+
+`plugins.allow` and `plugins.entries` configure OC plugin loading. Ordinary `tools.allow`, `tools.alsoAllow` and `tools.deny` influence model tool access. They are distinct from the proposed required allowlist: current OCE composition adds plugin grants to `tools.allow`, so another ordinary overlay would not enforce the limit. OC must intersect the final tool surface with OCE's approved list. [Current merge behavior](https://github.com/openclaw/openclaw-enterprise/blob/04514330688378316bd0641b8d5560da56aeff85/tests/conformance/plugin-runtime-policy.test.mjs#L578).
+
+Restricting human plugin enable/disable actions to an OCC-approved package list is a separate policy decision. P0 preserves direct human administration; it does not implement that additional restriction.
 
 ### Dedicated OpenClaw implementation
 
-The Gateway owns OC sessions and assigns work to the dedicated native worker. The worker's node identity does not grant general operator configuration RPCs. Child creation already inherits tool/permission policy and checks the parent's placement profile. OCE should retain these controls while applying the shared Gateway policy above. [Node method authorization](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/server-methods/method-authorization.ts#L43), [child policy and placement](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/worker-environments/worker-session-tool-executor.ts#L198).
+The Gateway owns OC sessions and assigns work to the dedicated worker. Its node identity does not grant general operator configuration RPCs. OC should apply the required allowlist before issuing Gateway tool handles and enforce permitted actions when invoked. Preserve approved worker-local coding tools and existing child permission/placement checks. [Worker preparation](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/worker-environments/worker-turn-execution.ts#L379), [handle invocation](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/worker-environments/worker-gateway-tool-runtime.ts#L168).
 
-**OCE work:** merge these names into global `tools.deny`, preserving all existing denials and other tool restrictions:
+**OCE work:** automatically publish the baseline and explicitly approved task-tool additions. Keep Gateway administration credentials outside model execution.
 
-```json
-{
-  "tools": {
-    "deny": ["gateway", "plugins", "openclaw", "nodes", "terminal", "secrets"]
-  }
-}
-```
-
-The global policy covers administrator-started model chats as well as ordinary chats. OC already filters tools before issuing worker handles, and invocation requires a valid handle. Keep Gateway administration credentials outside model execution. Native node-host identity and startup protection are separate runtime work, recorded in [remaining work](remaining-work.md). [Global policy stage](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy-pipeline.ts#L109), [worker invocation](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/worker-environments/worker-gateway-tool-runtime.ts#L168).
-
-**OC work:** add shared action-level filtering and managed automation restrictions for both Harnesses, as specified in the P0 work items. Existing whole-tool exclusions remain in place.
+**OC work:** add the required Gateway tool allowlist and action/automation enforcement. Reuse existing filtering machinery while keeping the OCE limit separate from additive tool grants.
 
 ### Dedicated Codex implementation
 
-Codex app-server runs in the Harness workload and owns its native execution threads. The Gateway coordinates them, supplies instructions and Gateway tools, and retains OC routing/session state. Codex combines those supplied tools with its native capabilities. P0 filters the Gateway-supplied tools while retaining native Codex execution and subagents under their existing policies. [Adapter inputs](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/thread-requests.ts#L151).
+Codex combines its native tools with Gateway-supplied dynamic tools. OC's adapter must apply the same Gateway tool allowlist to both the advertised schemas and the executable callback map. Native Codex coding tools and subagents remain governed by their existing policies. [Adapter inputs](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/thread-requests.ts#L151), [callback execution](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/dynamic-tools.ts#L376).
 
-**OCE work:** add `nodes` and `secrets` to the existing dedicated-Codex `codexDynamicToolsExclude` list. The minimum combined list is below; retain any additional configured exclusions:
+**OCE work:** publish the shared baseline and retain existing `codexDynamicToolsExclude` settings that remove Gateway implementations Codex replaces. Exclusion alone is no longer the security policy.
 
-```json
-{
-  "plugins": {
-    "entries": {
-      "codex": {
-        "config": {
-          "codexDynamicToolsExclude": [
-            "ls",
-            "read",
-            "write",
-            "edit",
-            "apply_patch",
-            "exec",
-            "process",
-            "gateway_exec",
-            "gateway_process",
-            "terminal",
-            "portal",
-            "openclaw",
-            "plugins",
-            "gateway",
-            "nodes",
-            "secrets"
-          ]
-        }
-      }
-    }
-  }
-}
-```
-
-The existing exclusions remove Gateway execution implementations that Codex replaces, along with several administrative tools; `nodes` and `secrets` complete the six-tool P0 denylist. Excluded tools are absent from the dynamic-tool dispatch map as well as the advertised list. Native `spawn_agent` and permitted Gateway session tools, including `sessions_spawn`, remain available under existing checks. [Existing OCE list](https://github.com/openclaw/openclaw-enterprise/blob/04514330688378316bd0641b8d5560da56aeff85/apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts#L2373), [dynamic-tool filtering](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/dynamic-tool-profile.ts#L99), [invocation](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/dynamic-tools.ts#L376).
-
-Use this Codex-specific field instead of also inserting the six names into global `tools.deny` for Codex. Ordinary tool restrictions deliberately disable native Codex tools and subagents when OC cannot map them safely; several of these six names trigger that behavior. The dynamic-tool exclusion field limits Gateway tools without triggering that broader restriction. Existing stricter policies must still apply. [Policy classification](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/harness/execution-environment.ts#L479), [Codex policy support](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/harness.ts#L49).
+**OC adapter work:** enforce the required allowlist without treating it as a restriction on native Codex tools. An ordinary global `tools.allow` can disable native coding tools and subagents, so it cannot be used unchanged for this Gateway-only policy. [Native policy classification](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/harness/execution-environment.ts#L479).
 
 **Beyond Gateway P0: protect configuration and runtime inputs.** OCE must enforce an execution boundary that protects its configuration, credentials, policy files and trusted processes across presets, authentication methods, approvals and delegated work. The Gateway/Harness Pod split alone does not protect app-server from model commands running inside the Harness workload. Token authentication protects its administrative connection; local files and processes need execution restrictions as well.
 
@@ -164,21 +126,21 @@ Use this Codex-specific field instead of also inserting the six names into globa
 
 **Codex work:** extend native enforcement only where existing requirements and execution restrictions cannot meet the chosen contract. A client RPC allowlist is not a P0 prerequisite while model execution lacks a usable administrative connection. Native child tasks and trusted Gateway thread start/resume remain available.
 
-## P0 work items
+### P0 work items
 
-OC enforces the model-tool policy; OCE publishes it for both dedicated Harnesses. These are proposed requirements. Keep the six whole-tool exclusions above until selected actions are explicitly reviewed and enabled.
+OC enforces the Gateway tool policy; OCE applies its baseline automatically for both dedicated Harnesses. These are proposed requirements; unlisted tools and actions remain unavailable.
 
-| Owner            | Work item                              | Required result                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ---------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OC               | Generic action filtering               | Support permitted actions per canonical tool. Reject unlisted or missing actions for restricted tools; normalize aliases and preserve whole-tool denials. Tools without declared actions retain whole-tool policy.                                                                                                                                                                                                            |
-| OC               | Invocation enforcement                 | Filter schemas and check final arguments before effects. Cover direct calls, deferred discovery, Code Mode, worker handles and catalog refresh. Return a clear policy-denial error.                                                                                                                                                                                                                                           |
-| OC               | Model caller authority                 | Apply restrictions to administrator-started chats, channel-owner conversations, children and scheduled Agent turns. Keep model automation access caller-scoped; direct human administration retains existing authorization.                                                                                                                                                                                                   |
-| OC               | Automation command-job protection      | Reject command-job creation, conversion, modification, enablement and triggering by managed model turns. Check existing jobs and resulting updates, while preserving ordinary Agent-turn schedules.                                                                                                                                                                                                                           |
-| OC Codex adapter | Shared Gateway-tool enforcement        | Carry filtered schemas and guarded executors through dynamic-tool callbacks and restored tools. Preserve native Codex coding tools and subagents; retain `codexDynamicToolsExclude` for whole-tool exclusions.                                                                                                                                                                                                                |
-| OCE              | Final policy composition               | Publish the six exclusions, action restrictions and automation policy after plugin/Agent configuration is composed. Existing stricter policy remains; plugin grants, session overrides and delegated or scheduled work cannot widen the managed policy. Retain session-only model selection and disabled cron triggers.                                                                                                       |
-| OCE              | Supported runtime and effective policy | Package a supporting OC version and validate the effective policy before admitting managed model work. Missing, invalid or unsupported restrictions must fail visibly.                                                                                                                                                                                                                                                        |
-| OC + OCE         | Policy activation and tightening       | Revalidate retained invocations or drain and rebuild affected turns and tool surfaces before declaring new restrictions active. Cached handles and resumed work must not retain broader authority.                                                                                                                                                                                                                            |
-| OC + OCE         | Qualification                          | Test allowed versus prohibited/missing/unlisted actions on the same retained tool, and ordinary schedule updates versus command-job conversion/update/enable/run. Cover both Harnesses and invocation paths, administrator/owner chats, children, session recipients, scheduled execution and refresh/resume. Denied calls leave state unchanged; ordinary tasks, native Codex tools and direct human administration succeed. |
+| Owner            | Work item                              | Required result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OC               | Required tool/action allowlist         | Require explicit tool identities and action sets. An empty list permits nothing. Reject unlisted tools/actions and missing required actions; normalize aliases and retain stricter policy. No wildcard or automatic plugin-wide grants.                                                                                                                                                                                                                                                           |
+| OC               | Invocation enforcement                 | Filter schemas and check final arguments before effects. Cover direct calls, deferred discovery, Code Mode, worker handles and catalog refresh. Return a clear policy-denial error.                                                                                                                                                                                                                                                                                                               |
+| OC               | Model caller authority                 | Apply restrictions to administrator-started chats, channel-owner conversations, children and scheduled Agent turns. Keep model automation access caller-scoped; direct human administration retains existing authorization.                                                                                                                                                                                                                                                                       |
+| OC               | Automation command-job protection      | Reject command-job creation, conversion, modification, enablement and triggering by model turns in OCE-managed deployments. Check existing jobs and resulting updates, while preserving ordinary Agent-turn schedules.                                                                                                                                                                                                                                                                            |
+| OC Codex adapter | Shared Gateway-tool enforcement        | Carry filtered schemas and guarded executors through dynamic-tool callbacks and restored tools. Preserve native Codex coding tools and subagents; keep existing replacement exclusions alongside the shared allowlist.                                                                                                                                                                                                                                                                            |
+| OCE              | Final policy composition               | Automatically publish the baseline, approved task-tool additions and automation policy. Intersect the final tool surface after plugin/Agent grants are composed. Existing stricter policy remains; plugin grants, session overrides and delegated or scheduled work cannot widen the Gateway tool policy. Retain session-only model selection and disabled cron triggers.                                                                                                                         |
+| OCE              | Supported runtime and effective policy | Package a supporting OC version and validate the effective policy before admitting model work in OCE-managed deployments. Missing, invalid or unsupported restrictions must fail visibly.                                                                                                                                                                                                                                                                                                         |
+| OC + OCE         | Policy activation and tightening       | Revalidate retained invocations or drain and rebuild affected turns and tool surfaces before declaring new restrictions active. Cached handles and resumed work must not retain broader authority.                                                                                                                                                                                                                                                                                                |
+| OC + OCE         | Qualification                          | Verify new tools remain unavailable and plugin grants cannot widen access. Test allowed versus prohibited/missing/unlisted actions on a retained tool, and ordinary schedule updates versus command-job conversion/update/enable/run. Cover both Harnesses and invocation paths, administrator/owner chats, children, session recipients, scheduled execution and refresh/resume. Denied calls leave state unchanged; ordinary tasks, native Codex tools and direct human administration succeed. |
 
 Action filtering alone cannot distinguish `automations(action="update")` on an Agent-turn schedule from the same action on a command job. The job-specific check is required even when the action is permitted.
 
