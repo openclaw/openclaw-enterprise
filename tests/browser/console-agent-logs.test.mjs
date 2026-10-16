@@ -1665,6 +1665,90 @@ test("a refused follow poll clears the shown output, and Back rebuilds the view"
   assert.equal(logReads(), readsAfterRefusal);
 });
 
+// Hold a real, authorized response in transit. The other read then gets a real 403 after
+// read_logs is revoked; neither an old page nor an old download may undo that refusal.
+for (const delayed of ["follow", "download"]) {
+  test(`a log access refusal wins over a delayed successful ${delayed}`, async (t) => {
+    const logs = await logsFixture(t);
+    logs.computeDriver.state.lines = [line(1, "shown before revocation")];
+    const { account, role } = await logsMember(logs.fixture, logs.namespace, `late-${delayed}`, [
+      "read",
+      "read_logs",
+    ]);
+    const { page, requests } = await openRetainedLogs(t, logs, account.credentials);
+    const pane = page.getByRole("log", { name: "Runtime log output" });
+    await pane.getByText("shown before revocation").waitFor();
+    logs.computeDriver.state.lines.push(line(2, "authorized before revocation"));
+
+    const follow = page.getByRole("button", { name: "Follow", exact: true });
+    const download = page.getByRole("button", { name: "Download" });
+    const startFollow = async () => {
+      await follow.click();
+      await page.clock.runFor(2_000);
+    };
+    const url =
+      delayed === "follow" ? "**/runtime/logs?*cursor=*" : "**/runtime/logs?*download=true*";
+    const held = await holdRequests(t, page, url, { once: true, afterServer: true });
+    // Observe the download link click synchronously, without preventing it or relying on
+    // when the browser reports a completed file. Do not count the user's Download button.
+    await page.evaluate(() => {
+      globalThis.document.addEventListener(
+        "click",
+        (event) => {
+          if (
+            event.target instanceof globalThis.HTMLAnchorElement &&
+            event.target.hasAttribute("download")
+          ) {
+            globalThis.document.documentElement.dataset.logDownloaded = "true";
+          }
+        },
+        true,
+      );
+    });
+    if (delayed === "follow") {
+      await startFollow();
+    } else {
+      await download.click();
+    }
+    await held.requested;
+
+    changeGrant(role, "read_logs", false);
+    const refusal = page.waitForResponse(
+      (response) => response.url().includes("/runtime/logs?") && response.status() === 403,
+    );
+    if (delayed === "follow") {
+      await download.click();
+    } else {
+      await startFollow();
+    }
+    await refusal;
+    const denied = page.getByText(/Log text requires Agent read_logs/);
+    await denied.waitFor();
+    const arriving = page.waitForResponse(url);
+    held.release();
+    const ok = await arriving;
+    assert.equal(ok.status(), 200);
+    assert.match(await ok.text(), /authorized before revocation/);
+    await waitForIdleFetches(page);
+
+    assert.equal(
+      await pane.locator(":scope > *").count(),
+      0,
+      "discard rows, including the delayed page",
+    );
+    assert.equal(
+      await page.locator("[data-log-downloaded]").count(),
+      0,
+      "discard the delayed download",
+    );
+    assert.equal(await denied.isVisible(), true);
+    assert.equal(await download.isDisabled(), true);
+    const reads = logRequests(requests, logs.revisionId).length;
+    await page.clock.runFor(4_000);
+    assert.equal(logRequests(requests, logs.revisionId).length, reads, "do not retry the refusal");
+  });
+}
+
 // Back checks runtime status itself, not only through the permission answer: a status read
 // refused since, with that answer unchanged, keeps the cached Pod cards off screen. The answer
 // still allows operate, so the rebuilt view asks once and then remembers the refusal.

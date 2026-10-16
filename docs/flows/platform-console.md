@@ -286,14 +286,12 @@ Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
 **Open vN Logs** selects the failed revision, even from a draft or another version.
-The tab keeps its height while loading; Stop and Delete appear in place. If the view
-is still current, focus moves to Logs and the output scrolls into view; an address or reload
-shows the page already there. Clicking the
-Logs tab instead keeps the strip in place when the output is already visible.
-[Agent runtime logs](agent-runtime-logs.md) covers status, output, and access errors.
-Logs `403`s stay remembered until logout; a status `403` is asked once more when the
-Agent permission answer allows operate again. A refused follow poll clears its rows, and
-Back rebuilds that view. Back shows the page its Logs check read.
+Logs reserves its height; Stop and Delete stay put. Opening Logs focuses and scrolls to
+the output. Direct navigation starts there; clicking the tab leaves visible output in place.
+[Runtime logs](agent-runtime-logs.md) covers status, output, and access errors.
+Logs remembers a `403` until logout; newly granted `operate` allows one more status read.
+A refused log read or download clears the rows. A late success cannot restore them or start
+a download. Back rebuilds that view; otherwise it shows the page it checked.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -371,7 +369,7 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-16 18:30: Forget Logs denials at logout; clear the rows of a refused follow poll; show the page Back's Logs check read. (lows-1016o)
+- 2026-10-16 18:30: Forget log denials at logout, clear refused output even across overlapping reads, and show the page Back checked. (lows-1016o / log-refusal-followup - c352f87)
 - 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
 

@@ -305,6 +305,30 @@ export function renderAgentLogs(
     logError.textContent = text ?? "";
   }
 
+  function showLogReadError(error, source) {
+    if (logsDenied) {
+      return;
+    }
+    showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
+    if (error.status !== 403) {
+      return;
+    }
+    // A refusal from either read clears the displayed output. A page or download already
+    // authorized before that refusal can still arrive; neither may put its output back.
+    logsDenied = true;
+    deniedLogViews.add(deniedKey);
+    outputRefused ||= rows > 0;
+    restartPending = false;
+    cursor = null;
+    pane.replaceChildren();
+    rows = 0;
+    logStatus.textContent = "";
+    applyFilters();
+    setFollow(false);
+    renderPickers();
+    onLogsDenied();
+  }
+
   function renderStrip() {
     if (!description) {
       return;
@@ -553,7 +577,7 @@ export function renderAgentLogs(
     downloadButton.disabled = true;
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
-      if (!current()) {
+      if (!current() || logsDenied) {
         return;
       }
       if (typeof text !== "string") {
@@ -585,7 +609,7 @@ export function renderAgentLogs(
         context.onExpired();
         return;
       }
-      showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
+      showLogReadError(error, source);
     } finally {
       downloadButton.disabled = logsDenied || !readableSelection();
     }
@@ -647,7 +671,7 @@ export function renderAgentLogs(
     let retryAfter = FOLLOW_POLL_MS;
     try {
       const page = await read(`${base}/logs?${query}`);
-      if (!current() || restartPending) {
+      if (!current() || restartPending || logsDenied) {
         return;
       }
       showLogError(null);
@@ -672,7 +696,7 @@ export function renderAgentLogs(
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
       }
     } catch (error) {
-      if (!current() || (restartPending && error.status !== 401)) {
+      if (!current() || (restartPending && ![401, 403].includes(error.status))) {
         return;
       }
       if (error.status === 401) {
@@ -689,24 +713,10 @@ export function renderAgentLogs(
       if (restart) {
         logStatus.textContent = "";
       }
-      showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
-      if (error.status === 403) {
-        // Never re-poll after a denial; the view needs new grants. Output read before it
-        // goes too, with its cursor (finding 1565).
-        outputRefused ||= rows > 0;
-        cursor = null;
-        pane.replaceChildren();
-        rows = 0;
-        logStatus.textContent = "";
-        applyFilters();
-        logsDenied = true;
-        deniedLogViews.add(deniedKey);
-        onLogsDenied();
+      showLogReadError(error, source);
+      if (error.status === 501) {
         setFollow(false);
-        renderPickers();
-      } else if (error.status === 501) {
-        setFollow(false);
-      } else {
+      } else if (!logsDenied) {
         retryAfter = Math.max(FOLLOW_POLL_MS, (error.retryAfterSeconds ?? 10) * 1000);
       }
     } finally {
