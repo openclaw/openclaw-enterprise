@@ -783,6 +783,30 @@ test("Configuration HTTP refuses a model provider models setting that is not a l
   assert.deepEqual(updated.body.data.values, listed);
 });
 
+// A selected Compute with no Configuration rules is not the same as no Compute selected.
+// The shared model-provider rules must protect Configuration create and update in either case.
+test("Configuration save checks model providers before a Compute Driver is selected", async () => {
+  const context = await fixture();
+  const { collection } = context;
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: createOpenClawConfiguration() },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const item = `${collection}/${created.body.data.id}`;
+  const provider = "/models/providers/gateway";
+  for (const [settings, message] of [
+    [{ baseUrl: "ftp://models.example/v1" }, absoluteUrl(`${provider}/baseUrl`)],
+    [
+      { models: {} },
+      setting("models.providers.gateway.models", "must be an array of model entries"),
+    ],
+  ]) {
+    await refusedOnSave(context, at(provider, settings), message, { item, preset: false });
+  }
+  const unchanged = await request(context.app, "GET", item);
+  assert.deepEqual(unchanged.body.data, created.body.data);
+});
+
 const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents } });
 
 // The Gateway roster's text for an Agent ID it rejects.
