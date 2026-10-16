@@ -52,8 +52,10 @@ stop on unexpected changes.
 Follow the [contribution and review policy](CONTRIBUTING.md#prepare-a-pull-request)
 through merge. Core team authors may use their authorized merge bypass for their
 own PRs after the applicable review, CI, and specific holds are satisfied. Ask
-for human feedback on architectural RFCs early; implementation and RFC revision
-can proceed in parallel. Follow the [RFC process](docs/contributing/rfcs.md).
+for human feedback on architectural RFCs early. Driver contract changes require
+[RFC submission before code](#submit-an-rfc-before-changing-a-driver-contract);
+after submission, implementation and RFC revision can proceed in parallel.
+Follow the [RFC process](docs/contributing/rfcs.md).
 New contributors wait for maintainer feedback.
 
 ## Development style
@@ -77,6 +79,19 @@ For example, GitHub App token issuance implemented as a Backend must follow the
 [Backend contract](docs/reference/backends.md) and participate in composition.
 Token minting and revocation alone are insufficient; see
 [PR #136](https://github.com/openclaw/openclaw-enterprise/pull/136).
+
+### Submit an RFC before changing a Driver contract
+
+Changes to a Driver contract require an RFC submitted for human review before
+implementation. This includes adding, removing, or changing interface members,
+configuration contracts, or required behavior, even when signatures stay the same.
+
+If no submitted RFC covers the proposed contract change, stop implementation and
+tell the human to stop and submit an RFC first. Link the
+[RFC process](docs/contributing/rfcs.md) in that message. Reuse or update an
+existing RFC when it owns the decision, and submit the proposed contract change
+for review before writing the code. After submission, implementation may proceed
+alongside RFC review, subject to existing decision and review holds.
 
 ### Require integration tests; reject low-value tests
 
