@@ -2270,7 +2270,7 @@ test("each Codex PAT source gets its own provider profile, stable across replays
     assert.equal(profiles.get(provider.type)?.id, provider.name, id);
     return provider.type;
   });
-  assert.notEqual(profileIds[0], profileIds[1]);
+  // Exactly two profiles: no source shares a profile with the other.
   assert.deepEqual([...profiles.keys()].sort(), [...profileIds].sort());
   // Replaying a source's registration reuses its profile instead of minting another.
   profileWrites.length = 0;
