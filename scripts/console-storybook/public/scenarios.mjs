@@ -660,7 +660,7 @@ export const scenarios = {
       { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
     ],
     description:
-      "Open an Agent from the list. The URL and page change together; details appear when access and the Agent read are confirmed. Read times are simulated.",
+      "Open an Agent from the list. The destination and Back to Agents appear immediately. The Agent’s name, actions, and overview appear together after the access checks. Read times are simulated.",
     steps: [
       "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
       "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",

@@ -345,16 +345,15 @@ test("Back during an Agent refocus check keeps the held page inert until the ret
   await page.locator(activeView).getByRole("link", { name: "Interrupted Agent" }).waitFor();
 });
 
-test("Opening Agent details holds the list and swaps once, as other first visits do", async (t) => {
+test("Opening Agent details acknowledges navigation immediately; other first visits still swap once", async (t) => {
   const { page } = await openList(t, "Single swap", ["Swap Agent"]);
 
-  // Time stays paused: reads that settle within the loading delay show no opening panel
-  // (finding 1516).
+  // Time stays paused: the destination appears immediately and has no minimum loading time.
   await page.getByRole("link", { name: "Swap Agent" }).click();
   await page.locator(activeView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await page.evaluate(() => globalThis.__shownPages.splice(0)), [
     "Agents",
-    "Agents (held)",
+    "Opening Agent",
     "Agent",
   ]);
 
@@ -410,9 +409,9 @@ test("A page held for Agents keeps its own navigation and header until Agents re
   ]);
 });
 
-// Opening an Agent painted "Loading agent details…" at once, then the Agent's heading and toolbar
-// alone, then the page (finding 1516).
-test("Opening an Agent shows its loading panel only past the delay and its heading with the page", async (t) => {
+// A click opens the destination immediately; the next visible state is the usable overview,
+// not its heading and toolbar alone (finding 1516).
+test("Opening an Agent shows the destination at once and reveals the heading with the overview", async (t) => {
   const { namespace, agents, page } = await openList(
     t,
     "Opening frames",
@@ -423,12 +422,12 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
   );
   await page.evaluate(recordShownFrames);
 
-  // The reads settle within the loading delay (time stays paused): the list, then the page.
+  // Time stays paused: neither the acknowledgment nor a fast result waits for a timer.
   await page.getByRole("link", { name: "Fast Agent" }).click();
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await shownFrames(page), [
     "agents | Agents | selector | Agents",
-    "agents | Agents | selector | Agents (held)",
+    "agents | Agent details | selector | Loading agent details…",
     "agents | Fast Agent | selector | Agent",
   ]);
   assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Fast Agent" })), true);
@@ -436,8 +435,8 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
   await page.locator(settledView).getByRole("link", { name: "Slow Agent" }).waitFor();
   await shownFrames(page);
 
-  // The overview's deployment record read is slow: the list, then past the delay the opening
-  // panel, then the whole page. Its heading and toolbar never show alone.
+  // Hold the overview read. The destination must stay usable, including Back to Agents,
+  // for the whole wait; the half-rendered overview must never become visible.
   const record = await holdRequests(
     t,
     page,
@@ -445,11 +444,7 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
   );
   await page.getByRole("link", { name: "Slow Agent" }).click();
   await record.requested;
-  // The Agent's page is rendered, hidden behind the held list.
   await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
-  await page.clock.runFor(249);
-  assert.equal(await page.getByText("Loading agent details…").count(), 0);
-  await page.clock.runFor(1);
   const main = page.getByRole("main");
   await main.getByText("Loading agent details…", { exact: true }).waitFor();
   assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
@@ -457,16 +452,14 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await shownFrames(page), [
     "agents | Agents | selector | Agents",
-    "agents | Agents | selector | Agents (held)",
     "agents | Agent details | selector | Loading agent details…",
     "agents | Slow Agent | selector | Agent",
   ]);
   assert.equal(await isFocused(page.getByRole("heading", { level: 1, name: "Slow Agent" })), true);
 });
 
-// Reopening an Agent whose retained page changed rebuilds it behind the held list; past the delay
-// the opening panel shows, as on a first visit, not an undimmed list with no cue.
-test("Reopening a changed Agent shows its loading panel past the delay", async (t) => {
+// A retained Agent can change between visits. Rebuild it behind the same opening panel.
+test("Reopening a changed Agent acknowledges the click before showing the new overview", async (t) => {
   const { namespace, agent, page } = await openList(t, "Reopen frames", ["Reopened Agent"], {
     deploy: true,
   });
@@ -487,15 +480,11 @@ test("Reopening a changed Agent shows its loading panel past the delay", async (
   await page.getByRole("link", { name: "Reopened Agent" }).click();
   await record.requested;
   await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
-  await page.clock.runFor(249);
-  assert.equal(await page.getByText("Loading agent details…").count(), 0);
-  await page.clock.runFor(1);
   await page.getByRole("main").getByText("Loading agent details…", { exact: true }).waitFor();
   record.release();
   await page.locator(settledView).getByRole("region", SUMMARY).waitFor();
   assert.deepEqual(await shownFrames(page), [
     "agents | Agents | selector | Agents",
-    "agents | Agents | selector | Agents (held)",
     "agents | Agent details | selector | Loading agent details…",
     "agents | Reopened Agent | selector | Agent",
   ]);
@@ -549,8 +538,7 @@ for (const back of ["Browser Back", "Back to Agents"]) {
     await read.requested;
     assert.equal(new URL(page.url()).pathname, `/console/agents/${agent.id}`);
     const main = page.getByRole("main");
-    // The list is held until the loading delay passes, then the opening panel shows.
-    await main.getByRole("heading", { name: "Agent details" }).waitFor();
+    assert.equal(await main.getByRole("heading", { name: "Agent details" }).isVisible(), true);
     assert.equal(await main.getByText("Loading agent details…", { exact: true }).isVisible(), true);
     assert.equal(await main.getByText("Slow Agent", { exact: true }).count(), 0);
 
@@ -713,7 +701,7 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   ]);
   const opened = agents[1];
   await tagView(page, "list");
-  // The first read is held, so the list stays shown, inert (finding 1516).
+  // The first read is held, so the destination shows its loading status.
   const firstRead = await holdRequests(
     t,
     page,
@@ -729,9 +717,9 @@ test("Forward during a return's recheck keeps the returning page for the next Ba
   await page.goBack();
   await page.waitForURL(`**/console/agents?namespace=${namespace.id}`);
   await recheck.requested;
-  // The shown page, the list the opening held, stays inert until Back is admitted.
-  await page.locator(heldView).getByRole("link", { name: "Opened Agent" }).waitFor();
-  assert.equal(await page.locator(`${activeView}[data-nav-tag="list"]`).count(), 0);
+  // Keep the pending destination inert until Back is admitted, not the retained private list.
+  await page.locator(heldView).getByText("Loading agent details…", { exact: true }).waitFor();
+  assert.equal(await page.locator('[data-nav-tag="list"]').count(), 0);
   // Forward abandons the return before it mounts the list.
   await page.goForward();
   await page.waitForURL(`**/console/agents/${opened.id}**`);
@@ -960,8 +948,13 @@ test("A first visit's read that answers after a second navigation paints nothing
   await page.clock.runFor(200);
   admission.release();
   await page.locator(settledView).getByRole("list", NAMESPACES).waitFor();
-  // The list stayed held; the superseded read never painted Agent details.
-  assert.deepEqual(await shownPages(page), ["Agents", "Agents (held)", "Namespaces"]);
+  // The destination acknowledged the click; the superseded read never painted Agent details.
+  assert.deepEqual(await shownPages(page), [
+    "Agents",
+    "Opening Agent",
+    "Opening Agent (held)",
+    "Namespaces",
+  ]);
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.textContent),
     "Namespaces",
@@ -1196,8 +1189,6 @@ async function openPendingAgent(t, page, namespace, agent) {
   await link.focus();
   await link.press("Enter");
   await read.requested;
-  // The list stays held until the loading delay passes (finding 1516).
-  await page.clock.runFor(250);
   const main = page.getByRole("main");
   await main.getByText("Loading agent details…", { exact: true }).waitFor();
   return { read, main };

@@ -124,9 +124,9 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
-from the list keeps the list inert; past 250 ms a pending page shows, without Agent data
-or detail actions. The Agent's heading appears with its overview, never alone.
-**Back to Agents** cancels the read and returns to the list; a second press does
+from the list immediately shows **Loading agent details…** and **Back to Agents**.
+Access checks finish before the Agent’s name, actions, and overview appear together.
+Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A held page keeps its own navigation and header.
 A return to a retained view or a refocus keeps the shown page inert and says
@@ -369,7 +369,7 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-16 11:30: Hold the shown page in its own navigation and header; hold the list while an Agent opens. (ui-jank-code-9)
+- 2026-10-16 11:30: Hold the shown page in its own navigation and header; show an Agent’s heading and overview together when ready. (ui-jank-code-9)
 - 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
 - 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
