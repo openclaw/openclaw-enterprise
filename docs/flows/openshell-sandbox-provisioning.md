@@ -174,9 +174,8 @@ paths from the environment.
 `OpenShellSandboxDriver.configureAgent` selects full access with user review and drops `appServer.networkProxy`.
 `deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access` on thread and turn requests only when the OpenShell
 endpoint selects that profile. If native policy returns a constrained thread,
-the Gateway fails the request before starting a turn. First Agent can read a
-prior PAT revision frozen with `workspace-write`, warning that shell tools fail
-there; `--replace-key` deploys one at the current policy.
+the Gateway fails the request before a turn. First Agent can read a
+prior PAT revision frozen with `workspace-write`, warning that shell tools fail; `--replace-key` deploys one at the current policy.
 OpenShell blocks nested bubblewrap user namespaces; model readiness does not
 prove shell execution.
 

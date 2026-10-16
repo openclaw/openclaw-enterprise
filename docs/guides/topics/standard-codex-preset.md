@@ -20,8 +20,8 @@ Read the enforcement boundary below before deploying.
   Kubernetes, follow the [runtime and seccomp setup](../../testing/kubernetes.md).
   The OpenShell SandboxDriver replaces this policy: it drops
   `appServer.networkProxy` and selects full access, so OpenShell's egress
-  policy, not this allowlist, bounds tools. Do not select a SandboxDriver that
-  replaces this policy unless its policy has independently been verified.
+  policy, not this allowlist, bounds tools. Select no other replacing
+  SandboxDriver unless its policy has independently been verified.
 - A model available to your credential and supporting Codex hosted search, plus
   the model API key and permission to create a Secret in the current Namespace. Follow [Harness authentication](../../reference/harness-execution.md#harness-authentication)
   for credential authorization and delivery.

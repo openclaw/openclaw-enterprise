@@ -1136,6 +1136,10 @@ async function main(options) {
       local.nativeAdmin?.browserOrigin ?? local.origin,
     );
     consoleUrl.searchParams.set("namespace", namespace.id);
+    // Before the result, so the response on stdout cannot bury it.
+    if (priorPatRevisions.has(record.revisionId)) {
+      progress(firstAgentPriorPatPolicyWarning(record.revisionId));
+    }
     process.stdout.write(
       `Agent: ${options.name}\nAgent ID: ${agent.id}\nRevision: ${record.revisionId}\nHarness: ${record.harness}\nModel: ${record.harness === "codex" ? "codex" : "openai"}/${model}\nModel response verified: ${proof.nonce}\nConsole: ${consoleUrl}\n`,
     );
@@ -1144,9 +1148,6 @@ async function main(options) {
     }
     if (proof.response !== undefined) {
       process.stdout.write(`\nAgent response:\n${proof.response}\n`);
-    }
-    if (priorPatRevisions.has(record.revisionId)) {
-      progress(firstAgentPriorPatPolicyWarning(record.revisionId));
     }
   });
 }

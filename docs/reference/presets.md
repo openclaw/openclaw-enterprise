@@ -82,10 +82,6 @@ Codex `config.toml` or a reasoning-effort override.
 | [**Standard OpenClaw**](../../deploy/presets/standard-openclaw.json)    | Embedded; name/model variables and masked API key                               | Standard gateway/tool policy; web search enabled without the Codex override                                                                                | None: native OpenClaw, no Codex plugin                                                                |
 | [`SWE Agent` / `swe-preset.json`](../../deploy/presets/swe-preset.json) | Dedicated; name/model variables; model defaults to `gpt-6-astra`; `codex_pat`   | Standard Codex settings plus Slack and workspace instructions                                                                                              | Same as Standard Codex, except `approvalPolicy: never`                                                |
 
-With the OpenShell SandboxDriver, dedicated Codex revisions get full access with
-`user` review and no Codex network proxy; OpenShell's egress policy is the
-network boundary. See [OpenShell configuration](drivers/openshell-sandbox.md#configuration).
-
 ### Plain console default
 
 **Start with default Preset** reads the authorized `default-codex` copy in the
@@ -118,9 +114,9 @@ OpenClaw instead routes `openai/<model>` through `agentRuntime.id: openclaw` and
 `https://api.openai.com/v1` with `openai-responses`.
 
 The standard Codex network proxy enables the `workspace` base profile in
-`limited` mode. Its nine allowed build domains and disabled proxy/socket escape
-options are listed in the [standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
-Cached search uses `tools.web.search.openaiCodex.mode: cached`.
+`limited` mode. Its build domains and disabled escape options are listed in the
+[standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
+The OpenShell SandboxDriver drops it ([details](drivers/openshell-sandbox.md#configuration)).
 
 Omitted fields inherit the selected native runtime's defaults; omission does
 not establish a particular reviewer, network policy, or tool permission. Compute

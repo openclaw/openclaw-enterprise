@@ -633,13 +633,13 @@ test("OpenShell drops the Codex network proxy so it cannot replace full access",
     domains: { "registry.npmjs.org": "allow" },
   };
   for (const proxy of [networkProxy, { enabled: false }, { readOnlyPaths: ["/app"] }]) {
-    const appServer = {
+    const appServer = Object.freeze({
       mode: "guardian",
       approvalPolicy: "on-request",
       sandbox: "workspace-write",
       approvalsReviewer: "user",
       networkProxy: proxy,
-    };
+    });
     const configuration = {
       plugins: { allow: ["codex"], entries: { codex: { enabled: true, config: { appServer } } } },
     };
@@ -650,7 +650,6 @@ test("OpenShell drops the Codex network proxy so it cannot replace full access",
       sandbox: "danger-full-access",
       approvalsReviewer: "user",
     });
-    assert.equal(appServer.networkProxy, proxy, "the saved Configuration is not rewritten");
     // Status reads rerun the hook on stored work, so dropping must be idempotent.
     assert.deepEqual(driver.configureAgent(configured, harness), configured);
   }
