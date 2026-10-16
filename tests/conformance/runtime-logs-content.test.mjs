@@ -1990,16 +1990,20 @@ const gapCount = (page, reason) =>
 const range = (count) => Array.from({ length: count }, (_, index) => index);
 // The `row=<n>` index of each delivered line, from JSON messages or `[info]` text lines.
 const rowIds = (page) =>
-  lineRecords(page).map(({ message }) => Number(/^(?:\[info\] )?row=(\d+);/.exec(message)[1]));
+  lineRecords(page).map(({ message }) => {
+    const match = /^(?:\[info\] )?row=(\d+);/.exec(message);
+    assert.ok(match, `not a row line: ${message.slice(0, 80)}`);
+    return Number(match[1]);
+  });
 // Raw bytes plus 32 bytes of timestamp per line: what the kubelet's 1 MiB read covers.
 const rawBytes = (lines) =>
   lines.reduce((bytes, line) => bytes + Buffer.byteLength(line.raw) + 32, 0);
 const iso = (milliseconds) => new Date(milliseconds).toISOString();
 
 // One page of the route's response, within the 512 KiB response bound.
-async function boundedPage(route, query) {
+async function boundedPage(route, query, message) {
   const response = await route.read(query);
-  assert.equal(response.status, 200, response.text.slice(0, 200));
+  assert.equal(response.status, 200, message ?? response.text.slice(0, 200));
   assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
   return response;
 }
@@ -2010,11 +2014,11 @@ async function cutPage(route, query) {
   return response;
 }
 // Follows a view until a page is not truncated (at most 10 pages).
-async function drain(route, { tailLines, cursor, onPage = () => {} }) {
+async function drain(route, { tailLines, cursor, message, onPage = () => {} }) {
   const lines = [];
   let pages = 0;
   while (pages < 10) {
-    const response = await boundedPage(route, { tailLines, cursor });
+    const response = await boundedPage(route, { tailLines, cursor }, message);
     onPage(response, pages);
     lines.push(...lineRecords(response.data));
     cursor = response.data.cursor;
@@ -2495,8 +2499,11 @@ test("container expanded byte-windows preserve valid conservative PEM cursors", 
     if (changed === "empty") {
       route.state.lines = [];
     }
-    // Every page is a 200: recovery must not poison the next signed cursor.
-    const { lines, cursor } = await drain(route, { tailLines: 160, cursor: first.data.cursor });
+    const { lines, cursor } = await drain(route, {
+      tailLines: 160,
+      cursor: first.data.cursor,
+      message: "recovery must not poison the next signed cursor",
+    });
     const seen = lines.map(({ message }) => message.split(";", 1)[0]);
     if (changed === "expanded") {
       assert.deepEqual(
@@ -2597,6 +2604,8 @@ test("container checkpoint windows remain stable when relative seconds round out
     ];
     const first = await route.read({ tailLines: 61, sinceSeconds: 10 });
     assert.equal(first.data.truncated, true);
+    // A fraction of a second passes, so the resumed relative window rounds outward.
+    t.mock.timers.tick(400);
     const rest = await route.read({ tailLines: 61, cursor: first.data.cursor });
     assert.equal(rest.status, 200);
     assert.equal(rest.data.truncated, false);
