@@ -27,7 +27,88 @@ Codex keeps its native coding, goal and collaboration tools. The adapter omits d
 
 Other retained tools must also record any declared action set explicitly before shipping; a newly added action is not approved by retaining its tool. [Session schema](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tools/sessions-tool-schema.ts#L12), [subagent schema](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tools/subagents-tool.ts#L58), [automation schema](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tools/cron-tool-schema.ts#L24).
 
-The required allowlist needs distinct semantics from ordinary `tools.allow`: currently an empty ordinary list allows all tools, plugin/group selectors expand with the catalog, and OCE merges plugin grants additively. Reuse OC's filtering/intersection machinery with a required Gateway policy input that permits nothing when empty, rejects invalid policy and cannot be widened by these grants. The configuration field name remains an implementation detail; the existing JSON settings alone do not provide this contract. [Tool matcher](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy-match.ts#L32), [plugin-group expansion](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy.ts#L164).
+The required allowlist needs distinct semantics from ordinary `tools.allow`: currently an empty ordinary list allows all tools, plugin/group selectors expand with the catalog, and OCE merges plugin grants additively. Reuse OC's filtering/intersection machinery with a required Gateway policy input that permits nothing when empty, rejects invalid policy and cannot be widened by these grants. The examples below use the illustrative name `tools.gatewayPolicy`; its final schema remains to be implemented. The existing JSON settings alone do not provide this contract. [Tool matcher](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy-match.ts#L32), [plugin-group expansion](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/agents/tool-policy.ts#L164).
+
+## Example OCE-generated Gateway configurations
+
+OCE renders the deployment's policy into Gateway configuration for either Harness. These fragments illustrate the proposed interface; they are not complete deployment configurations.
+
+**New schema, for review:** `tools.gatewayPolicy` and its `allow`, `actions` and `automations` fields are proposed names, unsupported in the inspected OC version. The `agents` and `cron` settings shown below already exist. OCE must package supporting OC enforcement before publishing the new policy.
+
+### Shared policy: OC and Codex
+
+This focused example allows session work, ordinary scheduling, worker-local coding and the Diffs task tool. It is narrower than the initial inventory above: only the named tools and actions are allowed. Diffs must separately be selected and loaded through the deployment's plugin configuration.
+
+```json
+{
+  "tools": {
+    "gatewayPolicy": {
+      "allow": [
+        "sessions_list",
+        "sessions_history",
+        "sessions_send",
+        "sessions_spawn",
+        "session_status",
+        "agents_list",
+        "sessions",
+        "automations",
+        "ls",
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+        "exec",
+        "diffs"
+      ],
+      "actions": {
+        "sessions": ["patch", "stop"],
+        "automations": [
+          "status",
+          "list",
+          "get",
+          "add",
+          "update",
+          "remove",
+          "run",
+          "runs",
+          "next_check",
+          "wake"
+        ]
+      },
+      "automations": { "scope": "caller", "allowCommandJobs": false }
+    }
+  },
+  "agents": { "defaults": { "modelSelectionScope": "session" } },
+  "cron": { "triggers": { "enabled": false } }
+}
+```
+
+`allow` is the required ceiling after ordinary tool/plugin grants; an empty list permits nothing. `actions` bounds the two action-bearing tools in this example. Existing caller, target, permission and execution-location checks still apply.
+
+The proposed `automations.scope: "caller"` withholds administrative automation grants from model turns, including administrator-started chats. `allowCommandJobs: false` rejects command-job creation, conversion, modification, enablement and triggering; OC must check the existing job and the result of an update. The existing `cron.triggers.enabled: false` separately disables scripts, streams and condition triggers.
+
+### Dedicated OC
+
+Use the shared fragment above. The allowed `ls`, `read`, `write`, `edit`, `apply_patch` and `exec` tools must execute only in the assigned worker; allowing their names does not authorize Gateway-local execution. Other task tools require explicit approval before OCE adds them to the final policy.
+
+### Dedicated Codex
+
+Use the same proposed `tools.gatewayPolicy.allow` and `actions` configuration shown above for OC. OC's Codex adapter must enforce this allowlist before advertising Gateway tools and registering executable callbacks. Unlisted tools and actions remain unavailable.
+
+Codex's native coding tools and subagents retain their existing runtime policies. The adapter must keep the Gateway policy separate from ordinary `tools.allow`, which can also restrict native Codex capabilities.
+
+Existing adapter filters can further remove duplicate or unwanted Gateway implementations. Their exclusion settings are recorded in the implementation note below; the shared allowlist defines the P0 boundary.
+
+Merge the shared fragment into OCE's generated configuration while preserving required deployment settings, plugin entries and stricter existing policy. It neither grants human permissions nor changes the separate Harness-local protection work.
+
+## Codex requirements coverage
+
+| Configuration to control                            | Available Codex support and remaining limit                                                                                                                                                                                  |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Approval policy, reviewer and execution permissions | Requirements constrain policies/reviewers and provide managed permission profiles. Sandbox-family restrictions alone do not pin every writable root or network option; qualify the effective profile and all override paths. |
+| Provider routing                                    | Requirements can pin the provider ID and its definition. OCE must supply both where it owns that routing.                                                                                                                    |
+| Native tools, MCP, plugins and hooks                | Feature, MCP identity and managed-hook controls exist. They are not a universal capability/configuration lock. OCE must protect executable inputs and approve native capability sources separately from Gateway tools.       |
+| Model, effort and service tier                      | New-thread settings provide defaults, not a general enforced allowlist. Exact locks remain optional product decisions; a required unsupported restriction would need Codex work.                                             |
 
 ## Remaining runtime and integration work
 
@@ -42,6 +123,41 @@ The worker also has a small local configuration containing model/provider defini
 **Gateway policy integration and tests.** Have OCE automatically publish the required allowlist for every dedicated deployment. Enforce it as a final intersection after ordinary plugin/Agent grants, using OC filtering and Codex dynamic-tool paths. Test new and unlisted tools/actions, empty policy, plugin additions and stricter preexisting restrictions. [OCE preparation](https://github.com/openclaw/openclaw-enterprise/blob/04514330688378316bd0641b8d5560da56aeff85/apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts#L2691).
 
 Verify that unlisted tools and actions are absent from discovery and cannot be invoked through direct calls, deferred discovery, Code Mode or catalog refresh. The six administrative tools named in the RFC must remain unavailable. Cover administrator-started chats, children, session recipients and scheduled jobs. Confirm ordinary tasks, explicitly approved plugin task tools, native Codex coding/subagents and direct human administration still work. Test session-only model changes and stream-trigger denial separately. Drain or replace affected running turns before claiming immediate policy revocation. [Reload behavior](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/src/gateway/config-reload-plan.ts#L281).
+
+**Codex adapter compatibility (existing behavior).** OCE currently supplies `codexDynamicToolsExclude` to remove Gateway implementations that Codex replaces, along with existing administrative-tool exclusions. Retain these settings and any additional configured exclusions when applying the proposed shared allowlist.
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "codex": {
+        "config": {
+          "codexDynamicToolsExclude": [
+            "ls",
+            "read",
+            "write",
+            "edit",
+            "apply_patch",
+            "exec",
+            "process",
+            "gateway_exec",
+            "gateway_process",
+            "terminal",
+            "portal",
+            "openclaw",
+            "plugins",
+            "gateway"
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+These exclusions only narrow the tools admitted by `tools.gatewayPolicy.allow`. They cannot grant an unlisted tool or action, and do not replace the required allowlist. For example, `nodes` and `secrets` remain unavailable when absent from the allowlist, without adding either name here.
+
+[Existing OCE Codex exclusions](https://github.com/openclaw/openclaw-enterprise/blob/04514330688378316bd0641b8d5560da56aeff85/apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts#L2373), [Codex dynamic-tool filtering](https://github.com/openclaw/openclaw/blob/90d30a1178a79dddd92e6190b66b95d89dfb3ca8/extensions/codex/src/app-server/dynamic-tool-profile.ts#L99).
 
 **Maintain the reviewed tool inventory.** Review new or changed Gateway/plugin tools before adding their concrete identities and actions to the allowlist. Loading a plugin or updating a tool catalog must not authorize additions automatically. Optional Gateway capabilities require explicit approval; Codex-native capabilities remain governed by separate Harness policy. Agent document contents remain out of scope.
 
@@ -59,4 +175,4 @@ Run qualification with the actual image, permissions and mounts. The native repl
 
 ## Draft provenance
 
-The working draft was imported from [PR #2367](https://github.com/openclaw/openclaw-enterprise/pull/2367), [source snapshot `e2190b7`](https://github.com/openclaw/openclaw-enterprise/blob/e2190b7a10a1782cb7488309af3cfcbf5e4a54c9/specs/rfcs/0020-managed-runtime-mode.md), on 2026-10-14 and synchronized back on 2026-10-15. It was renumbered from RFC-0020 to RFC-0021 because RFC-0020 was assigned on the base branch. Source findings and runtime evidence retain their investigation-snapshot dates.
+The working draft was imported from [PR #2367](https://github.com/openclaw/openclaw-enterprise/pull/2367), [source snapshot `e2190b7`](https://github.com/openclaw/openclaw-enterprise/blob/e2190b7a10a1782cb7488309af3cfcbf5e4a54c9/specs/rfcs/0020-managed-runtime-mode.md), on 2026-10-14 and last synchronized back on 2026-10-16. It was renumbered from RFC-0020 to RFC-0021 because RFC-0020 was assigned on the base branch. Source findings and runtime evidence retain their investigation-snapshot dates.
