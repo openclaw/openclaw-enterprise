@@ -228,14 +228,16 @@ async function disableProvider(state, provider) {
     return;
   }
   const config = { ...current, enabled: false };
-  await save(state, withProvider(state.values, provider.id, config));
+  await save(state, withProvider(state.values, provider.id, config), null, null, null, provider);
 }
 
-async function save(state, values, dialog, targetError, secretBindingUpdate) {
+async function save(state, values, dialog, targetError, secretBindingUpdate, provider) {
   if (state.pending || state.outcomeUnknown) {
     return;
   }
   state.pending = true;
+  // A later save's result replaces the previous save's notice.
+  state.savedNotice = "";
   state.onStateChange({ pending: true, outcomeUnknown: false });
   const controlsRoot = dialog ?? state.section;
   const errorNode = targetError ?? state.error;
@@ -271,7 +273,14 @@ async function save(state, values, dialog, targetError, secretBindingUpdate) {
   } finally {
     state.pending = false;
     state.onStateChange({ pending: false, outcomeUnknown: state.outcomeUnknown });
-    if (succeeded || !dialog || state.outcomeUnknown) {
+    if (succeeded && state.onSaved) {
+      // The owner rebuilds the section from the saved state and focuses this provider's
+      // action; until then the section shows the state before the save, so keep it disabled.
+      for (const node of state.section.querySelectorAll("button, input, select")) {
+        node.disabled = true;
+      }
+      void state.onSaved(provider ? `Edit ${provider.name}` : null);
+    } else if (succeeded || !dialog || state.outcomeUnknown) {
       state.rerender();
     } else {
       for (const { node, disabled } of controls) {
@@ -417,7 +426,14 @@ function openDrawer(section, state, provider, retained) {
     }
     const nextValues = provider.updatedValues(state.values, body);
     const secretBindingUpdate = provider.updatedSecretBindings?.(drawerContext);
-    void save(state, withPlugin(nextValues, provider), dialog, feedback, secretBindingUpdate);
+    void save(
+      state,
+      withPlugin(nextValues, provider),
+      dialog,
+      feedback,
+      secretBindingUpdate,
+      provider,
+    );
   });
   dialog.addEventListener("cancel", (event) => {
     if (state.pending) {
@@ -442,6 +458,8 @@ export function renderChannelSection(
     onSave,
     onStateChange = () => {},
     onReload,
+    onSaved,
+    savedNotice = "",
     copy = {},
     drawerContext = {},
   },
@@ -455,6 +473,8 @@ export function renderChannelSection(
     onSave,
     onStateChange,
     onReload,
+    onSaved,
+    savedNotice,
     section,
     copy,
     drawerContext,
@@ -483,12 +503,22 @@ export function renderChannelSection(
           ),
         ),
       ),
+      ...(state.savedNotice
+        ? [element("p", { className: "hint", role: "status" }, state.savedNotice)]
+        : []),
       state.error,
       ...(state.outcomeUnknown && state.onReload
-        ? [element("div", { className: "form-actions" }, button("Reload draft", state.onReload))]
+        ? [element("div", { className: "form-actions" }, reloadButton())]
         : []),
       ...providers.map((provider) => renderCard(section, state, provider)),
     );
+  }
+  function reloadButton() {
+    const reload = button("Reload draft", () => {
+      reload.disabled = true;
+      void state.onReload();
+    });
+    return reload;
   }
   render();
   const retained = drawerContext.drafts?.get("channels");

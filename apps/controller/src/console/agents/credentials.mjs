@@ -498,7 +498,11 @@ export function createChannelSecretsPanel({
           ? element(
               "div",
               { className: "form-actions credential-actions" },
-              button("Reload draft", onReload),
+              button("Reload draft", (event) => {
+                // The page rebuilds this section from the reread draft.
+                event.currentTarget.disabled = true;
+                void onReload();
+              }),
             )
           : null,
         renderUnavailableReason(),

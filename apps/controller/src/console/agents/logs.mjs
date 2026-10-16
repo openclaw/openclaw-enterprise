@@ -112,11 +112,18 @@ export function renderAgentLogs(context, { agent, revisionId }) {
   }
   const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
-  const stripStatus = element(
-    "p",
-    { className: "muted", role: "status" },
-    "Loading runtime status…",
-  );
+  // One line: a status region for loading and errors, and the observed time beside it. The
+  // time changes on every 10 s poll, so it sits outside the status region, and aria-live=off
+  // keeps the page view's live region from announcing it; only loading and errors are
+  // announced (finding 1425). The status region stays in the tree, empty when there is
+  // nothing to say, so a later error is announced.
+  const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
+  const stripObserved = element("span", { "aria-live": "off" });
+  const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  function showStripStatus(text) {
+    setText(stripObserved, "");
+    stripStatus.textContent = text;
+  }
   const sourceSelect = element("select", { id: "runtime-log-source", disabled: true });
   const podSelect = element("select", { id: "runtime-log-pod", hidden: true });
   const podLabel = element("label", { for: "runtime-log-pod", hidden: true }, "Pod / container");
@@ -260,7 +267,8 @@ export function renderAgentLogs(context, { agent, revisionId }) {
     if (!description) {
       return;
     }
-    setText(stripStatus, `Observed ${displayDate(description.observedAt)}`);
+    setText(stripStatus, "");
+    setText(stripObserved, `Observed ${displayDate(description.observedAt)}`);
     // The strip is a live region and status polls every 10 s, so rebuild it only on a change.
     replaceChildrenIfChanged(
       strip,
@@ -372,7 +380,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
       return;
     }
     if (deniedStatusViews.has(statusKey)) {
-      stripStatus.textContent = runtimeErrorText({ status: 403 }, "status");
+      showStripStatus(runtimeErrorText({ status: 403 }, "status"));
       offerLogsWithoutStatus();
       return;
     }
@@ -396,7 +404,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
           context.onExpired();
           return;
         }
-        stripStatus.textContent = withRequestId(runtimeErrorText(error, "status"), error);
+        showStripStatus(withRequestId(runtimeErrorText(error, "status"), error));
         if (error.status === 403) {
           offerLogsWithoutStatus();
         }
@@ -675,7 +683,7 @@ export function renderAgentLogs(context, { agent, revisionId }) {
 
   section.append(
     element("h3", {}, "Runtime"),
-    stripStatus,
+    stripLine,
     strip,
     element(
       "div",

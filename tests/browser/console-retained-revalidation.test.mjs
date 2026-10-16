@@ -693,6 +693,91 @@ for (const c of slowRecheckCases) {
   });
 }
 
+// A held page stayed inert with no busy cue: at 400 ms latency a return sat 1.7-2.2 s with
+// clicks doing nothing and nothing saying why (finding 1447). Past 300 ms a navigation's held
+// page now dims, with a progress cursor, and nothing moves; a fast hold never shows the cue.
+// A refocus recheck keeps the page's look and says Still checking after 1 s instead.
+for (const c of [
+  {
+    name: "A held return",
+    cue: true,
+    async act(page, t) {
+      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+      await page
+        .locator(settledView)
+        .getByRole("list", { name: "Namespaces", exact: true })
+        .waitFor();
+      const read = await holdRead(t, page, "**/api/auth/session", { once: true });
+      await page.goBack();
+      return read;
+    },
+  },
+  {
+    name: "A held first visit",
+    cue: true,
+    async act(page, t) {
+      const read = await holdRead(t, page, "**/namespaces", { once: true });
+      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+      return read;
+    },
+  },
+  {
+    name: "A held refocus recheck",
+    cue: false,
+    async act(page, t) {
+      const read = await holdRead(t, page, "**/api/auth/session", { once: true });
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+      return read;
+    },
+  },
+]) {
+  test(`${c.name} ${c.cue ? "shows a delayed busy cue" : "keeps its look"} without moving`, async (t) => {
+    const { page } = await openPausedList(t, c.name, ["Busy Agent"]);
+    const read = await c.act(page, t);
+    await read.requested;
+    const held = page.locator(heldView);
+    await held.waitFor();
+    const look = () =>
+      held.evaluate((view) => {
+        const style = view.ownerDocument.defaultView.getComputedStyle(view);
+        const main = view.ownerDocument.defaultView.getComputedStyle(view.parentElement);
+        const box = view.getBoundingClientRect();
+        return {
+          opacity: Number(style.opacity),
+          cursor: main.cursor,
+          delay: view.getAnimations()[0]?.effect.getTiming().delay ?? null,
+          box: [box.x, box.y, box.width, box.height],
+        };
+      });
+    const first = await look();
+    // The cue waits 300 ms, so a fast hold never flashes it. CSS animations run on real time,
+    // not the paused page clock.
+    assert.equal(first.delay, c.cue ? 300 : null);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const later = await look();
+    if (c.cue) {
+      assert.ok(later.opacity < 0.7, `the held page dims: ${later.opacity}`);
+      assert.equal(later.cursor, "progress");
+    } else {
+      assert.equal(later.opacity, 1);
+      assert.equal(later.cursor, "auto");
+    }
+    assert.deepEqual(later.box, first.box);
+    read.release();
+    await page.locator(settledView).waitFor();
+    assert.deepEqual(
+      await page.locator(settledView).evaluate((view) => {
+        const window = view.ownerDocument.defaultView;
+        return [
+          window.getComputedStyle(view).opacity,
+          window.getComputedStyle(view.parentElement).cursor,
+        ];
+      }),
+      ["1", "auto"],
+    );
+  });
+}
+
 test("Back after an abandoned Refresh rebuilds the page instead of restoring it", async (t) => {
   const { namespace, page } = await openPausedList(t, "Abandoned Refresh", ["Refreshed Agent"]);
   await tagView(page, "before-refresh");

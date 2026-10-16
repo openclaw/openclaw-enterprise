@@ -14,40 +14,13 @@ import {
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import { openAdvancedSettings } from "./console-agents-test-support.mjs";
+import {
+  focusedDescription,
+  focusedText,
+  openAdvancedSettings,
+  watchForReload,
+} from "./console-agents-test-support.mjs";
 
-// Marks the rendered Agent page and records any loading state it shows again, so a test can
-// tell an in-place update from a page reload.
-async function watchForReload(page) {
-  await page.evaluate(() => {
-    const doc = globalThis.document;
-    doc.querySelector(".agent-current-summary").dataset.saveMarker = "kept";
-    globalThis.reloadedText = [];
-    new globalThis.MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
-            globalThis.reloadedText.push(node.textContent);
-          }
-        }
-      }
-    }).observe(doc.body, { childList: true, subtree: true });
-  });
-  return () =>
-    page.evaluate(() => ({
-      marker: globalThis.document.querySelector(".agent-current-summary")?.dataset.saveMarker,
-      reloadedText: globalThis.reloadedText,
-    }));
-}
-
-const focusedText = (page) =>
-  page.evaluate(() => globalThis.document.activeElement?.textContent ?? null);
-// The saved status a focused control is described by, so a screen reader names it.
-const focusedDescription = (page) =>
-  page.evaluate(() => {
-    const id = globalThis.document.activeElement?.getAttribute("aria-describedby");
-    return id ? globalThis.document.getElementById(id)?.textContent : null;
-  });
 const scrollY = (page) => page.evaluate(() => globalThis.scrollY);
 const getReads = (requests) =>
   requests.filter((request) => request.method === "GET").map((request) => request.path);

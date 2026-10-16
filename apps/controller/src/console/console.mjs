@@ -583,7 +583,7 @@ function showStillChecking() {
 // retained route's admission and reads run. A retained view is then never painted before it revalidates
 // (finding 1412), and returns do not flash a loading state (finding 1415). Returns null when
 // no page is shown.
-function holdShownView(current) {
+function holdShownView(current, { busyCue = true } = {}) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
     return null;
@@ -601,6 +601,9 @@ function holdShownView(current) {
   }
   view.inert = true;
   view.setAttribute("aria-busy", "true");
+  // Navigation dims the held page after a moment (finding 1447); a refocus recheck keeps its
+  // look. The class lives on this load's shell, so the next shell drops it.
+  app.querySelector(".content").classList.toggle("holding", busyCue);
   shell.view.replaceWith(view);
   shell.view = view;
   if (shell.diagnostics && diagnostics) {
@@ -939,6 +942,8 @@ async function loadPage({
   if (loggingOut) {
     return;
   }
+  // A refocus or visibility recheck of the shown page, as opposed to a navigation.
+  const resumingView = reuseView && !fromNavigation;
   const current = route();
   const nativeIntent = takeNativeFragment(current);
   if (fromNavigation && nativeIntent === null) {
@@ -983,7 +988,8 @@ async function loadPage({
   let retained = retainedView !== null;
   // An Agent link opens its destination immediately. Other visits keep the shown page inert
   // until a retained view revalidates or admission and the destination's first read settle.
-  let shell = knownPrivateState && !openingAgent ? holdShownView(current) : null;
+  let shell =
+    knownPrivateState && !openingAgent ? holdShownView(current, { busyCue: !resumingView }) : null;
   let held = shell !== null;
   let agentReturnHref = null;
   let pendingAgentHeading = null;

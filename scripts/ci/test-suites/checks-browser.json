@@ -15,7 +15,8 @@
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs",
     "tests/browser/console-startup.test.mjs",
-    "tests/browser/console-agent-logs-layout.test.mjs"
+    "tests/browser/console-agent-logs-layout.test.mjs",
+    "tests/browser/console-agent-quiet-updates.test.mjs"
   ],
   "files": [
     {
@@ -53,6 +54,9 @@
     },
     {
       "path": "tests/browser/console-agent-logs-layout.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-quiet-updates.test.mjs"
     }
   ]
 }

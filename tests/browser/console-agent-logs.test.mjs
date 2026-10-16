@@ -392,7 +392,8 @@ test("startup warnings on a Ready Pod without restarts read as history", async (
 
 // Runtime status is reread every 10 s and usually comes back unchanged. Rebuilding the
 // aria-live status strip, the Source and Pod pickers and the retention text with the same
-// content made screen readers announce them again on every poll (finding 1420).
+// content made screen readers announce them again on every poll (finding 1420), and the
+// "Observed <time>" status line changed on every poll (finding 1425).
 test("an unchanged runtime status poll leaves the status strip and pickers untouched", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "steady output")];
@@ -416,23 +417,30 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
         globalThis.statusRewrites.push(`${record.type} ${node.id || node.className}`);
       }
     });
-    for (const selector of selectors) {
-      observer.observe(globalThis.document.querySelector(selector), {
+    const announcing = [...globalThis.document.querySelectorAll(".agent-logs [role='status']")];
+    for (const node of [
+      ...selectors.map((selector) => globalThis.document.querySelector(selector)),
+      ...announcing,
+    ]) {
+      observer.observe(node, {
         childList: true,
         subtree: true,
         characterData: true,
       });
     }
   }, observed);
-  const statusLine = page.locator(".agent-logs p[role='status']").first();
+  // The observation time sits outside every status region, with aria-live=off, because it
+  // changes on every poll and a status region would announce each one (finding 1425).
+  const observedLine = page.locator(".agent-logs [aria-live='off']");
+  assert.match(await observedLine.textContent(), /^Observed /);
 
   // Only the observation time changes; it shows outside the observed regions.
   computeDriver.state.observedAt = "2026-09-30T12:00:10.000Z";
-  const before = await statusLine.textContent();
+  const before = await observedLine.textContent();
   await page.clock.runFor(10_000);
   await page.waitForFunction(
     (text) =>
-      globalThis.document.querySelector(".agent-logs p[role='status']").textContent !== text,
+      globalThis.document.querySelector(".agent-logs [aria-live='off']").textContent !== text,
     before,
   );
   assert.deepEqual(await page.evaluate(() => globalThis.statusRewrites), []);
