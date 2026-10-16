@@ -22,6 +22,8 @@ export function supervisorPeerLabels(revisionId) {
 
 export function providerReadinessFixture({
   provisionHarness,
+  sandboxDriver,
+  expectedPodSelector,
   harnessEndpoint,
   providerNetwork = {
     namespace: "openshell-system",
@@ -45,7 +47,7 @@ export function providerReadinessFixture({
         audience: "openclaw-controller",
         expirationSeconds: 900,
       },
-      ...(harnessEndpoint === undefined
+      ...(harnessEndpoint === undefined && sandboxDriver?.harnessEndpoint === undefined
         ? {}
         : {
             network: {
@@ -60,7 +62,7 @@ export function providerReadinessFixture({
           return true;
         },
       },
-      sandboxDriver: {
+      sandboxDriver: sandboxDriver ?? {
         id: "sandbox-provider",
         implementation: "openshell",
         async provisionHarness(context) {
@@ -75,7 +77,7 @@ export function providerReadinessFixture({
     },
   );
   const revision = routedRevision(driver, {
-    sandboxDriverId: "sandbox-provider",
+    sandboxDriverId: sandboxDriver?.id ?? "sandbox-provider",
     configuration: admitLoggingConfiguration(
       {
         agents: { defaults: { model: "codex/gpt-5" } },
@@ -172,7 +174,7 @@ export function providerReadinessFixture({
       assert.equal(request.namespace, namespace);
       assert.deepEqual(
         Object.fromEntries(request.labelSelector.split(",").map((entry) => entry.split("="))),
-        {
+        expectedPodSelector ?? {
           "openclaw.dev/agent": revision.agentId,
           "openclaw.dev/revision": revision.id,
           "openclaw.dev/workload-role": "agent",

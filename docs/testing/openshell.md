@@ -156,3 +156,19 @@ directory when finished.
   environments, or complete process arguments.
 - An inactive direct Agent Service is expected for the provider-owned endpoint;
   inspect the OpenShell-advertised route instead.
+
+## Conditional workload tags
+
+The [conditional Sandbox example](../../examples/agent-workload-tags.ts) has two
+conformance paths:
+
+- [`agent-workload-tags.test.mjs`](../../tests/conformance/agent-workload-tags.test.mjs)
+  uses real OCC admission and direct OpenShell provider-contract calls to
+  inspect distinct policies through fixture transport.
+- [`kubernetes-compute.test.mjs`](../../tests/conformance/kubernetes-compute.test.mjs)
+  exercises tag propagation through Kubernetes Compute dispatch and fail-closed
+  rejection of unsupported projected Agent identity requirements.
+
+These tests do not establish a successful live Compute-to-OpenShell deployment. That proof requires the existing integration's credential bridge
+and an explicitly selected disposable cluster, following the
+[OpenShell Sandbox setup](#openshell-sandbox).

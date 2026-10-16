@@ -1520,6 +1520,16 @@ async function assertUpgradedAuthentication(db) {
   );
 }
 
+async function assertRevisionStillImmutable(db) {
+  // The application lacks update permission; even an owner update hits the immutability trigger.
+  const update = "UPDATE occ.agent_revisions SET admitted_spec = admitted_spec";
+  await assert.rejects(db.app.query(update), { code: "42501" });
+  await assert.rejects(db.migrator.query(update), {
+    code: "55000",
+    message: "agent_revisions is immutable",
+  });
+}
+
 async function canonicalData(db) {
   const result = { presets: [] };
   const hasPresets =
@@ -1636,6 +1646,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preWorkloadTags"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1648,9 +1659,20 @@ test(
         });
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
         await assertCompletedHistory(db, receipts);
-        assert.deepEqual(await canonicalData(db), before);
+        // Workload tags did not exist at any of these prefixes. Add only the exact
+        // empty maps to the expected data; compare every other stored field unchanged.
+        assert.equal(before.agents.length, 1);
+        assert.equal(before.agent_revisions.length, 1);
+        assert.deepEqual(await canonicalData(db), {
+          ...before,
+          agents: before.agents.map(({ value }) => ({ value: { ...value, tags: {} } })),
+          agent_revisions: before.agent_revisions.map(({ value }) => ({
+            value: { ...value, admitted_spec: { ...value.admitted_spec, tags: {} } },
+          })),
+        });
         await assertUpgradedAuthentication(db);
-        if (prefix === 55) {
+        if (prefix === 56) {
+          await assertRevisionStillImmutable(db);
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
           child.diagnostic(
@@ -1913,6 +1935,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preWorkloadTags"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1997,6 +2020,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preWorkloadTags"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2009,7 +2033,9 @@ test(
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
         // Abort 0056 after its function was created, before the deferred trigger exists.
+        // Abort 0057 after it added tags to the populated, immutable revision.
         const rollbackTag = [
+          [56, "GRANT"],
           [55, "CREATE TRIGGER"],
           [54, "ALTER TABLE"],
           [53, "CREATE FUNCTION"],
@@ -2032,6 +2058,9 @@ test(
         assert.deepEqual(await migrationCatalog(db.migrator), before.occ);
         if (prefix) {
           assert.deepEqual(await canonicalData(db), data);
+          if (prefix === 56) {
+            await assertRevisionStillImmutable(db);
+          }
         } else {
           assert.equal(
             (

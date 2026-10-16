@@ -24,6 +24,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  AgentTags,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -55,6 +56,7 @@ import type {
 import {
   normalizeInitialWorkspaceFiles,
   normalizeWorkspaceDefaultsId,
+  normalizeAgentTags,
   normalizePluginDesiredState,
   normalizePluginApprovers,
   normalizeHarnessAuthBinding,
@@ -188,6 +190,7 @@ export interface AgentRepository extends AgentReadRepository {
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
+    tags?: AgentTags,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -495,6 +498,14 @@ const serviceAccountIdentifier =
   /^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const secretName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$/;
 const secretKey = /^[-._a-zA-Z0-9]+$/;
+
+function normalizedAgentTags(tags: unknown): AgentTags {
+  try {
+    return normalizeAgentTags(tags);
+  } catch {
+    throw new ScopeViolationError("Agent tags are invalid.");
+  }
+}
 
 function validCredential(credential: unknown): credential is ServiceAccountCredential {
   if (
@@ -2332,6 +2343,7 @@ function repositories(
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
+        tags: normalizedAgentTags(agent.tags),
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -2393,6 +2405,7 @@ function repositories(
       nextPluginApprovers,
       nextRepositoryAccess,
       nextCredentialSources,
+      tags,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -2457,10 +2470,12 @@ function repositories(
         credentialSources: _currentCredentialSources,
         ...withoutPlugins
       } = current;
+      const nextTags = tags === undefined ? current.tags : normalizedAgentTags(tags);
       const updated = immutableCopy({
         ...withoutPlugins,
         configurationId,
         backendId: nextBackendId,
+        tags: nextTags,
         executionMode: executionMode ?? current.executionMode,
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
@@ -2611,6 +2626,7 @@ function repositories(
       if (previous.some((existing) => existing.id === revision.id)) {
         throw new ResourceConflictError("The server generated an existing AgentRevision identity.");
       }
+      const tags = normalizedAgentTags(revision.tags);
       const {
         secretBindings: _providedSecretBindings,
         plugins: _providedPlugins,
@@ -2618,6 +2634,7 @@ function repositories(
       } = revision;
       const saved = immutableCopy({
         ...withoutSecretBindings,
+        tags,
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });

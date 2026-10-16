@@ -115,6 +115,7 @@ async function createQueueRevision(
       ...configuration.rows[0].harness_auth,
       secretDriverId: configuration.rows[0].driver_id,
     },
+    tags: {},
     configuration_id: configuration.rows[0].configuration_id,
     configuration_kind: "agent",
     configuration_generation: 1,

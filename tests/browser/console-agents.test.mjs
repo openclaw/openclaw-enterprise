@@ -1243,6 +1243,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       method: "api_key",
       source: null,
     },
+    tags: {},
     servicePrincipalId: "identity_provisioned_agent",
     createdAt: new Date().toISOString(),
     activeRevisionId: null,
@@ -1261,6 +1262,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     harnessAuth: agent.harnessAuth,
     harness: { id: "codex", version: "test", mode: "dedicated" },
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
+    tags: {},
     servicePrincipalId: agent.servicePrincipalId,
   };
   const workspacePreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
@@ -1787,6 +1789,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       method: "codex_pat",
       source: null,
     },
+    tags: {},
     servicePrincipalId: "identity_retried_agent",
     createdAt,
     activeRevisionId: revisionId,
@@ -1805,6 +1808,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     harnessAuth: agent.harnessAuth,
     harness: { id: "codex", version: "test", mode: "dedicated" },
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
+    tags: {},
     servicePrincipalId: agent.servicePrincipalId,
   };
   const json = (data, status = 200) => ({

@@ -1,13 +1,13 @@
 ---
 author: kevinlin-openai
-implementation_status: Not implemented
+implementation_status: Partially implemented
 status: Proposed
 ---
 
 # Feature Spec: Agent workload tags
 
 **Date:** 2026-09-03
-**Status:** Planning — draft awaiting review and user direction
+**Status:** Proposed. This PR implements the tag contract. Live OpenShell verification is pending.
 **Owner:** OCC and Compute/Sandbox Driver maintainers
 
 ## Problem and Decision
@@ -17,11 +17,11 @@ AgentRevision. Compute and Sandbox Drivers consume that immutable map during
 per-workload preparation, allowing trusted driver code to select different
 sandbox behavior for `usage=personal` and `usage=security`.
 
-The current [Agent and revision contracts](../../packages/contracts/src/index.ts)
-have no user tag field. Compute already receives revisions; Sandbox provisioning
-and cleanup receive revisions, but its admission-time `configureAgent` hook
-receives only native configuration. Reuse those seams rather than adding a
-tag service or a second driver-selection mechanism.
+Before this change, the [Agent and revision contracts](../../packages/contracts/src/index.ts)
+had no user tag field. Compute already received revisions; Sandbox provisioning
+and cleanup received revisions, but its admission-time `configureAgent` hook
+received only native configuration. This implementation reuses those seams
+rather than adding a tag service or a second driver-selection mechanism.
 
 ## Scope
 
@@ -52,12 +52,12 @@ with the existing exact-resource read permission; never store credentials in the
 
 Extend the existing [Agent routes](../../packages/contracts/src/api/routes.ts):
 
-| Operation | `tags` behavior |
-| --- | --- |
-| `POST /namespaces/:namespaceId/agents` | Optional; omission creates `{}`. |
-| `PATCH /namespaces/:namespaceId/agents/:agentId` | Optional; omission preserves tags, a supplied object replaces the whole map, `{}` clears it. Keep the existing required `configurationId`. |
-| Agent and revision list/read responses | Include `tags` in the existing `data` envelope. |
-| `POST /namespaces/:namespaceId/agents/:agentId/deploy` | Remains bodyless; snapshots the saved Agent tags. |
+| Operation                                              | `tags` behavior                                                                                                                            |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /namespaces/:namespaceId/agents`                 | Optional; omission creates `{}`.                                                                                                           |
+| `PATCH /namespaces/:namespaceId/agents/:agentId`       | Optional; omission preserves tags, a supplied object replaces the whole map, `{}` clears it. Keep the existing required `configurationId`. |
+| Agent list/read and revision detail responses          | Include `tags` in the existing `data` envelope. Revision lists remain summaries.                                                           |
+| `POST /namespaces/:namespaceId/agents/:agentId/deploy` | Remains bodyless; snapshots the saved Agent tags.                                                                                          |
 
 Example Agent update body: `{"configurationId":"<existing-configuration-id>","tags":{"usage":"personal","team":"developer-tools"}}`.
 
@@ -76,8 +76,8 @@ claiming `usage=security` grants no additional privileges or credential access.
 
 OCC copies the locked Agent's tags in the existing deployment transaction,
 passes the same frozen copy to Sandbox configuration, and persists it in the
-new revision. Extend `SandboxDriver.configureAgent(configuration, tags)` with
-the read-only map as its second argument. Its returned native configuration
+new revision. Extend `SandboxDriver.configureAgent(configuration, harness, tags)` with
+the read-only map as its third argument. Its returned native configuration
 still passes existing validation before admission; driver failure admits no revision.
 
 Compute `prepareRevision`, activation, retirement, and `beforeWorkloadStart` /
@@ -90,6 +90,11 @@ preparation, not loading the driver once at controller startup.
 Edits affect only later deployments. Already queued, active, or retiring
 revisions retain their original tags, including after worker restart. Drivers
 must not reread mutable Agent tags through `bindAgent` to make revision decisions.
+
+When upgrading an existing installation, record an empty tag map on every Agent and
+historical revision: Agent-owned tags did not exist when those revisions were admitted.
+The migration preserves the rest of each admitted snapshot and its update protection.
+
 Keep stable Agent/revision resource identities, existing retry/cancellation
 semantics, and exact-resource cleanup; changing tags cannot redirect cleanup.
 
@@ -136,14 +141,18 @@ it does not add a bundled OpenShell YAML rule language or hard-code `usage` poli
 
 ## Verification
 
-| Required outcome | How to verify |
-| --- | --- |
-| API round-trip and clear/preserve semantics | Extend `tests/integration/occ-api.test.mjs` through real routes; cover create omission, replacement, clearing, reads, invalid maps, and exact-scope denial. |
-| Durable immutable snapshot | Extend PostgreSQL persistence and `postgres-worker-agent-revision.test.mjs`: deploy personal, update to security, deploy again, restart worker; each revision retains its own tags. |
-| Both drivers receive the admitted map | Conformance tests inspect actual Compute lifecycle and Sandbox admission/provision/cleanup inputs; attempted mutation cannot alter stored Agent or revision tags. |
-| Conditional sandbox selection | Run the trusted example with each usage value through the selected backend; inspect actual sandbox policy and workload identity, plus its safe unknown-tag path. |
-| Failed preparation stays contained | Existing lifecycle failure tests cover rejected tag policy, cancellation, retry, and exact-revision cleanup without weakening baseline isolation. |
-| Untagged Agents remain usable | Explicit empty-map fixtures follow current supported Docker/Kubernetes and Sandbox topologies; no live resource is retagged by an Agent update. |
+Current behavior is owned by the [Agent reference](../../docs/reference/agents.md#workload-tags),
+[Compute contract](../../docs/reference/drivers/compute.md#workload-tags), and
+[Sandbox contract](../../docs/reference/drivers/sandbox.md#conditional-workload-preparation).
+
+| Required outcome                            | How to verify                                                                                                                                                                       |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API round-trip and clear/preserve semantics | Extend `tests/integration/occ-api.test.mjs` through real routes; cover create omission, replacement, clearing, reads, invalid maps, and exact-scope denial.                         |
+| Durable immutable snapshot                  | Extend PostgreSQL persistence and `postgres-worker-agent-revision.test.mjs`: deploy personal, update to security, deploy again, restart worker; each revision retains its own tags. |
+| Both drivers receive the admitted map       | Conformance tests inspect actual Compute lifecycle and Sandbox admission/provision/cleanup inputs; attempted mutation cannot alter stored Agent or revision tags.                   |
+| Conditional sandbox selection               | Run the trusted example with each usage value through the selected backend; inspect actual sandbox policy and workload identity, plus its safe unknown-tag path.                    |
+| Failed preparation stays contained          | Existing lifecycle failure tests cover rejected tag policy, cancellation, retry, and exact-revision cleanup without weakening baseline isolation.                                   |
+| Untagged Agents remain usable               | Explicit empty-map fixtures follow current supported Docker/Kubernetes and Sandbox topologies; no live resource is retagged by an Agent update.                                     |
 
 ## Manual Notes
 

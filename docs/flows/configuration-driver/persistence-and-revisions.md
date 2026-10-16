@@ -114,8 +114,8 @@ bytes or inline SecretRefs.
 
 Next OCC reads the selected Configuration Driver's stored document. For the
 bundled Kubernetes Driver, that document is the `openclaw.json` ConfigMap entry.
-When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
-frozen copy before Configuration Driver validation and Harness selection. The
+OCC freezes the locked Agent’s tags. The selected Sandbox Driver’s optional
+`configureAgent(configuration, harness, tags)` transforms a frozen configuration copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
@@ -143,6 +143,10 @@ and `configurationGeneration` fields pin the selected Configuration metadata.
 The revision also pins the selected OpenClaw or Codex Harness descriptor,
 execution mode, Compute identity, optional Sandbox identity, Agent service
 principal, and any selected Secret Driver identity and normalized bindings.
+It stores the admitted tag map in the same transaction; Sandbox failure admits
+no revision. [Agent tag edits](../../reference/agents.md#workload-tags) affect only
+future deployments, so reconciliation and cleanup continue using each
+revision's saved tags after worker restart.
 Backend locators and value bytes are not stored in the revision. Subsequent nested
 Configuration edits increment its generation but affect only later explicit
 deployments; historical revisions and their admitted snapshots remain unchanged.

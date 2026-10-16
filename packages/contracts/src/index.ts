@@ -28,6 +28,10 @@ import type {
   RepositoryCredentialRuntimeBinding,
   RepositoryRevisionState,
 } from "./repo.ts";
+import { normalizeAgentTags } from "./agent-tags.ts";
+import type { AgentTags } from "./agent-tags.ts";
+
+export type { AgentTags } from "./agent-tags.ts";
 
 export type {
   RuntimeLogContentClass,
@@ -708,6 +712,7 @@ export interface Agent extends Scope {
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
+  readonly tags: AgentTags;
   readonly desiredRuntimeState: AgentDesiredRuntimeState;
   readonly status: AgentStatus;
   readonly configurationId: string;
@@ -787,6 +792,7 @@ export interface AgentRevision extends Scope {
   readonly agentId: string;
   readonly revision: number;
   readonly backendId: BackendRef;
+  readonly tags: AgentTags;
   readonly configurationId: string;
   readonly configurationKind: ConfigurationKind;
   readonly configurationGeneration: number;
@@ -836,6 +842,7 @@ export type AgentRevisionRead =
 export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevision> {
   return Object.freeze({
     ...revision,
+    tags: normalizeAgentTags(revision.tags),
     configuration: immutableCopy(revision.configuration),
     ...(revision.secretBindings === undefined
       ? {}
@@ -1485,6 +1492,7 @@ export interface SandboxDriver extends Driver {
   configureAgent?(
     configuration: Readonly<OpenClawConfigurationDocument>,
     harness: Readonly<RevisionHarnessDescriptor>,
+    tags: AgentTags,
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
@@ -1975,6 +1983,7 @@ export interface ConfigurationDriver extends Driver {
   validate(configuration: Configuration): Promise<void>;
 }
 
+export { normalizeAgentTags } from "./agent-tags.ts";
 export { normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";

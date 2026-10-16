@@ -37,6 +37,7 @@ function resources() {
     backendId: null,
     harnessAuth: null,
     executionMode: "dedicated",
+    tags: {},
     servicePrincipalId: `service-agent-${randomUUID()}`,
     createdAt,
   };
@@ -144,6 +145,7 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configurationKind: configuration.kind,
     configurationGeneration: configuration.generation,
     backendId: null,
+    tags: {},
     harnessAuth: {
       method: "codex_pat",
       source: { kind: "secret", namespaceId: agent.namespaceId, id: storedSecret.id },

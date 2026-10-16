@@ -581,6 +581,7 @@ revisionTest(
           agentId: malformedAdmission.id,
           revision: 1,
           backendId: null,
+          tags: {},
           configuration: {},
           servicePrincipalId: malformedAdmission.servicePrincipalId,
           createdAt: new Date().toISOString(),
@@ -603,6 +604,7 @@ revisionTest(
           malformedAdmission.id,
           JSON.stringify({
             draft_spec: {},
+            tags: {},
             configuration_id: malformedAdmission.configurationId,
             configuration_kind: "agent",
             configuration_generation: 1,
@@ -3603,5 +3605,147 @@ revisionTest(
         (error) => error.code === "23514",
       );
     }
+  },
+);
+
+test(
+  "OCC-admitted workload tags survive Agent edits and a PostgreSQL worker restart",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { OpenClawController },
+      { NativeIAMDriver },
+      { createTestConfigurationDriver },
+      { resolveApprovedHarness },
+    ] = await Promise.all([
+      import("../../packages/occ/src/index.ts"),
+      import("../../packages/iam/src/index.ts"),
+      import("../helpers/configuration-driver.mjs"),
+      import("../../apps/controller/src/composition/production-harness.ts"),
+    ]);
+    const fixture = await setup(context);
+    const controller = new OpenClawController(fixture.installation, { state: fixture.state });
+    const configurationDriver = createTestConfigurationDriver();
+    const iam = new NativeIAMDriver(fixture.state, { id: "iam-tags", implementation: "native" });
+    for (const driver of [fixture.compute, configurationDriver, iam]) {
+      controller.registerDriver(driver);
+      controller.selectDriver(driver.capability, driver.id);
+    }
+    const configuration = await controller.createConfiguration(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      kind: "agent",
+      values: (await import("../helpers/harness-configuration.mjs")).createHarnessConfiguration(
+        "codex",
+        "test-model",
+      ),
+    });
+    const personalTags = JSON.parse('{"usage":"personal","__proto__":"literal","team":"one"}');
+    const securityTags = { usage: "security", team: "two" };
+    const owner = await controller.createAgent(fixture.actor.id, {
+      namespaceId: fixture.namespace.id,
+      name: `durable-tags-${randomUUID()}`,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+      configurationId: configuration.id,
+      tags: personalTags,
+    });
+    const target = { namespaceId: fixture.namespace.id, agentId: owner.id };
+    const first = await controller.deployAgent(fixture.actor.id, target, resolveApprovedHarness);
+    const work = (revision) => ({
+      ...revision,
+      idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+    });
+
+    // Edit the Agent before its first queued deployment runs. The worker must consume
+    // the durable admission snapshot, even though mutable metadata already says security.
+    await controller.updateAgent(fixture.actor.id, {
+      ...target,
+      configurationId: configuration.id,
+      tags: securityTags,
+    });
+    const expectedTags = new Map([[first.id, personalTags]]);
+    const effects = [];
+    function observe(phase, revision, workerGeneration) {
+      if (revision.agentId !== owner.id) {
+        return;
+      }
+      assert.equal(revision.namespaceId, owner.namespaceId);
+      assert.equal(revision.servicePrincipalId, owner.servicePrincipalId);
+      assert.deepEqual(revision.tags, expectedTags.get(revision.id));
+      assert.equal(Object.isFrozen(revision.tags), true);
+      assert.throws(() => {
+        revision.tags.usage = "driver-mutation";
+      }, TypeError);
+      assert.throws(() => {
+        // An object exercises the inherited prototype setter when this revision
+        // has no own __proto__ tag; assigning a string would silently do nothing.
+        revision.tags["__proto__"] = { injected: "driver-prototype-mutation" };
+      }, TypeError);
+      effects.push({
+        phase,
+        revisionId: revision.id,
+        tags: structuredClone(revision.tags),
+        workerGeneration,
+      });
+    }
+    function computeFor(workerGeneration) {
+      return {
+        ...fixture.compute,
+        async prepareRevision(revision, ...args) {
+          observe("prepare", revision, workerGeneration);
+          return fixture.compute.prepareRevision(revision, ...args);
+        },
+        async activateRevision(revision) {
+          observe("activate", revision, workerGeneration);
+        },
+        async retireRevision(revision, ...args) {
+          observe("retire", revision, workerGeneration);
+          return fixture.compute.retireRevision(revision, ...args);
+        },
+      };
+    }
+    await fixture.start(computeFor(1));
+    await fixture.work(work(first), "succeeded");
+    await fixture.stop();
+
+    const second = await controller.deployAgent(fixture.actor.id, target, resolveApprovedHarness);
+    expectedTags.set(second.id, securityTags);
+    // A newly constructed worker and connection pool must reload both the queued
+    // candidate and its active predecessor from PostgreSQL, including their tag maps.
+    const restartedPool = fixture.createWorkerPool();
+    await fixture.start(computeFor(2), { pool: restartedPool });
+    await fixture.work(work(second), "succeeded");
+    await fixture.stop();
+
+    for (const [phase, revisionId, workerGeneration] of [
+      ["prepare", first.id, 1],
+      ["activate", first.id, 1],
+      ["prepare", second.id, 2],
+      ["activate", second.id, 2],
+      ["retire", first.id, 2],
+    ]) {
+      assert.ok(
+        effects.some(
+          (entry) =>
+            entry.phase === phase &&
+            entry.revisionId === revisionId &&
+            entry.workerGeneration === workerGeneration,
+        ),
+        `${phase} receives ${revisionId} in worker ${workerGeneration}`,
+      );
+    }
+    const persisted = await fixture.observerPool.query(
+      "SELECT id, admitted_spec->'tags' AS tags FROM occ.agent_revisions WHERE agent_id = $1 ORDER BY revision_number",
+      [owner.id],
+    );
+    assert.deepEqual(persisted.rows, [
+      { id: first.id, tags: personalTags },
+      { id: second.id, tags: securityTags },
+    ]);
+    const active = await fixture.state.read((unit) =>
+      unit.agents.findAgent(fixture.namespace.id, owner.id),
+    );
+    assert.equal(active.activeRevisionId, second.id);
+    assert.deepEqual(active.tags, securityTags);
   },
 );

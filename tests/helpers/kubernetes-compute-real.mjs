@@ -418,6 +418,7 @@ export function revision(driver, owner, agentId, number) {
     configurationId,
     configurationKind: "agent",
     configurationGeneration: number,
+    tags: {},
     configuration: admitLoggingConfiguration(
       {
         gateway: { controlUi: { enabled: false } },

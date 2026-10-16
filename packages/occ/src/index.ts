@@ -26,6 +26,7 @@ import type {
   AgentRuntimeHarnessStatus,
   ComputeAgentRevisionBinding,
   AgentRevision,
+  AgentTags,
   AgentRuntimeCredentialsInput,
   AgentRuntimeCredentialStatus,
   AccessBinding,
@@ -654,6 +655,7 @@ export interface CreateAgentInput {
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
+  readonly tags?: AgentTags;
 }
 
 export interface UpdateAgentInput {
@@ -669,6 +671,7 @@ export interface UpdateAgentInput {
   readonly pluginApprovers?: PluginApprovers | null;
   readonly repositoryBindings?: readonly RepositoryBindingRequest[];
   readonly repositoryAccess?: RepositoryAccess;
+  readonly tags?: AgentTags;
 }
 
 export interface LookupChannelDirectoryInput {
@@ -6553,6 +6556,7 @@ export class OpenClawController {
     const plugins = normalizeAgentPlugins(input.plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
+    const tags = immutableCopy(input.tags === undefined ? {} : input.tags);
     return this.mutate(async (state) => {
       const target: ResourceRef = {
         kind: "agent",
@@ -6609,6 +6613,7 @@ export class OpenClawController {
           harnessAuth,
           repositoryBindings,
           workspaceSetup: initialWorkspaceFiles !== undefined,
+          tags,
         },
         savedConfiguration,
       );
@@ -6628,6 +6633,7 @@ export class OpenClawController {
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
+        tags,
         servicePrincipalId: `service-agent-${agentId}`,
         desiredRuntimeState: "stopped",
         status: "active",
@@ -6669,6 +6675,7 @@ export class OpenClawController {
     const pluginApprovers =
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
+    const tags = input.tags === undefined ? undefined : immutableCopy(input.tags);
     return this.mutate(async (state) => {
       await this.authorize(principalId, "update", {
         kind: "agent",
@@ -6760,6 +6767,7 @@ export class OpenClawController {
           harnessAuth: requestedAuth === undefined ? previousAuth : requestedAuth,
           repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
           workspaceSetup: workspaceSetup !== undefined && !workspaceSetup.completed,
+          tags: tags ?? agent.tags,
         },
         savedConfiguration,
       );
@@ -6775,6 +6783,7 @@ export class OpenClawController {
         pluginApprovers,
         repositoryAccess,
         requestedSources,
+        tags,
       );
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
@@ -7022,11 +7031,13 @@ export class OpenClawController {
           throw new DependencyUnavailableError("The Secret backend identity changed.");
         }
       }
+      const admittedTags = immutableCopy(lockedAgent.tags);
       const admittedConfiguration = this.agentRuntimeConfiguration(
         configuration.values,
         revisionHarness,
         compute,
         sandbox,
+        admittedTags,
       );
       // The model provider settings, then the Compute rules, as on Configuration save, so a
       // stored Configuration that predates a rule gets the message its next save would. A
@@ -7155,6 +7166,7 @@ export class OpenClawController {
         configurationKind: configuration.kind,
         configurationGeneration: configuration.generation,
         configuration: admittedConfiguration,
+        tags: admittedTags,
         harness: revisionHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
@@ -8690,7 +8702,11 @@ export class OpenClawController {
       runtimeImage: !statusRead,
     });
     const configuration =
-      sandbox?.configureAgent?.(plan.configuration.values, harness) ?? plan.configuration.values;
+      sandbox?.configureAgent?.(
+        plan.configuration.values,
+        harness,
+        immutableCopy(agent?.tags ?? {}),
+      ) ?? plan.configuration.values;
     if (resolveConfiguredHarnessId(configuration) !== harness.id) {
       throw new ScopeViolationError("A Sandbox Driver cannot change the selected Harness runtime.");
     }
@@ -9507,6 +9523,7 @@ export class OpenClawController {
           id: agentId,
           namespaceId: namespace.id,
           name,
+          tags: {},
           configurationId: metadata.id,
           backendId,
           harnessAuth: plan.harnessAuth,
@@ -10661,6 +10678,7 @@ export class OpenClawController {
       readonly harnessAuth: HarnessAuthBinding | null;
       readonly repositoryBindings: readonly RepositoryBindingSelection[] | undefined;
       readonly workspaceSetup: boolean;
+      readonly tags: AgentTags;
     },
     readConfiguration: () => Promise<Readonly<Configuration>>,
   ): Promise<void> {
@@ -10690,7 +10708,13 @@ export class OpenClawController {
       return;
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
-    const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
+    const values = this.agentRuntimeConfiguration(
+      configuration.values,
+      harness,
+      compute,
+      sandbox,
+      agent.tags,
+    );
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
     const auth = selectsModel(configuration.values)
@@ -10738,10 +10762,11 @@ export class OpenClawController {
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
     sandbox: SandboxDriver | undefined,
+    tags: AgentTags,
   ): OpenClawConfigurationDocument {
     const sandboxConfiguration =
       sandbox?.configureAgent !== undefined
-        ? frozenValues(sandbox.configureAgent(frozenValues(values), harness))
+        ? frozenValues(sandbox.configureAgent(frozenValues(values), harness, immutableCopy(tags)))
         : values;
     return frozenValues(
       compute.runtimeLogging === "driver"

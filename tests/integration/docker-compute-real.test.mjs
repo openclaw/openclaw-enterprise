@@ -1734,6 +1734,7 @@ for (const setupMode of executionModes) {
           mode: setupMode,
         },
         compute: { id: driver.id, implementation: driver.implementation },
+        tags: {},
         servicePrincipalId: `sp-workspace-${randomUUID()}`,
         createdAt: namespace.createdAt,
       };

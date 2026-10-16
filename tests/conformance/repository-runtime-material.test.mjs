@@ -172,6 +172,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       secretDriverId: "kubernetes-secret",
     },
     compute: { id: driver.id, implementation: driver.implementation },
+    tags: {},
     servicePrincipalId: "principal-repository-material",
     createdAt: "2026-09-18T00:00:00.000Z",
     repositoryCredentials: {
@@ -463,6 +464,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
             configurationId: revision.configurationId,
             backendId: revision.backendId,
             executionMode: mode,
+            tags: {},
             servicePrincipalId: revision.servicePrincipalId,
             createdAt: revision.createdAt,
           },

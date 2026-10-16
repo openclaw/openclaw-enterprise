@@ -15,6 +15,9 @@ export function providerEndpointFixture({
   }),
   providerNetwork,
   revisionOverrides,
+  sandboxDriver,
+  lifecycleDrivers,
+  expectedPodSelector,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -25,6 +28,8 @@ export function providerEndpointFixture({
   const fixture = providerReadinessFixture({
     providerNetwork,
     revisionOverrides,
+    sandboxDriver,
+    expectedPodSelector,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
     async workspaceNodePeerLabels({ revision: target }) {
       peerLookups.push(target.id);
@@ -48,7 +53,7 @@ export function providerEndpointFixture({
       endpoints.push(context);
       return harnessEndpoint(context);
     },
-    lifecycleDrivers: [
+    lifecycleDrivers: lifecycleDrivers ?? [
       {
         id: "configuration-lifecycle",
         capability: "configuration",

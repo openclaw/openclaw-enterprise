@@ -35,6 +35,7 @@ const agent = Object.freeze({
   name: "Plugin agent",
   configurationId: "cfg_plugin",
   executionMode: "embedded",
+  tags: {},
   servicePrincipalId: "sp_plugin",
   createdAt: namespace.createdAt,
 });

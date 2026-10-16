@@ -427,6 +427,24 @@ export const SecretBindings = Type.Record(
   },
 );
 
+export const AgentTags = Type.Object(
+  {},
+  {
+    propertyNames: Type.String({
+      minLength: 1,
+      maxLength: 128,
+      pattern: "^[^\\u0000\\uD800-\\uDFFF]+$",
+    }),
+    additionalProperties: Type.String({
+      maxLength: 1024,
+      pattern: "^[^\\u0000\\uD800-\\uDFFF]*$",
+    }),
+    maxProperties: 64,
+    description:
+      "Agent-owned, non-secret workload metadata. Keys and values are case-sensitive and preserved exactly; at most 64 entries are accepted.",
+  },
+);
+
 export const SecretValue = Type.String({
   minLength: 1,
   maxLength: 65536,
@@ -722,6 +740,7 @@ export const CreateAgentBody = Type.Object(
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
+    tags: Type.Optional(AgentTags),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },
@@ -769,6 +788,7 @@ export const UpdateAgentBody = Type.Object(
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Union([Type.Ref("PluginApprovers"), Type.Null()])),
+    tags: Type.Optional(AgentTags),
     repositoryBindings: Type.Optional(RepositoryBindingRequestsSchema),
     repositoryAccess: Type.Optional(RepositoryAccessSchema),
   },

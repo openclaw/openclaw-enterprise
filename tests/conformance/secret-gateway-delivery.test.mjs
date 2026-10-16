@@ -37,6 +37,7 @@ function revision(driver, overrides = {}) {
     configurationId: "cfg_00000000-0000-4000-8000-000000000014",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     configuration: {
       ...native,
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },

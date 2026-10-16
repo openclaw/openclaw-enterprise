@@ -178,7 +178,7 @@ and rejects ownership or Compute-Driver mismatches before teardown.
 
 Namespace dispatch calls `ensureNamespace` or `deleteNamespace`. Revision
 dispatch optionally binds the exact Agent, then calls `prepareRevision` with its
-immutable snapshot. A wrong owner or invalid observation fails permanently;
+immutable snapshot, including [tags](../reference/agents/workload-tags.md). A wrong owner or invalid observation fails permanently;
 a pending observation defers convergence.
 
 When Compute's `requiresStoppedPredecessors` capability is set,

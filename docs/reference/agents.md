@@ -12,9 +12,8 @@ Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
 Creation saves identity and exact Namespace-owned Configuration with `active`
-status and `stopped` desired runtime state. No revision is
-created and no workload or model starts until an authorized caller requests
-[deployment](#identity-and-deployment).
+status and `stopped` desired runtime state. Only authorized
+[deployment](#identity-and-deployment) creates a revision or starts a workload or model.
 
 ## Supported operations
 
@@ -206,6 +205,10 @@ starts the revision; unsupported selections fail that startup without partially
 mutating the Agent. AgentRevision snapshots retain the requested plugin IDs and
 policy. See [Agent plugins](agent-plugins.md) for field semantics
 and the selected-only runtime contract.
+
+## Workload tags
+
+[Tag reference](agents/workload-tags.md).
 
 ## Workspace files
 

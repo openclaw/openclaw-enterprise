@@ -68,6 +68,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     configurationId: `configuration-${agentId}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    tags: {},
     configuration: admitLoggingConfiguration(
       {
         gateway: { mode: "local" },
@@ -122,6 +123,7 @@ function bind(driver, rev, namespace = tenant) {
       configurationId: rev.configurationId,
       backendId: null,
       executionMode: "embedded",
+      tags: {},
       servicePrincipalId: rev.servicePrincipalId,
       createdAt: namespace.createdAt,
     },

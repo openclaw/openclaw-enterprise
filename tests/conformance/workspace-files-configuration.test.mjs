@@ -70,6 +70,7 @@ function revision(overrides = {}) {
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     configuration: {},
     harness: { id: "test-harness", version: "1.0.0", mode: "embedded" },
     compute: { id: "compute-test", implementation: "deterministic-test" },

@@ -76,6 +76,7 @@ test(
           configuration_id: configurationId,
           configuration_kind: "agent",
           configuration_generation: 1,
+          tags: {},
           draft_spec: {},
           harness_auth: { ...harnessAuth, secretDriverId: "secret-queue" },
           harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },

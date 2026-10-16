@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
@@ -29,8 +30,11 @@ import {
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   admitLoggingConfiguration,
+  freezeAgentRevision,
   presetTemplateDefaultsWithPlaceholders,
 } from "../../packages/contracts/src/index.ts";
+import { WorkloadTagsSandboxDriver } from "../../examples/agent-workload-tags.ts";
+import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import {
   createKubernetesComputeDriver,
   harnessStateRemovalScript,
@@ -7716,6 +7720,7 @@ test("native channel providers require Secret bindings and project them only to 
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: apiKeyAuth,
     compute: { id: driver.id, implementation: driver.implementation },
@@ -8649,6 +8654,7 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
     id: "revision-runtime-failure-evidence",
     agentId: "agent-runtime-failure-evidence",
     configurationId: "cfg_runtime_failure_evidence",
+    tags: {},
     servicePrincipalId: "service-principal-runtime-failure-evidence",
   });
   const namespace = kubernetesNamespaceName(tenant.id);
@@ -8833,6 +8839,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
     configurationId: "cfg_00000000-0000-4000-8000-000000000077",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     harnessAuth: apiKeyAuth,
     compute: { id: driver.id, implementation: driver.implementation },
@@ -10705,6 +10712,7 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     configuration: {
       agents: { defaults: { model: "codex/gpt-5" } },
       gateway: { controlUi: { enabled: false } },
@@ -11447,6 +11455,188 @@ test("provider Harness requires its assigned network profile before readiness an
   }
 });
 
+test("Compute dispatches immutable workload tags and retains OpenShell credential and retirement boundaries", async () => {
+  const provisions = [];
+  const cleanups = [];
+  const deletions = [];
+  const hooks = [];
+  class ObservedSandbox extends WorkloadTagsSandboxDriver {
+    provisionHarness(context) {
+      assert.equal(Object.isFrozen(context.revision.tags), true);
+      provisions.push(context);
+      return super.provisionHarness(context);
+    }
+    cleanup(context) {
+      cleanups.push(context.revision);
+      return super.cleanup(context);
+    }
+  }
+  const sandboxDriver = new ObservedSandbox(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "approved-egress",
+            binaries: [{ path: "/usr/bin/curl" }],
+            endpoints: [{ host: "personal.example.test", ports: [443] }],
+          },
+        ],
+      },
+    },
+    [
+      {
+        name: "approved-egress",
+        binaries: [{ path: "/usr/bin/curl" }],
+        endpoints: [{ host: "security.example.test", ports: [443] }],
+      },
+    ],
+    {
+      id: "sandbox-workload-tags",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: "sandbox-workload-tags" },
+        client: new OpenShellGateway(
+          { serviceName: "openshell-gateway" },
+          {
+            gatewayClient: {
+              async getProvider() {},
+              async getSandbox() {},
+              async createSandbox() {
+                assert.fail("unsupported credentials must fail before transport");
+              },
+              async deleteSandbox(request, signal) {
+                assert.equal(signal.aborted, false);
+                deletions.push(request);
+              },
+              close() {},
+            },
+          },
+        ),
+      },
+    },
+  );
+  const lifecycleDrivers = [
+    {
+      id: "configuration-lifecycle",
+      capability: "configuration",
+      implementation: "conformance-lifecycle",
+      computeLifecycleHooks: {
+        async beforeWorkloadStart(revision) {
+          assert.equal(Object.isFrozen(revision.tags), true);
+          hooks.push(["start", revision.id, revision.tags.usage]);
+        },
+        async beforeWorkloadStop(revision, signal) {
+          assert.equal(signal.aborted, false);
+          hooks.push(["stop", revision.id, revision.tags.usage]);
+        },
+      },
+    },
+  ];
+  const fixture = providerEndpointFixture({
+    sandboxDriver,
+    lifecycleDrivers,
+    revisionOverrides: { id: "rev_00000000-0000-4000-8000-000000000011" },
+  });
+  const personal = freezeAgentRevision({
+    ...fixture.revision,
+    tags: { usage: "personal", "arbitrary.tag/key": "metadata" },
+  });
+  const security = freezeAgentRevision({
+    ...personal,
+    id: "rev_00000000-0000-4000-8000-000000000012",
+    revision: 2,
+    tags: { usage: "security" },
+  });
+  await fixture.prepare(personal);
+  fixture.setGatewayServing();
+  fixture.setSetupAvailable(true);
+  // Compute preserves projected Agent identity. OpenShell must reject that
+  // unsupported requirement instead of stripping the identity to launch.
+  for (const revision of [personal, security]) {
+    await assert.rejects(
+      fixture.driver.prepareRevision(revision, authContext(revision)),
+      /cannot preserve an Agent ServiceAccount and projected identity token/,
+    );
+  }
+  assert.deepEqual(
+    provisions.map(({ revision }) => revision),
+    [personal, security],
+  );
+  assert.deepEqual(hooks, [
+    // Gateway bootstrap prepares hooks once before the Harness can be provisioned.
+    ["start", personal.id, "personal"],
+    ["start", personal.id, "personal"],
+    ["stop", personal.id, "personal"],
+    ["start", security.id, "security"],
+    ["stop", security.id, "security"],
+  ]);
+  for (const { requirements, revision } of provisions) {
+    const variables = Object.fromEntries(
+      requirements.environment.map((entry) => [entry.name, entry]),
+    );
+    assert.equal(Object.hasOwn(variables, "APP_SERVER_TOKEN"), false);
+    assert.match(variables.APP_TOKEN_SHA.value, /^[a-f0-9]{64}$/);
+    assert.equal(
+      requirements.workloadIdentity.serviceAccountName,
+      `agent-${digest(personal.agentId)}`,
+    );
+    assert.deepEqual(variables.OPENAI_API_KEY.valueFrom.secretKeyRef, {
+      name: `harness-secrets-${digest(personal.agentId)}-${digest(revision.id)}`,
+      key: "OPENAI_API_KEY",
+    });
+    for (const tag of Object.keys(personal.tags)) {
+      assert.equal(Object.hasOwn(variables, tag), false);
+    }
+  }
+  for (const write of fixture.writes) {
+    for (const tag of Object.keys(personal.tags)) {
+      assert.equal(Object.hasOwn(write.metadata.labels, tag), false);
+    }
+  }
+  // Model a later successful cutover with an independently seeded ready gateway.
+  // Retiring its predecessor must dispatch the old tags and preserve that gateway.
+  const retired = providerEndpointFixture({
+    sandboxDriver,
+    lifecycleDrivers,
+    revisionOverrides: security,
+    // Cleanup observes the predecessor's Pods while the active gateway belongs to security.
+    expectedPodSelector: {
+      "openclaw.dev/namespace": personal.namespaceId,
+      "openclaw.dev/agent": personal.agentId,
+      "openclaw.dev/revision": personal.id,
+      "openclaw.dev/workload-role": "agent",
+    },
+  });
+  await retired.prepare(security);
+  retired.setGatewayServing();
+  const gatewayKey = retired.key(
+    "Deployment",
+    `gateway-${digest(personal.agentId)}`,
+    kubernetesNamespaceName(tenant.id),
+  );
+  const gateway = structuredClone(retired.objects.get(gatewayKey));
+  assert.ok(gateway, "the active gateway must exist before retiring its predecessor");
+  await retired.driver.retireRevision(personal);
+  assert.ok(retired.requests.length > 0, "retirement must observe the predecessor Pods");
+  assert.deepEqual(cleanups, [personal]);
+  assert.deepEqual(deletions, [
+    { name: `sb-${digest(personal.id, 16)}`, workspace: kubernetesNamespaceName(tenant.id) },
+  ]);
+  assert.deepEqual(hooks.at(-1), ["stop", personal.id, "personal"]);
+  assert.deepEqual(retired.objects.get(gatewayKey), gateway);
+});
+
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
   const fixture = providerReadinessFixture();
   fixture.driver.waitBeforeRetry = async () => {};
@@ -11606,6 +11796,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    tags: {},
     configuration: {
       agents: { defaults: { model: "codex/gpt-5" } },
       gateway: { controlUi: { enabled: false } },
