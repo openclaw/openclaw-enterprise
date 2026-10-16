@@ -10,13 +10,13 @@ This companion records outstanding work for [RFC-0021](index.md).
 
 The coordinating thread maintains the completion column and PR links. Each implementation PR names its RFC item numbers, dependencies and evidence. Status progresses from queued or preparing to in progress, PR open, merged, and complete after the required verification. No item is complete yet.
 
-| Stage                 | RFC items                    | Dependency and deliverable                                                                                                                                                         |
-| --------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A — OC Gateway policy | 1, 2; native OC part of 8    | First PR: required policy schema, discovery and invocation enforcement, including retained worker handles. Implementation started.                                                 |
-| B — OC automations    | 3, 4; automation part of 8   | After A's interface is established: caller-scoped model authority and command-job protection.                                                                                      |
-| C — OC Codex adapter  | 5; Codex part of 8           | After A's interface is established; can proceed alongside B. Filter schemas and guarded callbacks, including restored tools.                                                       |
-| D — OCE integration   | 6, 7; OCE part of 8          | After A–C: automatic policy composition, supporting runtime adoption and effective-policy admission. Source preparation started; configuration activation waits for supporting OC. |
-| E — Qualification     | 9; completion evidence for 8 | After D: verify both Harnesses through supported execution paths, including denied effects and preserved tasks/human administration.                                               |
+| Stage                 | RFC items                    | Dependency and deliverable                                                                                                                                                                     |
+| --------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A — OC Gateway policy | 1, 2; native OC part of 8    | Required policy schema, discovery and invocation enforcement, including retained worker handles. Draft [OC #174547](https://github.com/openclaw/openclaw/pull/174547); validation in progress. |
+| B — OC automations    | 3, 4; automation part of 8   | Implementation in progress on A's reviewed interface: caller-scoped model authority and command-job protection.                                                                                |
+| C — OC Codex adapter  | 5; Codex part of 8           | Implementation in progress on A's reviewed interface, alongside B. Filter schemas and guarded callbacks, including restored tools.                                                             |
+| D — OCE integration   | 6, 7; OCE part of 8          | After A–C: automatic policy composition, supporting runtime adoption and effective-policy admission. Source preparation started; configuration activation waits for supporting OC.             |
+| E — Qualification     | 9; completion evidence for 8 | After D: verify both Harnesses through supported execution paths, including denied effects and preserved tasks/human administration.                                                           |
 
 Dependent work may use explicit stacked PRs; OCE must not activate fields that its packaged OC does not enforce. Track source merge, runtime packaging and qualification separately. New scope decisions return to the author.
 
