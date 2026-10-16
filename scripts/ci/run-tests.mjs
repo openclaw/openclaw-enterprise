@@ -1384,8 +1384,9 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   const laneStarted = performance.now();
   const concurrency = lane ? fileConcurrency(lane, issues) : 1;
   if (lane && lane.fileConcurrency > 1) {
+    const measured = lane.parallelFiles.filter((path) => manifest.durations.has(path)).length;
     process.stderr.write(
-      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length}), longest first (${lane.parallelFiles.filter((path) => manifest.durations.has(path)).length} of ${lane.parallelFiles.length} shared files measured)\n`,
+      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})${measured > 0 ? `, longest first (${measured} of ${lane.parallelFiles.length} shared files measured)` : ""}\n`,
     );
   }
   if (lane && issues.length === 0) {

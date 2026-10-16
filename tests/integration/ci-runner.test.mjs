@@ -3765,6 +3765,7 @@ test("run starts shared files longest first from the measured table, unmeasured 
   const listed = await starts("listed");
   assert.ok(listed.short < listed.new && listed.long < listed.new);
   assert.ok(listed.new <= listed.middle);
+  assert.doesNotMatch(listed.stderr, /longest first/);
 });
 
 test("audit rejects an unusable file duration table", async (t) => {
