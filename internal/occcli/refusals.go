@@ -30,7 +30,7 @@ type commandPermission struct {
 var commandPermissions = map[string]commandPermission{
 	"installation get":                    {[]string{"getInstallation"}, []string{"installation.read"}, ""},
 	"installation deployment-inventory":   {[]string{"getInstallationDeploymentInventory"}, []string{"installation.administer"}, "read on every Namespace, Agent and active revision, and deploy on each running Agent"},
-	"namespace list":                      {[]string{"listNamespaces"}, nil, "an Installation-scoped key"},
+	"namespace list":                      {[]string{"listNamespaces"}, nil, ""},
 	"namespace get":                       {[]string{"getNamespace"}, []string{"namespace.read"}, ""},
 	"namespace create":                    {[]string{"createNamespace"}, []string{"namespace.create"}, "Installation administer with --existing-namespace"},
 	"namespace delete":                    {[]string{"deleteNamespace"}, []string{"namespace.delete"}, ""},
@@ -151,10 +151,10 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 		needs = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 	}
 	switch {
-	case also == "":
 	case needs == "":
-		needs = also
-	default:
+		// Nothing to grant: a list filtered per item refuses only a scoped key.
+		return ""
+	case also != "":
 		needs += ", plus " + also
 	}
 	hint := fmt.Sprintf("hint: \"occ %s\" needs %s; ask an administrator to grant what is missing.", path, needs)
