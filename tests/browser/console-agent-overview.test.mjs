@@ -439,6 +439,7 @@ test("Recovery waits for the caller's permission answer before offering the draf
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const summary = page.locator(".agent-current-summary");
   await summary.getByText("v2 · Failed", { exact: true }).waitFor();
+  await permissions.requested;
   // While the answer is pending, the recovery is held rather than offering a draft link
   // the caller may not be allowed to use (finding 1478).
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });

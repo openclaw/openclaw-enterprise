@@ -866,7 +866,8 @@ test("holdRequests sends a held write once, and fails it when its answer is lost
 
   const lost = await holdRequests(t, page, `${origin}/lost`, { afterServer: true });
   const lostAnswer = post("/lost");
-  await assert.rejects(lost.requested);
+  // The hold caught the POST: the waiter gets the lost answer, not the no-request deadline.
+  await assert.rejects(lost.requested, (error) => !/was held/.test(error.message));
   assert.equal(await lostAnswer, "failed");
   assert.equal(posts["/lost"], 1);
 
