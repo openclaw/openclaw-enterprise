@@ -3670,10 +3670,13 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     providerStatus: result.providerStatus,
     providerCode: result.providerCode,
   }));
-  // One retry in all, for a model timeout or a transient failure; every other
-  // failure is deterministic and held at once.
-  if ((result.code === "MODEL_PROBE_TIMEOUT" || result.transient === true) && attempt === 1 &&
-    performance.now() + 1000 < deadline) {
+  if (result.code === "MODEL_PROBE_TIMEOUT" && attempt === 1 && performance.now() + 1000 < deadline) {
+    setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
+    return;
+  }
+  // A transient failure gets the same single retry; every other failure is
+  // deterministic and held at once.
+  if (result.transient === true && attempt === 1 && performance.now() + 1000 < deadline) {
     setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);
     return;
   }
