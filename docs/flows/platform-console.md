@@ -126,7 +126,7 @@ stops reads. Missing provenance stays explicit.
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
 from the list immediately shows **Loading agent details…** and **Back to Agents**.
 Access checks finish before the Agent’s name, actions, and overview appear together.
-Other ways into an Agent, a fresh load included, keep the shown page until then.
+Other ways into an Agent keep the shown page until then; a fresh load shows loading after 250 ms.
 Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A held page keeps its own navigation and header.

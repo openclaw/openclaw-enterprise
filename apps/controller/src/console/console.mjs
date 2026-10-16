@@ -1077,6 +1077,10 @@ async function loadPage({
     showOpeningPanel();
   } else if (!held) {
     if (startup) {
+      // An abandoned load may have left its Agent page hidden beside the status (finding 1537).
+      for (const stale of app.querySelectorAll(":scope > .startup ~ *")) {
+        stale.remove();
+      }
       showCheckingSession();
     } else {
       shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
