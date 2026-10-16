@@ -181,8 +181,9 @@ missing wiring or failed dependencies return errors.
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent` composes Provider,
 Harness, Preset, Configuration, and workspace inputs. `console.mjs:loadPage` reads the
 Namespace permission summary with the Agents list and Create Agent; without
-`agents.create`, both refuse creation from their first paint, and the API still decides. Provider/Harness changes
-reset incompatible credentials and model choices while retaining unrelated JSON. The
+`agents.create`, both refuse creation from their first paint, and the API still
+decides. Provider/Harness changes reset incompatible credentials and model choices
+while retaining unrelated JSON. The
 [creation reference](../reference/console/create-and-deploy.md) owns combinations,
 Preset constraints, token handling, permissions, and recovery.
 
@@ -287,9 +288,9 @@ preflight.
 `deploymentFailure` for **Open vN Logs**. Client navigation selects the failed
 revision's `tab=logs`, even from the draft or a different version. Once the
 snapshot read and the panel's first reads settle, it focuses the Logs tab and
-scrolls the panel into view only if the strip or output start is offscreen. A chosen
-tab keeps its strip in place. Until then the tab keeps
-its height and hides Stop and Delete, which appear in place. The panel's
+scrolls the panel into view if the view is still current. Until then the tab keeps
+its height and hides Stop and Delete, which appear in place. A Logs tab clicked in
+view keeps its strip in place instead of scrolling. The panel's
 `agents/logs.mjs:renderAgentLogs` reads that revision's runtime status and output,
 or displays its access or availability error;
 [Agent runtime logs](agent-runtime-logs.md) owns those reads.

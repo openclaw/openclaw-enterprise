@@ -156,7 +156,7 @@ p {
   text-align: center;
   /* A load that settles within the loading delay never flashes its status (finding 1444). Full
      loads took up to 274 ms, past the 250 ms other statuses wait, so the boot status waits
-     400 ms (finding 1519). Visibility, not opacity: the status must still count as a paint. */
+     400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows

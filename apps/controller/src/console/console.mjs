@@ -943,12 +943,13 @@ function showCheckingSession() {
   if (!shown) {
     app.replaceChildren(status);
   }
-  // Delay the announcement, never the session check or the view that replaces it.
+  // Delay the announcement, never the session check or the view that replaces it. It waits
+  // until the status is visible (400 ms, console.css), so screen readers announce the change.
   setTimeout(() => {
     if (status.isConnected) {
       status.textContent = "Checking session…";
     }
-  }, 300);
+  }, 400);
 }
 
 async function loadPage({
@@ -1522,6 +1523,9 @@ async function loadPage({
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
+    } else if (permissionsRead) {
+      // Painted without the permissions answer: a return reads it again instead of reusing this.
+      viewState.reusable = false;
     }
     if (current.creating) {
       renderCreateAgent(

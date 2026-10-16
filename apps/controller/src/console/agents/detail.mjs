@@ -2429,8 +2429,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       mountedTab = null;
     }
     // A tab the reader chose keeps its strip where it was used: the version evidence above it
-    // hides for Workspace and Logs and returns for the others (finding 1518).
-    const stripTop = activated ? tabs.getBoundingClientRect().top : null;
+    // hides for Workspace and Logs and returns for the others (finding 1518). At the top of the
+    // page the heading stays in view instead.
+    const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
     versionEvidence.hidden = selectedTab === "workspace" || selectedTab === "logs";
     if (stripTop !== null) {
@@ -2525,12 +2526,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
       if (tabContext.isCurrent() && !deleting) {
         tabControls.get("logs").focus({ preventScroll: true });
-        // A strip in view with the output starting below it stays put: the reader clicked
-        // it there (finding 1518). A link or address that opens Logs out of view scrolls.
-        if (
-          tabs.getBoundingClientRect().top < 0 ||
-          content.getBoundingClientRect().top >= innerHeight
-        ) {
+        // A strip clicked in view with the output starting on screen stays put (finding 1518).
+        // A link or address that opens Logs scrolls the output into view as before.
+        const stripKept =
+          activated &&
+          tabs.getBoundingClientRect().top >= 0 &&
+          content.getBoundingClientRect().top < innerHeight - Math.min(200, innerHeight / 3);
+        if (!stripKept) {
           detailPane.scrollIntoView({ block: "start" });
         }
       }

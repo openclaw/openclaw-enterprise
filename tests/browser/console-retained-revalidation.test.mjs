@@ -1177,15 +1177,20 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
   await script.requested;
   const status = page.locator("#app > p.startup[role='status']");
   await status.waitFor({ state: "attached" });
-  // Read the status's look at fixed times into its animation, independent of host load.
+  // Read the status's look at fixed times into its animation, independent of host load. A fresh
+  // copy starts its own animation, which a loaded host may already have finished on the original.
   const shown = await status.evaluate((node) => {
-    const [animation] = node.getAnimations();
+    const copy = node.cloneNode(true);
+    node.after(copy);
+    const [animation] = copy.getAnimations();
     animation.pause();
-    return [0, 300, 399, 600].map((time) => {
+    const looks = [0, 300, 399, 600].map((time) => {
       animation.currentTime = time;
-      const style = globalThis.getComputedStyle(node);
+      const style = globalThis.getComputedStyle(copy);
       return style.visibility === "hidden" || Number(style.opacity) === 0 ? "hidden" : "shown";
     });
+    copy.remove();
+    return looks;
   });
   assert.deepEqual(shown, ["hidden", "hidden", "hidden", "shown"]);
   assert.equal(

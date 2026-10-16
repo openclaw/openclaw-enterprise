@@ -265,6 +265,10 @@ export function renderCreateAgent(context, draft) {
         ),
       ),
     );
+    // Start over re-enters here from the form; keep focus on the page, not the document.
+    if (document.activeElement === document.body && context.isCurrent()) {
+      context.view.closest(".content")?.querySelector("h1")?.focus({ preventScroll: true });
+    }
     return;
   }
   // Starting the form replaces the launch view, and with it the control that started it. Give
