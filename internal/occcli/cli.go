@@ -934,7 +934,7 @@ func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namesp
 	var apiErr *occclient.APIError
 	switch {
 	case order != "":
-		noticef(notices, "notice: showing revision %s, %s than the active revision %s; run \"occ agent deployment-status %s %s\" for the active revision", latest, order, active, agentID, active)
+		noticef(notices, "notice: showing revision %s, %s than the active revision %s; run \"occ --namespace %s agent deployment-status %s %s\" for the active revision", latest, order, active, namespace, agentID, active)
 	case errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden:
 		noticef(notices, "notice: showing revision %s, the latest revision you can read; the active revision %s is not readable with your permissions", latest, active)
 	default:

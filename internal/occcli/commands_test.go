@@ -473,13 +473,13 @@ func TestDeploymentStatusNamesTheRevisionItChose(t *testing.T) {
 			"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
 			"GET " + agentPath + "/revisions/" + testRevision1ID:   `{"id":"` + testRevision1ID + `","revision":1}`,
 			"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
-		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + `; run "occ agent deployment-status ` + testAgentID + " " + testRevision1ID + `" for the active revision` + "\n"},
+		}, "notice: showing revision " + testRevision2ID + ", newer than the active revision " + testRevision1ID + `; run "occ --namespace ` + testNamespaceID + ` agent deployment-status ` + testAgentID + " " + testRevision1ID + `" for the active revision` + "\n"},
 		{"older than the active revision", map[string]string{
 			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 			"GET " + agentPath + "/revisions":                      olderOnly,
 			"GET " + agentPath + "/revisions/" + testRevision2ID:   `{"id":"` + testRevision2ID + `","revision":2}`,
 			"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"failed"}`,
-		}, "notice: showing revision " + testRevision1ID + ", older than the active revision " + testRevision2ID + `; run "occ agent deployment-status ` + testAgentID + " " + testRevision2ID + `" for the active revision` + "\n"},
+		}, "notice: showing revision " + testRevision1ID + ", older than the active revision " + testRevision2ID + `; run "occ --namespace ` + testNamespaceID + ` agent deployment-status ` + testAgentID + " " + testRevision2ID + `" for the active revision` + "\n"},
 		{"active metadata unavailable", map[string]string{
 			"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision2ID + `"}`,
 			"GET " + agentPath + "/revisions":                      olderOnly,
