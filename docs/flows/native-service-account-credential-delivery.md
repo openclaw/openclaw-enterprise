@@ -247,8 +247,8 @@ before admitting the Job; seed and claim remain available.
 A later non-OAuth revision's private-state init container removes `codex-home`.
 
 Compute observes `Complete`, replaces the original Secret value with a consumed
-marker, foreground-deletes the Job, waits for its exact Pods to disappear, and
-removes the seed Secret; only then can Codex start. Recovery from a consumed
+marker, removes the seed Secret, foreground-deletes the Job, and waits for its
+exact Pods to disappear; only then can Codex start. Recovery from a consumed
 marker repeats cleanup, never reseeding. Its OAuth startup branch opens existing
 auth, validates the receipt, and runs the ordinary model probe. Native refresh
 writes the same persistent file. Later revisions retain the source and reopen disk;

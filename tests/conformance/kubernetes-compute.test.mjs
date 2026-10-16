@@ -15780,6 +15780,87 @@ test("Kubernetes OAuth handoff fails its pass after three conflicting Job delete
   );
 });
 
+test("Kubernetes OAuth handoff removes the seed Secret first, so a failed Job delete after consumption cannot leave it", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  const sourceKey = stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
+  );
+  const seedKey = `Secret:${namespace}:${job.metadata.name}`;
+  assert.ok(objects.has(seedKey));
+
+  // The Job completes and this pass consumes the source, then the API server fails the
+  // Job delete with a non-conflict error. If this was the deployment's last attempt (or
+  // its convergence deadline passed), no later pass runs, so the seed Secret holding
+  // the token bundle must already be gone.
+  const transport = await driver.apiClients;
+  const deleteJob = transport.batch.deleteNamespacedJob;
+  transport.batch.deleteNamespacedJob = async () => {
+    throw Object.assign(new Error("Service Unavailable"), { statusCode: 503 });
+  };
+  state.ready = true;
+  await assert.rejects(driver.prepareRevision(revision, context), /HTTP 503/);
+  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+  assert.equal(objects.has(seedKey), false);
+  assert.ok(objects.has(`Job:${namespace}:${job.metadata.name}`));
+
+  // A later pass, when one runs, still removes the completed Job.
+  transport.batch.deleteNamespacedJob = deleteJob;
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  assert.equal(
+    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+    false,
+  );
+});
+
+test("Kubernetes OAuth handoff re-reads a legacy bootstrap Deployment when its delete conflicts", async () => {
+  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
+  const sourceKey = stageReadyOAuthSource(objects, revision, context);
+  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
+  const job = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
+  );
+  // A bootstrap Deployment left by an earlier release, owned by the same revision.
+  const deploymentKey = `Deployment:${namespace}:${job.metadata.name}`;
+  objects.set(deploymentKey, {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      ...structuredClone(job.metadata),
+      uid: "legacy-bootstrap-uid",
+      resourceVersion: "1",
+    },
+    spec: {},
+  });
+
+  // Like the API server, the delete honors its resourceVersion precondition. Another
+  // writer updates the Deployment once, after the Driver read it and before its delete.
+  const transport = await driver.apiClients;
+  const deleteDeployment = transport.apps.deleteNamespacedDeployment;
+  let conflicts = 0;
+  transport.apps.deleteNamespacedDeployment = async (request) => {
+    const stored = objects.get(deploymentKey);
+    if (conflicts === 0) {
+      stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
+    }
+    if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
+      conflicts += 1;
+      throw Object.assign(new Error("Conflict"), { statusCode: 409 });
+    }
+    assert.equal(request.body.preconditions.uid, "legacy-bootstrap-uid");
+    return deleteDeployment(request);
+  };
+  state.ready = true;
+  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
+  assert.equal(conflicts, 1);
+  assert.equal(objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+  assert.equal(
+    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
+    false,
+  );
+});
+
 test("Kubernetes OAuth failure evidence lists Job pods newest first by creation time", async () => {
   const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
   stageReadyOAuthSource(objects, revision, context);
