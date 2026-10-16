@@ -3307,6 +3307,19 @@ export const scenarios = {
     description:
       "Open the direct Logs link at 390 px. The first runtime status takes 700 ms; status and log output appear together instead of moving the output after it appears.",
   },
+  runtimeLogsSlowTabClick: {
+    group: "Pages/Agent detail",
+    name: "Select Logs while runtime status is loading",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/runtime", delayMs: 1200, once: true }],
+    description:
+      "The first runtime status takes 1.2 s after the Logs tab is selected. Stop Agent and Delete Agent stay hidden under the reserved area until the strip and output appear, so nothing below moves.",
+    steps: [
+      "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
+    ],
+  },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
     name: "Runtime status after a healthy first deploy",
@@ -4008,7 +4021,22 @@ export const scenarios = {
       },
     ],
     actions: [click("Edit Slack"), click("Save configuration")],
-    description: "A rejected Configuration write keeps the drawer and feedback visible.",
+    description:
+      "A rejected Configuration write keeps the drawer and feedback visible, with focus back on Save configuration.",
+  },
+  channelChangedElsewhere: {
+    group: "Components/Channels",
+    name: "Configuration changed elsewhere",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "Another browser saved this Configuration after the page read it. The editor closes and the section offers Reload draft; editing, deployment and tab changes wait for it.",
+    steps: [
+      "Check that focus is on Reload draft and the alert says the saved Configuration changed while you were editing.",
+      "Select Reload draft: the tab rebuilds in place with Draft reloaded., and Edit Slack saves again.",
+    ],
   },
   channelSavePending: {
     group: "Components/Channels",

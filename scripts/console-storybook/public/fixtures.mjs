@@ -180,6 +180,8 @@ export function installFixture(scenario, evidence) {
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
   const configs = new Map();
+  const configurationReads = new Set();
+  let configurationChangedElsewhere = false;
   const agents = new Map();
   const revisions = new Map();
   const deployments = new Map();
@@ -918,6 +920,15 @@ export function installFixture(scenario, evidence) {
           return error(404);
         }
         if (method === "GET") {
+          // Another browser saves this Configuration once the page has read it
+          // (configurationChangedElsewhere), so the next save preflight finds a newer generation.
+          if (scenario.configurationChangedElsewhere && !configurationChangedElsewhere) {
+            if (configurationReads.has(saved.id)) {
+              configurationChangedElsewhere = true;
+              saved.generation += 1;
+            }
+            configurationReads.add(saved.id);
+          }
           return response(saved);
         }
         if (method === "PATCH") {

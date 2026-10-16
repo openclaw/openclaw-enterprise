@@ -54,6 +54,7 @@ export const DiagnosticsUnknown = story("diagnosticsUnknown");
 export const DiagnosticsUnavailable = story("diagnosticsUnavailable");
 export const RuntimeLogs = story("runtimeLogs");
 export const RuntimeLogsSlowFirstStatus = story("runtimeLogsSlowFirstStatus");
+export const RuntimeLogsSlowTabClick = story("runtimeLogsSlowTabClick");
 export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");

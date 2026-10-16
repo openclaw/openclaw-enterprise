@@ -103,7 +103,7 @@ admitted versions remain unchanged; Cancel discards the edit. On deployment, Kub
 `deployment` delivers the generated password environment variable.
 
 Saving refreshes the draft in place, keeping scroll and focus; admitted snapshots stay. Invalid input,
-denial, and stale drafts retain editor text. Uncertain saves require readback.
+denial, and stale drafts retain editor text; focus moves to Reload draft or the outcome. Uncertain saves require readback.
 Unsaved edits block deployment; pending saves block tab and version changes.
 
 `agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
@@ -180,8 +180,8 @@ uncertain outcomes block retries until refresh. The
 recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
-Saving channels rereads Agent and Configuration and checks their association and
-generation. The PATCH sends `{ values: updatedValues }`, adding `secretBindings`
+Saving channels rereads Agent and Configuration; a changed association or
+generation closes the editor and offers Reload draft. The PATCH sends `{ values: updatedValues }`, adding `secretBindings`
 only for changed selections and preserving others. A rejected PATCH writes no
 new Secret grant.
 
