@@ -236,8 +236,10 @@ const inPlaceCases = [
       return reload;
     },
     saved: "Draft reloaded.",
-    focus: "Edit Configuration",
-    described: true,
+    // The reader's edits are carried over the reread document (finding 1512), so Save
+    // Configuration is the next step and deployment waits for it.
+    focus: "Save Configuration",
+    deployable: false,
   },
 ];
 
@@ -260,7 +262,10 @@ for (const c of inPlaceCases) {
     if (c.described) {
       assert.equal(await focusedDescription(page), c.saved);
     }
-    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
+    assert.equal(
+      await page.getByRole("button", { name: "Deploy new version" }).isEnabled(),
+      c.deployable ?? true,
+    );
     await c.verify?.(page, context, place.requests);
   });
 }

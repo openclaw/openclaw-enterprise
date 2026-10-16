@@ -133,12 +133,13 @@ Every JSON route shares this parser and limit. Creation requires `kind: "agent"`
 root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings` and `expectedGeneration`, refusing
-a stale one with `409` and an `/expectedGeneration` detail under the row lock. `kind`, `generation`, and ownership
-are server-owned. OCC preserves nested values and SecretRefs unchanged. Malformed,
+a stale one with `409` and an `/expectedGeneration` detail under the row lock.
+`kind`, `generation`, and ownership are server-owned. OCC preserves nested values
+unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
 `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
-Agent dependency or generation conflict with `409`, and unavailable IAM or storage with
+Agent dependency conflict with `409`, and unavailable IAM or storage with
 `503`. OpenClaw resolves inline SecretRefs at runtime; Configuration CRUD
 preserves them in `values`. OCC separately authorizes `operate` on each Secret
 selected by `secretBindings`, including retained bindings when PATCH omits the
