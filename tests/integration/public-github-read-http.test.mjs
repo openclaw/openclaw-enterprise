@@ -514,7 +514,6 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
       const [idler, other] = aliases;
       // One address opens the reader's whole 48-connection budget and never
       // finishes its request headers.
-      const started = Date.now();
       const idle = [];
       st.after(() => {
         for (const socket of idle) {
@@ -528,6 +527,7 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         await once(socket, "connect");
         socket.write("GET /healthz HTTP/1.1\r\nHost: reader\r\n");
       }
+      const idling = Date.now();
       const healthz = () =>
         new Promise((resolve) => {
           http
@@ -542,15 +542,17 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
             .once("error", (error) => resolve(error.code));
         });
       // Without a per-address cap every other caller is reset until the idle
-      // sockets time out, which Node's default 30 s check made last about 30 s.
+      // sockets reach the 6 s headers timeout (about 30 s with Node's default
+      // check interval), so allow well under 6 s.
       let status = await healthz();
-      while (status !== 200 && Date.now() - started < 7000) {
+      while (status !== 200 && Date.now() - idling < 2000) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         status = await healthz();
       }
       assert.equal(status, 200, "another caller is answered while one address idles");
-      // The idle sockets the reader did accept close at the 6 s headers timeout.
-      while (idle.some((socket) => !socket.closed) && Date.now() - started < 8500) {
+      // The idle sockets the reader did accept close at the 6 s headers timeout,
+      // checked every second.
+      while (idle.some((socket) => !socket.closed) && Date.now() - idling < 9000) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       assert.equal(idle.filter((socket) => !socket.closed).length, 0);
