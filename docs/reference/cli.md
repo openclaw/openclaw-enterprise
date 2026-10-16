@@ -201,8 +201,8 @@ the normal follow interval. It does not print
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
 
-A `403` adds a `hint:` line naming the grants the command needs and whom to ask,
-or the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
+OCC's generic `403` adds a `hint:` line naming the grants the command needs, or
+the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
 IDs passed: OCC refuses a missing ID the same way.
 
 ## Local development

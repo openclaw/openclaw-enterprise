@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/openclaw/openclaw-enterprise/internal/occclient"
@@ -17,7 +18,8 @@ type commandPermission struct {
 	// needs are the operations' unconditional permissions, as resourceKind.action
 	// from x-openclaw-permissions in packages/contracts/openapi/occ-api.openapi.json.
 	needs []string
-	// also names conditional or alternative grants, in prose.
+	// also names conditional grants in prose; a parenthetical such as
+	// "(or administer)" names an alternative to the first permission.
 	also string
 }
 
@@ -63,7 +65,7 @@ var commandPermissions = map[string]commandPermission{
 	"iam service-principal create":        {[]string{"createIAMServicePrincipal"}, []string{"installation.administer", "namespace.read"}, ""},
 	"iam service-principal list":          {[]string{"listIAMServicePrincipals"}, []string{"installation.administer", "namespace.read"}, ""},
 	"iam service-principal get":           {[]string{"getIAMServicePrincipal"}, []string{"installation.administer", "namespace.read"}, ""},
-	"service-key create":                  {[]string{"createServiceKey"}, []string{"installation.administer"}, "every grant of the ServicePrincipal"},
+	"service-key create":                  {[]string{"createServiceKey"}, []string{"installation.administer"}, ""},
 	"service-key revoke":                  {[]string{"revokeServiceKey"}, []string{"installation.administer"}, ""},
 	"agent create":                        {[]string{"createAgent"}, []string{"agent.create", "configuration.read"}, "access to the ServiceAccount, Secrets and credential sources it binds"},
 	"agent list":                          {[]string{"listAgents"}, []string{"namespace.read"}, ""},
@@ -71,7 +73,7 @@ var commandPermissions = map[string]commandPermission{
 	"agent update":                        {[]string{"updateAgent"}, []string{"agent.update", "configuration.read"}, "access to the ServiceAccount, Secrets and credential sources it binds"},
 	"agent deploy":                        {[]string{"deployAgent"}, []string{"agent.deploy", "configuration.read"}, "access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy"},
 	"agent revisions":                     {[]string{"listAgentRevisions"}, []string{"agent.read"}, ""},
-	"agent deployment-status":             {[]string{"listAgentRevisions", "getAgentDeployment"}, []string{"agent.read", "agent_revision.read"}, ""},
+	"agent deployment-status":             {[]string{"getAgentDeployment"}, []string{"agent_revision.read"}, "Agent read without DEPLOYMENT_ID"},
 	"agent stop":                          {[]string{"stopAgent"}, []string{"agent.operate"}, ""},
 	"agent delete":                        {[]string{"deleteAgent"}, []string{"agent.delete"}, ""},
 	"agent runtime-credentials get":       {[]string{"getAgentRuntimeCredentials"}, []string{"agent.read"}, ""},
@@ -79,7 +81,7 @@ var commandPermissions = map[string]commandPermission{
 	"agent credential-withdrawal request": {[]string{"withdrawAgentCredentialSource"}, []string{"agent.operate"}, ""},
 	"agent credential-withdrawal get":     {[]string{"getAgentCredentialWithdrawal"}, []string{"agent.read"}, ""},
 	"agent runtime":                       {[]string{"getAgentDeploymentRuntime"}, []string{"agent.operate", "agent.read", "agent_revision.read"}, ""},
-	"agent logs":                          {[]string{"getAgentDeploymentRuntimeLogs"}, []string{"agent.read_logs", "agent.read"}, "or Agent administer in place of read_logs"},
+	"agent logs":                          {[]string{"getAgentDeploymentRuntimeLogs"}, []string{"agent.read_logs", "agent.read"}, "(or administer)"},
 }
 
 // permissionKinds names OCC resource kinds as the console and docs do.
@@ -95,58 +97,71 @@ var permissionKinds = map[string]string{
 	"service_account":   "ServiceAccount",
 }
 
-// admittedNamespaceRefusal is OCC's message when a Namespace-scoped key
-// addresses another Namespace or an Installation-level route.
-const admittedNamespaceRefusal = "The admitted Namespace does not match."
+// OCC's two caller-scope refusals. Other 403 messages name their own cause
+// (for example an Agent principal's missing grant) and get no hint.
+const (
+	genericRefusal           = "The exact platform operation was not authorized."
+	admittedNamespaceRefusal = "The admitted Namespace does not match."
+)
 
-// refusalHint returns one hint line for a 403 FORBIDDEN from the command at
-// path, or "". It depends only on the command and the caller's own key file,
-// never on the requested IDs, so a real and a fake ID still print the same.
-func (app *application) refusalHint(path string, err error) string {
+// keyNamespacePattern accepts a plain Namespace ID from the key file; anything
+// else, such as a hand-edited value with control characters, is not printed.
+var keyNamespacePattern = regexp.MustCompile(`^ns_[A-Za-z0-9-]{1,64}$`)
+
+// refusalHint returns one hint line for OCC's generic or admitted-Namespace
+// 403 from the command, or "". It depends only on the command and the caller's
+// own key file, never on the requested IDs, so a real and a fake ID still print
+// the same.
+func (app *application) refusalHint(command *cobra.Command, path string, err error) string {
 	var apiErr *occclient.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusForbidden || apiErr.Code != "FORBIDDEN" {
 		return ""
 	}
-	if apiErr.Message == admittedNamespaceRefusal {
-		scope := "one Namespace"
-		if namespace := occclient.ServiceKeyNamespace(app.serviceKeyFile); namespace != "" {
-			scope = "Namespace " + namespace
+	switch apiErr.Message {
+	case admittedNamespaceRefusal:
+		namespace := occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		if !keyNamespacePattern.MatchString(namespace) {
+			return "hint: this service key is scoped to one Namespace; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass that Namespace's ID with --namespace (or OCC_NAMESPACE), read it with \"occ namespace get ID\", or use an Installation-scoped key."
 		}
 		return fmt.Sprintf(
-			"hint: this service key is scoped to %s; it cannot use another Namespace or Installation-level commands such as \"occ namespace list\". Use \"occ namespace get\" with that Namespace's ID, or an Installation-scoped key.",
-			scope,
+			"hint: this service key is scoped to Namespace %s; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass --namespace %s (or set OCC_NAMESPACE), read it with \"occ namespace get %s\", or use an Installation-scoped key.",
+			namespace, namespace, namespace,
 		)
+	case genericRefusal:
+	default:
+		return ""
 	}
 	permission, ok := commandPermissions[path]
 	if !ok {
 		return ""
 	}
 	parts := make([]string, 0, len(permission.needs))
-	administrator := "a Namespace administrator"
 	for _, need := range permission.needs {
 		kind, action, _ := strings.Cut(need, ".")
 		parts = append(parts, permissionKinds[kind]+" "+action)
-		if kind == "installation" {
-			administrator = "an Installation administrator"
-		}
+	}
+	also := permission.also
+	if strings.HasPrefix(also, "(") && len(parts) > 0 {
+		// A parenthetical qualifies the first permission: "read_logs (or administer)".
+		parts[0] += " " + also
+		also = ""
 	}
 	needs := strings.Join(parts, " and ")
 	if len(parts) > 2 {
 		needs = strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
 	}
 	switch {
-	case permission.also == "":
+	case also == "":
 	case needs == "":
-		needs = permission.also
-	case strings.HasPrefix(permission.also, "or "):
-		needs += ", " + permission.also
+		needs = also
 	default:
-		needs += ", plus " + permission.also
+		needs += ", plus " + also
 	}
-	return fmt.Sprintf(
-		"hint: \"occ %s\" needs %s; ask %s to grant what is missing. OCC refuses an ID that does not exist the same way.",
-		path, needs, administrator,
-	)
+	hint := fmt.Sprintf("hint: \"occ %s\" needs %s; ask an administrator to grant what is missing.", path, needs)
+	if strings.Contains(command.Use, "ID") {
+		hint += " OCC refuses an ID that does not exist the same way."
+	}
+	return hint
 }
 
 // refusalHintError appends a hint line to a refused command's error.
@@ -170,7 +185,7 @@ func (app *application) addRefusalHints(root *cobra.Command) {
 		path := strings.TrimPrefix(command.CommandPath(), root.Root().Name()+" ")
 		command.RunE = func(command *cobra.Command, args []string) error {
 			err := run(command, args)
-			if hint := app.refusalHint(path, err); hint != "" {
+			if hint := app.refusalHint(command, path, err); hint != "" {
 				return &refusalHintError{err: err, hint: hint}
 			}
 			return err

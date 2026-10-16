@@ -38,8 +38,7 @@ type Client struct {
 
 type serviceKeyEnvelope struct {
 	Data struct {
-		Key         string `json:"key"`
-		NamespaceID string `json:"namespaceId"`
+		Key string `json:"key"`
 	} `json:"data"`
 }
 
@@ -315,7 +314,11 @@ func ServiceKeyNamespace(path string) string {
 	if err != nil {
 		return ""
 	}
-	var envelope serviceKeyEnvelope
+	var envelope struct {
+		Data struct {
+			NamespaceID string `json:"namespaceId"`
+		} `json:"data"`
+	}
 	if json.Unmarshal(contents, &envelope) != nil {
 		return ""
 	}
