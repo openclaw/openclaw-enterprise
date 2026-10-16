@@ -156,7 +156,6 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
-  codexSandbox: modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
 });
 const {
   kubectl,
@@ -374,10 +373,9 @@ function nativeCodexConfiguration(gatewayAuth) {
       trustedProxies: gatewayAuth.trustedProxies,
     };
   }
-  configuration.tools = {
-    allow: ["read", "write", "edit", "exec"],
-    fs: { workspaceOnly: true },
-  };
+  // Native Codex tools are one capability; a narrow allowlist disables that surface.
+  // OpenShell supplies the filesystem and network boundaries verified below.
+  configuration.tools = { profile: "full" };
   return configuration;
 }
 
@@ -1703,26 +1701,24 @@ function createIntegrationSandboxDriverFactory(
       });
     }
 
+    // Preserve the real Driver's HOME so Compute and the Harness agree on hook paths.
+    // These configuration and identity methods perform no gateway I/O.
+    const configurationDriver = new OpenShellSandboxDriver(selection.configuration, {
+      id: selection.id,
+      implementation: "openshell",
+      backend: backendFor(undefined),
+    });
     return {
       id: selection.id,
       capability: "sandbox",
       implementation: selection.implementation,
       facets: Object.freeze(["networking", "filesystem", "process"]),
+      harnessHome: configurationDriver.harnessHome,
       configureAgent(configuration, harness) {
-        // Configuration admission performs no gateway I/O.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).configureAgent(configuration, harness);
+        return configurationDriver.configureAgent(configuration, harness);
       },
       harnessResource(context) {
-        // The bridge provisions through the real Driver, so its Sandbox identity is the same.
-        return new OpenShellSandboxDriver(selection.configuration, {
-          id: selection.id,
-          implementation: "openshell",
-          backend: backendFor(undefined),
-        }).harnessResource(context);
+        return configurationDriver.harnessResource(context);
       },
       async ensureNamespace(context) {
         try {
@@ -2499,8 +2495,8 @@ async function prepareProductionInstallation(
   if (harnessId === "codex") {
     assert.equal(
       deployed.data.configuration.plugins.entries.codex.config.appServer.sandbox,
-      modelSourceType === "codex-pat" ? "workspace-write" : "danger-full-access",
-      "OCC must select Codex isolation from the admitted source login mode.",
+      "danger-full-access",
+      "OpenShell must own isolation for both API-key and PAT sources.",
     );
   } else {
     assert.equal(
@@ -4108,7 +4104,7 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
-async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
+async function gatewayTurnFailureDiagnostic(topology, gatewayPassword) {
   const redactions = [modelCredential, gatewayPassword, topology.appServerToken].filter(
     (secret) => typeof secret === "string" && secret.length > 0,
   );
@@ -4167,7 +4163,7 @@ async function nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword) {
   return `\n${sections.join("\n")}`;
 }
 
-async function requestNativeOpenClawTurns(context, topology) {
+async function requestGatewayTurns(context, topology, harnessId) {
   const passwordSecret = await resource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
@@ -4179,8 +4175,15 @@ async function requestNativeOpenClawTurns(context, topology) {
     openShellGatewayName(topology.agent.id),
   );
   context.after(() => forwarding.stop());
+  const sessionKey = `openshell-gateway-${randomUUID()}`;
+  const nonces = [];
   const requestTurn = async () => {
-    const nonce = `OCC-OPENSHELL-NATIVE-${randomUUID()}`;
+    const nonce = `OCC-OPENSHELL-GATEWAY-${randomUUID()}`;
+    nonces.push(nonce);
+    const prompt =
+      harnessId === "codex"
+        ? `Use the shell exec tool to run exactly printf '%s' '${nonce}'. Reply with its output.`
+        : `Reply with exactly ${nonce}.`;
     let response;
     try {
       response = await fetch(`${forwarding.url}/v1/chat/completions`, {
@@ -4188,36 +4191,86 @@ async function requestNativeOpenClawTurns(context, topology) {
         headers: {
           authorization: `Bearer ${gatewayPassword}`,
           "content-type": "application/json",
-          "x-openclaw-session-key": `openshell-native-${randomUUID()}`,
+          "x-openclaw-session-key":
+            harnessId === "codex" ? sessionKey : `openshell-native-${randomUUID()}`,
         },
         body: JSON.stringify({
           model: "openclaw/default",
           stream: false,
-          messages: [{ role: "user", content: `Reply with exactly ${nonce}.` }],
+          messages: [{ role: "user", content: prompt }],
         }),
         signal: AbortSignal.timeout(180_000),
       });
     } catch (error) {
-      const diagnostic = await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      const diagnostic = await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
       assert.fail(
-        `Native OpenClaw turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
+        `Agent Gateway turn request failed: ${error?.message ?? String(error)}${diagnostic}`,
       );
     }
     const body = await response.text();
     assert.equal(body.includes(modelCredential), false);
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
-      response.status === 200
-        ? ""
-        : await nativeOpenClawTurnFailureDiagnostic(topology, gatewayPassword);
+      response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
     assert.equal(response.status, 200, `${body}${failureDiagnostic}`);
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 
-  // The first session's retained worker keeps its slot after the turn. A second session therefore
-  // proves that the same AgentRevision Sandbox admits more than one session-owned worker.
+  // Codex reuses the Gateway session to cover the bridge's next-turn policy. Native
+  // OpenClaw uses distinct sessions to exercise its multiple retained worker slots.
   await requestTurn();
   await requestTurn();
+  if (harnessId === "codex") {
+    // Inspect native, durable command records, not the model's claim that it ran printf.
+    // The HTTP requests above must pass through the regular OpenClaw bridge.
+    const claims = new Set(
+      topology.harnessPod.spec.volumes
+        .filter(({ persistentVolumeClaim }) => persistentVolumeClaim?.claimName)
+        .map(({ name }) => name),
+    );
+    const roots = topology.harnessPod.spec.containers
+      .find(({ name }) => name === "agent")
+      .volumeMounts.filter(({ name }) => claims.has(name))
+      .map(({ mountPath }) => mountPath);
+    await waitFor(
+      "successful native shell commands for both Gateway turns",
+      async () => {
+        const rollouts = await readHarnessFiles(topology.placement, topology.harnessPod, roots);
+        // Both commands must complete in order in one native thread, not two fresh rollouts.
+        return (
+          rollouts.some(({ path, content }) => {
+            if (!path.endsWith(".jsonl")) {
+              return false;
+            }
+            let next = 0;
+            // The writer may still be flushing its last record after the HTTP response.
+            const lines = content.toString("utf8").split("\n").slice(0, -1).filter(Boolean);
+            for (const line of lines) {
+              const { type, payload } = JSON.parse(line);
+              if (type !== "event_msg" || payload.type !== "item_completed") {
+                continue;
+              }
+              const command = payload.item;
+              const nonce = nonces[next];
+              if (
+                command.type === "CommandExecution" &&
+                command.command.join(" ").includes(nonce) &&
+                command.exit_code === 0 &&
+                command.aggregated_output?.trim() === nonce
+              ) {
+                next += 1;
+                if (next === nonces.length) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          }) || undefined
+        );
+      },
+      30_000,
+    );
+  }
 }
 
 async function assertNativeOpenClawWorkspaceFiles(topology) {
@@ -4311,6 +4364,13 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     "/sandbox/enterprise",
     "the Agent Gateway must receive the OpenShell provider workspace contract.",
   );
+  assert.equal(
+    topology.gatewayPod.spec.containers
+      .flatMap(({ env = [] }) => env)
+      .find(({ name }) => name === "OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE")?.value,
+    ":danger-full-access",
+    "OpenShell must explicitly select the native Codex permission profile.",
+  );
   const providerWorkspace = providerWorkspaceVariable.value;
   const harnessWorkspaceVariable = topology.harnessPod.spec.containers
     .flatMap(({ env = [] }) => env)
@@ -4332,7 +4392,9 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   // references the same opaque auth file without reusing cached cloud configuration.
   const deniedBackend = `https://chatgpt.com/backend-api/wham/${nonce}`;
   const deniedConfigPath = `/backend-api/wham/${nonce}/wham/config/bundle`;
-  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -rf "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
+  // Forced deletion requests native approval even in full-access mode. Use non-forced
+  // cleanup of this fresh probe directory so the command reaches the OpenShell boundary.
+  const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -r -- "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -4384,6 +4446,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.ok(escapedCommand, "the real Codex Harness must attempt escaping its workspace.");
   assert.ok(approvedCommand, "the real Codex Harness must execute the approved curl command.");
   assert.ok(deniedCommand, "the real Codex Harness must execute the denied curl command.");
+  // A declined escalation alone is not evidence of an OS-level denial: require executed commands.
+  for (const command of [readonlyCommand, escapedCommand, deniedCommand]) {
+    assert.ok(Number.isSafeInteger(command.exitCode), "the denied command must have executed.");
+  }
   assert.equal(workspaceCommand.exitCode, 0, "OpenShell must allow approved workspace writes.");
   assert.equal(approvedPathCommand.exitCode, 0, "OpenShell must allow projected config reads.");
   assert.notEqual(
@@ -4399,15 +4465,34 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       deniedConfigRequest,
       "the real Codex binary must attempt the unapproved backend path.",
     );
+    assert.ok(
+      Number.isSafeInteger(deniedConfigRequest.exitCode),
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${result.items.some(
+        ({ method, params }) =>
+          method === "item/commandExecution/requestApproval" &&
+          params?.itemId === deniedConfigRequest.id,
+      )}).`,
+    );
     assert.notEqual(deniedConfigRequest.exitCode, 0);
+    // The network supervisor runs outside the workload Pod. Match its boundary pair
+    // so this proof reads only the audit events for the Harness that executed the probe.
+    const boundaryPair = topology.harnessPod.metadata.labels?.["openshell.ai/boundary-pair"];
+    assert.ok(boundaryPair, "the Harness must identify its OpenShell boundary pair.");
+    const supervisors = (await resources("pods", topology.placement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
+        pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
+    );
+    assert.equal(supervisors.length, 1, "the Harness must have exactly one network supervisor.");
     // A provider 404 or an unrelated CLI failure is insufficient: the real supervisor
-    // must record its L7 denial of this exact native-Codex request.
+    // must record its L7 denial of this exact native-Codex request. Unmatched paths
+    // use the relay reason, not the generic HTTP policy-denial response text.
     await waitFor(
       "OpenShell denial of an unrelated Codex backend path",
       async () => {
         const logs = await kubectl(
           "logs",
-          topology.harnessPod.metadata.name,
+          supervisors[0].metadata.name,
           "--namespace",
           topology.placement,
           "--all-containers=true",
@@ -4418,7 +4503,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
           .some(
             (line) =>
               line.includes(`L7_REQUEST deny GET chatgpt.com:443${deniedConfigPath}`) &&
-              line.includes("not permitted by policy"),
+              line.includes("reason=no L7 endpoint path matched request"),
           );
       },
       30_000,
@@ -5096,7 +5181,7 @@ test(
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );
-          await requestNativeOpenClawTurns(context, topology);
+          await requestGatewayTurns(context, topology, "openclaw");
           await assertEmbeddedOpenShellFailsClosed(topology);
         }
         return;
@@ -5137,19 +5222,11 @@ test(
         );
       }
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting authenticated real in-Sandbox model turn.\n",
+        "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
       );
-      const nonce = `OCC-OPENSHELL-${randomUUID()}`;
-      const modelTurn = await requestCodexTurnFromGatewayPod({
-        namespace: topology.gatewayPlacement,
-        gatewayPod: topology.gatewayPod.metadata.name,
-        providerModel,
-        prompt: `Reply with exactly ${nonce}.`,
-      });
-      assert.match(modelTurn.assistant, new RegExp(nonce));
-      assert.equal(JSON.stringify(modelTurn).includes(modelCredential), false);
+      await requestGatewayTurns(context, topology, "codex");
       process.stderr.write(
-        "OpenShell integration: real in-Sandbox model turn passed; testing actual filesystem and network enforcement.\n",
+        "OpenShell integration: regular Gateway shell turns passed; testing actual filesystem and network enforcement.\n",
       );
       await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
       process.stderr.write(

@@ -28,8 +28,8 @@ The bundle moves one way and exists in these places:
 | Stage        | Object                                           | Who can read it                                                                                                                               | Erased when                                                                                       |
 | ------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | Staged login | Session Secret in the control plane              | Holders of `secret:operate` on that Secret, including through `secretBindings` projection                                                     | Cancelled, touched after expiry, or consumed by the first deployment                              |
-| Handoff      | Immutable seed Secret in the execution namespace | Kubernetes principals allowed to `get` Secrets there                                                                                          | After successful handoff and writer termination, or revision cleanup                              |
-| Handoff      | Seed writer pod                                  | No network, because its template has no `openclaw.dev/network-profile` label and the namespace default-deny applies; no service-account token | Deleted with the seed Secret                                                                      |
+| Handoff      | Immutable seed Secret in the execution namespace | Kubernetes principals allowed to `get` Secrets there                                                                                          | After the source is consumed, or revision cleanup                                                 |
+| Handoff      | Seed writer pod                                  | No network, because its template has no `openclaw.dev/network-profile` label and the namespace default-deny applies; no service-account token | Deleted with its Job                                                                              |
 | Runtime      | `codex-home/auth.json` on the Agent claim        | The dedicated Codex workload, which refreshes it                                                                                              | A non-OAuth revision starts, or the claim is deleted (subject to the StorageClass reclaim policy) |
 
 **Launch scope:** persistent runtime-owned credentials deliberately replace the
@@ -49,7 +49,8 @@ Job once and observes its existing conditions on later passes. It does not patch
 or recreate a failed Job to reset either budget.
 Reobservation accepts equivalent API-canonicalized resource quantities while
 rejecting changed limits or requests. Before admitting a Job, Compute retires
-any exact owned bootstrap Deployment and waits for its writer Pods to disappear.
+any exact owned bootstrap Deployment, re-reading it when a delete conflicts, and
+waits for its writer Pods to disappear.
 The seed and private claim survive this cutover.
 
 The writer locks the private directory while it validates or installs the bundle
@@ -57,8 +58,10 @@ and receipt, then exits. Kernel-owned locking serializes duplicate executions
 and releases the lock on process exit. A successful Job means the writer verified
 both files; it does not prove provider authentication or a model turn.
 
-After `Complete`, Compute consumes the source, deletes the Job with foreground
-propagation, waits for its exact Pods to disappear, and removes the seed Secret.
+After `Complete`, Compute consumes the source and removes the seed Secret first,
+retrying transient errors, so a later Job or Pod cleanup failure cannot leave the
+token bundle behind. It then deletes the Job with foreground propagation and
+waits for its exact Pods to disappear.
 Only then does it start Codex. Cleanup interrupted after consumption resumes
 from the consumed marker without copying the original tokens again.
 

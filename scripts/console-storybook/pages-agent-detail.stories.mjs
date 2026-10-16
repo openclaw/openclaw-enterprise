@@ -52,6 +52,7 @@ export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
 export const DiagnosticsUnavailable = story("diagnosticsUnavailable");
 export const RuntimeLogs = story("runtimeLogs");
+export const RuntimeLogsSlowFirstStatus = story("runtimeLogsSlowFirstStatus");
 export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");

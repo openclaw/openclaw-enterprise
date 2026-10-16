@@ -190,13 +190,7 @@ function createTestCredentialRefresh(calls, options = {}) {
 }
 
 function createTestSandbox() {
-  const configuredLoginModes = [];
   return {
-    configuredLoginModes,
-    configureAgent(configuration, _harness, loginMode) {
-      configuredLoginModes.push(loginMode);
-      return configuration;
-    },
     id: "sandbox-test",
     capability: "sandbox",
     implementation: "test-sandbox",
@@ -328,7 +322,6 @@ async function fixture(options = {}) {
       return { ...namespace, name: `placed-${namespace.id.slice(-12)}` };
     },
   };
-  const sandbox = createTestSandbox();
   const drivers = [
     iam,
     compute,
@@ -336,7 +329,7 @@ async function fixture(options = {}) {
     secretDriver,
     ...(options.withoutGateway ? [] : [gateway]),
     ...(options.withoutRefresh || options.withoutGateway ? [] : [refresh]),
-    ...(options.withoutSandbox ? [] : [sandbox]),
+    ...(options.withoutSandbox ? [] : [createTestSandbox()]),
   ];
   for (const driver of drivers) {
     controller.registerDriver(driver);
@@ -410,7 +403,6 @@ async function fixture(options = {}) {
     passRegistrationFence,
     refresh,
     secretDriver,
-    sandbox,
     state,
   };
 }
@@ -2009,7 +2001,6 @@ test("deploy admission freezes the source and requires the Agent principal to op
     controller,
     dedicatedAgent,
     gateway,
-    sandbox,
     grantAgentSourceOperate,
     makeReady,
     modelSecret,
@@ -2041,8 +2032,6 @@ test("deploy admission freezes the source and requires the Agent principal to op
   await assert.rejects(deploy(), AuthorizationDeniedError);
   grantAgentSourceOperate(agent, source);
   const revision = await deploy();
-  // The Sandbox selects isolation from admitted catalog metadata, never Secret material.
-  assert.equal(sandbox.configuredLoginModes.at(-1), "api_key");
   assert.deepEqual(revision.harnessAuth, {
     method: "credential_source",
     sourceId: source.id,

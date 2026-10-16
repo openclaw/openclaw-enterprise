@@ -1143,7 +1143,10 @@ const REQUEST_RETRY_ATTEMPTS = 6;
 const REQUEST_RETRY_BASE_DELAY_MS = 50;
 const REQUEST_RETRY_MAX_DELAY_MS = 2_000;
 const REQUEST_RETRY_BUDGET_MS = 2_000;
-/** Read-and-delete attempts for the OAuth bootstrap Job; the last 409 or 404 fails the pass. */
+/**
+ * Read-and-delete attempts for the OAuth bootstrap Job or legacy Deployment (the last
+ * 409 or 404 fails the pass) and for a consumed seed Secret (also on transient errors).
+ */
 const OAUTH_BOOTSTRAP_DELETE_ATTEMPTS = 3;
 /** Each Kubernetes call on the runtime log path; the service bounds the whole request. */
 const RUNTIME_LOG_CALL_TIMEOUT_MS = 5_000;
@@ -13481,7 +13484,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ) {
         throw new OwnershipFailure("Consumed OAuth credentials cannot be replaced; sign in again.");
       }
-      await this.removeOAuthBootstrap(revision, namespace);
+      await this.removeOAuthBootstrap(revision, namespace, { consumed: true });
       return true;
     }
     let nativeAuth: Record<string, unknown>;
@@ -13639,7 +13642,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       phase: "consumed",
       volumeUid,
     });
-    await this.removeOAuthBootstrap(revision, namespace);
+    await this.removeOAuthBootstrap(revision, namespace, { consumed: true });
     return true;
   }
 
@@ -13754,37 +13757,67 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
-    const name = this.oauthBootstrapName(revision);
-    const deployment = await this.getOwned(
-      "Deployment",
-      name,
-      namespace,
-      this.pluginRuntimeOwnership(revision),
-    );
-    if (deployment === undefined) {
-      return;
+    if (await this.deleteOAuthBootstrapWorkload("Deployment", revision, namespace)) {
+      // An unfinished writer must leave the volume before another writer starts.
+      await this.waitForRevisionPodsToTerminate(
+        revision,
+        namespace,
+        "agent",
+        this.oauthBootstrapName(revision),
+      );
     }
-    const clients = await this.clients(namespace.plane);
-    await this.request(
-      () =>
-        clients.apps.deleteNamespacedDeployment({
-          name,
-          namespace: namespace.name,
-          body: {
-            propagationPolicy: "Foreground",
-            preconditions: {
-              uid: required(deployment.metadata.uid, "OAuth bootstrap Deployment UID"),
-              resourceVersion: required(
-                deployment.metadata.resourceVersion,
-                "OAuth bootstrap Deployment version",
-              ),
-            },
+  }
+
+  /**
+   * Foreground-deletes the owned OAuth bootstrap Job or legacy Deployment with uid and
+   * resourceVersion preconditions from a fresh, ownership-checked read. A write between
+   * the read and the delete (409) or an object already gone (404) is re-read instead of
+   * failing the pass: after consumption, a failed final attempt has no later pass.
+   * Returns whether an owned object was found.
+   */
+  private async deleteOAuthBootstrapWorkload(
+    kind: "Job" | "Deployment",
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<boolean> {
+    const name = this.oauthBootstrapName(revision);
+    const ownership = this.pluginRuntimeOwnership(revision);
+    const label = kind === "Job" ? "OAuth bootstrap" : "OAuth bootstrap Deployment";
+    let found = false;
+    for (let attempt = 1; ; attempt += 1) {
+      const workload = await this.getOwned(kind, name, namespace, ownership);
+      if (workload === undefined) {
+        return found;
+      }
+      found = true;
+      const request = {
+        name,
+        namespace: namespace.name,
+        body: {
+          propagationPolicy: "Foreground",
+          preconditions: {
+            uid: required(workload.metadata.uid, `${label} UID`),
+            resourceVersion: required(workload.metadata.resourceVersion, `${label} version`),
           },
-        }),
-      { mutating: true },
-    );
-    // An unfinished writer must leave the volume before another writer starts.
-    await this.waitForRevisionPodsToTerminate(revision, namespace, "agent", name);
+        },
+      };
+      const clients = await this.clients(namespace.plane);
+      try {
+        await this.request(
+          () =>
+            kind === "Job"
+              ? clients.batch.deleteNamespacedJob(request)
+              : clients.apps.deleteNamespacedDeployment(request),
+          { mutating: true },
+        );
+        return true;
+      } catch (error) {
+        const status = numericErrorStatus(error);
+        if ((status !== 409 && status !== 404) || attempt >= OAUTH_BOOTSTRAP_DELETE_ATTEMPTS) {
+          throw error;
+        }
+      }
+    }
   }
 
   private async oauthBootstrapFailureEvidence(
@@ -13893,48 +13926,47 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private async removeOAuthBootstrap(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
+    { consumed = false }: { readonly consumed?: boolean } = {},
   ): Promise<void> {
     const name = this.oauthBootstrapName(revision);
     const ownership = this.pluginRuntimeOwnership(revision);
-    await this.retireOAuthBootstrapDeployment(revision, namespace);
-    // A write between the read and the delete (409) or a Job already gone (404) is
-    // re-read here instead of failing the pass: after consumption, a failed final
-    // attempt has no later pass, and the seed Secret would keep the token bundle.
-    for (let attempt = 1; ; attempt += 1) {
-      const job = await this.getOwned("Job", name, namespace, ownership);
-      if (job === undefined) {
-        break;
-      }
-      const clients = await this.clients(namespace.plane);
-      try {
-        await this.request(
-          () =>
-            clients.batch.deleteNamespacedJob({
-              name,
-              namespace: namespace.name,
-              body: {
-                propagationPolicy: "Foreground",
-                preconditions: {
-                  uid: required(job.metadata.uid, "OAuth bootstrap UID"),
-                  resourceVersion: required(
-                    job.metadata.resourceVersion,
-                    "OAuth bootstrap version",
-                  ),
-                },
-              },
-            }),
-          { mutating: true },
-        );
-        break;
-      } catch (error) {
-        const status = numericErrorStatus(error);
-        if ((status !== 409 && status !== 404) || attempt >= OAUTH_BOOTSTRAP_DELETE_ATTEMPTS) {
-          throw error;
+    if (consumed) {
+      // The source is consumed, so the seed's token bundle has no remaining use. End its
+      // custody first: a later Deployment, Job or Pod cleanup failure can then fail the
+      // pass, even its last attempt, without leaving the bundle behind. A transient
+      // failure of this delete is retried; each attempt re-reads the owned Secret, so a
+      // delete that was applied but unconfirmed reads as gone.
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+          break;
+        } catch (error) {
+          const status = numericErrorStatus(error);
+          if (
+            !(
+              error instanceof KubernetesRequestTimeout ||
+              status === 404 ||
+              status === 409 ||
+              status === 429 ||
+              (status !== undefined && status >= 500)
+            ) ||
+            attempt >= OAUTH_BOOTSTRAP_DELETE_ATTEMPTS
+          ) {
+            throw error;
+          }
+          await this.waitBeforeRetry(
+            requestRetryDelay(attempt, status, error),
+            currentComputeAbortSignal(),
+          );
         }
       }
     }
+    await this.retireOAuthBootstrapDeployment(revision, namespace);
+    await this.deleteOAuthBootstrapWorkload("Job", revision, namespace);
     await this.waitForRevisionPodsToTerminate(revision, namespace, "agent", name);
-    await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+    if (!consumed) {
+      await this.deleteOwnedNamespacedResource("Secret", name, ownership, namespace);
+    }
   }
 
   private async deliverHarnessAuth(
@@ -14675,6 +14707,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ? `ws://agent-${suffix}.${required(configuration?.harnessNamespace?.name, "Harness namespace")}.svc:${AGENT_TRANSPORT_PORT}`
                   : `wss://${this.options.executionCluster.harnessRouting.hostname}${this.harnessRoutePath(ownership)}`,
           });
+          if (providerEndpoint?.codexPermissionProfile !== undefined) {
+            variables.push({
+              name: "OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE",
+              value: providerEndpoint.codexPermissionProfile,
+            });
+          }
           if (providerEndpoint?.workspaceRoot !== undefined) {
             variables.push({
               name: "OPENCLAW_REMOTE_WORKSPACE_ROOT",
