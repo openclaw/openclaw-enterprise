@@ -1160,7 +1160,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
   let revealHold = null;
   let scrollOnReveal = null;
-  function revealDetail() {
+  function showDetail() {
     clearTimeout(revealTimer);
     view.classList.remove("agent-detail-pending");
     // An Agent opened from the list shows this page in place of the list only now (finding 1516).
@@ -1168,7 +1168,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     scrollOnReveal?.();
     markRevealed();
   }
-  revealTimer = setTimeout(revealDetail, FIRST_ACTIVITY_WAIT_MS);
+  // The overview's first reads settled.
+  function revealDetail() {
+    if (revealHold) {
+      void revealHold.then(showDetail);
+    } else {
+      showDetail();
+    }
+  }
+  revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
     const strip = tabs.getBoundingClientRect();
     const bounds = tabControls.get(selectedTab).getBoundingClientRect();
@@ -1774,9 +1782,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null])
-          .then(() => revealHold)
-          .then(revealDetail);
+        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
+          revealDetail,
+        );
       };
       const nextPanel = mostRecent
         ? createDeploymentStatusPanel(
