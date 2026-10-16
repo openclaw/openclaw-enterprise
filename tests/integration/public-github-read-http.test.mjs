@@ -154,9 +154,14 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   };
   // GitHub denies its anonymous quota once. Every later read, from any caller, is parked with
   // the shared retry time (above `minimum` seconds) instead of spending more quota.
-  const assertParked = async (headers, minimum, reads) => {
+  const assertParked = async (
+    headers,
+    minimum,
+    reads,
+    body = { message: "API rate limit exceeded" },
+  ) => {
     const quota = { "x-ratelimit-remaining": "0", ...headers };
-    answer(403, { message: "API rate limit exceeded" }, quota);
+    answer(403, body, quota);
     const before = requests;
     for (const [address, path, base] of reads) {
       const parked = await from(address, path, base);
@@ -459,6 +464,56 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
         [second, "/pulls/20", base],
         [third, "/pulls/20", base],
       ]);
+    },
+  );
+  await t.test(
+    "identical reads in flight share one provider read and its answer",
+    multipleCallers,
+    async (st) => {
+      const reader = await startReader(st);
+      const [first, second] = aliases;
+      // The provider holds the first read of pull 30 and answers any other at once.
+      const holding = Promise.withResolvers();
+      let held;
+      reply = (req, res) => {
+        if (held) {
+          ok(res);
+          return;
+        }
+        held = res;
+        holding.resolve();
+      };
+      const before = requests;
+      const reads = [from(first, "/pulls/30", reader.base)];
+      await holding.promise;
+      // The reader takes the second caller's request synchronously: by this event it has either
+      // joined the read in flight or started its own provider read.
+      const taken = once(reader.server, "request");
+      reads.push(from(second, "/pulls/30", reader.base));
+      await taken;
+      held.writeHead(200, json).end(JSON.stringify({ number: 30 }));
+      for (const { status, body } of await Promise.all(reads)) {
+        assert.equal(status, 200);
+        assert.deepEqual(body, { number: 30 });
+      }
+      assert.equal(requests, before + 1, "identical reads in flight must share one provider read");
+    },
+  );
+  await t.test(
+    "a 403 whose only quota signal is x-ratelimit-remaining: 0 parks the shared quota",
+    multipleCallers,
+    async (st) => {
+      const { base } = await startReader(st);
+      // No retry-after, reset time or rate-limit wording: the reader parks for its default minute.
+      await assertParked(
+        {},
+        50,
+        [
+          [aliases[0], "/pulls/40", base],
+          [aliases[1], "/releases/40", base],
+        ],
+        { message: "Forbidden" },
+      );
     },
   );
   await t.test(
