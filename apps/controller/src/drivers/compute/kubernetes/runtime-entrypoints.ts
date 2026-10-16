@@ -3612,8 +3612,18 @@ function probeCodexAuthentication(timeout) {
     let turnStarted = false;
     let turnCompleted = false;
     let recoveredStreamErrors = 0;
+    // A transient failure is only a retry candidate: a later deterministic failure in
+    // the same attempt (a tool event, a rate limit) still holds at once. A transient
+    // message is never a Reconnecting notice, so no recovered stream error lands here.
+    let transientFailure;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
+      const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
+        : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
+      if (failure?.transient === true) {
+        transientFailure ??= failure;
+        continue;
+      }
       if (event.type === "error") {
         if (!turnStarted || turnCompleted || !isRecoveredNativeStreamError(event) ||
           ++recoveredStreamErrors > MAX_RECOVERED_STREAM_RETRIES) return finish(codexProbeStatusFailure(event.message, "error-event"));
@@ -3626,6 +3636,7 @@ function probeCodexAuthentication(timeout) {
       }
       if (event.type === "turn.completed") turnCompleted = true;
     }
+    if (transientFailure !== undefined) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
     // A probe killed from outside (not by its own timeout) may pass on a second try.

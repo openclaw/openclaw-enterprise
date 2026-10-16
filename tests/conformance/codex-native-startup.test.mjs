@@ -524,6 +524,77 @@ test("Codex runtime retries a transient startup model probe failure once", async
       expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
       probeCodes: ["MODEL_PROBE_FAILED", "AUTHENTICATION_FAILED"],
     },
+    // Within one attempt, a later deterministic failure vetoes an earlier transient one.
+    {
+      name: "a transient error then a tool event in the same attempt holds the tool event",
+      native: [
+        login(),
+        probe([
+          started,
+          errorEvent("unexpected status 503"),
+          { type: "item.completed", item: { type: "command_execution" } },
+        ]),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
+    },
+    {
+      name: "a transient error then a rate limit in the same attempt holds the rate limit",
+      native: [
+        login(),
+        probe(
+          [
+            started,
+            errorEvent("unexpected status 503"),
+            failedTurn("exceeded retry limit, last status: 429 Too Many Requests"),
+          ],
+          { status: 1 },
+        ),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }, { status: 429 }),
+    },
+    {
+      name: "a transient error then a credential rejection in the same attempt is an authentication failure",
+      native: [
+        login(),
+        probe(
+          [
+            started,
+            errorEvent("unexpected status 503"),
+            failedTurn("unexpected status 401 Unauthorized: Incorrect API key"),
+          ],
+          { status: 1 },
+        ),
+      ],
+      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
+    },
+    {
+      name: "a transient error then a completed reply in the same attempt is still retried",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 503"), assistant, completed]),
+        success,
+      ],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    },
+    {
+      name: "two transient failures in one attempt still get one retry",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 502"), failedTurn("broken pipe")], {
+          status: 1,
+        }),
+        failedWith("unexpected status 503"),
+      ],
+      retryAfterMs: 1000,
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
+        { status: 503 },
+      ),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+    },
     {
       name: "a transient failure then a timeout holds the timeout",
       native: [login(), failedWith("unexpected status 503"), probe([], timedOut, 30000)],
