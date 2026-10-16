@@ -126,9 +126,11 @@ stops reads. Missing provenance stays explicit.
 `loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
 from the list immediately shows **Loading agent details…** and **Back to Agents**.
 Access checks finish before the Agent’s name, actions, and overview appear together.
+Other ways into an Agent keep the shown page until then.
 Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A held page keeps its own navigation and header.
+A page held for another page keeps its Namespace selector disabled.
 A return to a retained view or a refocus keeps the shown page inert and says
 **Still checking…** after one second. The Console retains up to 16 views by route,
 Namespace, and session owner, excluding passwords and discovery
@@ -365,13 +367,10 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 13:00: Keep the shown page until an entered Agent reveals; keep a held page's selector disabled on the way to another page. (ui-jank-code-10)
 - 2026-10-16 12:00: Paint Create Agent with its permission answer; keep a clicked Logs tab's strip in place. (ui-jank-code-9)
 - 2026-10-16 11:30: Hold the shown page in its own navigation and header; show an Agent’s heading and overview together when ready. (ui-jank-code-9)
 - 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
 - 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
-- 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
-- 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
-- 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
-- 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
