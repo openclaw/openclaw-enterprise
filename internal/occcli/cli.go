@@ -123,6 +123,7 @@ func New(out, errOut io.Writer) *cobra.Command {
 			child.Run, child.RunE = nil, helpTopic
 		}
 	}
+	app.addRefusalHints(command)
 	return command
 }
 

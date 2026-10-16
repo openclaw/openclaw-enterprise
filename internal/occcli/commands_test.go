@@ -27,6 +27,8 @@ type fakeOCC struct {
 	mu        sync.Mutex
 	responses map[string]string
 	requested []string
+	// refuse, when set, answers every request 403 FORBIDDEN with this message.
+	refuse string
 }
 
 func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -39,6 +41,11 @@ func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	fake.mu.Lock()
 	fake.requested = append(fake.requested, requested)
 	fake.mu.Unlock()
+	if fake.refuse != "" {
+		writer.WriteHeader(http.StatusForbidden)
+		_ = json.MarshalWrite(writer, map[string]any{"error": map[string]string{"code": "FORBIDDEN", "message": fake.refuse}})
+		return
+	}
 	data, ok := fake.responses[key]
 	if !ok {
 		writer.WriteHeader(http.StatusNotFound)

@@ -38,7 +38,8 @@ type Client struct {
 
 type serviceKeyEnvelope struct {
 	Data struct {
-		Key string `json:"key"`
+		Key         string `json:"key"`
+		NamespaceID string `json:"namespaceId"`
 	} `json:"data"`
 }
 
@@ -304,6 +305,21 @@ func readServiceKey(path string) (string, error) {
 		return "", fmt.Errorf("invalid service-key file %s", path)
 	}
 	return key, nil
+}
+
+// ServiceKeyNamespace returns the Namespace a service-key file's key was issued
+// for, as recorded in the file by issuance, or "" when the file names none or
+// cannot be read. It is local information for error hints, not authorization.
+func ServiceKeyNamespace(path string) string {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var envelope serviceKeyEnvelope
+	if json.Unmarshal(contents, &envelope) != nil {
+		return ""
+	}
+	return envelope.Data.NamespaceID
 }
 
 func httpTransport(caBundle string) (*http.Transport, error) {
