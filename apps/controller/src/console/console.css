@@ -2451,6 +2451,7 @@ summary:focus-visible {
   color: var(--muted);
 }
 .log-viewer {
+  container: log-viewer / inline-size;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2783,7 +2784,7 @@ summary:focus-visible {
   color: var(--muted);
   text-decoration: line-through;
 }
-@media (max-width: 1100px) {
+@container log-viewer (max-width: 1100px) {
   .log-line {
     grid-template-columns: 150px 44px minmax(60px, 88px) minmax(0, 1fr);
     gap: 10px;
@@ -2797,6 +2798,8 @@ summary:focus-visible {
   .log-actions {
     margin-left: 0;
   }
+}
+@container log-viewer (max-width: 760px) {
   .log-line {
     grid-template-columns: minmax(0, 1fr) 48px minmax(60px, 112px);
     gap: 4px 10px;
@@ -2833,6 +2836,8 @@ summary:focus-visible {
     padding-right: 16px;
     padding-left: 16px;
   }
+}
+@container log-viewer (max-width: 520px) {
   .log-row {
     padding-right: 12px;
     padding-left: 28px;

@@ -3333,6 +3333,7 @@ export const scenarios = {
     steps: [
       "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
+      "At 1160px, keep the version list beside the detail panel. In a collapsed log row, the message should use the full line below its timestamp, level, and origin. Widen the preview until the message fits beside that metadata.",
       "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
       "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
     ],

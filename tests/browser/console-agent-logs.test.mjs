@@ -114,6 +114,42 @@ test("a failed deployment's Logs link opens its version in view without reloadin
   }
 });
 
+test("narrow desktop log panels give messages the full row width", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [line(1, "narrow desktop output")];
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1160, height: 900 } },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  await page
+    .getByRole("log", { name: "Runtime log output" })
+    .getByText("narrow desktop output")
+    .waitFor();
+
+  // Keep the version selector beside the detail panel: a stacked mobile layout
+  // would hide the regression caused by sizing log columns from the viewport.
+  const layout = await page.locator(".agent-version-layout").evaluate((element) => {
+    const selector = element.firstElementChild.getBoundingClientRect();
+    const detail = element.querySelector(".agent-version-detail").getBoundingClientRect();
+    const viewer = element.querySelector(".log-viewer").getBoundingClientRect();
+    const row = element.querySelector(".log-line").getBoundingClientRect();
+    const message = element.querySelector(".log-content").getBoundingClientRect();
+    return {
+      split: selector.width > 0 && selector.right <= detail.left && selector.bottom > detail.top,
+      viewerWidth: viewer.width,
+      rowWidth: row.width,
+      messageWidth: message.width,
+    };
+  });
+  assert.ok(layout.split, "the desktop version selector and detail panel remain side by side");
+  assert.ok(layout.viewerWidth < 760, "the log viewer is narrow inside the desktop split panel");
+  assert.ok(layout.rowWidth > 0);
+  assert.ok(
+    layout.messageWidth >= layout.rowWidth * 0.95,
+    `message width ${layout.messageWidth} should fill log-line width ${layout.rowWidth}`,
+  );
+});
+
 test("phone-width routes, resizing and history keep the selected Agent tab visible", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "phone-width output")];
