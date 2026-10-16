@@ -885,8 +885,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       callerPermissionsSettled = true;
     });
   // Agent-side saves (plugins, authentication source, repository access) are Agent updates;
-  // Configuration saves have no bit in this answer and stay enabled (finding 1530).
-  const agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
+  // Configuration saves have no bit in this answer and stay enabled (finding 1530). A draft
+  // refresh reads the answer again, so a grant applies without a page Refresh (finding 1538).
+  let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   let deleting = agent.status === "deleting";
   let currentRevisionId = agent.activeRevisionId;
   // The Agent as last read; Stop and finished deployments update it in place.
@@ -2383,6 +2384,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       agent = freshAgent;
       updateCurrentAgent(freshAgent, latestRevisionResult, viewedSnapshot);
     }
+    // The rebuilt editors take the fresh answer; a failed read keeps the last one.
+    const previousUpdateAllowed = agentUpdateAllowed;
+    agentUpdateAllowed = request(`${path}/permissions`).then(
+      (permissions) => {
+        if (context.isCurrent()) {
+          callerPermissions = permissions;
+        }
+        return permissions?.update;
+      },
+      () => previousUpdateAllowed,
+    );
     const next = loadDetails();
     const data = await next;
     if (!context.isCurrent() || deleting || !data) {
@@ -2716,7 +2728,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               throw error;
             }
             if (!configurationSaved) {
-              refusedSave(error, "configuration");
+              refusedSave(error, "configuration", mutationStarted);
             }
             if (error.status === 401) {
               context.onExpired();
@@ -2831,6 +2843,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           updateNote.textContent = AGENT_UPDATE_DENIED;
           updateNote.hidden = false;
           save.disabled = true;
+          // An edit that cannot be saved would only block Deploy (finding 1539).
+          auth.setDisabled(true);
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
@@ -2951,7 +2965,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
             feedback.textContent = error.outcomeUnknown
               ? error.message
-              : rejectionMessage(refusedSave(error, "agent"), mutationStarted);
+              : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted);
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
@@ -2963,7 +2977,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             pending = false;
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;
-            auth.setDisabled(outcomeUnknown || savedAuthentication !== null);
+            auth.setDisabled(outcomeUnknown || savedAuthentication !== null || updateDenied);
             syncUnsavedAuthentication();
           }
         }
@@ -3084,7 +3098,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
-      fields?.setDisabled(locked);
+      // An edit that cannot be saved would only block leaving the tab (finding 1539).
+      fields?.setDisabled(locked || updateDenied);
     }
     fields = createRepositoryFields(
       context,
@@ -3148,7 +3163,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
         } else {
           feedback.textContent = rejectionMessage(
-            saved ? error : refusedSave(error, "agent"),
+            saved ? error : refusedSave(error, "agent", mutationStarted),
             mutationStarted,
           );
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
@@ -3489,7 +3504,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           return;
         }
         if (!configurationSaved) {
-          refusedSave(error, "configuration");
+          refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;

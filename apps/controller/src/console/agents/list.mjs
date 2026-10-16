@@ -118,6 +118,9 @@ export const SAVE_REFUSALS = Object.freeze({
     "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.",
   agent:
     "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+  // A save first rereads the Agent and its Configuration; a refused read is not a refused
+  // update (finding 1540).
+  read: "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.",
 });
 
 // Shown beside Agent-side save controls when the caller's permission answer denies Agent update.
@@ -125,10 +128,11 @@ export const SAVE_REFUSALS = Object.freeze({
 export const AGENT_UPDATE_DENIED =
   "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.";
 
-// Marks a 403 from a save (or from its preflight reads) so message() names that save's grants.
-export function refusedSave(error, save) {
+// Marks a 403 from a save so message() names the grants it needs: the save's own when the
+// write itself was refused (`written`), read access when a read before it was (finding 1540).
+export function refusedSave(error, save, written) {
   if (error?.status === 403) {
-    error.refusal = SAVE_REFUSALS[save];
+    error.refusal = SAVE_REFUSALS[written ? save : "read"];
   }
   return error;
 }

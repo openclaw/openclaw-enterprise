@@ -250,7 +250,8 @@ export function renderAgentPlugins(
     save.disabled = updateDenied || !dirty || pending || outcomeUnknown || reloadRequired;
     discard.disabled = !dirty || pending || outcomeUnknown || reloadRequired;
     reload.hidden = !outcomeUnknown && !reloadRequired;
-    discovery.fields.setDisabled(pending || outcomeUnknown || reloadRequired);
+    // Edits that cannot be saved would only block leaving the tab (finding 1539).
+    discovery.fields.setDisabled(updateDenied || pending || outcomeUnknown || reloadRequired);
     oauthLogin.setDisabled(pending || outcomeUnknown || reloadRequired);
     if (outcomeUnknown) {
       feedback.textContent =
@@ -345,7 +346,9 @@ export function renderAgentPlugins(
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429, 501].includes(error.status);
       feedback.textContent =
         error.status === 403
-          ? SAVE_REFUSALS.agent
+          ? mutationStarted
+            ? SAVE_REFUSALS.agent
+            : SAVE_REFUSALS.read
           : error.status === 400 && !saved && error.serverMessage !== undefined
             ? rejectionMessage(error, mutationStarted)
             : error.status === 400
@@ -373,6 +376,8 @@ export function renderAgentPlugins(
       updateDenied = true;
       updateNote.textContent = AGENT_UPDATE_DENIED;
       updateNote.hidden = false;
+      // The selections stay in view while their fields are disabled.
+      input.closest("details").open = true;
       updateState();
     }
   });

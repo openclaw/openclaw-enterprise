@@ -111,3 +111,40 @@ test("an untouched or unchanged document reports nothing mixed", () => {
   assert.deepEqual(carryDocument(base, base, { auth: { mode: "none" } }).mixed, []);
   assert.deepEqual(carryDocument(base, { auth: { mode: "none" } }, base).mixed, []);
 });
+
+// One browser changed a key that holds an object, the other a plain sibling: the recursion
+// covers the object, so the parent is not named (finding 1541).
+test("an object-valued change beside a plain sibling's change names nothing", () => {
+  const probes = [
+    // gateway.auth.mode against gateway.port
+    [
+      { gateway: { auth: { mode: "token" }, port: 18789 } },
+      { gateway: { auth: { mode: "password" }, port: 18789 } },
+      { gateway: { auth: { mode: "token" }, port: 18790 } },
+    ],
+    // agents.defaults.model.primary against agents.defaults.timeoutSeconds
+    [
+      { agents: { defaults: { model: { primary: "a" }, timeoutSeconds: 60 } } },
+      { agents: { defaults: { model: { primary: "b" }, timeoutSeconds: 60 } } },
+      { agents: { defaults: { model: { primary: "a" }, timeoutSeconds: 90 } } },
+    ],
+    // channels.slack.dmPolicy against the channels.slack.channels map
+    [
+      { channels: { slack: { dmPolicy: "open", channels: {} } } },
+      { channels: { slack: { dmPolicy: "disabled", channels: {} } } },
+      { channels: { slack: { dmPolicy: "open", channels: { C1: { allow: true } } } } },
+    ],
+  ];
+  for (const [base, mine, current] of probes) {
+    const merged = carryDocument(base, mine, current);
+    assert.deepEqual(merged.conflicts, []);
+    assert.deepEqual(merged.mixed, []);
+  }
+  // Plain keys changed separately inside such an object are still named.
+  const auth = carryDocument(
+    { gateway: { auth: { mode: "token" }, port: 18789 } },
+    { gateway: { auth: { mode: "password" }, port: 18789 } },
+    { gateway: { auth: { mode: "token", token: ref("GATEWAY_TOKEN") }, port: 18790 } },
+  );
+  assert.deepEqual(auth.mixed, ["/gateway/auth"]);
+});

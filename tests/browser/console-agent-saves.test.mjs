@@ -34,11 +34,14 @@ import {
 // (findings 1445 and 1446). They now refresh in place.
 
 const scrollY = (page) => page.evaluate(() => globalThis.scrollY);
+// A refresh in place rereads the Agent's permission answer, so a grant applies to the rebuilt
+// editors (finding 1538); a page load also rereads the Namespace's.
 const pageReloadReads = (requests) =>
   requests
     .filter((request) => request.method === "GET")
     .map((request) => request.path)
-    .filter((path) => /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path));
+    .filter((path) => /\/api\/auth\/session|\/revisions|\/permissions|\/deployments/.test(path))
+    .filter((path) => !/\/agents\/[^/]+\/permissions$/.test(path));
 
 // Opens an Agent draft tab. The default viewport is short, so a reload's jump to the top shows
 // as a lost scroll position.

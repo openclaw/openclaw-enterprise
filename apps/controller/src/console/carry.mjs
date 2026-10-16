@@ -80,7 +80,12 @@ export function carryDocument(base, mine, current, path = "") {
   const grouping = [...mineKeys, ...theirKeys].every((key) =>
     [base, mine, current].every((side) => own(side, key) === undefined || isRecord(own(side, key))),
   );
-  if (path && !grouping && mineKeys.length && theirKeys.some((key) => !mineKeys.includes(key))) {
+  // A key that holds an object on every side is the recursion's to name, so it does not mix
+  // with a plain sibling: `gateway.auth.mode` against `gateway.port` names nothing (finding 1541).
+  const plain = (key) => ![base, mine, current].every((side) => isRecord(own(side, key)));
+  const minePlain = mineKeys.filter(plain);
+  const theirPlain = theirKeys.filter(plain);
+  if (path && !grouping && minePlain.length && theirPlain.some((key) => !minePlain.includes(key))) {
     mixed.push(path);
   }
   for (const key of keys) {
