@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-15
-last_updated_session: authoring-run/8c4ab973-b5a0-4bcf-8fcf-5f9d908ea26c
+updated: 2026-10-16
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Console Agent editing and runtime requests
@@ -200,23 +200,22 @@ describes the supported edits and their deployment boundaries.
 ### 5. Save authentication and deploy the first revision
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
-Agent before saving authentication and rejects changed bindings. When changing
-the Harness source, the PATCH replaces its prior `credentialSources` entry and
-preserves unrelated entries; it does not delete the old source or revoke grants.
-After PATCH,
+Agent and rejects changed bindings before saving authentication. PATCH replaces
+the prior Harness `credentialSources` entry, preserving unrelated entries without
+deleting the old source or revoking grants. After PATCH,
 `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
-grants the Agent service principal exact `operate` on the selected Secret
-(`api_key` or imported `codex_pat`) or CredentialSource. It reuses or creates a
-role and binding through the signed-in actor's IAM authority. Managed
-ServiceAccount PATs and runtime authentication skip this grant.
+grants exact Secret (`api_key` or imported `codex_pat`) or CredentialSource
+`operate` to the Agent service principal, creating or reusing a role/binding through the
+signed-in actor's IAM authority. Managed ServiceAccount PATs and runtime
+authentication skip this grant.
 
-A failed grant preserves saved authentication and freezes its controls.
+Grant failure freezes controls while preserving saved authentication.
 **Retry credential access** rejects changed bindings and retries only the grant;
-reading bindings recovers lost responses. An uncertain PATCH requires **Reload
-authentication source** before another save or grant. Saved bindings and pending
-access survive navigation; deployment stays blocked until confirmation or reload.
-Server admission remains authoritative, with preflight/authorization errors
-separate from credential metadata. Confirmed access does not prove provider readiness.
+rereading bindings recovers lost responses. An uncertain PATCH requires
+**Reload authentication source** before saving or granting again. Saved bindings
+and pending access survive navigation, blocking deployment until confirmation or
+reload. Server admission remains authoritative; preflight/authorization errors
+stay separate from credential metadata. Confirmed access does not prove provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel`
 
@@ -234,13 +233,13 @@ Secrets, preserving matching groups. Bytes enter neither Configuration nor audit
 Failure admits no revision; retry rechecks status. Missing credentials after an
 earlier revision require operator investigation. Model/channel Secrets stay separate.
 
-Submission rereads Agent and Configuration; changed identity or generation
-requires reload. PATCH preserves other bindings, then `ensureCredentialOperateBinding`
-checks changed and pending Secrets. Grant failure preserves saved bindings and
-blocks deployment. Later saves retry still-referenced grants; picker edits and
-rejected PATCHes retain the warning. Only confirmed access or reference removal
-clears it. Explicit refresh resets local tracking; API authorization still applies.
-Pickers switch references, not shared Secret values.
+Submission rereads Agent and Configuration; changed identity/generation requires
+reload. PATCH preserves other bindings; `ensureCredentialOperateBinding` checks
+changed/pending Secrets. Grant failure preserves saved bindings, blocks deployment,
+and is retried on later saves while referenced. Picker edits/rejected PATCHes
+retain the warning until confirmed access or reference removal. Explicit refresh
+resets tracking; API authorization still applies. Pickers change references,
+not shared Secret values.
 
 ### 6. Read and replace live workspace files
 
@@ -353,6 +352,8 @@ worker cleanup and the Namespace-owned resources it preserves.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 00:38: Reconcile in-place OAuth save feedback after merging main. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 697ca86d47f67a9671f07708f362bcfb671650e6)
 
 - 2026-10-15 22:35: Reconcile failed-version recovery and OAuth editing. (authoring-run/8c4ab973-b5a0-4bcf-8fcf-5f9d908ea26c - c997748f661b5df1198047de5a97c9cf23fb241a)
 
