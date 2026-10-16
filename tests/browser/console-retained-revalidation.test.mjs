@@ -445,6 +445,8 @@ test("Opening an Agent shows its loading panel only past the delay and its headi
   );
   await page.getByRole("link", { name: "Slow Agent" }).click();
   await record.requested;
+  // The Agent's page is rendered, hidden behind the held list.
+  await page.locator('.content [aria-live="polite"][hidden]').waitFor({ state: "attached" });
   await page.clock.runFor(249);
   assert.equal(await page.getByText("Loading agent details…").count(), 0);
   await page.clock.runFor(1);
