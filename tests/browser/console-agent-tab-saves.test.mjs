@@ -322,8 +322,8 @@ test("Reload draft in the Configuration editor updates the Agent page in place",
 });
 
 // Cancel rereads the Agent before the tab is rebuilt. A repository-choices read that finished
-// in that window re-enabled Save on the editor being replaced, so the cancelled edit could
-// still be written (review of #2551).
+// in that window re-enabled the editor being replaced, so the cancelled edit could be changed
+// and saved again (review of #2551).
 test("repository Cancel keeps the replaced editor locked while choices finish loading", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
@@ -361,19 +361,19 @@ test("repository Cancel keeps the replaced editor locked while choices finish lo
     const seen = new Promise((resolve) => {
       requested = resolve;
     });
-    await page.route(
-      url,
-      async (route) => {
-        if (route.request().method() !== method) {
-          await route.fallback();
-          return;
-        }
-        requested();
-        await released;
-        await route.continue().catch(() => {});
-      },
-      { times: 1 },
-    );
+    // One-shot by hand: with `times`, Playwright stops intercepting once no route is left,
+    // which lets the other held request through early.
+    let used = false;
+    await page.route(url, async (route) => {
+      if (used || route.request().method() !== method) {
+        await route.fallback();
+        return;
+      }
+      used = true;
+      requested();
+      await released;
+      await route.continue().catch(() => {});
+    });
     return { seen, release };
   };
   const options = await hold(`${fixture.origin}${agentPath}/repository-options`, "GET");
@@ -388,8 +388,13 @@ test("repository Cancel keeps the replaced editor locked while choices finish lo
   await reread.seen;
   options.release();
   await page.waitForResponse((response) => response.url().endsWith("/repository-options"));
-  // Let the choices' completion run its updates.
+  // The choices' completion updates the editor; it must stay locked, so no field can make
+  // the cancelled edit savable again.
+  const profile = page.locator("#repository-default-git-read");
+  await profile.waitFor();
   await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await cancel.isDisabled(), true, "the cancelled editor is still shown");
+  assert.equal(await profile.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
 
