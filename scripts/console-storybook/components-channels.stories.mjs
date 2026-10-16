@@ -61,6 +61,7 @@ export const ChannelProvisioningReserved = {
 };
 export const ChannelChangedElsewhere = story("channelChangedElsewhere");
 export const ChannelChangedElsewhereWithEdits = story("channelChangedElsewhereWithEdits");
+export const ChannelChangedElsewhereMerged = story("channelChangedElsewhereMerged");
 export const ChannelSavePending = { ...story("channelSavePending"), name: "Channel save pending" };
 export const ChannelSaveUnknown = {
   ...story("channelSaveUnknown"),

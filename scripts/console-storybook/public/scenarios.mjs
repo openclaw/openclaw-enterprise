@@ -2924,6 +2924,41 @@ export const scenarios = {
     ],
     description: "Invalid JSON retains editor contents and sends no Configuration write.",
   },
+  configurationChangedElsewhereMerged: {
+    group: "Pages/Agent detail",
+    name: "Configuration edits merged over another browser's save",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: { gateway: { bind: "loopback" }, agents: { defaults: { model: "codex/gpt-5.1" } } },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+      click("Save Configuration"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser changed the model and the gateway bind while this editor set the bind. Reload draft merges this reader's edit over the reread document and names the value both changed.",
+    steps: [
+      "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
+    ],
+  },
   admitted: {
     group: "Pages/Agent detail",
     name: "Current version",
@@ -4104,6 +4139,37 @@ export const scenarios = {
       "Select Reload draft: Edit Slack reopens with Direct-message policy still Disabled and says the edits are applied over the reloaded settings; Save configuration saves them.",
     ],
   },
+  channelChangedElsewhereMerged: {
+    group: "Components/Channels",
+    name: "Edits merged over another browser's save",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackPolicy: "open",
+    configurationChangedElsewhere: {
+      values: {
+        channels: {
+          slack: {
+            dmPolicy: "allowlist",
+            allowFrom: ["UDDDD111", "UEEEE222"],
+            channels: { CDEMO123: { users: ["UDEMO123", "UOTHER99"] } },
+          },
+        },
+      },
+    },
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-allowed-user-ids", value: "UDEMO123, UNEW4567" },
+      { selector: "#slack-dm-policy", value: "pairing" },
+      click("Save configuration"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser added a channel user and set a DM allowlist while this editor added a user and chose Pairing. Reload draft adds only this reader's user to the reread list and names the DM policy both browsers changed.",
+    steps: [
+      "Check the note: Allowed people in these channels (added UNEW4567), and Direct-message policy also changed in another browser, saved as Allowlist.",
+      "Check that the channel list keeps UOTHER99 and the DM list keeps UDDDD111 and UEEEE222; Save configuration saves the merge.",
+    ],
+  },
   channelSavePending: {
     group: "Components/Channels",
     name: "Channel save pending",
@@ -4170,6 +4236,20 @@ export const scenarios = {
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
       "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSlackCarried: {
+    group: "Components/Credentials",
+    name: "Slack token choice carried through a conflict",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser saved this Configuration first. The chosen app token stays shown, and Reload draft applies it over the reread bindings for Save channel Secrets.",
   },
   credentialsSecretListDenied: {
     group: "Components/Credentials",

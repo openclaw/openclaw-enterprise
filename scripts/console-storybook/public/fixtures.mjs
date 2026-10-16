@@ -18,6 +18,25 @@ function initialDeploymentProgress(status) {
   return { lastAttempt: null, nextAttemptAt: status === "queued" ? createdAt : null };
 }
 
+// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
+function mergeElsewhere(target, changes) {
+  for (const [key, value] of Object.entries(changes)) {
+    const current = target[key];
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      current !== null &&
+      typeof current === "object" &&
+      !Array.isArray(current)
+    ) {
+      mergeElsewhere(current, value);
+    } else {
+      target[key] = structuredClone(value);
+    }
+  }
+}
+
 function slackChannels(scenario) {
   if (scenario.slackChannels !== undefined) {
     return structuredClone(scenario.slackChannels);
@@ -928,6 +947,7 @@ export function installFixture(scenario, evidence) {
             if (configurationReads.has(saved.id)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
+              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
             configurationReads.add(saved.id);
           }
