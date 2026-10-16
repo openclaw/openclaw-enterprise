@@ -97,15 +97,14 @@ not copy historical values. Stop and deletion target the Agent.
 generation (including a `409` from a racing save) requires **Reload draft**.
 
 **Enable gateway password access** sets `gateway.auth.password` to reference
-`OPENCLAW_GATEWAY_PASSWORD`. Other settings and Secret bindings stay unchanged; **Cancel**
-discards the edit. Kubernetes `gatewayConfiguration` recognizes the reference;
-`deployment` supplies the generated password.
+`OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
+`gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
 Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
 an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
-A `403` lists required grants without guessing which was missing. If the Console knows the caller
-lacks Agent `update`, it disables plugin, repository and authentication saves. It has no equivalent
-permission hint for Configuration saves.
+A refused write lists required grants without guessing which; a refused preflight read names read
+access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
+and authentication editors; Configuration saves get no such hint.
 
 `agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
 **Save plugin selections** PATCHes the Agent map, preserving Configuration and
@@ -113,8 +112,8 @@ admitted revisions. Driver validation precedes deployment's immutable snapshot. 
 [plugin deployment flow](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
-PATCHes `repositoryAccess`. Dirty, pending, or uncertain saves block tabs and
-deployment; failed discovery leaves access unverified.
+PATCHes `repositoryAccess`. Unsaved edits also block tabs; failed discovery leaves
+access unverified.
 
 Deployment rereads Agent and Configuration, requires authentication and
 Slack bindings, and blocks Teams. Changed association, generation, authentication,

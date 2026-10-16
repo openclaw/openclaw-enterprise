@@ -2803,7 +2803,7 @@ export const scenarios = {
     pluginDiscovery,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save plugin selections stays disabled, even after an edit, and the note names the grant to ask for. The API still decides.",
+      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   pluginsDraft: {
@@ -3041,7 +3041,7 @@ export const scenarios = {
     repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save repository access stays disabled and the note names the grant to ask for.",
+      "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   repositoryAdmitted: {
@@ -4279,7 +4279,7 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     readOnlyPermissionSummary: true,
     description:
-      "The permission answer denies Agent update, so Save authentication source is disabled and the note names the grant to ask for.",
+      "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
   },
   credentialsSlack: {
@@ -4624,6 +4624,22 @@ export const scenarios = {
       },
     ],
     description: "Unauthorized reads do not enable blank overwrites.",
+  },
+  workspaceSaveDenied: {
+    group: "Components/Workspace",
+    name: "Save denied",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [{ suffix: "/AGENTS.md", method: "PUT", status: 403 }],
+    actions: [
+      {
+        selector: '[id="workspace-AGENTS.md"]',
+        value: "# Updated guidance\nReview changes before applying them.",
+      },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
   },
   workspaceMissing: {
     group: "Components/Workspace",
