@@ -60,13 +60,20 @@ The existing `k3d-model` lane requires this case. Record image IDs, the source
 revision, allowed/denied requests and lifecycle results. Fixture manifests or SDK
 client doubles do not prove actual network isolation or native plugin execution.
 
+The native case also seeds the retired Agent-wide channel grant to an existing
+owned TCP endpoint. Verify connectivity before cutover, then require the old
+Gateway Pod to terminate, the grant to disappear and direct connectivity to be
+denied after normal revision deployment.
+
 For a revision with both Gateway access and an admitted public GitHub reader,
-verify that terminal refusal starts both withdrawals even if one Kubernetes delete
-fails. Restart the worker while withdrawal is pending, restore authority and prove
-that neither access route repairs. Completion requires the exact proxy Pods and
-reader Harness to terminate. Qualify this composition on the refreshed source;
-separate earlier passes do not establish the combined outcome. Protected Harness
-and Credential Proxy compositions remain unqualified.
+withdraw the current Installation settings before maintenance and verify that
+refusal is persisted before either closure starts. Deny one Kubernetes delete,
+restart while removal is pending, restore the settings and prove that neither
+route repairs. Completion requires the exact proxy Pods and reader Harness to
+terminate. PostgreSQL worker cases separately cover restored actor and Secret
+Driver authority. Qualify this composition on the refreshed source; separate
+earlier passes do not establish the combined outcome. Protected Harness and
+Credential Proxy compositions remain unqualified.
 
 Storybook **Pages/Agent detail** includes Gateway Network, Restricted, Empty,
 Read Only, Disabled, Embedded, Loading and Error scenarios. Rebuild from current

@@ -3690,7 +3690,10 @@ export class ControllerWorker {
       // Deploy and repair work must never re-attach a withdrawn source.
       const secretContext = await this.resolveRevisionSecretContext(revision);
       if ("result" in secretContext) {
-        if (agent.activeRevisionId === revision.id) {
+        if (
+          agent.activeRevisionId === revision.id &&
+          this.revisionAccessStatus(revision) === "none"
+        ) {
           await this.finalizeActiveRevision(claim, revision, secretContext.result.code);
         } else {
           await this.finalizeRevision(claim, secretContext.result);

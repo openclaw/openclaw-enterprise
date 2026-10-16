@@ -374,10 +374,10 @@ const LEGACY_WORKSPACE_NODE_POLICY_SELECTOR: {
 } = { matchLabels: { "openclaw.dev/workload-role": "agent" } };
 /** Every Agent-scoped NetworkPolicy name agentNetworkPolicies and
  * pluginStatusNetworkPolicies can write (each gets the Agent's suffix), plus
- * `allow-workspace-node-gateway`, which earlier controllers wrote: listing it
- * lets activation delete that copy (finding 1127). */
+ * the workspace-node and channel grants earlier controllers wrote. */
 const AGENT_NETWORK_POLICY_NAMES = Object.freeze([
   "allow-gateway-agent",
+  "allow-gateway-channels",
   "allow-gateway-workspace-node",
   "allow-workspace-node-gateway",
   "allow-agent-runtime",
@@ -5818,6 +5818,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         environment: Record<string, string>,
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
+        await this.retireGatewayChannelGrant(revision, gatewayNamespace);
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
             revision,
@@ -6428,6 +6429,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         throw new ConfigurationFailure("Refusing stale AgentRevision gateway activation.");
       }
+      await this.retireGatewayChannelGrant(revision, gatewayNamespace);
       const repositoryMaterial = await this.prepareRepositoryMaterialForActivation(
         revision,
         namespace,
@@ -6718,6 +6720,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       gatewayOwnership,
     );
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -7060,6 +7063,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeStoppedGateway(revision, namespace);
       await this.removeGatewayOutbound(revision, gatewayNamespace);
+      await this.retireGatewayChannelGrant(revision, gatewayNamespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -7092,6 +7096,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.shutdownRevisionRuntime(revision, namespace);
     }
     await this.removeGatewayOutbound(revision, gatewayNamespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
@@ -7124,6 +7129,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.lifecycle.beforeWorkloadStop(revision);
       await this.removeRetiredGateway(revision, namespace);
       await this.removeGatewayOutbound(revision, gatewayNamespace);
+      await this.retireGatewayChannelGrant(revision, gatewayNamespace);
       return;
     }
     this.verifyNamespaceOwnership(
@@ -7142,6 +7148,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
     await this.removeGatewayOutbound(revision, gatewayNamespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
     if (revision.repositoryCredentials !== undefined) {
       await this.waitForRevisionPodsToTerminate(
         revision,
@@ -7239,13 +7246,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace: KubernetesNamespaceAddress,
     role: "agent" | "gateway" | "gateway-outbound",
     workloadName?: string,
+    allGatewayRevisions = false,
   ): Promise<void> {
     const clients = await this.clients(namespace.plane);
     const signal = this.operationSignal();
     const labels = {
       "openclaw.dev/namespace": revision.namespaceId,
       "openclaw.dev/agent": revision.agentId,
-      "openclaw.dev/revision": revision.id,
+      ...(allGatewayRevisions ? {} : { "openclaw.dev/revision": revision.id }),
       "openclaw.dev/workload-role": role,
       ...(workloadName === undefined ? {} : { "app.kubernetes.io/name": workloadName }),
     };
@@ -7558,10 +7566,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const suffix = sha256Hex(revision.agentId, 12);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
+    await this.retireGatewayChannelGrant(revision, gatewayNamespace);
     // Keep these lists in step with AGENT_NETWORK_POLICY_NAMES and the channel
     // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
+      "allow-gateway-channels",
       "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
@@ -7707,27 +7717,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION] !== stoppedRevisionId) {
           return;
         }
-        const { uid, resourceVersion } = gateway.metadata;
-        if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
-          throw new OwnershipFailure(
-            `Deployment ${name} UID and resourceVersion must be explicitly observed before delete.`,
-          );
-        }
         // A cutover can update the same UID. Fence it before deleting shared resources.
-        await this.request(
-          () =>
-            clients.apps.deleteNamespacedDeployment({
-              name,
-              namespace: namespace.name,
-              body: {
-                preconditions: {
-                  uid,
-                  resourceVersion,
-                },
-              },
-            }),
-          { mutating: true },
-        );
+        await this.deleteObservedGatewayDeployment(gateway, namespace);
       }
       // With the single owning worker, absence also permits retrying partial shared cleanup.
     }
@@ -7759,6 +7750,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
         { mutating: true },
       );
     }
+  }
+
+  private async deleteObservedGatewayDeployment(
+    gateway: ManagedKubernetesObject<"Deployment">,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const { name, uid, resourceVersion } = gateway.metadata;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw new OwnershipFailure(
+        `Deployment ${name} UID and resourceVersion must be explicitly observed before delete.`,
+      );
+    }
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.apps.deleteNamespacedDeployment({
+          name,
+          namespace: namespace.name,
+          body: { preconditions: { uid, resourceVersion } },
+        }),
+      { mutating: true },
+    );
   }
 
   private async deleteOwnedNamespacedResource(
@@ -12727,9 +12740,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       throw new OwnershipFailure("Refusing to withdraw another Compute Driver's Gateway route.");
     }
-    if (revision.gatewayOutbound === undefined) {
-      return;
-    }
     required(revision.agentId, "Agent ID");
     required(revision.id, "AgentRevision ID");
     required(revision.servicePrincipalId, "Agent ServicePrincipal ID");
@@ -12747,10 +12757,61 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       } else {
         this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
       }
-      await this.removeGatewayOutbound(revision, namespace);
+      const closures = await Promise.allSettled([
+        this.removeGatewayOutbound(revision, namespace),
+        this.retireGatewayChannelGrant(revision, namespace),
+      ]);
+      const failed = closures.find((closure) => closure.status === "rejected");
+      if (failed?.status === "rejected") {
+        throw failed.reason;
+      }
     } catch (error) {
       throw transientKubernetesFailure(error);
     }
+  }
+
+  private async retireGatewayChannelGrant(
+    revision: Readonly<AgentRevision>,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const suffix = sha256Hex(revision.agentId, 12);
+    const policyName = `allow-gateway-channels-${suffix}`;
+    const policy = await this.getOwned("NetworkPolicy", policyName, namespace, ownership);
+    if (policy === undefined) {
+      return;
+    }
+    const gatewayName = `gateway-${suffix}`;
+    const gateway = await this.getOwned("Deployment", gatewayName, namespace, ownership);
+    if (gateway !== undefined) {
+      const number = Number(gateway.metadata.annotations?.[AGENT_REVISION_ANNOTATION]);
+      const id = gateway.metadata.annotations?.[AGENT_REVISION_ID_ANNOTATION];
+      if (!Number.isSafeInteger(number) || number < 1 || !isNonEmptyString(id)) {
+        throw new OwnershipFailure("Refusing an ambiguous retired channel grant Gateway.");
+      }
+      if (number > revision.revision || (number === revision.revision && id !== revision.id)) {
+        throw new DependencyUnavailableError("A newer Gateway must retire its channel grant.");
+      }
+      await this.deleteObservedGatewayDeployment(gateway, namespace);
+    }
+    // Keep the old grant as durable evidence until its Gateway and established flows are gone.
+    // Without the Deployment, orphaned terminating Pods can belong to an earlier cutover.
+    await this.waitForRevisionPodsToTerminate(revision, namespace, "gateway", gatewayName, true);
+    if ((await this.getOwned("Deployment", gatewayName, namespace, ownership)) !== undefined) {
+      throw new DependencyUnavailableError("The retired channel grant Gateway reappeared.");
+    }
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.networking.deleteNamespacedNetworkPolicy({
+          name: policyName,
+          namespace: namespace.name,
+          body: {
+            preconditions: { uid: required(policy.metadata.uid, "Retired channel grant UID") },
+          },
+        }),
+      { mutating: true },
+    );
   }
 
   private validateAdmittedGatewayOutbound(revision: AgentRevision): void {

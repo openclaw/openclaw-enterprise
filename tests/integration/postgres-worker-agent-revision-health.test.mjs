@@ -35,12 +35,27 @@ const outboundAdmission = {
 };
 const withdrawalPending = "REVISION_ACCESS_WITHDRAWAL_PENDING";
 
+function withReplacementSecretDriver(drivers) {
+  return {
+    ...drivers,
+    installation: {
+      ...drivers.installation,
+      drivers: {
+        ...drivers.installation.drivers,
+        secret: { ...drivers.installation.drivers.secret, id: "secret-replacement" },
+      },
+    },
+    secretDriver: { ...drivers.secretDriver, id: "secret-replacement" },
+  };
+}
+
 for (const [cause, access] of [
   ["authorization", "Gateway outbound"],
   ["backend", "Gateway outbound"],
   ["deadline", "Gateway outbound"],
   ["authorization", "Compute-admitted"],
   ["configuration", "Compute-admitted"],
+  ["secret-driver", "Gateway outbound"],
 ]) {
   test(
     `active ${access} withdrawal survives ${cause} refusal, restored authority and worker restart`,
@@ -123,6 +138,7 @@ for (const [cause, access] of [
         backend: "BACKEND_UNAVAILABLE",
         deadline: "CONVERGENCE_DEADLINE_EXCEEDED",
         configuration: "REVISION_ACCESS_WITHDRAWN",
+        "secret-driver": "SECRET_DRIVER_MISMATCH",
       }[cause];
       const expectedData = cause === "deadline" ? { timeoutMs: 1_000 } : undefined;
       const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
@@ -139,7 +155,13 @@ for (const [cause, access] of [
         accessCurrent = false;
       }
       if (cause !== "deadline") {
-        await fixture.start(compute, { providers: [], convergenceTimeoutMs: 1_000 });
+        await fixture.start(compute, {
+          providers: [],
+          convergenceTimeoutMs: 1_000,
+          // A selected Driver change invalidates the admitted Secret binding without
+          // altering its PostgreSQL metadata or bypassing its reference safeguards.
+          ...(cause === "secret-driver" ? { transformDrivers: withReplacementSecretDriver } : {}),
+        });
       }
       await waitFor("failed removal after a committed refusal", async () => {
         const current = await queue.findWork(workId);
@@ -206,6 +228,56 @@ for (const [cause, access] of [
     },
   );
 }
+
+test(
+  "active revision without access admission recovers after restoring its selected Secret Driver",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const { owner, candidate } = await fixture.admitInitialRevision("secret-driver-recovery", {
+      agent: { executionMode: "dedicated" },
+    });
+    let prepared = 0;
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 60_000,
+      async prepareRevision(revision) {
+        prepared += 1;
+        return fixture.compute.prepareRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
+    assert.ok(maintenance);
+    const originalPreparationCount = prepared;
+
+    // An ordinary active runtime has no admitted access to withdraw. Refusing its
+    // current Secret context must keep the maintenance chain available for recovery.
+    await fixture.start(compute, { transformDrivers: withReplacementSecretDriver });
+    await fixture.work({ idempotencyKey: maintenance.idempotency_key }, "failed_permanent");
+    await fixture.stop();
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
+    assert.equal(
+      (await queue.findWork(maintenance.idempotency_key)).reasonCode,
+      "SECRET_DRIVER_MISMATCH",
+    );
+    assert.equal(
+      await queue.findWorkAttempt(maintenance.idempotency_key, withdrawalPending),
+      undefined,
+    );
+    assert.equal(prepared, originalPreparationCount);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    const [recovery] = (await fixture.advanceMaintenance(candidate)).rows;
+    assert.ok(recovery, "an ordinary active runtime retains its next maintenance pass");
+
+    await fixture.start(compute);
+    await fixture.work({ idempotencyKey: recovery.idempotency_key }, "succeeded");
+    assert.ok(prepared > originalPreparationCount);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+  },
+);
 
 test(
   "terminal active preparation retains retirement until outbound withdrawal survives restart and lease recovery",

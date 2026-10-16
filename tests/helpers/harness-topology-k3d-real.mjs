@@ -3374,7 +3374,7 @@ async function redeployGatewayOutbound(topology, selection) {
   }
   const previousGateway = topology.gatewayPod.metadata.uid;
   const previousHarness = topology.harnessPod.metadata.uid;
-  const admitted = await topology.adminRequest("POST", `${agentPath}/deploy`);
+  const admitted = await topology.request("POST", `${agentPath}/deploy`);
   assert.equal(admitted.status, 202, JSON.stringify(admitted.error));
   const agent = await waitFor(`outbound revision ${admitted.data.id} activation`, async () => {
     const current = await topology.adminRequest("GET", agentPath);
@@ -4045,6 +4045,75 @@ async function watchRevisionAccessRepairs({ kind, apiPath, namespace, name, barr
 }
 
 async function assertManagedGatewayOutbound(context, topology) {
+  // The previous controller's Agent-wide grant must not survive a canonical revision cutover.
+  const originalGateway = topology.gatewayPod;
+  const target = await resource("pod", topology.approvedClient, topology.platformNamespace);
+  const externalAddress = target.status.podIP;
+  const connect = () =>
+    tcpConnectionOutcome(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+      externalAddress,
+      deniedPort,
+    );
+  assert.equal(await connect(), "denied");
+  const suffix = hash(topology.agent.id);
+  const legacyName = `allow-gateway-channels-${suffix}`;
+  const owner = await resource(
+    "networkpolicy",
+    `allow-gateway-agent-${suffix}`,
+    topology.gatewayPlacement,
+  );
+  await applyManifest(
+    JSON.stringify({
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: {
+        name: legacyName,
+        namespace: topology.gatewayPlacement,
+        labels: owner.metadata.labels,
+        annotations: owner.metadata.annotations,
+      },
+      spec: {
+        podSelector: {
+          matchLabels: {
+            "openclaw.dev/network-profile": "broad-egress-v1",
+            "openclaw.dev/workload-role": "gateway",
+            "openclaw.dev/agent": topology.agent.id,
+          },
+        },
+        policyTypes: ["Egress"],
+        egress: [
+          {
+            to: [{ ipBlock: { cidr: `${externalAddress}/32` } }],
+            ports: [{ protocol: "TCP", port: deniedPort }],
+          },
+        ],
+      },
+    }),
+  );
+  await waitFor(
+    "the actual retired grant to allow its old destination",
+    async () => (await connect()) === "connected",
+  );
+  await redeployGatewayOutbound(topology);
+  assert.equal(
+    (await resources("pods", topology.gatewayPlacement)).some(
+      ({ metadata }) => metadata.uid === originalGateway.metadata.uid,
+    ),
+    false,
+    "retired-grant cutover must terminate the old Gateway and its established flows",
+  );
+  assert.equal(
+    (await resources("networkpolicies", topology.gatewayPlacement)).some(
+      ({ metadata }) => metadata.name === legacyName,
+    ),
+    false,
+  );
+  assert.equal(await connect(), "denied");
+  context.diagnostic(
+    "Retired shared-proxy grant: actual additive TCP access closed at normal revision cutover, old Gateway Pod terminated, and the new Gateway retained only its managed route. This endpoint closes immediately, so this prelude proves grant removal and Pod termination rather than a held legacy tunnel.",
+  );
   await assertRevisionAccessConfigurationWithdrawal(context, topology);
   const pluginRoot = "/home/node/.openclaw/state/plugins/oce-outbound-proof";
   for (const name of ["openclaw.plugin.json", "package.json", "index.mjs"]) {

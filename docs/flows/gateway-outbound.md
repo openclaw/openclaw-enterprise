@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
 updated: 2026-10-16
-last_updated_session: authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53
+last_updated_session: authoring-run/05789d5b-74d1-470e-874f-94028b6d6115
 ---
 
 # Gateway Outbound Flow
@@ -140,6 +140,12 @@ before removal. Work-bound evidence keeps the refusal, bounded failure details a
 required runtime retirement together. The next pass calls
 `ControllerWorker.finishRevisionAccessWithdrawal` instead of preparing the revision.
 
+`ControllerWorker.processRevision` preserves permanent
+`resolveRevisionSecretContext` refusals through `finalizeRevision` when access was
+admitted. Restoring the selected Secret Driver cannot resume that revision after
+withdrawal begins. Without admitted access, active Secret-context failures retain
+the existing continuing-maintenance recovery path.
+
 `KubernetesComputeDriver.revisionAccessStatus` returns `none` without admitted
 access, `current` when its immutable Gateway/reader admission is still permitted,
 and `withdrawn` when current configuration refuses it. A pending withdrawal remains
@@ -170,6 +176,12 @@ and waits on Namespace, Agent, revision and workload-role Pod labels. Stop retai
 retirement and deletion remove it afterward. Old cleanup cannot match a successor.
 Existing tunnels end with the proxy process rather than surviving a policy change.
 
+`retireGatewayChannelGrant` removes the retired Agent-wide channel grant before
+Gateway deployment reconciliation and during access withdrawal. The grant stays
+as the retry obligation until fenced Deployment deletion, Gateway Pod termination
+and Deployment absence are confirmed. A newer Gateway is preserved. This cleanup
+accepts no retired channel-proxy configuration.
+
 ## Debugging and Verification
 
 Read the selected revision's network snapshot and deployment result before
@@ -190,6 +202,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 13:35: Preserve permanent Secret-context refusal and retire obsolete channel grants before access completion. (authoring-run/05789d5b-74d1-470e-874f-94028b6d6115 - e2dc3023d8c2369dab0a0f200051ff5e84096077)
 
 - 2026-10-16 13:09: Compose admitted Gateway and reader withdrawal against refreshed upstream. (authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53 - 792afad4f9e8bd4323fc197a102ebde7961484c9)
 

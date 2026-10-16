@@ -518,6 +518,11 @@ test("retiring an upgraded revision removes its legacy node Secret and keeps the
   ]);
   const deleted = [];
   driver.apiClients = Promise.resolve({
+    networking: {
+      async readNamespacedNetworkPolicy() {
+        throw Object.assign(new Error("not found"), { statusCode: 404 });
+      },
+    },
     core: {
       async readNamespacedSecret({ name }) {
         if (!secrets.has(name)) {
@@ -1501,6 +1506,136 @@ test("revision access withdrawal closes both admitted routes independently and p
       assert.ok(objects.has(key("Deployment", fixture.gatewayName, namespace)));
     });
   }
+});
+
+test("retired shared proxy grants remain until their Gateway terminates and cannot delete a successor", async () => {
+  const f = dedicatedFirstDeployFixture({ outbound: gatewayOutbound });
+  const { driver, revision, namespace, objects, key, clients } = f;
+  driver.waitBeforeRetry = async () => {};
+  revision.gatewayOutbound = driver.admitGatewayOutbound({
+    selection: { mode: "publicHttps" },
+    executionMode: "dedicated",
+    requirements: [],
+  });
+  await f.prepare();
+  f.markReady(driver.gatewayOutboundName(revision));
+  await f.prepare();
+  const originalGateway = structuredClone(objects.get(key("Deployment", f.gatewayName)));
+  const legacyName = `allow-gateway-channels-${digest(revision.agentId)}`;
+  // This is the Agent-wide policy an upstream controller wrote for an external proxy.
+  const legacy = {
+    ...driver.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      legacyName,
+      { namespaceId: revision.namespaceId, agentId: revision.agentId },
+      { name: namespace, plane: "execution" },
+    ),
+    spec: {
+      podSelector: {
+        matchLabels: {
+          "openclaw.dev/network-profile": "broad-egress-v1",
+          "openclaw.dev/workload-role": "gateway",
+          "openclaw.dev/agent": revision.agentId,
+        },
+      },
+      policyTypes: ["Egress"],
+      egress: [
+        { to: [{ ipBlock: { cidr: "192.0.2.55/32" } }], ports: [{ protocol: "TCP", port: 3128 }] },
+      ],
+    },
+  };
+  legacy.metadata.uid = "retired-policy-uid";
+  legacy.metadata.resourceVersion = "1";
+  f.save(legacy);
+  const removeDeployment = clients.apps.deleteNamespacedDeployment;
+  let denied = true;
+  clients.apps.deleteNamespacedDeployment = async (request) => {
+    if (request.name === f.gatewayName && denied) {
+      throw Object.assign(new Error("Gateway delete denied"), { statusCode: 403 });
+    }
+    if (request.name === f.gatewayName) {
+      assert.equal(
+        request.body.preconditions.resourceVersion,
+        originalGateway.metadata.resourceVersion,
+      );
+    }
+    return removeDeployment(request);
+  };
+  await assert.rejects(driver.withdrawRevisionAccess(revision), /Gateway delete denied/);
+  assert.ok(
+    objects.has(key("NetworkPolicy", legacyName)),
+    "failed deletion must retain the cleanup obligation",
+  );
+  assert.ok(objects.has(key("Deployment", f.gatewayName)));
+
+  let observed;
+  let release;
+  const waiting = new Promise((resolve) => {
+    observed = resolve;
+  });
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let podReads = 0;
+  clients.core.listNamespacedPod = async ({ labelSelector }) => {
+    if (
+      labelSelector.includes("openclaw.dev/workload-role=gateway") &&
+      !labelSelector.includes("openclaw.dev/workload-role=gateway-outbound")
+    ) {
+      if (podReads++ === 0) {
+        return {
+          items: [
+            {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: {
+                ...originalGateway.spec.template.metadata,
+                name: "retired-gateway-pod",
+                namespace,
+                uid: "retired-gateway-pod-uid",
+              },
+            },
+          ],
+        };
+      }
+      observed();
+      await held;
+    }
+    return { items: [] };
+  };
+  denied = false;
+  const withdrawal = driver.withdrawRevisionAccess(revision);
+  try {
+    await Promise.race([
+      waiting,
+      withdrawal.then(() => {
+        throw new Error("withdrawal must wait for the retired Gateway Pod");
+      }),
+    ]);
+    assert.ok(
+      objects.has(key("NetworkPolicy", legacyName)),
+      "a terminating Pod must keep its durable obligation",
+    );
+    assert.equal(objects.has(key("Deployment", f.gatewayName)), false);
+    assert.ok(objects.has(key("Service", f.gatewayName)));
+    assert.ok(objects.has(key("ServiceAccount", f.gatewayName)));
+  } finally {
+    release();
+  }
+  await withdrawal;
+  assert.equal(objects.has(key("NetworkPolicy", legacyName)), false);
+
+  // A delayed old revision cannot fence a newer Gateway that already owns the shared name.
+  const successor = structuredClone(originalGateway);
+  successor.metadata.annotations["openclaw.dev/agent-revision"] = "2";
+  successor.metadata.annotations["openclaw.dev/agent-revision-id"] = "newer-gateway";
+  successor.spec.template.metadata.labels["openclaw.dev/revision"] = "newer-gateway";
+  f.save(successor);
+  f.save(legacy);
+  await assert.rejects(driver.withdrawRevisionAccess(revision));
+  assert.deepEqual(objects.get(key("Deployment", f.gatewayName)), successor);
+  assert.ok(objects.has(key("NetworkPolicy", legacyName)));
 });
 
 test("custom Codex endpoints compile explicit providers without changing the admitted model IDs", async () => {
@@ -13246,6 +13381,11 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
+    networking: {
+      async readNamespacedNetworkPolicy() {
+        throw Object.assign(new Error("not found"), { statusCode: 404 });
+      },
+    },
     core: {
       async readNamespacedConfigMap() {
         throw notFound();
@@ -13396,6 +13536,11 @@ function stopOrderFixture(id) {
   };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
+    networking: {
+      async readNamespacedNetworkPolicy() {
+        throw Object.assign(new Error("not found"), { statusCode: 404 });
+      },
+    },
     core: {
       async readNamespacedConfigMap() {
         throw notFound();
@@ -13616,6 +13761,11 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
   };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
+    networking: {
+      async readNamespacedNetworkPolicy() {
+        throw Object.assign(new Error("not found"), { statusCode: 404 });
+      },
+    },
     core: {
       async readNamespacedConfigMap() {
         throw notFound();
@@ -14478,12 +14628,7 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
     .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
     .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
   assert.deepEqual(
-    remaining.filter(
-      (name) =>
-        !written.has(name) &&
-        name !== `allow-agent-auth-${suffix}` &&
-        name !== `allow-gateway-channels-${suffix}`,
-    ),
+    remaining.filter((name) => !written.has(name) && name !== `allow-agent-auth-${suffix}`),
     [],
   );
   const gatewayAgent = objects.get(policyKey(`allow-gateway-agent-${suffix}`));
@@ -14542,7 +14687,7 @@ test("activating an embedded revision deletes a dedicated predecessor's Gateway 
     .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
     .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
   assert.deepEqual(
-    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-channels-${suffix}`),
+    remaining.filter((name) => !written.has(name)),
     [],
   );
   // The embedded Gateway keeps the model egress it writes under the shared name.

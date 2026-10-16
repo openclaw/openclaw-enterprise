@@ -5,6 +5,10 @@ native OpenClaw plugins. Kubernetes Compute creates an isolated proxy for each
 admitted dedicated revision that needs external access. Enabled supported channels
 add their required destinations automatically.
 
+The bundled Slack Driver supplies automatic requirements. Other native integrations,
+including Teams without a contributing Channel Driver, need an explicit restricted
+or public HTTPS selection; `channelsOnly` does not infer their destinations.
+
 ## Agent selection and permissions
 
 `gatewayOutbound` belongs to the OCE Agent, outside native Configuration values.
@@ -125,6 +129,11 @@ reader's Harness can stop even if its reader peer is unchanged.
 Restored authority cannot repair that version's access: deploy a new authorized
 version. An ordinary Harness without admitted reader access retains its existing
 behavior. Channels and Gateway integrations lose their route when the proxy stops.
+
+Retired Agent-wide channel grants are removed before a Gateway starts or access
+withdrawal completes. Cleanup keeps the old grant until the affected Gateway Pods
+terminate, closing established connections as well as the policy route. Failed
+deletion remains pending; cleanup cannot delete a newer Gateway.
 
 ## Verification and troubleshooting
 
