@@ -2433,9 +2433,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     latestPermissionsRead = read;
     permissionsReadSettled = false;
-    void read.then(() => {
+    const settle = () => {
       permissionsReadSettled = latestPermissionsRead === read;
-    });
+    };
+    void read.then(settle, settle);
     return read;
   }
 

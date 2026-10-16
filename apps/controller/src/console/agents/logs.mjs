@@ -253,7 +253,8 @@ export function renderAgentLogs(
   let logsDenied = deniedLogViews.has(deniedKey);
   // Set when runtime status is denied; the last page's stream stands in for the Pod list.
   let statusDenied = false;
-  // Set once this view asked for a fresh permission answer.
+  // Set once this view compared a status denial with a fresh permission answer, or had no
+  // reason to; Back's check revalidates the page's answer after that.
   let permissionsAsked = false;
   let lastStream = null;
 
@@ -502,11 +503,19 @@ export function renderAgentLogs(
         if ([403, 404, 501].includes(error.status)) {
           if (error.status === 403) {
             deniedStatusViews.set(statusKey, null);
-            void permissions().then((answer) => {
-              if (deniedStatusViews.get(statusKey) === null) {
-                deniedStatusViews.set(statusKey, answer?.operate === true);
-              }
-            });
+            // An answer that allows operate may predate a revocation: once per view, compare
+            // the refusal with a fresh one, so a later grant is not taken as unchanged.
+            const fresh = !permissionsAsked;
+            permissionsAsked = true;
+            void permissions()
+              .then((answer) =>
+                answer?.operate === true && fresh ? permissions({ fresh }) : answer,
+              )
+              .then((answer) => {
+                if (deniedStatusViews.get(statusKey) === null) {
+                  deniedStatusViews.set(statusKey, answer?.operate === true);
+                }
+              });
           }
           return;
         }

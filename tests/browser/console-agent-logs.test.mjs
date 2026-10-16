@@ -1892,15 +1892,21 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${logs.revisionId}/runtime`)).length;
   const logReads = () => logRequests(requests, logs.revisionId).length;
+  const permissionReads = () =>
+    requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
   assert.equal(statusReads(), 1);
   assert.equal(logReads(), 1);
 
+  // Each Back that rebuilds the page reads the answer twice: Back's check and the page's own
+  // read, which the rebuilt Logs view reuses while it is in flight.
   await leave();
   changeGrant(role, "operate", true);
+  let permissionsBefore = permissionReads();
   await page.goBack();
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 2);
+  assert.equal(permissionReads() - permissionsBefore, 2);
   // The permission answer has no read_logs bit, so the log text denial stands for this sign-in.
   assert.equal(logReads(), 1);
   await page.getByText(/Log text requires Agent read_logs/).waitFor();
@@ -1908,15 +1914,20 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
   // Operate revoked: the status read is refused once, then remembered across Backs.
   await leave();
   changeGrant(role, "operate", false);
+  permissionsBefore = permissionReads();
   await page.goBack();
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 3);
+  assert.equal(permissionReads() - permissionsBefore, 2);
+  // A kept view takes the answer Back's check read; it does not ask again.
   await leave();
+  permissionsBefore = permissionReads();
   await page.goBack();
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 3);
+  assert.equal(permissionReads() - permissionsBefore, 1);
 
   // Sign out and in again as the same member, without reloading the tab.
   changeGrant(role, "read_logs", true);
@@ -1970,6 +1981,33 @@ test("a Logs tab rebuilt after an operate grant reads status again without a pag
   await waitForIdleFetches(page);
   assert.equal(statusReads(), 3);
   assert.equal(permissionReads(), permissionsBefore);
+});
+
+// The page read its answer before operate was revoked. The refusal is compared with a fresh
+// answer, so it counts as a lost grant and a later grant shows status again.
+test("a status refusal after a revocation the page did not read is asked again once granted", async (t) => {
+  const logs = await logsFixture(t);
+  const { account, role } = await logsMember(logs.fixture, logs.namespace, "revoked-unread", [
+    "read",
+    "operate",
+    "read_logs",
+  ]);
+  const { page } = await openRetainedLogs(t, logs, account.credentials);
+  await page.locator(".runtime-pod").first().waitFor();
+  await waitForIdleFetches(page);
+  const reopenLogs = async () => {
+    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("button", { name: "Logs", exact: true }).click();
+  };
+
+  changeGrant(role, "operate", false);
+  await reopenLogs();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await waitForIdleFetches(page);
+  changeGrant(role, "operate", true);
+  await reopenLogs();
+  await page.locator(".runtime-pod").first().waitFor();
+  assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
 });
 
 // A status refusal while the answer allows operate is not asked again on the page (a fresh
