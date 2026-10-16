@@ -320,3 +320,84 @@ test("Reload draft in the Configuration editor updates the Agent page in place",
   assert.equal(await focusedDescription(page), "Draft reloaded.");
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
 });
+
+// Cancel rereads the Agent before the tab is rebuilt. A repository-choices read that finished
+// in that window re-enabled Save on the editor being replaced, so the cancelled edit could
+// still be written (review of #2551).
+test("repository Cancel keeps the replaced editor locked while choices finish loading", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1600",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repositories Cancel Lock",
+    nativeValues("repositories-cancel"),
+  );
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const saved = await fixture.request("PATCH", agentPath, {
+    body: {
+      configurationId: agent.configurationId,
+      repositoryAccess: {
+        defaultProfile: "git-full",
+        repositories: [{ repositoryRef: "application" }],
+      },
+    },
+  });
+  assert.equal(saved.status, 200);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const hold = async (url, method) => {
+    let release;
+    const released = new Promise((resolve) => {
+      release = resolve;
+    });
+    t.after(() => release());
+    let requested;
+    const seen = new Promise((resolve) => {
+      requested = resolve;
+    });
+    await page.route(
+      url,
+      async (route) => {
+        if (route.request().method() !== method) {
+          await route.fallback();
+          return;
+        }
+        requested();
+        await released;
+        await route.continue().catch(() => {});
+      },
+      { times: 1 },
+    );
+    return { seen, release };
+  };
+  const options = await hold(`${fixture.origin}${agentPath}/repository-options`, "GET");
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"));
+  await options.seen;
+  const remove = page.getByRole("button", { name: /^Remove/ });
+  await remove.click();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  const cancel = page.getByRole("button", { name: "Cancel", exact: true });
+  const reread = await hold(`${fixture.origin}${agentPath}`, "GET");
+  await cancel.click();
+  await reread.seen;
+  options.release();
+  await page.waitForResponse((response) => response.url().endsWith("/repository-options"));
+  // Let the choices' completion run its updates.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
+
+  reread.release();
+  await remove.waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(pathRequests(requests, "PATCH", agentPath).length, 0);
+  assert.deepEqual((await fixture.request("GET", agentPath)).data.repositoryAccess.repositories, [
+    { repositoryRef: "application" },
+  ]);
+});

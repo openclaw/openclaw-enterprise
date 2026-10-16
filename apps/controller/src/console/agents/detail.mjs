@@ -2850,12 +2850,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     let saveState = "idle";
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
+    // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
+    let reloading = false;
     function rebuild(saved, focus) {
-      reload.disabled = true;
-      cancel.disabled = true;
-      // A Save during the reread would write the edit being discarded.
-      save.disabled = true;
-      fields.setDisabled(true);
+      reloading = true;
+      update();
       void reloadDraftInPlace(context, { saved, focus });
     }
     const reload = button("Reload draft", () => rebuild("Draft reloaded."));
@@ -2873,6 +2872,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       rebuild("", "Cancel");
     });
     function update() {
+      if (reloading) {
+        // A Save during the reread would write the edit being discarded, and a late field
+        // update (repository choices loading, say) must not enable it again.
+        reload.disabled = true;
+        cancel.disabled = true;
+        save.disabled = true;
+        fields?.setDisabled(true);
+        return;
+      }
       const dirty = fields?.isDirty() ?? false;
       const pending = saveState === "saving";
       const outcomeUnknown = saveState === "uncertain";
