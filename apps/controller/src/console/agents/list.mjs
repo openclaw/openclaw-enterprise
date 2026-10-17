@@ -236,6 +236,17 @@ export function renderAgentList(context) {
       },
     );
   }
+  // Fills a row's deployment cell. Focus in the cell moves to its new link, or to the row's Agent
+  // link when it has none.
+  function fillDeployment(deployment, ...content) {
+    const focused = deployment.contains(deployment.ownerDocument.activeElement);
+    deployment.replaceChildren(...content);
+    if (focused) {
+      (deployment.querySelector("a") ?? deployment.closest("tr")?.querySelector("a"))?.focus({
+        preventScroll: true,
+      });
+    }
+  }
   function showDeployment(item, deployment) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
@@ -247,23 +258,22 @@ export function renderAgentList(context) {
           return;
         }
         if (result === null) {
-          deployment.textContent = "No visible deployments";
+          fillDeployment(deployment, "No visible deployments");
           return;
         }
-        deployment.replaceChildren(
-          link(
-            `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
-            `agents/${item.id}?revision=${result.revision.id}`,
-            context,
-          ),
-        );
         const neutral = neutralDeploymentOutcome(result.status);
         const failure =
           !neutral && result.status.status === "failed"
             ? (result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
-        deployment.append(
+        fillDeployment(
+          deployment,
+          link(
+            `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
+            `agents/${item.id}?revision=${result.revision.id}`,
+            context,
+          ),
           element(
             "span",
             {
@@ -276,8 +286,10 @@ export function renderAgentList(context) {
         );
       })
       .catch((error) => {
-        deployment.textContent =
-          error.status === 403 ? "Deployment access denied" : "Deployment unavailable";
+        fillDeployment(
+          deployment,
+          error.status === 403 ? "Deployment access denied" : "Deployment unavailable",
+        );
       });
   }
   function render() {
@@ -364,10 +376,16 @@ export function renderAgentList(context) {
   }
   // A retained list is mounted without rereading its rows' deployments, so what they showed is
   // not presented as current: each row reads its deployment again from "Reading deployment…".
+  // A row's deployment link stays, saying only that, since Back from it focuses it again by its
+  // address; the fresh link takes its focus.
   context.onResume?.(() => {
     deployments.clear();
     for (const [deployment, item] of cells) {
-      deployment.replaceChildren("Reading deployment…");
+      const shown = deployment.querySelector("a");
+      if (shown) {
+        shown.textContent = "Reading deployment…";
+      }
+      deployment.replaceChildren(shown ?? "Reading deployment…");
       showDeployment(item, deployment);
     }
   });

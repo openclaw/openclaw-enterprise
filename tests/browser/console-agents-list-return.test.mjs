@@ -19,6 +19,8 @@ const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
 const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
+const isFocused = (locator) =>
+  locator.evaluate((node) => node === globalThis.document.activeElement);
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
 // A deployment record read; the list shows its status and, for a failure, its error.
@@ -37,7 +39,9 @@ function deploymentRecord(namespace, status) {
   };
 }
 
-async function openTeamList(t, name) {
+// `newer` names the Agents (by index) with a second version deployed after the active one, so their
+// Latest deployment link differs from their Current version link.
+async function openTeamList(t, name, { newer = [] } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
@@ -45,7 +49,10 @@ async function openTeamList(t, name) {
   for (let index = 1; index <= AGENTS; index += 1) {
     const label = `Team Agent ${String(index).padStart(2, "0")}`;
     const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
-    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    let { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    if (newer.includes(index - 1)) {
+      revision = await fixture.deployAgent(namespace.id, agent.id);
+    }
     agents.push({ ...agent, name: label, revisionId: revision.id });
   }
   const { page } = await newPage(t, fixture);
@@ -74,11 +81,12 @@ const deploymentCells = (page) =>
       ),
     );
 
-// Records, after every DOM change, any deployment link or Agent link the active (revealed) view
-// shows, so a stale value painted for even one frame before a row's fresh read is caught.
-function recordRevealed() {
+// Records, after every DOM change, how many rows of the active (revealed) view show a deployment
+// other than "Reading deployment…", and every Agent it shows, so a stale value painted for even
+// one frame before a row's fresh read is caught.
+function recordRevealed(reading) {
   const document = globalThis.document;
-  const seen = { deploymentLinks: 0, agents: new Set() };
+  const seen = { deployments: 0, agents: new Set() };
   globalThis.__revealed = seen;
   const record = () => {
     const view = document.querySelector('.content [aria-live="polite"]:not([inert])');
@@ -86,9 +94,11 @@ function recordRevealed() {
     if (!table) {
       return;
     }
-    seen.deploymentLinks = Math.max(
-      seen.deploymentLinks,
-      table.querySelectorAll(".agent-deployment a").length,
+    seen.deployments = Math.max(
+      seen.deployments,
+      [...table.querySelectorAll(".agent-deployment")].filter(
+        (cell) => cell.textContent !== reading,
+      ).length,
     );
     for (const link of table.querySelectorAll("tbody tr td:first-child a")) {
       seen.agents.add(link.textContent);
@@ -103,9 +113,10 @@ function recordRevealed() {
     attributes: true,
   });
 }
+const startRecording = (page) => page.evaluate(recordRevealed, READING);
 const revealed = (page) =>
   page.evaluate(() => ({
-    deploymentLinks: globalThis.__revealed.deploymentLinks,
+    deployments: globalThis.__revealed.deployments,
     agents: [...globalThis.__revealed.agents].sort(),
   }));
 
@@ -171,7 +182,7 @@ for (const how of ["Browser Back", "Agents navigation"]) {
       `**/namespaces/${namespace.id}/agents/${changed.id}/deployments/${changed.revisionId}`,
       { fulfill: deploymentRecord(namespace, "failed") },
     );
-    await page.evaluate(recordRevealed);
+    await startRecording(page);
     await goBackToList(page, how);
 
     // The retained list is back and usable while every row read is still outstanding.
@@ -187,7 +198,7 @@ for (const how of ["Browser Back", "Agents navigation"]) {
       await deploymentCells(page),
       Object.fromEntries(Object.keys(before).map((name) => [name, READING])),
     );
-    assert.equal((await revealed(page)).deploymentLinks, 0, "no stale deployment was revealed");
+    assert.equal((await revealed(page)).deployments, 0, "no stale deployment was revealed");
 
     // The rows fill in place from their fresh reads.
     rows.release();
@@ -223,7 +234,7 @@ test("A return whose list read dropped an Agent never reveals that Agent, with r
       json: { ...body, data: body.data.filter((item) => item.id !== removed.id) },
     });
   });
-  await page.evaluate(recordRevealed);
+  await startRecording(page);
   await page.goBack();
 
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
@@ -257,5 +268,102 @@ test("A return rereads only the rows the search shows", async (t) => {
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   assert.equal(await viewTag(page), "kept");
   await page.getByText(READING).first().waitFor({ state: "detached" });
-  assert.deepEqual(revisions, [`/namespaces/${namespace.id}/agents/${target.id}/revisions`]);
+  // The Agent page may still read its own history as it closes; no other row is read.
+  assert.deepEqual(
+    [...new Set(revisions)],
+    [`/namespaces/${namespace.id}/agents/${target.id}/revisions`],
+  );
+});
+
+// Back from a row's deployment link focuses that link again. The retained row keeps the link while
+// it rereads, so the return finds it, and the fresh link (or, with none, the Agent link) keeps
+// focus once the read lands.
+for (const outcome of ["fills", "is refused"]) {
+  test(`Back from a row's deployment link keeps focus on that row while its reread ${outcome}`, async (t) => {
+    const { namespace, agents, page } = await openTeamList(t, `Team return focus ${outcome}`, {
+      newer: [1],
+    });
+    const [, target] = agents;
+    await tagView(page);
+    const row = page.locator(activeView).getByRole("row").filter({ hasText: target.name });
+    const deploymentLink = row.locator(".agent-deployment a");
+    await deploymentLink.focus();
+    await deploymentLink.press("Enter");
+    await page.waitForURL(`**/console/agents/${target.id}?**revision=${target.revisionId}**`);
+    await page
+      .locator(settledView)
+      .getByRole("region", { name: "Agent state at a glance" })
+      .waitFor();
+
+    const rows = await holdRowReads(t, page, namespace);
+    const refused = outcome === "is refused";
+    const own = await holdRequests(
+      t,
+      page,
+      `**/namespaces/${namespace.id}/agents/${target.id}/deployments/${target.revisionId}`,
+      {
+        fulfill: refused
+          ? {
+              status: 403,
+              json: {
+                error: { code: "PERMISSION_DENIED", message: "Access denied." },
+                meta: { requestId: "req_test_list_return" },
+              },
+            }
+          : deploymentRecord(namespace, "succeeded"),
+      },
+    );
+    await page.goBack();
+    await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+    await rows.revisions.requested;
+    assert.equal(await viewTag(page), "kept");
+    assert.equal(await deploymentLink.textContent(), READING);
+    assert.equal(await isFocused(deploymentLink), true, "Back focused the row's deployment link");
+
+    rows.release();
+    own.release();
+    await page.getByText(READING).first().waitFor({ state: "detached" });
+    if (refused) {
+      assert.equal(
+        await row.locator(".agent-deployment").textContent(),
+        "Deployment access denied",
+      );
+      assert.equal(
+        await isFocused(row.getByRole("link", { name: target.name, exact: true })),
+        true,
+        "focus moved to the row's Agent link",
+      );
+    } else {
+      assert.match(await deploymentLink.textContent(), /^v2 · succeeded/);
+      assert.equal(await isFocused(deploymentLink), true, "the fresh link kept focus");
+    }
+    assert.equal(await viewTag(page), "kept");
+  });
+}
+
+// A list left again before its rows' rereads land is not reused: the next return rebuilds it.
+test("A list left again during its rows' rereads is rebuilt on the next return", async (t) => {
+  const { namespace, agents, page } = await openTeamList(t, "Team return again");
+  const [opened] = agents;
+  await tagView(page);
+  await openAgent(page, opened);
+
+  const rows = await holdRowReads(t, page, namespace);
+  await page.goBack();
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  await rows.revisions.requested;
+  assert.equal(await viewTag(page), "kept");
+  await page.locator(settledView).getByRole("link", { name: opened.name, exact: true }).click();
+  await page.waitForURL(`**/console/agents/${opened.id}**`);
+  rows.release();
+  await page
+    .locator(settledView)
+    .getByRole("region", { name: "Agent state at a glance" })
+    .waitFor();
+
+  await page.goBack();
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), null, "the list was rebuilt");
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), AGENTS);
 });
