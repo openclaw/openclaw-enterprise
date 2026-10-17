@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-17
-last_updated_session: authoring-run/5775742a-69b2-4b9b-947e-198df50d9f40
+last_updated_session: authoring-run/77795960-6a71-4c2d-95a7-3c0c0558e489
 ---
 
 # Agent runtime logs flow
@@ -205,8 +205,9 @@ Console (`apps/controller/src/console/agents/logs.mjs`) use the download request
 for `-previous.log`; current and Sandbox filenames stay unchanged.
 `runtime-logs/read.ts:runtimeLogPageAtLevel` filters after signing, preserving unknown
 levels/gaps/withheld counts. Console filters loaded rows; debug is opt-in.
-Cached `403` avoids duplicate denials. Pod cards show state/exit; Gateway links
-Harness output or Deployment activity.
+If status selects a different source, Pod or instance, Console clears old output and reads a fresh tail only when available.
+Status denial preserves authorized log access; cached `403` avoids duplicate denials.
+Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 CLI rejects zero/sub-second `--since`; omission leaves reads unfiltered.
 `runAgentLogs --follow` polls every two seconds. Cancelling follow succeeds; cancelling a one-shot read fails. `internal/occclient/transport.go:apiError` accepts
 `Retry-After` seconds/HTTP dates: positive delays ≤1h postpone `429` retries,
@@ -237,6 +238,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 22:06: Keep the log tail with the selection after a status change. (authoring-run/77795960-6a71-4c2d-95a7-3c0c0558e489 - ee93918670368e1f34ae39b7a5f32744d8fae78e)
 
 - 2026-10-17 18:04: Use monotonic request-bucket time. (authoring-run/5775742a-69b2-4b9b-947e-198df50d9f40 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
 

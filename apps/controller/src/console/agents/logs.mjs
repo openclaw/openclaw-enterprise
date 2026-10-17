@@ -302,6 +302,18 @@ export function renderAgentLogs(
     return Boolean(source) && (source.kind === "sandbox" || statusDenied || Boolean(selectedPod()));
   }
 
+  // Compare the selected stream, not its Pod UID or restart count: the cursor handles those.
+  function effectiveSelection() {
+    const pod = selectedPod();
+    return JSON.stringify([
+      selectedSource()?.id,
+      pod?.name,
+      pod?.container,
+      previous.checked,
+      readableSelection(),
+    ]);
+  }
+
   function logQuery(source, pod) {
     const query = new URLSearchParams({ source: source.id });
     if (source.kind !== "sandbox" && pod) {
@@ -504,12 +516,25 @@ export function renderAgentLogs(
         if (!current() || (superseded() && description !== null)) {
           return;
         }
+        const selection = effectiveSelection();
         description = answer;
         statusDenied = false;
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
+        } else if (!logsDenied && selection !== effectiveSelection()) {
+          // A restart normally clears the old view. Do that now if it must wait for an
+          // in-flight read (whose denial still wins), or there is no readable replacement.
+          if (reading || !readableSelection()) {
+            cursor = null;
+            pane.replaceChildren();
+            rows = 0;
+            logStatus.textContent = "";
+            applyFilters();
+          }
+          showLogError(null);
+          void readLogs({ restart: true });
         }
         if (superseded()) {
           // The newer load schedules the next poll.

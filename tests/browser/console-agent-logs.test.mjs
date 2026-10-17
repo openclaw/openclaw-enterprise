@@ -636,6 +636,99 @@ test("an unchanged runtime status poll leaves the status strip and pickers untou
   assert.ok((await page.evaluate(() => globalThis.statusRewrites.length)) > 0);
 });
 
+test("a status poll that changes the log source starts its tail; retaining the source spends no read", async (t) => {
+  const logs = await logsFixture(t);
+  const state = logs.computeDriver.state;
+  state.harnessPod = { ready: true };
+  state.harnessLines = [line(1, "output from the selected Agent")];
+  state.lines = [line(2, "output from the remaining Gateway")];
+  const { page, requests } = await openRetainedLogs(t, logs, logs.fixture.credentials);
+  const source = page.locator("#runtime-log-source");
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await source.selectOption("agent");
+  const agentLine = pane.getByText("output from the selected Agent");
+  await agentLine.waitFor();
+  const reads = () => logRequests(requests, logs.revisionId);
+  const before = reads().length;
+
+  // The status changes, but the selected Agent stream still exists.
+  state.extraPods = [{ name: "another-gateway-pod", uid: randomUUID() }];
+  await page.clock.runFor(10_000);
+  await page.locator(".runtime-pod").getByText("another-gateway-pod").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await source.inputValue(), "agent");
+  assert.equal(await agentLine.isVisible(), true);
+  assert.equal(reads().length, before);
+
+  // The Agent Pod goes away. The picker already falls back to Gateway; the output must too.
+  state.harnessPod = { created: false };
+  await page.clock.runFor(10_000);
+  await source.locator('option[value="agent"]:disabled').waitFor({ state: "attached" });
+  await waitForIdleFetches(page);
+  assert.equal(await source.inputValue(), "gateway");
+  const next = reads().slice(before);
+  assert.equal(next.length, 1, "read the new source once");
+  const { searchParams } = new URL(next[0].path, logs.fixture.origin);
+  assert.equal(searchParams.get("source"), "gateway");
+  assert.equal(searchParams.get("tailLines"), "200");
+  assert.equal(searchParams.has("cursor"), false);
+  assert.equal(await agentLine.count(), 0);
+  await pane.getByText("output from the remaining Gateway").waitFor();
+});
+
+test("a status poll that replaces the selected Pod drops even an in-flight page from it", async (t) => {
+  const logs = await logsFixture(t);
+  const state = logs.computeDriver.state;
+  const old = { name: "gateway-before-rollout", uid: randomUUID() };
+  state.extraPods = [old];
+  const { page, requests } = await openRetainedLogs(t, logs, logs.fixture.credentials);
+  const picker = page.locator("#runtime-log-pod");
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  state.readPodUid = old.uid;
+  state.lines = [line(1, "output from the selected Pod")];
+  await picker.selectOption({ label: old.name + " / gateway" });
+  const oldLine = pane.getByText("output from the selected Pod");
+  await oldLine.waitFor();
+
+  const url = "**/runtime/logs?*cursor=*";
+  const held = await holdRequests(t, page, url, { once: true, afterServer: true });
+  const late = "last output from the old Pod";
+  state.lines.push(line(2, late));
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await held.requested;
+  const reads = () => logRequests(requests, logs.revisionId);
+  const before = reads().length;
+  await watchPainted(page, late);
+
+  state.extraPods = [];
+  delete state.readPodUid;
+  state.lines = [line(3, "first output from the remaining Pod")];
+  await page.clock.runFor(10_000);
+  await picker
+    .getByRole("option", { name: old.name + " / gateway" })
+    .waitFor({ state: "detached" });
+  assert.equal(await oldLine.count(), 0, "do not label the old output as the new selection");
+
+  const delivered = page.waitForResponse(url);
+  held.release();
+  const oldResponse = await delivered;
+  assert.equal(oldResponse.status(), 200);
+  assert.ok((await oldResponse.text()).includes(late), "the old response really arrived");
+  await pane.getByText("first output from the remaining Pod").waitFor();
+  const next = reads().slice(before);
+  assert.equal(next.length, 1, "read the replacement Pod once");
+  const { searchParams } = new URL(next[0].path, logs.fixture.origin);
+  assert.equal(searchParams.has("cursor"), false);
+  assert.equal(searchParams.get("tailLines"), "200");
+  assert.deepEqual(JSON.parse(await picker.inputValue()), [searchParams.get("pod"), "gateway"]);
+  assert.deepEqual(
+    await page.evaluate(() => globalThis.__painted),
+    [],
+    "the old response never repainted",
+  );
+});
+
 test("a rejected cursor starts one new view and later restarts wait for it", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.lines = [line(1, "first view line")];

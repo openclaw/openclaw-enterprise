@@ -3827,6 +3827,17 @@ export const scenarios = {
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
     ],
   },
+  runtimeLogPodReplaced: {
+    ...runtimeLogsPage,
+    name: "Selected Pod disappears from runtime status",
+    runtimePod: "rollover",
+    description:
+      "On the next status poll, gateway-retiring disappears. The Console starts the selected Pod’s log tail without mixing the two Pods’ output.",
+    steps: [
+      "Select gateway-retiring in Pod / container before the next status poll. Its name appears in the output and the caption.",
+      "After about ten seconds, the picker, output and caption all name the remaining Pod. No action or manual refresh is needed.",
+    ],
+  },
   runtimeLogAccessLost: {
     ...runtimeLogsPage,
     name: "Log access lost after output appears",
