@@ -204,7 +204,7 @@ export function createChannelSecretsPanel({
     values,
     saving: false,
     saveError: null,
-    saveErrorBeforeWrite: false,
+    saveErrorStep: null,
     saveMessage: "",
     saveGrantWarning: "",
     pendingSecretGrants: {},
@@ -219,13 +219,19 @@ export function createChannelSecretsPanel({
   const section = element("section", { className: "agent-card channel-secrets" });
 
   function saveErrorText() {
-    if (state.saveErrorBeforeWrite) {
-      return (
-        "Could not check the saved Configuration. Try again before saving channel Secrets." +
-        (state.saveError.requestId ? ` Request ID: ${state.saveError.requestId}` : "")
-      );
+    const { saveError, saveErrorStep, saveGrantWarning } = state;
+    if (saveErrorStep === "grant" && saveGrantWarning) {
+      return saveGrantWarning;
     }
-    return state.saveGrantWarning || credentialError(state.saveError, true);
+    const message =
+      saveErrorStep === "preflight"
+        ? "Could not check the saved Configuration. Try again before saving channel Secrets." +
+          (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
+        : credentialError(saveError, true);
+    // Report this failed save first. A grant can still be outstanding from an earlier save.
+    return saveGrantWarning
+      ? `${message} Access to a previously saved Secret is still unconfirmed.`
+      : message;
   }
 
   function canEnterChannelCredentials() {
@@ -442,7 +448,7 @@ export function createChannelSecretsPanel({
       }
       state.saving = true;
       state.saveError = null;
-      state.saveErrorBeforeWrite = false;
+      state.saveErrorStep = null;
       state.saveMessage = "";
       state.carriedNote = "";
       state.saveGrantWarning = "";
@@ -535,7 +541,11 @@ export function createChannelSecretsPanel({
           state.draftSeed = draft;
         }
         state.saveError = cause;
-        state.saveErrorBeforeWrite = !mutationStarted;
+        state.saveErrorStep = configurationSaved
+          ? "grant"
+          : mutationStarted
+            ? "configuration"
+            : "preflight";
         state.saveMessage = "";
         state.outcomeUnknown =
           mutationStarted && !configurationSaved && !isDefinitiveRejection(cause);
