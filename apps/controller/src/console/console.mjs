@@ -665,19 +665,15 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 }
 
 // The control focused in the shown page, which a refocus recheck blurs when it holds the page
-// inert (finding 1654). restore() gives focus back once the page remounts, with an input's caret,
-// unless the reader has moved focus since. A deployment link the remount replaced gives it to
-// the cell's pending deployment instead, as Back does.
+// inert (finding 1654). restore() gives focus back once the page remounts (an input keeps its
+// caret), unless the reader has moved focus since. A deployment link the remount replaced gives
+// it to the cell's pending deployment instead, as Back does.
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = view?.contains(document.activeElement) ? document.activeElement : null;
   if (!focused) {
     return null;
   }
-  const selection =
-    typeof focused.selectionStart === "number"
-      ? [focused.selectionStart, focused.selectionEnd]
-      : null;
   const href = focused.href ?? null;
   return {
     restore(remounted) {
@@ -691,9 +687,6 @@ function focusInShownView() {
             (item) => item.dataset.returnFocusHref === href,
           );
       target?.focus({ preventScroll: true });
-      if (target === focused && selection) {
-        focused.setSelectionRange(...selection);
-      }
     },
   };
 }

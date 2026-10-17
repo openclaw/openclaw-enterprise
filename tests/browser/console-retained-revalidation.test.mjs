@@ -1059,7 +1059,12 @@ for (const how of ["Enter", "a click"]) {
 // page, and the search box keeps its caret. A deployment link, which the remount replaces until
 // its reread lands, gives focus to that pending cell, as Back does. Focus never visits the
 // heading (#2712 review).
-for (const target of ["an Agent link", "the search box", "a deployment link"]) {
+for (const target of [
+  "an Agent link",
+  "the search box",
+  "a deployment link",
+  "the sidebar it moved to during the check",
+]) {
   test(`A refocus recheck of the Agents list gives focus back to ${target}`, async (t) => {
     const deployment = target === "a deployment link";
     const { agent, page } = await openList(t, `Refocus ${target}`, "Refocus Agent", {
@@ -1077,12 +1082,14 @@ for (const target of ["an Agent link", "the search box", "a deployment link"]) {
         ),
     });
     const search = target === "the search box";
+    const moved = target === "the sidebar it moved to during the check";
     const cell = page.locator(settledView).locator(".agent-deployment");
     const control = search
       ? page.locator(settledView).getByRole("searchbox", { name: "Search Agents" })
       : deployment
         ? cell.getByRole("link")
         : page.locator(settledView).getByRole("link", { name: agent.name });
+    const sidebar = page.getByRole("link", NAMESPACES);
     await tagView(page, "refocused");
     if (search) {
       await control.fill("Refocus");
@@ -1098,6 +1105,10 @@ for (const target of ["an Agent link", "the search box", "a deployment link"]) {
     await refocus(page);
     await session.requested;
     await page.locator(heldView).waitFor();
+    if (moved) {
+      // The reader moved on while the page was held: the remount leaves their focus alone.
+      await sidebar.focus();
+    }
     session.release();
     await page.locator(settledView).waitFor();
     assert.equal(await viewTag(page), "refocused", "the list remounted unchanged");
@@ -1106,7 +1117,11 @@ for (const target of ["an Agent link", "the search box", "a deployment link"]) {
       assert.equal(await focusedIn(cell), true, "focus waits in the pending deployment");
       await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
     }
-    assert.equal(await isFocused(control), true, "focus is back on the control");
+    assert.equal(
+      await isFocused(moved ? sidebar : control),
+      true,
+      moved ? "focus stays where the reader moved it" : "focus is back on the control",
+    );
     if (search) {
       assert.deepEqual(
         await control.evaluate((input) => [input.selectionStart, input.selectionEnd]),

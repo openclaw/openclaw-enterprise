@@ -766,6 +766,17 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     const { shift, shifts } = await takeLayoutShifts(page);
     t.diagnostic(`permissions ${permissionsDelay} ms: shift ${shift}: ${JSON.stringify(shifts)}`);
     assert.ok(shift < 0.01, `permissions ${permissionsDelay} ms: shift ${shift}`);
+    // A failure known before the page shows leads it, above the overview (finding 1655 moves
+    // only a card that lands later).
+    assert.equal(
+      await recovery.evaluate((card) =>
+        Boolean(
+          card.compareDocumentPosition(card.ownerDocument.querySelector(".agent-overview-status")) &
+          globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ),
+      true,
+    );
   }
 });
 
@@ -1087,6 +1098,15 @@ for (const viewport of [
     const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
     let record = deploymentRecord(namespace, agent, pending, "running");
     await page.route(recordUrl, (route) => route.fulfill(record));
+    // Native administration is open, so its link is the primary action until the card shows.
+    await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
+      route.fulfill({
+        json: {
+          data: { status: "available", url: "https://admin.example.test/" },
+          meta: { requestId: "req_test_failing_deploy" },
+        },
+      }),
+    );
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(
       page,
@@ -1132,14 +1152,20 @@ for (const viewport of [
     await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
     await waitForIdleFetches(page);
     assert.deepEqual(await tops(), before, "the overview stays in place");
-    // The card follows the deployment's activity, and its first action is the page's one primary.
+    // The card follows the deployment's activity, and its first action is the page's one primary:
+    // native administration's link steps back, as it does beside a card above the overview.
     assert.equal(
       await recovery.evaluate(
         (card) => card.previousElementSibling?.classList.contains("agent-overview-status") === true,
       ),
       true,
     );
-    assert.equal(await page.locator(".overview-primary:visible").count(), 1);
+    const background = (locator) =>
+      locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
+    const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+    const admin = page.getByRole("link", { name: "Open admin console" });
+    assert.equal(await admin.isVisible(), true);
+    assert.notEqual(await background(admin), await background(logs));
   });
 }
 
