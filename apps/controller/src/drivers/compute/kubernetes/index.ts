@@ -7057,9 +7057,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
-   * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
-   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
+   * derived exactly as provisioning created it, so the gateway withdraws and confirms whether or
+   * not the Kubernetes Namespace still exists: the provider's Workspace record outlives the
+   * Namespace, and only the gateway can tell a missing Sandbox from a hidden one (finding 1693).
+   * A configuration that cannot reach the Sandbox, or an object this Driver does not own, is a
+   * CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
@@ -7108,14 +7110,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      return Object.freeze({ sourceId: source.id, state: "absent" });
+    // A missing Namespace proves nothing about the Sandbox (finding 1693): only its ownership
+    // check needs the object; the gateway withdraws and confirms either way.
+    if (existingNamespace !== undefined) {
+      this.verifyNamespaceOwnership(
+        existingNamespace,
+        { namespaceId: revision.namespaceId },
+        external,
+      );
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
     const sandboxNamespace = this.sandboxNamespaceForRevision(revision, namespace);
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
@@ -7162,15 +7165,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      // The Namespace's teardown releases the provider's Workspace with every Sandbox in it.
-      return;
+    // The Namespace's teardown releases the provider's Workspace with every Sandbox in it, but
+    // a Namespace missing before that proves nothing about the exposure (finding 1693): only
+    // its ownership check needs the object; the provider withdraws and confirms either way.
+    if (existingNamespace !== undefined) {
+      this.verifyNamespaceOwnership(
+        existingNamespace,
+        { namespaceId: revision.namespaceId },
+        external,
+      );
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
     const context = await this.sandboxNamespaceContext(
       this.sandboxNamespaceForRevision(revision, namespace),
       namespace,
