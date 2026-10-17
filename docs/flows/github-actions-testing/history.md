@@ -58,3 +58,7 @@ This record preserves the dated changes to the GitHub Actions testing flow. See 
 - 2026-09-04 15:10: Clarified independent logging backend cleanup and local one-Kubernetes-lane-at-a-time guidance after measured Docker VM pressure.
 - 2026-09-04 15:35: Documented the shared Docker 29.4.0 setup action for Collector and Docker-model compatibility.
 - 2026-09-04 16:00: Pointed evolving proof status to spec19 after PR #23 head `27bd0e9` passed the hosted PR lanes and local live Docker-model execution passed.
+
+- 2026-10-10 13:15: Retain complete leading/trailing diagnostic lines within the existing field budget and consume private boundary flags before publishing. (authoring-run/32d914e3-aba3-48ff-a536-1bf407c4f564 - 1005ea3085b91665f1f470cd49c7590143b221a2)
+
+- 2026-10-10 06:00: Preserve bounded nested failure causes and aggregate siblings through the existing CI diagnostic text projection. (authoring-run/92364dff-b3af-4ab2-8297-9dfaa98d7e31 - cd30d20a297fdb0f2b712122b705aa4c168564ff)
