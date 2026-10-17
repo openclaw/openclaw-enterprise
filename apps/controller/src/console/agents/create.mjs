@@ -257,8 +257,9 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The last named wait stays shown until a later deployment read names another or none: a read
-  // cut off at the next poll would otherwise flip the line back to the bare text (finding 1637).
+  // The quota wait the last fresh deployment read named. It fills in when a later read is cut off
+  // or unavailable and the job names no wait, so the line doesn't flip back to the bare text
+  // (finding 1637); a fresh answer or a refusal replaces it.
   let named = null;
   while (current?.status === "queued" || current?.status === "running") {
     if (typeof current.url !== "string" || !current.url) {
