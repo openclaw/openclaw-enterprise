@@ -129,32 +129,6 @@ try {
       { key: parentKey, agentId: scenario.agentId },
     );
     const offset = requests.length;
-    // PROOF ONLY (temporary): start a parent-route turn on the requester session and let its
-    // native request arrive first, as the stray did in the two CI failures.
-    let interference;
-    if (process.env.OCC_TEST_SUBAGENT_INTERFERE === scenario.agentId) {
-      const accepted = await callGatewayFromCli(
-        "agent",
-        {
-          url: "ws://127.0.0.1:8080",
-          password: process.env.OPENCLAW_GATEWAY_PASSWORD,
-          timeout: "90000",
-        },
-        {
-          message: "Unrelated requester turn.",
-          sessionKey: parentKey,
-          idempotencyKey: `interfere-${scenario.agentId}`,
-        },
-      );
-      const request = await waitFor("interfering thread/start", () =>
-        requests.slice(offset).find(({ method }) => method === "thread/start"),
-      );
-      interference = {
-        runId: accepted.runId,
-        model: request.params.model,
-        cwd: request.params.cwd,
-      };
-    }
     const response = await fetch("http://127.0.0.1:8080/tools/invoke", {
       method: "POST",
       headers: {
@@ -201,7 +175,6 @@ try {
           .map(({ params }) => params.model),
       )}`,
     );
-    const legacy = requests.slice(offset).find(({ method }) => method === "thread/start");
     // Settle this run, including its configured fallbacks, before the next case.
     const completed = await callGatewayFromCli(
       "agent.wait",
@@ -223,60 +196,9 @@ try {
       model: native.params.model,
       cwd: native.params.cwd,
       terminalStatus: completed.status,
-      legacyModel: legacy?.params.model,
-      interference,
     });
-    if (interference?.runId) {
-      await callGatewayFromCli(
-        "agent.wait",
-        {
-          url: "ws://127.0.0.1:8080",
-          password: process.env.OPENCLAW_GATEWAY_PASSWORD,
-          timeout: "45000",
-        },
-        { runId: interference.runId, timeoutMs: 30000 },
-      );
-    }
   }
-  // PROOF ONLY (temporary): does a heartbeat send a parent-route native request?
-  let heartbeat;
-  if (process.env.OCC_TEST_SUBAGENT_HEARTBEAT_PROBE === "1") {
-    const rpc = (method, params) =>
-      callGatewayFromCli(
-        method,
-        {
-          url: "ws://127.0.0.1:8080",
-          password: process.env.OPENCLAW_GATEWAY_PASSWORD,
-          timeout: "30000",
-        },
-        params,
-      ).catch((error) => ({ error: String(error?.message ?? error).slice(0, 300) }));
-    const last = await rpc("last-heartbeat", {});
-    const before = requests.length;
-    const wake = await rpc("wake", { mode: "now", text: "Routing fixture heartbeat probe." });
-    const until = Date.now() + 20_000;
-    let request;
-    while (!request && Date.now() < until) {
-      request = requests.slice(before).find(({ method }) => method === "thread/start");
-      if (!request) await delay(100);
-    }
-    heartbeat = {
-      last: JSON.stringify(last).slice(0, 600),
-      wake: JSON.stringify(wake).slice(0, 300),
-      request: request && {
-        model: request.params.model,
-        cwd: request.params.cwd,
-        subagent: request.params.developerInstructions?.includes("- Your session: "),
-        sessions: [
-          ...new Set(
-            request.params.developerInstructions?.match(/agent:[a-z]+:[A-Za-z0-9:_-]{0,60}/g) ?? [],
-          ),
-        ].slice(0, 4),
-        heartbeatPrompt: /heartbeat/i.test(JSON.stringify(request.params).slice(0, 200000)),
-      },
-    };
-  }
-  console.log(JSON.stringify({ commit: provenance.commit, observed, heartbeat }));
+  console.log(JSON.stringify({ commit: provenance.commit, observed }));
 } finally {
   for (const socket of server.clients) {
     socket.terminate();
