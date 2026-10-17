@@ -10,7 +10,10 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { PROVISIONING_REFUSAL_CODES } from "../../apps/controller/src/console/agents/list.mjs";
+import {
+  PROVISIONING_REFUSAL_CODES,
+  preAdmissionRefusal,
+} from "../../apps/controller/src/console/agents/list.mjs";
 import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
@@ -984,6 +987,40 @@ test("every API error code that may answer 503 is classified for Create Agent's 
     [...PROVISIONING_REFUSAL_CODES, ...NOT_PROVISIONING_REFUSALS].sort(),
     unclassified.sort(),
   );
+});
+
+// Both answer 503 DEPENDENCY_UNAVAILABLE, so Create Agent and Deploy tell a refusal from a commit
+// the API could not confirm only by the API's sentence (finding 1650). Each mapping above that
+// answers a refusal code is classified here through the console's own function, so rewording the
+// API's sentence or the console's copy alone fails: Deploy would show an unconfirmed commit as a
+// refusal and offer Deploy again.
+const UNNAMED_503_CASES = [
+  "an unknown commit outcome says not to retry automatically",
+  "an unavailable dependency is not a denial",
+  "a Configuration ConfigMap OCC does not own",
+  "an unavailable dependency from another module copy, matched by name",
+  "a Kubernetes API 404",
+];
+
+test("Create Agent and Deploy show the API's reason only for a named 503 refusal", () => {
+  const names = cases.map(([name]) => name);
+  for (const name of UNNAMED_503_CASES) {
+    assert.ok(names.includes(name), `missing case: ${name}`);
+  }
+  const refusals = cases.filter(
+    ([, , expected]) =>
+      expected.status === 503 && PROVISIONING_REFUSAL_CODES.includes(expected.code),
+  );
+  assert.ok(refusals.length > UNNAMED_503_CASES.length);
+  for (const [name, error] of refusals) {
+    const failure = requestFailure(error);
+    const shown = preAdmissionRefusal({
+      status: failure.status,
+      code: failure.code,
+      serverMessage: failure.message,
+    });
+    assert.equal(shown, UNNAMED_503_CASES.includes(name) ? undefined : failure.message, name);
+  }
 });
 
 test("a submitted Secret binding destination names its rule and key, never the Secret", () => {

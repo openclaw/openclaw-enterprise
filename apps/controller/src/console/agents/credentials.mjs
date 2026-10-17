@@ -329,7 +329,10 @@ export function createChannelSecretsPanel({
       return `Complete these in Credentials before deploying: ${missing.join(", ")}.`;
     }
     if (state.unsavedSecrets) {
-      return "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
+      // A member who cannot read a saved Secret cannot pick it again: the picker offers the
+      // unreadable binding only while the draft still holds it (finding 1649). A page reload
+      // drops unsaved choices for every reader.
+      return "Save the channel Secret choices before deploying, or reload the page to discard them.";
     }
     return "Ready to deploy.";
   }

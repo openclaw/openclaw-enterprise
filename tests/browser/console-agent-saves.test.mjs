@@ -1051,7 +1051,7 @@ const SAVED_STATE_CONFLICT =
   "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
 // Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
 const UNSAVED_SECRETS_GATE =
-  "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
+  "Save the channel Secret choices before deploying, or reload the page to discard them.";
 const reservedSaveCases = [
   {
     name: "Channels",
@@ -1175,6 +1175,46 @@ test("an unsaved channel Secret choice blocks Deploy new version until it is sav
     .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
     .waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
+});
+
+// A member who cannot read the saved Secret cannot choose it again: the picker offers the
+// unreadable binding only while the draft holds it. The gate names a way out that works for
+// every reader, and a page reload drops the unsaved choice (finding 1649).
+test("the unsaved channel Secret gate names a way out for a member who cannot read the saved Secret", async (t) => {
+  const context = await slackAgent(t, "Unreadable Saved Secret");
+  const { fixture, namespace, agent, bot } = context;
+  const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+  const page = await openTab(t, fixture, namespace, agent, "credentials", {
+    // The member's Secret list leaves out the saved bot token, as IAM would.
+    beforeLogin: (routed) =>
+      routed.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
+        if (route.request().method() !== "GET") {
+          await route.continue().catch(() => {});
+          return;
+        }
+        const response = await route.fetch();
+        const body = await response.json();
+        body.data = body.data.filter((secret) => secret.id !== bot.id);
+        await route.fulfill({ response, json: body });
+      }),
+  });
+  await page.getByRole("heading", { name: "Unreadable Saved Secret" }).waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  const botPicker = page.getByLabel("Slack bot token", { exact: true });
+  assert.equal(await botPicker.inputValue(), "Bound Secret");
+  await selectSecret(page, "Slack bot token", secondBot);
+  await page.getByText(UNSAVED_SECRETS_GATE, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  // The saved Secret is no longer offered, so "choose it again" cannot be followed.
+  await botPicker.fill("");
+  await page.getByRole("option", { name: secretOptionLabel(secondBot), exact: true }).waitFor();
+  assert.equal(await page.getByRole("option", { name: /Bound Secret/ }).count(), 0);
+  await page.reload();
+  await page.getByRole("heading", { name: "Unreadable Saved Secret" }).waitFor();
+  await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  assert.equal(await botPicker.inputValue(), "Bound Secret");
   assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
 });
 
