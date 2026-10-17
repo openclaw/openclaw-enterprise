@@ -1,15 +1,14 @@
 ---
 created: 2026-09-30
-updated: 2026-10-16
-last_updated_session: codex/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-10-17
+last_updated_session: authoring-run/5775742a-69b2-4b9b-947e-198df50d9f40
 ---
 
 # Agent runtime logs flow
 
 ## Overview
 
-OCC authorizes admitted-revision status/log reads and returns redacted, bounded
-Compute Driver records. Downloads stay local.
+Authorized revision reads return bounded, redacted Compute records; downloads stay local.
 
 ## Entry Points
 
@@ -25,7 +24,7 @@ Compute Driver records. Downloads stay local.
 - Assumptions: `deploymentId` names an admitted revision of the exact Agent.
   Status requires Agent `operate`/`read` plus revision `read`. Logs require Agent
   `read` and `read_logs` (or `administer`, unless a Restriction denies `read_logs`),
-  covering every revision that Agent deploys. `authorizeRuntimeLogRead` checks
+  covering every Agent revision. `authorizeRuntimeLogRead` checks
   `read_logs` first.
 
 ## Flow
@@ -77,9 +76,8 @@ a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
 `agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
 the tier action and Agent `read` (plus revision `read` for status only), resolves
 the revision within the exact Agent, then rejects a Driver without
-`describeAgentRuntime` or with `runtimeLogging: "driver"`. Only then does
-`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admit reads;
-audited denials spend no token.
+`describeAgentRuntime` or with `runtimeLogging: "driver"`. `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
+audited denials spend no token. Elapsed-time buckets ignore clock corrections.
 
 ### 2. Describe the runtime
 
@@ -202,8 +200,7 @@ names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 
 `apps/controller/src/http/runtime-logs.ts:runtimeLogPageBody` and
 `runtimeLogDownloadBody` reject reserved `content` records.
-Container headers label the requested `instance=current` or `instance=previous`, even
-without Pods. `runtimeLogDownloadFileName` and
+Container headers label `instance=current` or `instance=previous`, even without Pods. `runtimeLogDownloadFileName` and
 Console (`apps/controller/src/console/agents/logs.mjs`) use the download request
 for `-previous.log`; current and Sandbox filenames stay unchanged.
 `runtime-logs/read.ts:runtimeLogPageAtLevel` filters after signing, preserving unknown
@@ -227,7 +224,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 - `runtime-logs-content.test.mjs` verifies handlers with synthetic Driver pages;
   `occ-api-security.test.mjs` verifies authorization and cursor failures.
   Kubernetes conformance substitutes API observations; Sandbox conformance/wire tests prove
-  handler/protocol boundaries, not runtime execution.
+  protocol boundaries, not runtime execution.
 
 ## Related docs
 
@@ -240,6 +237,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 18:04: Use monotonic request-bucket time. (authoring-run/5775742a-69b2-4b9b-947e-198df50d9f40 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
 
 - 2026-10-16 19:09: Retain Pods unless proven older. (codex/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 646709121b8ad092df151d16cd4ca6a6c523e34d)
 
