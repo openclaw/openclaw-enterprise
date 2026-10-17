@@ -301,6 +301,105 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   assert.deepEqual(await page.evaluate(() => globalThis.deployStatusTexts), ["Deploying…"]);
 });
 
+// After an admitted deployment the draft page stays on screen, inert, while the new version
+// loads. Focus fell from the Deploying… status to the page body for 100-580 ms until the new
+// version's heading took it (finding 1626). The held page's heading now keeps it, through the
+// loading page when the read outlasts 250 ms, and hands it to the new version's heading. A
+// reader who left the status during the request is not pulled back while the page is held.
+for (const [scenario, readMs, movedOn] of [
+  ["a quick version read", 100, false],
+  ["a slow version read", 700, false],
+  ["a reader who moved on", 100, true],
+]) {
+  test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
+    const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Deployment hand-off",
+      nativeValues("deployment-hand-off"),
+      { harnessAuth: { method: "runtime" } },
+    );
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+    );
+    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+      method: "POST",
+    });
+    await page.getByRole("button", { name: "Deploy new version" }).focus();
+    await page.keyboard.press("Enter");
+    await admitted.requested;
+    assert.equal(await focusedText(page), "Deploying…");
+    if (movedOn) {
+      await page.evaluate(() => globalThis.document.activeElement?.blur());
+    }
+    // Every frame from admission until the new version shows: the focused node (numbered, so a
+    // replaced heading counts as a new one), and whether the loading page stood in.
+    await page.evaluate(() => {
+      const ids = new WeakMap();
+      let next = 0;
+      const trail = [];
+      const state = { trail, loadingShown: false, stopped: false };
+      const sample = () => {
+        if (state.stopped) {
+          return;
+        }
+        const node = globalThis.document.activeElement;
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}${node.isConnected ? "" : " detached"}: ${node.textContent.trim()}`;
+        if (trail.at(-1) !== entry) {
+          trail.push(entry);
+        }
+        state.loadingShown ||= Boolean(
+          globalThis.document.querySelector(".content")?.textContent.includes("Reading this Agent."),
+        );
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.focusFrames = state;
+      sample();
+    });
+    const versionRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+      once: true,
+      method: "GET",
+    });
+    admitted.release();
+    await versionRead.requested;
+    await new Promise((resolve) => setTimeout(resolve, readMs));
+    versionRead.release();
+    await page.waitForURL(/revision=rev_/);
+    await page.waitForFunction(
+      () =>
+        globalThis.document.activeElement?.tagName === "H1" &&
+        globalThis.document.activeElement.isConnected &&
+        !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
+        globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+    );
+    const { trail, loadingShown } = await page.evaluate(() => {
+      globalThis.focusFrames.stopped = true;
+      return globalThis.focusFrames;
+    });
+    assert.equal(loadingShown, readMs > 250, trail.join(" | "));
+    assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
+    if (movedOn) {
+      // Nothing takes focus while the page is held; the new version's heading takes it once shown.
+      assert.deepEqual(trail.slice(0, -1), ["BODY"], trail.join(" | "));
+    } else {
+      assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
+      assert.ok(!trail.includes("BODY"), trail.join(" | "));
+      assert.ok(trail.every((entry) => !entry.endsWith(" detached")), trail.join(" | "));
+    }
+  });
+}
+
 for (const [field, change] of [
   ["execution mode", { executionMode: "dedicated" }],
   ["Backend", { backendId: backendFixtures[0].id }],
