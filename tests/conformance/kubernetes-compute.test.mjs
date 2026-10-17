@@ -2134,6 +2134,22 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
   assert.equal(withdrawals[3].revision, revision);
   assert.equal(withdrawals[3].namespace.name, namespace);
   assert.equal(withdrawals[3].workspaceNodeEnrolled, true);
+  // A Namespace at the derived name that another Namespace owns (none claims this one by label)
+  // fails before the provider is asked.
+  const listNamespace = clients.core.listNamespace;
+  clients.core.listNamespace = async () => ({ items: [] });
+  clients.core.readNamespace = async () => ({
+    ...driver.manifest("v1", "Namespace", namespace, {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000009",
+    }),
+    status: { phase: "Active" },
+  });
+  await assert.rejects(
+    driver.withdrawHarnessExposure(revision, signal),
+    /Refusing an unowned Kubernetes namespace/,
+  );
+  assert.equal(withdrawals.length, 4);
+  clients.core.listNamespace = listNamespace;
   clients.core.readNamespace = readNamespace;
 });
 
@@ -7366,12 +7382,21 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     status: { phase: "Active" },
   };
   let namespaceExists = true;
+  let foreignNamespace;
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespace() {
-        return { items: namespaceExists ? [structuredClone(namespaceResource)] : [] };
+        return {
+          items:
+            namespaceExists && foreignNamespace === undefined
+              ? [structuredClone(namespaceResource)]
+              : [],
+        };
       },
       async readNamespace() {
+        if (foreignNamespace !== undefined) {
+          return structuredClone(foreignNamespace);
+        }
         if (!namespaceExists) {
           throw Object.assign(new Error("Not found"), { statusCode: 404 });
         }
@@ -7441,6 +7466,24 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     },
   );
   assert.equal(withdrawals.length, 0);
+
+  // A Namespace at the derived name that this Namespace does not own (none claims it by label)
+  // is checked before the gateway is asked: retrying cannot change it, so the worker fails the
+  // withdrawal at once.
+  foreignNamespace = {
+    ...driver.manifest("v1", "Namespace", namespace, {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000009",
+    }),
+    status: { phase: "Active" },
+  };
+  withdrawals.length = 0;
+  await assert.rejects(driver.withdrawCredentialSource(revision, source, signal), (error) => {
+    assert.ok(error instanceof CredentialWithdrawalRefusedError, String(error));
+    assert.equal(error.code, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    return true;
+  });
+  assert.equal(withdrawals.length, 0);
+  foreignNamespace = undefined;
 
   // A missing Namespace proves nothing about the Sandbox (finding 1693): the gateway's record
   // outlives it, so the gateway still withdraws, in the derived placement, and its answer stands.
