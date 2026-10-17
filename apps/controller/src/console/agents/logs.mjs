@@ -32,7 +32,7 @@ export function clearRuntimeDenials() {
 
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
-function runtimeErrorText(error, tier, source) {
+function runtimeErrorText(error, tier, source, manualRead = false) {
   if (error.status === 403) {
     // Name both grants: without status the Logs section never says what log text needs.
     return tier === "logs"
@@ -52,7 +52,13 @@ function runtimeErrorText(error, tier, source) {
     return "The cluster denied the read. Ask your platform operator to enable agentRuntimeLogs in the Helm chart (see the Agent logs guide).";
   }
   if (error.status === 429) {
-    return "Too many requests. Waiting before the next read.";
+    if (!manualRead) {
+      return "Too many requests. Waiting before the next read.";
+    }
+    const seconds = error.retryAfterSeconds;
+    return seconds === undefined
+      ? "Too many requests. Try again shortly."
+      : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
   }
   if (error.status === 504) {
     return "The read timed out. Try again.";
@@ -316,11 +322,11 @@ export function renderAgentLogs(
     logError.textContent = text ?? "";
   }
 
-  function showLogReadError(error, source) {
+  function showLogReadError(error, source, { manualRead }) {
     if (logsDenied) {
       return;
     }
-    showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
+    showLogError(withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error));
     if (error.status !== 403) {
       return;
     }
@@ -660,7 +666,7 @@ export function renderAgentLogs(
         context.onExpired();
         return;
       }
-      showLogReadError(error, source);
+      showLogReadError(error, source, { manualRead: true });
     } finally {
       downloadButton.disabled = logsDenied || !readableSelection();
     }
@@ -765,7 +771,7 @@ export function renderAgentLogs(
       if (restart) {
         logStatus.textContent = "";
       }
-      showLogReadError(error, source);
+      showLogReadError(error, source, { manualRead: !following });
       if (error.status === 501) {
         setFollow(false);
       } else if (!logsDenied) {

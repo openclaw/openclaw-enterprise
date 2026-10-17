@@ -3768,6 +3768,18 @@ export const scenarios = {
       "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
     ],
   },
+  runtimeLogsRateLimited: {
+    ...runtimeLogsPage,
+    name: "Rate-limited log reads with Follow off or on",
+    rules: [{ suffix: "/runtime/logs", skip: 1, status: 429, code: "RUNTIME_LOGS_RATE_LIMITED" }],
+    actions: [click("Refresh logs")],
+    description:
+      "The first page loads, then log requests are rate limited. This fixture omits Retry-After: Refresh logs asks you to try again, without another audited read.",
+    steps: [
+      "Select Follow. When its next read is rate limited, the message says the Console is waiting for the next read.",
+      "While Following is still selected, choose Download. That action asks you to try again; the Console will not repeat the download.",
+    ],
+  },
   runtimeLogsDenied: {
     group: "Pages/Agent detail",
     name: "Runtime logs without administer",
