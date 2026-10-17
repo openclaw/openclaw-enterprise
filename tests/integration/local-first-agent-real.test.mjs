@@ -18,6 +18,7 @@ import {
   failNativeProvisioningDeadline,
   nativeFirstAgentProofTimeout,
   nativeProvisioningPath,
+  runtimeLogSources,
 } from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
@@ -401,7 +402,7 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
 });
 
-test("the missed native handoff deadline reports only Pod readiness for its exact revision", async () => {
+test("the missed native handoff deadline reports only Pod readiness and fixed runtime output for its exact revision", async () => {
   const namespaceId = `ns_${randomUUID()}`;
   const agentId = `agt_${randomUUID()}`;
   const revisionId = `rev_${randomUUID()}`;
@@ -450,7 +451,13 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
     const signal = calls[0]?.signal;
     assert.ok(signal instanceof AbortSignal);
     for (const call of calls) {
-      assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
+      if (call.path.includes("/runtime/logs?")) {
+        // Each optional log page has its own bounded budget.
+        assert.ok(call.signal instanceof AbortSignal);
+        assert.notEqual(call.signal, signal);
+      } else {
+        assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
+      }
       assert.equal(call.method, "GET");
       assert.equal(call.body, undefined);
     }
@@ -468,9 +475,16 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
     ready: true,
     events: [{ message: "private-sentinel" }],
   };
-  const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`];
-  async function sample(pods, revision = revisionId) {
-    const observation = await observe([deployment, { revisionId: revision, pods }], runtimePaths);
+  const logPaths = runtimeLogSources.map(
+    (source) => `${deploymentPath}/runtime/logs?source=${source}&tailLines=1000`,
+  );
+  const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`, ...logPaths];
+  const unavailableOutput = Object.fromEntries(
+    runtimeLogSources.map((source) => [source, "unavailable"]),
+  );
+  async function sample(pods, revision = revisionId, pending = deployment) {
+    const observation = await observe([pending, { revisionId: revision, pods }], runtimePaths);
+    assert.deepEqual(observation.runtimeOutput, unavailableOutput);
     return observation.runtimeAfterDeadline;
   }
   // A dedicated Harness may not exist yet while its Gateway starts. Neither sample is acceptance.
@@ -486,6 +500,100 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
   assert.equal(await sample([{ ...agent, role: "private-sentinel" }]), "unavailable");
   assert.equal(await sample([{ ...gateway, phase: "private-sentinel" }]), "unavailable");
   assert.equal(await sample([gateway], "another-revision"), "unavailable");
+  // The named node wait (WORKSPACE_NODE_PENDING) is observed like the unnamed one.
+  const nodePending = {
+    ...deployment,
+    progress: { lastAttempt: { code: "WORKSPACE_NODE_PENDING" } },
+  };
+  assert.deepEqual(await sample([{ ...gateway, ready: true }, agent], revisionId, nodePending), {
+    gateway: oneReady,
+    agent: oneReady,
+  });
+
+  // Runtime log pages are summarized as fixed event names, shape-checked tokens and counts;
+  // message text, hosts and token-shaped values outside each field's shape never print.
+  const page = (source, records) => ({ revisionId, source, truncated: false, records });
+  const wrapper = (message, fields, level = "info") => ({
+    type: "line",
+    kind: "wrapper",
+    level,
+    message,
+    fields,
+  });
+  const logged = await observe(
+    [
+      deployment,
+      { revisionId, pods: [{ ...gateway, ready: true }, agent] },
+      page("agent", [
+        wrapper("runtime.startup_phase", { phase: "supervisor-spawn", outcome: "ok", ms: 7 }),
+        wrapper(
+          "openclaw.model_probe",
+          { code: "MODEL_PROBE_FAILED", causeKind: "AUTH", providerStatus: 401, elapsedMs: 9 },
+          "error",
+        ),
+        wrapper("openclaw.model_probe", { code: "private-sentinel" }, "error"),
+        wrapper("private-sentinel", { code: "READY" }),
+        { type: "line", kind: "openclaw", level: "error", message: "private-sentinel" },
+        { type: "withheld", count: 3, reason: "unrecognised_structured" },
+      ]),
+      page("sandbox", [
+        {
+          type: "line",
+          kind: "sandbox",
+          level: "warn",
+          message: "private-sentinel",
+          fields: {
+            action: "DENIED",
+            rule_type: "network",
+            source: "sandbox",
+            dst_host: "private-sentinel",
+          },
+        },
+        {
+          type: "line",
+          kind: "sandbox",
+          level: "info",
+          message: "private-sentinel",
+          fields: { action: "private-sentinel", source: "gateway" },
+        },
+      ]),
+      { ...page("gateway", []), revisionId: "another-revision" },
+    ],
+    runtimePaths,
+  );
+  assert.deepEqual(logged.runtimeOutput, {
+    agent: {
+      records: { line: 5, withheld: 3, gap: 0, other: 0 },
+      levels: { info: 2, error: 3 },
+      truncated: false,
+      events: [
+        {
+          time: null,
+          event: "runtime.startup_phase",
+          phase: "supervisor-spawn",
+          outcome: "ok",
+          ms: 7,
+        },
+        {
+          time: null,
+          event: "openclaw.model_probe",
+          code: "MODEL_PROBE_FAILED",
+          causeKind: "AUTH",
+          elapsedMs: 9,
+          providerStatus: 401,
+        },
+        { time: null, event: "openclaw.model_probe", code: "unknown" },
+      ],
+    },
+    sandbox: {
+      records: { line: 2, withheld: 0, gap: 0, other: 0 },
+      levels: { warn: 1, info: 1 },
+      truncated: false,
+      decisions: { "DENIED:network:sandbox": 1, "unknown:none:gateway": 1 },
+      events: [],
+    },
+    gateway: "unavailable",
+  });
 
   await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
   const late = { ...provisioned, status: "succeeded" };
