@@ -14,7 +14,8 @@ export function completion(events, description, predicate) {
 
 // The database can say a work item ended before its worker.completed event arrives (finding
 // 1607). Wait for the work's first pass with `outcome`, check it is the last pass observed, and
-// return every pass of the work.
+// return every pass of the work. A revision pass whose pointer commit lost a race retries but
+// logs its resolved outcome, so use this only where nothing else moves the pointer.
 export async function completedPasses(events, work, outcome = "success") {
   const ended = await completion(
     events,

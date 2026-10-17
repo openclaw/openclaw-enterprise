@@ -682,7 +682,8 @@ for (const moment of ["preparation", "commit", "activation"]) {
       const done = await fixture.work(candidate, "succeeded", 30_000);
       assert.ok(stop !== undefined, "the stop was admitted during the pass");
       await fixture.work(stop, "succeeded", 30_000);
-      const passes = stopPasses(events, candidate).map(({ code }) => code);
+      // Both works drain the same Gateway, so the stop can finish first.
+      const passes = (await completedPasses(events, candidate)).map(({ code }) => code);
       assert.ok(passes.includes("AGENT_STOP_YIELDED"), passes.join(", "));
       assert.equal(passes.at(-1), "REVISION_STOPPED");
       assert.ok(!passes.includes("DEPENDENCY_UNAVAILABLE"), passes.join(", "));
