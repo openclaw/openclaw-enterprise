@@ -927,6 +927,8 @@ for (const [outcome, failsAgain, leaveFocus] of [
     const main = page.getByRole("main");
     const retry = main.getByRole("button", { name: "Try again" });
     await main.getByRole("heading", { name: "Could not load agent details" }).waitFor();
+    const pageHeading = main.getByRole("heading", { level: 1 });
+    assert.equal(await pageHeading.innerText(), "Agent details");
     assert.equal(await main.getByRole("button", { name: "Back to Agents" }).isVisible(), true);
 
     const historyLength = await page.evaluate(() => globalThis.history.length);
@@ -949,6 +951,7 @@ for (const [outcome, failsAgain, leaveFocus] of [
     // Focus moves to the result once the load settles, after the heading has rendered.
     await page.locator(settledView).waitFor();
     assert.equal(await isFocused(leaveFocus ? sidebar : result), true);
+    assert.equal(await pageHeading.innerText(), failsAgain ? "Agent details" : "Retry Agent");
     assert.equal(
       await page.evaluate(() => globalThis.history.length),
       historyLength,

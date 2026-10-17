@@ -683,6 +683,25 @@ export const scenarios = {
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
   },
+  navigationAgentReadRetry: {
+    group: "Pages/Navigation",
+    name: "Retry opening an Agent",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000002",
+        delayMs: 900,
+        status: 503,
+        once: true,
+      },
+    ],
+    description:
+      "The first read of Documentation assistant returns a simulated 503. The page stays on Agent details so you can retry or go back to the list.",
+    steps: [
+      "Open Documentation assistant. Loading agent details is replaced by Could not load agent details; the page heading stays Agent details.",
+      "Choose Try again. Documentation assistant opens without a page reload, and Back returns to the list.",
+    ],
+  },
   navigationRetained: {
     group: "Pages/Navigation",
     name: "Return to loaded pages",
