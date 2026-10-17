@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-13
-last_updated_session: authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4
+updated: 2026-10-17
+last_updated_session: authoring-run/e4102058-8f0c-46a5-9b80-14c6ba6d7801
 ---
 
 # Installation Profile Rendering Flow
@@ -136,7 +136,11 @@ characters total, without a per-segment cap. Namespace names and unqualified
 label names/values retain their 63 limit. The chart and
 `scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
 rule; the chart checks peers only for nonempty maps. Repository Backend IDs
-follow their rule within 200 UTF-16 code units, as in the chart.
+follow their rule within 200 UTF-16 code units, as in the chart. After composing
+all Backends, preflight also checks the startup rule that their IDs are unique.
+A repository Backend cannot use `chatgpt-primary` when managed ChatGPT accounts
+are enabled; that ID remains valid without the ChatGPT Backend. A collision
+produces failed preflight without either deployment file.
 
 ### 4. Build Helm values
 
@@ -295,6 +299,8 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
+- 2026-10-17 17:55: Refuse composed Backend ID collisions before deployment files are written. (authoring-run/e4102058-8f0c-46a5-9b80-14c6ba6d7801 - 7b3a70b371fd914540fbc05e3a8080b2bbb1dd6d)
+
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
 
 - 2026-10-11 18:12: Validate sign-in and ChatGPT admin Secret references before rendering deployment files. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
@@ -366,12 +372,4 @@ activation, and repository registry creation need separate evidence.
 
 - 2026-09-28 19:57: Match Helm Gateway names and invalidate prior generated files before rerendering. (authoring-run/c35ba3ae-a801-46fc-af68-f8f7a27d56ed - 15bab9571fa12a2192a4d5dbff70f3e263468ee7)
 
-- 2026-09-28 15:36: Documented installation profile rendering flow. (authoring-run/6f2a325a-cf1c-4277-9ce3-7623626f68c6 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
-
-- 2026-09-28 16:43: Updated the output step after removing the runtime YAML-loader dependency. (authoring-run/6f2a325a-cf1c-4277-9ce3-7623626f68c6 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
-
-- 2026-09-28 17:04: Clarified that Codex defaults to existing `codex_pat` token credentials and renders managed ServiceAccount wiring only when explicitly supplied. (authoring-run/6f2a325a-cf1c-4277-9ce3-7623626f68c6 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
-
-- 2026-09-28 17:31: Documented stricter profile preflight checks for IPv4 CIDRs, native-admin DNS domains, and paired metrics selectors. (authoring-run/6f2a325a-cf1c-4277-9ce3-7623626f68c6 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
-
-- 2026-09-28 18:02: Documented rendered Installation checksum injection into Helm values and the Secret-before-Helm apply order. (authoring-run/6f2a325a-cf1c-4277-9ce3-7623626f68c6 - 6c56149f1f2b7290d8526d87c3624c9b7db09fbf)
+[Installation profile rendering documentation history](installation-profile-rendering/history.md) preserves the older dated entries.

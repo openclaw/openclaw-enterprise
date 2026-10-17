@@ -2202,6 +2202,16 @@ function buildRendered(profile, parsed, diagnostics) {
     "Retrieve the bootstrap service key from the protected bootstrap PVC and verify authenticated OCC access.",
   );
 
+  const backendIds = new Set();
+  for (const backend of installation.backend) {
+    if (backendIds.has(backend.id)) {
+      diagnostics.errors.push(
+        `Generated Backend IDs must be unique; repository.backendId ${JSON.stringify(backend.id)} is already used by another configured Backend.`,
+      );
+    }
+    backendIds.add(backend.id);
+  }
+
   return { values, installation };
 }
 
