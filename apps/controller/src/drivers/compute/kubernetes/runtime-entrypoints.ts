@@ -2087,7 +2087,8 @@ function probeOpenClawAuthenticationFailure() {
 // today 403/502), "mixed" (both) or "none". It is an observation, not an origin:
 // the relay forwards an upstream 401 with its headers intact. "bodyShape" names the
 // 401 body's form ("json-error-code", "json-error-no-code": an error object with or
-// without a code, "json-no-error", "non-json" or "empty"); "providerErrorCode" and
+// without a non-null code, "json-no-error", "non-json" or "empty"; absent if the
+// body could not be read); "providerErrorCode" and
 // "providerErrorType" carry error.code and error.type only when they are in the
 // closed sets below, else "other". The child alone reads the body and writes only
 // those tokens to stdout; the parent keeps a token only if it is in the same sets,

@@ -164,14 +164,14 @@ held failure exits at once. Exhausted or nonretryable failure
 holds the process unready until restart or Pod stop; readiness polling never
 starts another model call.
 
-Codex logs each attempt as `codex.model_probe` with its
+Codex logs each attempt as a structured `codex.model_probe` record with its
 number, elapsed milliseconds, exit code, recognized termination signal, and
 final code (`READY`, `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`,
 `AUTHENTICATION_FAILED`, or `UNAVAILABLE`). Both probe logs add a
 `MODEL_PROBE_FAILED` [cause](agents/deployment.md#model-check-failure-cause)
 (`causeKind` and `causeDetail` in `occ agent logs` and the console Logs tab) and
-omit credentials and raw provider output. Runtime failure status publishes
-after retries end.
+omit credentials and raw provider output. The runtime failure status is
+published only after retries end.
 
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
 probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
@@ -179,7 +179,8 @@ request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
 event or access-token login error reporting 401 or 403. The upfront 401 adds closed-set
 `providerCode`, `responseHeaderMarker` (header names), `bodyShape`
 (`json-error-code`, `json-error-no-code`, `json-no-error`, `non-json`, `empty`),
-`providerErrorCode` and `providerErrorType` (`error.code`, `error.type`; else `other`). A CPU-starved OpenClaw
+`providerErrorCode` and `providerErrorType` (`error.code`, `error.type`: `other` off-set,
+omitted when missing). A CPU-starved OpenClaw
 probe reports `MODEL_PROBE_CPU_STARVED`. Timeouts, provider server errors,
 and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 `LOGIN_FAILED`. The worker fails deployment at once on each held

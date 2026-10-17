@@ -61,15 +61,16 @@ const providerCodes = new Set([
 // "none" is a real value here, so an absent field prints "absent" instead.
 const responseHeaderMarkers = new Set(["none", "provider-like", "openshell-policy", "mixed"]);
 // The upfront 401 body's form and its error.code and error.type, each from a closed
-// set ("other" off-set); the message never reaches the log.
-const bodyShapes = new Set([
+// set ("other" off-set); the message never reaches the log. They mirror the sets in
+// runtime-entrypoints.ts; runtime-model-probe-settlement.test.mjs pins that.
+export const bodyShapes = new Set([
   "json-error-code",
   "json-error-no-code",
   "json-no-error",
   "non-json",
   "empty",
 ]);
-const providerErrorCodes = new Set([
+export const providerErrorCodes = new Set([
   "invalid_api_key",
   "insufficient_permissions",
   "invalid_organization",
@@ -82,7 +83,7 @@ const providerErrorCodes = new Set([
   "ip_not_authorized",
   "other",
 ]);
-const providerErrorTypes = new Set([
+export const providerErrorTypes = new Set([
   "invalid_request_error",
   "authentication_error",
   "permission_error",

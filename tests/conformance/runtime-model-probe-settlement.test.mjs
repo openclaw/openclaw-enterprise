@@ -13,6 +13,11 @@ import {
 } from "../helpers/runtime-model-probe-observation.mjs";
 import reporter from "../../scripts/ci/reporter.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  bodyShapes as helperBodyShapes,
+  providerErrorCodes as helperErrorCodes,
+  providerErrorTypes as helperErrorTypes,
+} from "../helpers/local-first-agent-native.mjs";
 
 const execute = promisify(execFile);
 const ready = {
@@ -428,6 +433,13 @@ test("the upfront check keeps only closed-set body tokens from its child", () =>
   assert.ok(calls[0].options.maxBuffer <= 1024);
   assert.deepEqual(JSON.parse(calls[0].options.env.C), UPFRONT_ERROR_CODES);
   assert.deepEqual(JSON.parse(calls[0].options.env.T), UPFRONT_ERROR_TYPES);
+  // The QA helper reads the same sets, plus "other".
+  assert.deepEqual([...helperErrorCodes], [...UPFRONT_ERROR_CODES, "other"]);
+  assert.deepEqual([...helperErrorTypes], [...UPFRONT_ERROR_TYPES, "other"]);
+  assert.deepEqual(
+    [...helperBodyShapes],
+    ["json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"],
+  );
   const rejected = (stdout, status = 13) =>
     upfrontCheck("openai", undefined, "fixture-key", { status, stdout }).rejected;
   const base = { providerStatus: 401, responseHeaderMarker: "provider-like" };
@@ -711,6 +723,35 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
     ],
     ['{"error":{"code":"","type":{"name":"x"}}}', 13, "json-error-code", "other", "other"],
     ['{"error":{"code":false}}', 13, "json-error-code", "other", undefined],
+    // Prototype-shaped names are plain off-set values or own keys, never lookups.
+    [
+      '{"error":{"code":"__proto__","type":"constructor"}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"code":"toString","type":"hasOwnProperty"}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"__proto__":{"code":"invalid_api_key"}}}',
+      13,
+      "json-error-no-code",
+      undefined,
+      undefined,
+    ],
+    [
+      '{"__proto__":{"error":{"code":"invalid_api_key"}}}',
+      13,
+      "json-no-error",
+      undefined,
+      undefined,
+    ],
     ['{"error":{}}', 13, "json-error-no-code", undefined, undefined],
     // JSON without an error object, including a bare error string or array.
     [`{"error":${quoted}}`, 13, "json-no-error", undefined, undefined],
@@ -747,9 +788,13 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
       },
       body,
     );
-    // Neither the body, a header value nor any part of the key leaves the child.
+    // Neither the body, a header value, the request's key nor any part of a
+    // hostile key leaves the child.
     for (const text of [child.stdout, child.stderr, JSON.stringify(rejected)]) {
-      assert.ok(!/Hostile|sk-proj|Incorrect|Unauthorized|member|html/i.test(text), text);
+      assert.ok(
+        !/Hostile|sk-proj|fixture-key|Incorrect|Unauthorized|member|html/i.test(text),
+        text,
+      );
     }
   }
   // A body that breaks off mid-read names no shape: it was neither empty nor parsed.
