@@ -2156,8 +2156,10 @@ const deadline = setTimeout(() => {
   },
 );
 
-async function runSubagentRoutingCase(t, proofEnvironment = [], mutateCases = (cases) => cases) {
-  {
+test(
+  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
+  imageTestOptions,
+  async (t) => {
     const nativeIds = {
       parent: "vendor/organization/parent",
       main: "vendor/organization/default-child",
@@ -2226,13 +2228,11 @@ async function runSubagentRoutingCase(t, proofEnvironment = [], mutateCases = (c
     );
     const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
     assert.ok(commit, "The image source pin must be explicit.");
-    const cases = mutateCases(
-      ["main", "string", "object", "alias"].map((agentId) => ({
-        agentId,
-        model: nativeIds[agentId === "alias" ? "parent" : agentId],
-        cwd: remoteWorkspaceRoot,
-      })),
-    );
+    const cases = ["main", "string", "object", "alias"].map((agentId) => ({
+      agentId,
+      model: nativeIds[agentId === "alias" ? "parent" : agentId],
+      cwd: remoteWorkspaceRoot,
+    }));
     let stdout;
     try {
       ({ stdout } = await runDocker(
@@ -2244,7 +2244,6 @@ async function runSubagentRoutingCase(t, proofEnvironment = [], mutateCases = (c
           `OCC_TEST_SUBAGENT_MODELS=${JSON.stringify(Object.values(nativeIds))}`,
           "-e",
           `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
-          ...proofEnvironment.flatMap((entry) => ["-e", entry]),
           containerName,
           "node",
           "--input-type=module",
@@ -2272,47 +2271,6 @@ async function runSubagentRoutingCase(t, proofEnvironment = [], mutateCases = (c
     );
     assert.ok(
       result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
-    );
-    return result;
-  }
-}
-
-test(
-  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
-  imageTestOptions,
-  async (t) => {
-    await runSubagentRoutingCase(t);
-  },
-);
-
-// PROOF ONLY (temporary, finding 1645): the default completion handoff sends a
-// requester turn on the parent route after each child settles; the fix sends none.
-test(
-  "PROOF 1645 completion handoff reaches the native peer only when enabled",
-  imageTestOptions,
-  async (t) => {
-    const handoff = await runSubagentRoutingCase(t, [
-      "OCC_TEST_SUBAGENT_HANDOFF=default",
-      "OCC_TEST_SUBAGENT_OBSERVE_MS=5000",
-    ]);
-    t.diagnostic("PROOF-1645 handoff=default " + JSON.stringify(handoff.proof));
-    const fixed = await runSubagentRoutingCase(t, ["OCC_TEST_SUBAGENT_OBSERVE_MS=5000"]);
-    t.diagnostic("PROOF-1645 handoff=off " + JSON.stringify(fixed.proof));
-    assert.ok(
-      handoff.proof.strays.includes("vendor/organization/parent"),
-      JSON.stringify(handoff.proof),
-    );
-    assert.deepEqual(fixed.proof.strays, [], JSON.stringify(fixed.proof));
-    // Mutant: the object child routed on the parent route must still be caught per case.
-    await assert.rejects(
-      runSubagentRoutingCase(t, [], (cases) =>
-        cases.map((scenario) =>
-          scenario.agentId === "object"
-            ? { ...scenario, model: "vendor/organization/parent" }
-            : scenario,
-        ),
-      ),
-      /object native thread\/start models: \["vendor\/organization\/default-child"/,
     );
   },
 );
