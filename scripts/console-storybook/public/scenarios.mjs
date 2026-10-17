@@ -3684,6 +3684,11 @@ export const scenarios = {
     actions: [click("Run diagnostics for this version")],
     description:
       "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
+    steps: [
+      "After the automatic run, Tab to Run diagnostics for this version and press Enter. During the 1.2 s check the button is disabled and focus moves to Waiting for diagnostic results…; it does not drop to the page body.",
+      "When the checks appear, focus returns to Run diagnostics for this version, described by the Observed time rather than the whole check list.",
+      "Press Enter again, then Shift+Tab to Refresh record before the checks appear. Focus stays on Refresh record when they do.",
+    ],
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",
@@ -3714,6 +3719,9 @@ export const scenarios = {
     actions: [click("Run diagnostics for this version")],
     description:
       "A failed on-demand check reports its own error. The viewed v7 deployment record remains succeeded.",
+    steps: [
+      "Tab to Run diagnostics for this version and press Enter. Focus moves to the waiting line, then returns to the button, described by the unavailable message.",
+    ],
   },
   runtimeLogs: {
     group: "Pages/Agent detail",
