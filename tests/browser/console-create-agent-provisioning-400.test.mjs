@@ -646,10 +646,12 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
 });
 
-test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, Create Agent does not send users to Embedded", async (t) => {
+test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, Create Agent copy does not recommend Embedded unconditionally", async (t) => {
   // The Driver lacks the process facet, so the Installation cannot admit dedicated OpenClaw. Like
   // every selected Sandbox Driver it also refuses Embedded execution at Agent save and deploy, so
-  // the Console copy must not recommend Embedded unconditionally (finding 1612).
+  // the Console copy must not recommend Embedded unconditionally (finding 1612). This pins the
+  // copy only: the form still defaults OpenClaw to Embedded here, and a submit saves the
+  // Configuration before the Agent save is refused (#2670).
   const drivers = provisioningDrivers();
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
   const fixture = await createConsoleAppFixture(t, {
