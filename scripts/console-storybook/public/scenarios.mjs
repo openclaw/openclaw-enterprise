@@ -3442,7 +3442,7 @@ export const scenarios = {
     steps: [
       "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
       "The list is usable immediately. Latest deployment starts blank; after 250 ms it says “Reading deployment…”, never linking to the old result. When access is denied, the Agent stays visible.",
-      "Go Back again, focus the Research assistant link while its deployment still reads, switch windows, then return. The same list returns with focus on the link.",
+      "After Back, focus the Research assistant link while its deployment still reads, switch windows, then return. The same list returns with focus on the link.",
     ],
   },
   agentsDeploymentError: {
