@@ -1151,6 +1151,13 @@ export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly workspaceNodeEnrolled?: boolean;
 }
 
+/**
+ * What `withdrawHarnessExposure` needs: the revision names the exact Sandbox, and the Workspace
+ * comes with the Namespace. Compute calls it outside a preparation pass too (for a revision that
+ * is already active, or one that failed for good), where no Harness requirements are rendered.
+ */
+export type SandboxHarnessWithdrawalContext = Omit<SandboxHarnessContext, "requirements">;
+
 export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
   /** The Agent transport token the Agent Gateway presents to the Harness. */
   readonly transportToken: string;
@@ -1567,10 +1574,13 @@ export interface SandboxDriver extends Driver {
    * Removes the exposure `provisionHarness` created for Compute's status read of a dedicated
    * OpenClaw worker, once its workspace node has enrolled: nothing of Compute's listens there
    * afterwards, and the exposure would route unauthenticated traffic to whatever does. Resolves
-   * only once the provider confirms the exposure gone; Compute does not report the revision
-   * ready before that. A Codex Harness keeps its exposure as the Gateway's transport.
+   * only once the provider confirms the exposure gone, with a read it can trust (a provider
+   * that hides unauthorized Sandboxes behind "not found" confirms nothing by that alone);
+   * Compute does not report the revision ready before that. Idempotent: called again for a
+   * revision without the exposure, it resolves without a mutation. A Codex Harness keeps its
+   * exposure as the Gateway's transport.
    */
-  withdrawHarnessExposure?(context: SandboxHarnessContext): Promise<void>;
+  withdrawHarnessExposure?(context: SandboxHarnessWithdrawalContext): Promise<void>;
   /**
    * The exact Sandbox `provisionHarness` creates for this revision, derived without effects.
    * Required to revoke credentials from a running revision.
@@ -2005,6 +2015,16 @@ export interface ComputeDriver extends Driver {
     signal: AbortSignal,
     options?: { readonly recheck?: boolean },
   ): Promise<CredentialAttachmentStatus>;
+  /**
+   * Withdraws the Harness exposure a Sandbox Driver created for Compute's status read of a
+   * dedicated OpenClaw worker, outside a preparation pass: the worker calls it for every such
+   * revision that is already active when it starts (an upgrade from a controller that kept the
+   * exposure) and for one that failed for good while its Sandbox stays for diagnosis. Idempotent
+   * and effect-free for revisions without such an exposure (a Codex Harness, no Sandbox Driver).
+   * Resolves only once the provider confirms the exposure gone; the worker retries a bounded
+   * number of times and logs the failure code.
+   */
+  withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
   /**
    * Throws OCC's ComputePreparationFailedError when initialization is terminal.
    * The worker durably fails deployment and schedules stopRevision for cleanup.

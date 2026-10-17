@@ -653,9 +653,11 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
   const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
   const signal = AbortSignal.timeout(2_000);
   try {
-    // A service is gone on COMPLETED, ALREADY_ABSENT or NOT_FOUND only; an accepted or
-    // unstated outcome is not a confirmation, so the exposure is reported as still present.
-    for (const sandbox of ["sandbox-wire", "sandbox-absent", "sandbox-missing"]) {
+    // A service is gone on COMPLETED or ALREADY_ABSENT only; an accepted or unstated outcome
+    // is not a confirmation, so the exposure is reported as still present. Neither is
+    // NOT_FOUND: OpenShell answers it for a Sandbox this identity may not see as for one that
+    // is gone (finding 1670), so the caller confirms with a read it can trust.
+    for (const sandbox of ["sandbox-wire", "sandbox-absent"]) {
       await client.deleteService("tenant-workspace", sandbox, "", signal);
     }
     for (const sandbox of ["sandbox-accepted", "sandbox-silent"]) {
@@ -664,6 +666,10 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
         /DeleteService did not confirm deletion/,
       );
     }
+    await assert.rejects(
+      client.deleteService("tenant-workspace", "sandbox-missing", "", signal),
+      /DeleteService did not find the Sandbox, so the deletion is unconfirmed/,
+    );
     const deletions = requests.filter(([method]) => method === "DeleteService");
     assert.equal(deletions.length, 5);
     // The delete is idempotent by itself: no request_id, so no durable admission per pass.

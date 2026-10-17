@@ -40,6 +40,7 @@ import {
   CredentialSourceConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
+  SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   TransientDependencyError,
@@ -1208,6 +1209,59 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     /another Sandbox Driver/,
   );
   assert.equal(deletions.length, 5);
+  // Finding 1670: OpenShell answers NOT_FOUND for a Sandbox this identity may not see exactly
+  // as for one that is gone, so an absent service is "withdrawn" only once a Workspace read the
+  // identity still passes confirms it (GetWorkspace keeps PERMISSION_DENIED). A refusal there
+  // fails closed with its own code, a missing Workspace fails closed too, a gateway that does
+  // not answer keeps its class, and no deletion is attempted on any of them.
+  exposedService = undefined;
+  const getWorkspace = gatewayClient.getWorkspace;
+  const workspaceReads = [];
+  gatewayClient.getWorkspace = async (name) => {
+    workspaceReads.push(name);
+    return getWorkspace(name);
+  };
+  await driver.withdrawHarnessExposure(enrolled);
+  await driver.provisionHarness(enrolled);
+  assert.deepEqual(workspaceReads, [requests[0].workspace, requests[0].workspace]);
+  assert.equal(deletions.length, 5);
+  // grpc-js ServiceError shape: PERMISSION_DENIED (7) and UNAUTHENTICATED (16).
+  for (const [code, name] of [
+    [7, "PERMISSION_DENIED"],
+    [16, "UNAUTHENTICATED"],
+  ]) {
+    gatewayClient.getWorkspace = async () => {
+      throw Object.assign(new Error(`${code} ${name}: workspace`), { code, details: "workspace" });
+    };
+    for (const withdraw of [
+      () => driver.withdrawHarnessExposure(enrolled),
+      () => driver.provisionHarness(enrolled),
+    ]) {
+      await assert.rejects(withdraw(), (error) => {
+        assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
+        assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+        assert.match(error.message, /cannot be confirmed withdrawn/);
+        return true;
+      });
+    }
+  }
+  gatewayClient.getWorkspace = async () => undefined;
+  await assert.rejects(
+    driver.withdrawHarnessExposure(enrolled),
+    /reports no Workspace .* cannot be confirmed withdrawn/,
+  );
+  const unansweredWorkspace = new DependencyUnavailableError(
+    "OpenShell GetWorkspace failed with gRPC status 14.",
+  );
+  gatewayClient.getWorkspace = async () => {
+    throw unansweredWorkspace;
+  };
+  await assert.rejects(
+    driver.withdrawHarnessExposure(enrolled),
+    (error) => error === unansweredWorkspace,
+  );
+  assert.equal(deletions.length, 5);
+  gatewayClient.getWorkspace = getWorkspace;
   // Nothing is observed through a withdrawn exposure, and nothing is asked of the gateway.
   const getService = gatewayClient.getService;
   gatewayClient.getService = async () => assert.fail("an enrolled worker is not observed");

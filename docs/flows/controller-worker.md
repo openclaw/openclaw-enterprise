@@ -118,20 +118,21 @@ defines who can retry; a takeover becomes the work's actor, audited as
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop first calls `recoverStale()`, then `claim()`. The
+Each loop calls `recoverStale()`, one bounded native-exposure sweep step
+(`withdrawHarnessExposure` for one listed active-at-start or failed revision,
+five logged attempts), then `claim()`. The
 [PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
-eligible queued work with `FOR UPDATE SKIP LOCKED`, assigns a fresh claim token
-and lease deadline, and increments the attempt count. Another live claim for
-the same Agent, or the Namespace for Namespace work, prevents concurrent
-ownership of that target.
+eligible queued work with `FOR UPDATE SKIP LOCKED`, assigning a claim token,
+lease deadline and attempt increment. Another live claim on the Agent, or the
+Namespace for Namespace work, prevents concurrent ownership.
 
-An empty queue waits within a bound. After work or idle, `health()` queries
-work, calls `onHealthy`, and emits `worker.health`; readiness requires both to
-succeed. Serialized failures emit `HEALTH_UNAVAILABLE` without consuming retries.
+An empty queue waits, bounded. After work or idle, `health()` queries work,
+calls `onHealthy`, emits `worker.health`; readiness needs both. Serialized
+failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
 
 Each pass start and claim renewal calls `onProgress`; the liveness probe
-restarts a worker whose marker goes stale. A client `query_timeout` usually
-frees a stuck pass first by discarding its connection. See
+restarts a worker with a stale marker. A client `query_timeout` usually
+frees a stuck pass, discarding its connection. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects

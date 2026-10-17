@@ -330,7 +330,9 @@ export interface OpenShellGatewayClient
   ): Promise<OpenShellServiceResponse | undefined>;
   /**
    * Removes one exposed service endpoint. Resolves only once OpenShell confirms the endpoint
-   * gone (COMPLETED, ALREADY_ABSENT or NOT_FOUND); any other answer is a failure.
+   * gone (COMPLETED or ALREADY_ABSENT); any other answer is a failure. NOT_FOUND is one too: it
+   * names a Sandbox that is gone or that this identity may not see (OpenShell answers both
+   * alike), so it confirms nothing about the endpoint.
    */
   deleteService(
     workspace: string,
@@ -1453,7 +1455,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       );
     } catch (error) {
       if (await this.isStatus(error, "NOT_FOUND")) {
-        return;
+        // A Sandbox that is gone and one this identity is not allowed to see answer alike
+        // (finding 1670): neither confirms the endpoint gone, so the caller decides with a
+        // read it can trust.
+        throw new OpenShellGatewayFailure(
+          "OpenShell DeleteService did not find the Sandbox, so the deletion is unconfirmed.",
+          { cause: error },
+        );
       }
       throw error;
     }

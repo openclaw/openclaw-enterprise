@@ -7130,6 +7130,56 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return status;
   }
 
+  /**
+   * Withdraws a dedicated OpenClaw worker's provider exposure outside a preparation pass. An
+   * active revision gets no pass without a maintenance interval, which this Driver declares
+   * none of, so one deployed by a controller that kept the exposure for the Sandbox's lifetime
+   * would keep it until redeploy (finding 1669); a revision that failed for good keeps its
+   * Sandbox for diagnosis and, until now, the exposure with it (finding 1672). Nothing of
+   * Compute's reads through it in either state. Effect-free for revisions without one.
+   */
+  async withdrawHarnessExposure(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new Error(
+        "Refusing to withdraw a Harness exposure from an AgentRevision pinned to another Compute Driver.",
+      );
+    }
+    if (revision.harness.mode !== "dedicated" || revision.harness.id !== "openclaw") {
+      return;
+    }
+    const sandboxDriver = this.sandboxDriverForRevision(revision);
+    if (sandboxDriver?.withdrawHarnessExposure === undefined) {
+      return;
+    }
+    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+    const existingNamespace = await this.getNamespace(namespace);
+    if (existingNamespace === undefined) {
+      // The Namespace's teardown releases the provider's Workspace with every Sandbox in it.
+      return;
+    }
+    this.verifyNamespaceOwnership(
+      existingNamespace,
+      { namespaceId: revision.namespaceId },
+      external,
+    );
+    const context = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, namespace),
+      namespace,
+    );
+    await sandboxDriver.withdrawHarnessExposure({
+      ...context,
+      signal: AbortSignal.any([context.signal, signal]),
+      revision,
+      workspaceNodeEnrolled: true,
+    });
+  }
+
   async stopRevision(revision: AgentRevision): Promise<void> {
     this.lifecycleStarted = true;
     if (

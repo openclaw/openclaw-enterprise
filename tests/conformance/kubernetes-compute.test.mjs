@@ -1805,6 +1805,84 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(withdrawals.length, 1);
 });
 
+// Findings 1669 and 1672: a revision that gets no preparation pass (already active at an
+// upgrade from a controller that kept the exposure, or failed for good with its Sandbox kept
+// for diagnosis) has its exposure withdrawn through Compute's own hook, outside a pass, with the
+// revision and its provider Workspace only; no Harness requirements are rendered for it.
+test("Kubernetes Compute withdraws a native Harness exposure outside a preparation pass", async () => {
+  const withdrawals = [];
+  let withdrawalFailure;
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("no preparation pass runs here");
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+    },
+  };
+  const { driver, revision, namespace } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  const signal = new AbortController().signal;
+  await driver.withdrawHarnessExposure(revision, signal);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].revision, revision);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal(withdrawals[0].namespace.id, tenant.id);
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.equal(withdrawals[0].requirements, undefined);
+  assert.notEqual(withdrawals[0].kubernetes, undefined);
+  assert.equal(withdrawals[0].signal.aborted, false);
+  // The worker's signal reaches the provider: a stopping worker ends the call.
+  const stopping = new AbortController();
+  stopping.abort(new Error("stopping"));
+  await driver.withdrawHarnessExposure(revision, stopping.signal);
+  assert.equal(withdrawals.length, 2);
+  assert.equal(withdrawals[1].signal.aborted, true);
+  // An unconfirmed withdrawal keeps its class: the worker logs it by code and retries.
+  withdrawalFailure = new Error("OpenShell DeleteService did not confirm deletion.");
+  await assert.rejects(
+    driver.withdrawHarnessExposure(revision, signal),
+    (error) => error === withdrawalFailure,
+  );
+  withdrawalFailure = undefined;
+  assert.equal(withdrawals.length, 3);
+  // Nothing is asked of the provider for a Codex Harness (its exposure is the Gateway's
+  // transport), for a revision without a Sandbox Driver, or for one pinned to another Compute.
+  await driver.withdrawHarnessExposure(
+    { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+    signal,
+  );
+  await driver.withdrawHarnessExposure({ ...revision, sandboxDriverId: undefined }, signal);
+  await assert.rejects(
+    driver.withdrawHarnessExposure(
+      { ...revision, compute: { ...revision.compute, id: "other-compute" } },
+      signal,
+    ),
+    /pinned to another Compute Driver/,
+  );
+  assert.equal(withdrawals.length, 3);
+});
+
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
 // model and subagents.model. An openai source's provider block is dropped, so no selection
 // may be left on it.

@@ -51,6 +51,7 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   TransientDependencyError,
@@ -500,6 +501,47 @@ function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
   );
 }
 
+/**
+ * Native Harness exposures the worker withdraws outside a preparation pass: a revision already
+ * active when the worker starts, deployed by a controller that kept the exposure for the
+ * Sandbox's lifetime (finding 1669), and a candidate that failed for good while its Sandbox
+ * stays for diagnosis (finding 1672). Attempts: at once, then 30 s, 1, 2 and 4 min later; the
+ * fifth failure is logged by code and the revision left until the next start.
+ */
+const MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS = 5;
+const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
+
+interface PendingHarnessExposureWithdrawal {
+  readonly revision: Readonly<AgentRevision>;
+  attempts: number;
+  dueAt: number;
+}
+
+/** The code a failed exposure withdrawal is logged with; never the provider's text. */
+function harnessExposureWithdrawalCode(error: unknown): string {
+  if (error instanceof TransientDependencyError) {
+    return error.code;
+  }
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
+    ? code
+    : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
+}
+
+/** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */
+function holdsNativeHarnessExposure(
+  revision: Readonly<AgentRevision>,
+  compute: Pick<ComputeDriver, "id" | "implementation">,
+): boolean {
+  return (
+    revision.harness.mode === "dedicated" &&
+    revision.harness.id === "openclaw" &&
+    revision.sandboxDriverId !== undefined &&
+    revision.compute.id === compute.id &&
+    revision.compute.implementation === compute.implementation
+  );
+}
+
 /** A revision's first pending withdrawal, preferring one that does not await a replay. */
 function firstPendingCredentialWithdrawal(
   withdrawals: readonly Readonly<CredentialWithdrawal>[],
@@ -922,6 +964,9 @@ export class ControllerWorker {
   private readonly maxAttempts: number;
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
+  // Keyed by revision ID; undefined until the start-time listing has run.
+  private harnessExposureWithdrawals: Map<string, PendingHarnessExposureWithdrawal> | undefined;
+  private harnessExposureListingFailures = 0;
   private readonly repoDriver: RepoDriver | undefined;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
@@ -1182,6 +1227,7 @@ export class ControllerWorker {
       try {
         const recovery = await this.queue.recoverStale();
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
+        await this.withdrawPendingHarnessExposure();
         const claim = await this.queue.claim();
         if (claim !== undefined) {
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
@@ -2955,6 +3001,133 @@ export class ControllerWorker {
   }
 
   /**
+   * One bounded step of the native Harness exposure sweep per loop pass, before the claim, as
+   * stale-claim recovery runs. The first pass lists the revisions (one read, no claim): every
+   * active revision whose Sandbox Driver may hold the exposure, and every newer candidate whose
+   * deployment failed for good; the Kubernetes Driver declares no maintenance interval, so no
+   * pass would reach them otherwise. Each later pass withdraws for at most one due revision,
+   * so a provider that does not answer costs one bounded call per pass. The withdrawal is
+   * idempotent and churns nothing: a revision without the exposure is confirmed and dropped.
+   */
+  private async withdrawPendingHarnessExposure(): Promise<void> {
+    const compute = this.compute;
+    if (compute.withdrawHarnessExposure === undefined || this.stopping) {
+      return;
+    }
+    if (this.harnessExposureWithdrawals === undefined) {
+      if (this.harnessExposureListingFailures >= MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS) {
+        return;
+      }
+      try {
+        this.harnessExposureWithdrawals = await this.listHarnessExposureWithdrawals();
+      } catch {
+        if (this.stopping || this.abort.signal.aborted) {
+          return;
+        }
+        this.harnessExposureListingFailures += 1;
+        this.emit({
+          event: "worker.harness-exposure-sweep-failed",
+          code: "WORKER_UNAVAILABLE",
+          attempt: this.harnessExposureListingFailures,
+        });
+        return;
+      }
+      if (this.harnessExposureWithdrawals.size > 0) {
+        this.emit({
+          event: "worker.harness-exposure-sweep",
+          pending: this.harnessExposureWithdrawals.size,
+        });
+      }
+    }
+    const now = Date.now();
+    const pending = [...this.harnessExposureWithdrawals.values()].find(
+      (candidate) => candidate.dueAt <= now,
+    );
+    if (pending === undefined) {
+      return;
+    }
+    const { revision } = pending;
+    const fields = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    try {
+      await withComputeAbortSignal(this.abort.signal, () =>
+        compute.withdrawHarnessExposure!(revision, this.abort.signal),
+      );
+    } catch (error) {
+      if (this.stopping || this.abort.signal.aborted) {
+        return;
+      }
+      pending.attempts += 1;
+      const permanent = pending.attempts >= MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS;
+      if (permanent) {
+        this.harnessExposureWithdrawals.delete(revision.id);
+      } else {
+        pending.dueAt =
+          Date.now() + HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS * 2 ** (pending.attempts - 1);
+      }
+      this.emit({
+        event: "worker.harness-exposure-withdrawal-failed",
+        ...fields,
+        code: harnessExposureWithdrawalCode(error),
+        attempt: pending.attempts,
+        outcome: permanent ? "permanent" : "retry",
+      });
+      return;
+    }
+    this.harnessExposureWithdrawals.delete(revision.id);
+    this.emit({ event: "worker.harness-exposure-withdrawn", ...fields });
+  }
+
+  private async listHarnessExposureWithdrawals(): Promise<
+    Map<string, PendingHarnessExposureWithdrawal>
+  > {
+    const listed = await this.state.read(async (view) => {
+      const found: {
+        readonly activeRevisionId: string | undefined;
+        readonly revisions: readonly Readonly<AgentRevision>[];
+      }[] = [];
+      for (const namespace of await view.namespaces.listNamespaces()) {
+        if (namespace.status !== "ready") {
+          continue;
+        }
+        for (const agent of await view.agents.listAgents(namespace.id)) {
+          const revisions = await view.revisions.listRevisions(namespace.id, agent.id);
+          const active = revisions.find(({ id }) => id === agent.activeRevisionId);
+          // Older revisions were retired when the active one activated; a newer candidate
+          // that failed keeps its Sandbox until the next activation retires it.
+          const candidates = revisions.filter(
+            (revision) =>
+              holdsNativeHarnessExposure(revision, this.compute) &&
+              (active === undefined ||
+                revision.id === active.id ||
+                revision.revision > active.revision),
+          );
+          if (candidates.length > 0) {
+            found.push({ activeRevisionId: agent.activeRevisionId, revisions: candidates });
+          }
+        }
+      }
+      return found;
+    });
+    const pending = new Map<string, PendingHarnessExposureWithdrawal>();
+    for (const { activeRevisionId, revisions } of listed) {
+      for (const revision of revisions) {
+        if (revision.id !== activeRevisionId) {
+          const deployment = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
+          if (deployment?.state !== "failed_permanent") {
+            continue;
+          }
+        }
+        pending.set(revision.id, { revision, attempts: 0, dueAt: 0 });
+      }
+    }
+    return pending;
+  }
+
+  /**
    * Withdrawal work that ran out of attempts on a retryable failure (an unreachable gateway, or
    * one that has not confirmed revocation yet) queues one later series of attempts for its
    * revision, in the transaction that fails it, or right after stale-claim recovery fails it
@@ -3761,6 +3934,7 @@ export class ControllerWorker {
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
           error instanceof SandboxRevisionUnsupportedError ||
+          error instanceof SandboxGatewayUnauthorizedError ||
           error instanceof CredentialSourceRevisionError ||
           error instanceof ActivationFailedError
         ) {

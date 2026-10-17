@@ -858,6 +858,24 @@ export class SandboxRevisionUnsupportedError extends Error {
 }
 
 /**
+ * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
+ * Driver cannot tell a withdrawn Harness exposure from one it is no longer allowed to see: an
+ * unauthorized Sandbox lookup answers NOT_FOUND there, like a missing one. The exposure may still
+ * route unauthenticated traffic to the Sandbox, so the Driver fails closed and the worker fails
+ * the deployment with `code` instead of reporting the revision ready. An operator restores the
+ * identity's Workspace role and deploys again. The message stays in the controller.
+ */
+export class SandboxGatewayUnauthorizedError extends Error {
+  readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SandboxGatewayUnauthorizedError";
+    this.code = "SANDBOX_GATEWAY_UNAUTHORIZED";
+  }
+}
+
+/**
  * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
  * would place their placeholders in the same Sandbox environment variable. The revision's
  * source list and each source's config are fixed, so retrying cannot change the outcome; the

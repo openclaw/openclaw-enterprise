@@ -47,7 +47,10 @@ not answer is a transient dependency failure, not evidence. Compute activates
 only a `serving` Codex Harness, and reads a dedicated OpenClaw worker's status
 only before its node has enrolled (`workspaceNodeEnrolled` in the context); then
 it calls `withdrawHarnessExposure(context)`, which removes that worker's exposure
-and resolves only once the provider confirms it gone. An endpoint may select
+and resolves only once the provider confirms it gone, through a read the
+controller's identity still passes (a missing answer alone is no proof). Its
+context carries no requirements: Compute also calls it outside a pass, for a
+revision already active at start or one that failed for good. An endpoint may select
 `codexPermissionProfile: ":danger-full-access"` when the provider supplies the
 sandbox boundary. Kubernetes Compute projects that selection to the Gateway;
 without it, the Codex bridge retains its configured sandbox behavior.
@@ -163,7 +166,9 @@ cannot run an exact revision and a retry cannot change that, it throws
 code. The worker then fails the deployment with that code and a fixed message
 at once. The driver's own message stays in the controller:
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED` (Secret-backed environment) and
-`SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness).
+`SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness). `SandboxGatewayUnauthorizedError`
+(`SANDBOX_GATEWAY_UNAUTHORIZED`) fails it the same way when the provider refuses
+the controller's identity while it confirms a Harness exposure withdrawn.
 
 When the provider refuses the controller's own identity during `ensureNamespace`
 or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.

@@ -244,19 +244,19 @@ qualification remains outstanding.
 
 The client sends Sandbox identity/spec, Workspace scope and one of 16 `request_id`
 values: revision UUID, then 15 derived IDs. After `REQUEST_OUTCOME_UNCERTAIN`,
-`REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`, it advances only if
+`REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE` it advances once
 `getSandbox` finds nothing. Unresolved IDs never expire; completed records do
 after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved
 records, `RESOURCE_EXHAUSTED` becomes transient `SANDBOX_ADMISSION_LIMIT_REACHED`:
 revision preparation waits without spending attempts until its convergence
 deadline; Namespace work retries. Each Harness takes one unnamed
 bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
-failure); only Codex returns a URL. The Driver reads before creating and adopts an existing
+failure); only Codex returns a URL. The Driver reads first and adopts an existing
 or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations, spec,
 neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
-defines the trust boundary. Native exposure ends at enrollment;
-`withdrawHarnessExposure`, adoption and recreation with `workspaceNodeEnrolled`
-delete it.
+bounds trust. Native exposure ends once a post-enrollment pass confirms its
+delete, by `withdrawHarnessExposure`, adoption or recreation with
+`workspaceNodeEnrolled`.
 
 The Backend reuses clients, retrying setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads

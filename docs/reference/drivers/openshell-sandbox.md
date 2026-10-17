@@ -283,7 +283,12 @@ retain the Kubernetes transport.
 A native worker's node opens the Gateway connection itself. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
-(`DeleteService`, fail closed); adoption or recreation then has none.
+(`DeleteService`, fail closed); adoption or recreation then has none. A missing
+service counts as withdrawn only while `GetWorkspace` still answers: OpenShell
+hides an unauthorized Sandbox as missing, and a refused identity fails the
+revision with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker sweeps revisions
+already active at an upgrade, and candidates that failed for good, through
+Compute's `withdrawHarnessExposure` at start.
 
 ## Kubernetes and admission requirements
 
