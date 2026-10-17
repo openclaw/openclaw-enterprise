@@ -153,6 +153,7 @@ func (app *application) printIAMRole(value any, collection bool) error {
 func (app *application) printIAMAccessBinding(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
+		{title: "SUBJECT KIND", key: "subjectKind"},
 		{title: "SUBJECT", key: "subjectId"},
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},
@@ -220,11 +221,13 @@ func (app *application) printAgentRevisionList(rows []any) error {
 
 // printDeploymentStatus shows startup warnings in the table too: a succeeded
 // deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
-// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+// PLUGIN_INSTALL_FAILED). The ERROR cell reads "CODE: message" (D608).
+// Structured output keeps the full error and warnings.
 func (app *application) printDeploymentStatus(value any) error {
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			row := maps.Clone(resource)
+			row["error"] = deploymentErrorText(resource["error"])
 			row["warnings"] = deploymentWarningsText(resource["warnings"])
 			value = row
 		}
@@ -236,6 +239,42 @@ func (app *application) printDeploymentStatus(value any) error {
 		{title: "ERROR", key: "error"},
 		{title: "WARNINGS", key: "warnings"},
 	})
+}
+
+// deploymentErrorText renders a deployment error as "CODE: message" on one
+// line, then the classified cause of a failed startup model check (finding 323)
+// or a pointer to the diagnostic data that only structured output shows. A
+// value without a string code is left as it is, so the table still shows it.
+// Free text (message, cause detail) is collapsed to one line; code and cause
+// kind are schema tokens, and tableCell escapes anything hidden in any of them.
+func deploymentErrorText(value any) any {
+	deploymentError, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	code, ok := deploymentError["code"].(string)
+	if !ok || code == "" {
+		return value
+	}
+	text := code
+	if message, ok := deploymentError["message"].(string); ok && strings.TrimSpace(message) != "" {
+		text += ": " + strings.Join(strings.Fields(message), " ")
+	}
+	data, hasData := deploymentError["data"]
+	if !hasData || data == nil {
+		return text
+	}
+	if data, ok := data.(map[string]any); ok {
+		failure, _ := data["runtimeFailure"].(map[string]any)
+		if cause, ok := failure["cause"].(map[string]any); ok {
+			kind, _ := cause["kind"].(string)
+			detail, _ := cause["detail"].(string)
+			if kind != "" || detail != "" {
+				return text + " (cause: " + strings.TrimSpace(kind+" "+strings.Join(strings.Fields(detail), " ")) + ")"
+			}
+		}
+	}
+	return text + " (details: -o json)"
 }
 
 // deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil

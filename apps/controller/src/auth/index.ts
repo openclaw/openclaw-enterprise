@@ -18,6 +18,7 @@ import {
 } from "@openclaw-enterprise/iam";
 import {
   PostgresHumanAuthentication,
+  AuthorizationDeniedError,
   ScopeViolationError,
   type HumanAuthenticationActivation,
   type HumanAuthenticationActivationHooks,
@@ -29,6 +30,7 @@ import {
   type SchemaAuthAdapterOptionsV1,
   type PostgresPlatformState,
   type PreparedPasswordAccount,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { IAMDriver } from "@openclaw-enterprise/contracts";
 import {
@@ -44,6 +46,7 @@ import type { ExternalProviderName } from "./github.ts";
 import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./google.ts";
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
+import { sessionAuthority } from "./session-authority.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
@@ -162,6 +165,7 @@ import type {
   AdmittedSession,
 } from "../admission/admission-verifier.ts";
 import { AdmissionFailure, UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
+import { RequestFailure, unstorableTextFailure } from "../http/errors.ts";
 import { betterAuthIssuer, validHttpBaseURL } from "./configuration.ts";
 
 export { betterAuthIssuer, OCC_BETTER_AUTH_ISSUER_PREFIX } from "./configuration.ts";
@@ -382,6 +386,12 @@ export interface ControllerAuth {
   signOut(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   session(request: FastifyRequest, reply: FastifyReply): Promise<void>;
   resolveSession(request: FastifyRequest): Promise<AuthenticatedSession | undefined>;
+  withSessionAuthority<T>(session: AuthenticatedSession, work: () => Promise<T>): Promise<T>;
+  holdSession(
+    unit: PlatformUnitOfWork,
+    session: AuthenticatedSession,
+    request: FastifyRequest,
+  ): Promise<void>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
     readonly name: string;
@@ -501,7 +511,7 @@ function setAuthHeaders(
 }
 
 function authFailure(error: unknown): { readonly status: number; readonly code: string } {
-  if (error instanceof AdmissionFailure) {
+  if (error instanceof AdmissionFailure || error instanceof RequestFailure) {
     return { status: error.status, code: error.code };
   }
   if (error instanceof APIError || (typeof error === "object" && error !== null)) {
@@ -527,6 +537,14 @@ function authFailure(error: unknown): { readonly status: number; readonly code: 
       };
     }
     if (error instanceof APIError) {
+      if (
+        typeof status === "number" &&
+        Number.isSafeInteger(status) &&
+        status >= 500 &&
+        status < 600
+      ) {
+        return { status: 503, code: "DEPENDENCY_UNAVAILABLE" };
+      }
       return { status: 401, code: "UNAUTHENTICATED" };
     }
   }
@@ -546,6 +564,14 @@ function serviceKeyNameRefusal(error: unknown): boolean {
   return error instanceof Error && error.name === "APIError" && code === "INVALID_NAME_LENGTH";
 }
 
+/** A curated auth endpoint answered 5xx: its database or audit store failed. */
+class AuthDependencyUnavailable extends Error {
+  constructor() {
+    super("Authentication dependency unavailable.");
+    this.name = "AuthDependencyUnavailable";
+  }
+}
+
 /**
  * A rejected password whose denial audit could not be written. The response is 503 (audit
  * outages fail closed), yet admission still counts it as a credential failure.
@@ -557,12 +583,14 @@ class DenialAuditUnavailable extends Error {
   }
 }
 
-// The Console reason for each GitHub allowlist refusal (RFC-0061) and for an attached identity
-// whose account is disabled. No other value reaches the redirect.
+// The Console reason for each GitHub allowlist refusal (RFC-0061), for an attached identity
+// whose account is disabled, for a provider that could not answer, and for a callback that
+// failed inside OCE (`unavailable`). No other value reaches the redirect.
 const callbackReasons: Readonly<Record<(typeof CALLBACK_DENIALS)[number], string>> = {
   MEMBERSHIP_REQUIRED: "membership",
   MEMBERSHIP_UNAVAILABLE: "membership-unavailable",
   ACCOUNT_DISABLED: "account-disabled",
+  PROVIDER_UNAVAILABLE: "provider-unavailable",
 };
 
 /** An audited callback refusal whose Console reason the callback redirect carries. */
@@ -786,13 +814,16 @@ async function sendAuthEndpoint(
     reply.status(failure.status).send({
       error: {
         code: failure.code,
-        // Every caller checks the Origin before it reads any credential, so naming the refused
-        // Origin reveals nothing about the session or password; keep it that way, because the
+        // A malformed request names its offending field, as on every API route. Every caller
+        // checks the Origin before it reads any credential, so naming the refused Origin
+        // reveals nothing about the session or password; keep it that way, because the
         // endpoint's own message would misdirect a CLI user.
         message:
-          error instanceof AdmissionFailure && error.reason === "untrusted_origin"
-            ? UNTRUSTED_ORIGIN_MESSAGE
-            : failureMessage,
+          error instanceof RequestFailure
+            ? error.message
+            : error instanceof AdmissionFailure && error.reason === "untrusted_origin"
+              ? UNTRUSTED_ORIGIN_MESSAGE
+              : failureMessage,
       },
       meta: { requestId: request.id },
     });
@@ -980,6 +1011,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     cookiePrefix,
   );
   const issuer = betterAuthIssuer(options.installationId);
+  const withSessionAuthority = sessionAuthority();
   if (humanLogin !== undefined && typeof options.database !== "function") {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
@@ -1127,6 +1159,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       // Timing differences here are hidden by the slow lane's floor. Lookup failures
       // propagate, so an outage is 503 rather than a refusal.
       async isReserved(email) {
+        // Invalid spellings must not select a reserved account through storage normalization.
+        if (unstorableTextFailure("body", email) !== undefined) {
+          return false;
+        }
         if (humanLogin !== undefined) {
           // The recovery account is the documented way in when a provider is down, so
           // strangers spending its email can slow it but never refuse it.
@@ -1305,7 +1341,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         });
       }
       if (response.status >= 500) {
-        const failure = new Error("Authentication dependency unavailable.");
+        const failure = new AuthDependencyUnavailable();
         // The curated password endpoint marks a rejection whose denial audit failed; the
         // response stays 503, but the guess spends budget as in the password-only profile.
         if (path === "/oce/password" && (await deniedWithoutAudit(response))) {
@@ -1359,10 +1395,19 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           setAuthHeaders(reply, result.headers);
           reply.redirect("/console/");
         } catch (error) {
-          reply.redirect(
+          // A refusal keeps its reason. A callback that failed inside OCE (its database or
+          // audit store) is an outage, not a refusal of this identity. Every other refusal,
+          // including a provider this API does not configure, stays generic.
+          const reason =
             error instanceof CallbackRefusal
-              ? `/console/?authError=${name}&authReason=${error.consoleReason}`
-              : `/console/?authError=${name}`,
+              ? error.consoleReason
+              : error instanceof AuthDependencyUnavailable
+                ? "unavailable"
+                : undefined;
+          reply.redirect(
+            reason === undefined
+              ? `/console/?authError=${name}`
+              : `/console/?authError=${name}&authReason=${reason}`,
           );
         }
       },
@@ -1404,30 +1449,37 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         // Read from the validated input, not the credential pair, so the admission key
         // is plainly derived from the email alone.
         const email = String(input.email).trim().toLowerCase();
+        // An email with a NUL character or an unpaired surrogate is a 400, as on every API
+        // route. It is refused inside admission, so it spends budget like the bad-credential
+        // answer it replaces. The password is never stored as text and is not checked.
+        const unstorableEmail = unstorableTextFailure("body", { email: input.email });
         const deviceCookie = knownDeviceFromCookieHeader(request.headers.cookie, knownDeviceSecure);
         // The account's state is read only for an entry issued for this email, so a
         // forged or foreign cookie reads nothing; a stale entry just means no exemption.
         let deviceConstraints: readonly string[] = [];
-        const device = await verifyKnownDevice(
-          options.secret,
-          email,
-          deviceCookie,
-          Date.now(),
-          knownDeviceState,
-          (keys, read) => {
-            deviceConstraints = keys;
-            return knownDeviceReads.admit(
-              keys.map((key) => admissionKey("device", key)),
-              async () => {
-                const state = await read();
-                // A completed fresh read can establish a stale/disabled entry. Only
-                // an unavailable proof retains constraints; it never grants an exemption.
-                deviceConstraints = [];
-                return state;
-              },
-            );
-          },
-        );
+        const device =
+          unstorableEmail === undefined
+            ? await verifyKnownDevice(
+                options.secret,
+                email,
+                deviceCookie,
+                Date.now(),
+                knownDeviceState,
+                (keys, read) => {
+                  deviceConstraints = keys;
+                  return knownDeviceReads.admit(
+                    keys.map((key) => admissionKey("device", key)),
+                    async () => {
+                      const state = await read();
+                      // A completed fresh read can establish a stale/disabled entry. Only
+                      // an unavailable proof retains constraints; it never grants an exemption.
+                      deviceConstraints = [];
+                      return state;
+                    },
+                  );
+                },
+              )
+            : undefined;
         // The address lane needs a trusted proxy: without one, browsers behind the ingress
         // share its address, so only the email (or known-device) lane applies.
         const attempt = {
@@ -1440,9 +1492,18 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
         if (humanLogin) {
           // The curated endpoint checks the password, issues the session and marks the
           // browser as a known device; only credential rejections spend budget.
-          return passwordAdmission.admit(attempt, () =>
-            runPrivateEndpoint(request, "/oce/password", body),
-          );
+          return passwordAdmission.admit(attempt, async () => {
+            // Preserve the guarded denial audit without looking up the invalid email.
+            if (unstorableEmail !== undefined) {
+              try {
+                await humanLogin.recordPasswordDenial();
+              } catch (error) {
+                throw new DenialAuditUnavailable(error);
+              }
+              throw unstorableEmail;
+            }
+            return runPrivateEndpoint(request, "/oce/password", body);
+          });
         }
         return passwordAdmission.admit(attempt, async () => {
           const audit = options.passwordSignInAudit;
@@ -1450,9 +1511,16 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           // password reset or account recreation that commits during the sign-in then bumps
           // the state past it and revokes the entry, instead of the old password's sign-in
           // being bound to the new state. A failed read only skips the marking.
-          const accountState = await knownDeviceState(email).catch(() => undefined);
+          const accountState =
+            unstorableEmail === undefined
+              ? await knownDeviceState(email).catch(() => undefined)
+              : undefined;
           let result;
           try {
+            // Audited as a refusal, as Better Auth's own invalid-email answer was.
+            if (unstorableEmail !== undefined) {
+              throw unstorableEmail;
+            }
             result = await api.signInEmail({
               body: { ...body, rememberMe: true },
               headers: authHeaders(request.headers),
@@ -1531,15 +1599,19 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
           }
           requireSessionKey(headers, options.secret, current);
         }
+        // Guarded logout already holds the user in its original State transaction.
         if (humanLogin) {
           return runPrivateEndpoint(request, "/oce/sign-out");
         }
-        return api.signOut({
-          headers,
-          asResponse: false,
-          returnHeaders: true,
-          returnStatus: true,
-        });
+        const current = await resolveSession(request);
+        const revoke = () =>
+          api.signOut({
+            headers,
+            asResponse: false,
+            returnHeaders: true,
+            returnStatus: true,
+          });
+        return current === undefined ? revoke() : withSessionAuthority(current.id, revoke);
       },
       (response) => response,
       "The controller session could not be revoked.",
@@ -1634,6 +1706,13 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
     signOut,
     session,
     resolveSession,
+    withSessionAuthority: (session, work) => withSessionAuthority(session.id, work),
+    holdSession: async (_unit, session, request) => {
+      const current = await resolveSession(request);
+      if (current?.id !== session.id || current.userId !== session.userId) {
+        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+      }
+    },
     async createServiceKey({ principal, name, expiresIn }) {
       // The server-only userId parameter is the plugin's referenceId; no human
       // account or session is created for this existing IAM automation identity.
@@ -1926,6 +2005,14 @@ export async function createPostgresControllerAuth(
   }
   return {
     ...auth,
+    holdSession: async (unit, session) => {
+      if (guarded) {
+        await persistence!.holdSession(unit, session.userId, session.id);
+      }
+      if (!(await unit.installations.holdAuthenticationSession(session.id, session.userId))) {
+        throw new AuthorizationDeniedError("The assigning session is no longer current.");
+      }
+    },
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

@@ -248,10 +248,14 @@ export class PostgresHumanAuthentication {
     return (await this.state.queryInTransaction(unit, sql, parameters)).rows as Row[];
   }
 
-  private async lockUser(unit: PlatformUnitOfWork, userId: string): Promise<Row> {
+  private async lockUser(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    mode: "update" | "share" = "update",
+  ): Promise<Row> {
     const [user] = await this.query(
       unit,
-      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR UPDATE`,
+      `SELECT ${userColumns} FROM occ."user" u WHERE u.id = $1 FOR ${mode === "share" ? "SHARE" : "UPDATE"}`,
       [userId],
     );
     if (user === undefined) {
@@ -698,7 +702,25 @@ export class PostgresHumanAuthentication {
       HumanAuthenticationSession,
       "id" | "token" | "userId" | "ipAddress" | "userAgent"
     >,
+    audit?: {
+      readonly provider: string;
+      readonly subject: string;
+      readonly login?: string | undefined;
+      readonly attemptId: string;
+    },
   ): Promise<HumanAuthenticationSession> {
+    if (
+      audit !== undefined &&
+      (!/^[a-z][a-z0-9-]{0,39}$/.test(audit.provider) ||
+        !proof.providerId.startsWith(`${audit.provider}:`) ||
+        audit.subject !== proof.subject ||
+        audit.subject.length === 0 ||
+        audit.subject.length > 255 ||
+        (audit.login !== undefined && !/^[A-Za-z0-9-]{1,39}$/.test(audit.login)) ||
+        !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))
+    ) {
+      throw new ScopeViolationError("The authentication audit identity is invalid.");
+    }
     return this.state.transact(async (unit) => {
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
@@ -740,6 +762,7 @@ export class PostgresHumanAuthentication {
       await this.audit(unit, "authentication.login", proof.principalId, {
         userId: proof.userId,
         methodId: proof.methodId,
+        ...audit,
       });
       return sessionFromRow(inserted);
     });
@@ -859,11 +882,16 @@ export class PostgresHumanAuthentication {
     unit: PlatformUnitOfWork,
     actor: HumanAuthenticationActor,
     userIds: readonly string[],
+    intent: "account-operation" | "session-hold" = "account-operation",
   ): Promise<void> {
-    await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
-    await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    // Account operations own bounded acquisition. A session hold borrows the
+    // caller's transaction limits and shares the user against revocation.
+    if (intent === "account-operation") {
+      await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
+      await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
+    }
     for (const id of [...new Set([...userIds, actor.userId])].sort()) {
-      await this.lockUser(unit, id);
+      await this.lockUser(unit, id, intent === "session-hold" ? "share" : "update");
     }
     const [current] = await this.query(
       unit,
@@ -888,6 +916,20 @@ export class PostgresHumanAuthentication {
     if (current === undefined) {
       throw new AuthorizationDeniedError("The human administrator session is no longer current.");
     }
+  }
+
+  /** Retains the guarded actor on the caller's original State transaction. */
+  async holdSession(unit: PlatformUnitOfWork, userId: string, sessionId: string): Promise<void> {
+    await this.guardActor(
+      unit,
+      {
+        userId,
+        sessionId,
+        principalId: await this.principal(unit, userId),
+      },
+      [],
+      "session-hold",
+    );
   }
 
   /** Present state under the same guards; this is not an operation-result receipt. */
@@ -1281,31 +1323,21 @@ export class PostgresHumanAuthentication {
     });
   }
 
-  /**
-   * `provider` names the external sign-in provider whose callback was refused. A GitHub
-   * membership denial (RFC-0061) also records the numeric GitHub `subject` that provider
-   * authenticated, so an administrator can tell whose sign-in the allowlist refused. A
-   * disabled account's refusal records that account's `userId` for the same reason.
-   */
+  /** Records a matched sign-in refusal without treating provider profile data as authority. */
   async recordDenied(
     reason: HumanAuthenticationDenial,
     provider?: "github" | "google" | "oidc",
-    identity?: { readonly subject: string } | { readonly userId: string },
+    identity?: {
+      readonly subject?: string;
+      readonly userId?: string;
+      readonly login?: string | undefined;
+    },
+    audit?: { readonly attemptId: string },
   ): Promise<void> {
     const membership = reason === "MEMBERSHIP_REQUIRED" || reason === "MEMBERSHIP_UNAVAILABLE";
-    const disabledAccount =
-      reason === "ACCOUNT_DISABLED" &&
-      provider !== undefined &&
-      identity !== undefined &&
-      "userId" in identity &&
-      typeof identity.userId === "string" &&
-      identity.userId.length > 0;
-    const githubSubject =
-      provider === "github" &&
-      identity !== undefined &&
-      "subject" in identity &&
-      typeof identity.subject === "string" &&
-      /^[1-9][0-9]{0,19}$/.test(identity.subject);
+    const subject = identity?.subject;
+    const login = identity?.login;
+    const userId = identity?.userId;
     if (
       ![
         "INVALID_CREDENTIALS",
@@ -1317,11 +1349,20 @@ export class PostgresHumanAuthentication {
         "ACCOUNT_DISABLED",
       ].includes(reason) ||
       (provider !== undefined && !["github", "google", "oidc"].includes(provider)) ||
-      (membership
-        ? !githubSubject
-        : reason === "ACCOUNT_DISABLED"
-          ? !disabledAccount
-          : identity !== undefined)
+      (audit !== undefined &&
+        (provider === undefined || !/^[A-Za-z0-9_-]{43}$/.test(audit.attemptId))) ||
+      (subject !== undefined && (provider !== "github" || !/^[1-9][0-9]{0,19}$/.test(subject))) ||
+      (login !== undefined && (subject === undefined || !/^[A-Za-z0-9-]{1,39}$/.test(login))) ||
+      (membership && subject === undefined) ||
+      (userId !== undefined && (reason !== "ACCOUNT_DISABLED" || !userId)) ||
+      (reason === "ACCOUNT_DISABLED" && (provider === undefined || userId === undefined)) ||
+      (identity !== undefined &&
+        ![
+          "MEMBERSHIP_REQUIRED",
+          "MEMBERSHIP_UNAVAILABLE",
+          "EXTERNAL_IDENTITY_REJECTED",
+          "ACCOUNT_DISABLED",
+        ].includes(reason))
     ) {
       throw new ScopeViolationError("The authentication denial classification is invalid.");
     }
@@ -1340,12 +1381,13 @@ export class PostgresHumanAuthentication {
         ...(provider === undefined
           ? {}
           : {
-              details:
-                identity === undefined
-                  ? { provider }
-                  : "subject" in identity
-                    ? { provider, subject: identity.subject }
-                    : { provider, userId: identity.userId },
+              details: {
+                provider,
+                ...(subject === undefined ? {} : { subject }),
+                ...(login === undefined ? {} : { login }),
+                ...(userId === undefined ? {} : { userId }),
+                ...audit,
+              },
             }),
       }),
     );

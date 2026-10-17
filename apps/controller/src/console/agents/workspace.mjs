@@ -5,7 +5,10 @@ const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 function fileError(error, writing) {
   let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
   if (error.status === 403) {
-    text = "Access denied. You do not have permission for this file operation.";
+    // Saving a file is an Agent operate action (finding 1540).
+    text = writing
+      ? "You do not have permission to save this file. Ask an administrator for Agent operate access."
+      : "Access denied. You do not have permission for this file operation.";
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";
@@ -142,18 +145,28 @@ export function renderWorkspaceFiles(context, agent, path) {
           context.onExpired();
           return;
         }
+        // Explicit Reload can settle an unknown write only when the API confirms file absence.
+        // A resource/scope 404 does not establish the native file's current state.
+        const missingReadback =
+          discard &&
+          cause.status === 404 &&
+          cause.code === "NOT_FOUND" &&
+          cause.serverMessage === "The requested workspace file was not found.";
         // A missing file can be created through PUT. Other read failures never enable a blank overwrite.
-        if (cause.status === 404 && !outcomeUnknown) {
+        if (cause.status === 404 && (!outcomeUnknown || missingReadback)) {
           editor.value = !discard && retained ? retained.text : "";
           baseline = !discard && retained ? retained.baseline : undefined;
           initialized = true;
           editor.setCustomValidity("");
           loaded = true;
+          if (missingReadback) {
+            outcomeUnknown = false;
+          }
         } else {
           loaded = false;
         }
-        status.textContent = "";
-        error.textContent = fileError(cause, false);
+        status.textContent = missingReadback ? `${name} is missing. Save to create it.` : "";
+        error.textContent = missingReadback ? "" : fileError(cause, false);
       } finally {
         if (context.isCurrent()) {
           pending = false;

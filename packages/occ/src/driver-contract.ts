@@ -54,6 +54,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "credential_gateway") {
     return [
       "listSourceTypes",
+      "validateSourceConfig",
       "registerSource",
       "updateSource",
       "sourceStatus",
@@ -77,6 +78,8 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     return (
       sandboxFacets(candidate.facets) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      (candidate.validateWorkspaceSetup === undefined ||
+        typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&

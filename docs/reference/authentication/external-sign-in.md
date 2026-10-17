@@ -5,6 +5,14 @@ Plane (OCC) accounts, and the session, recovery, and account controls that apply
 once an external provider is enabled. The [authentication reference](../authentication.md)
 covers bootstrap, password sessions, request origin, provisioning, and failures.
 
+## Console sign-in destinations
+
+After sign-in, the console returns to the requested supported page and Namespace
+when available. Access is checked again; sign-out and failed external sign-in
+clear the pending destination. A new sign-in after an active session expires
+starts at Agents. An Agent recovery link can return to its console page after
+authorization, where opening the native UI remains a separate action.
+
 ## GitHub sign-in for existing accounts
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
@@ -97,8 +105,9 @@ Unknown identities fail without signup. Success returns to exactly `/console/`
 and sets a two-minute HttpOnly, `SameSite=Strict` login receipt; failure returns
 to `/console/?authError=github` without automatic retry. An identity attached to a
 disabled account returns with `authReason=account-disabled`, audited as `ACCOUNT_DISABLED`
-with the account's `userId`; only the person the provider just authenticated reaches it,
-and every other refusal stays generic. The starting tab sends its
+with the account's `userId`; only the person the provider just authenticated reaches it.
+Provider outages and allowlist refusals (below) carry their own reasons; a rejected
+identity stays generic. The starting tab sends its
 `attemptId` with the configured Origin to `POST /api/auth/providers/github/result`,
 which returns the callback session's `sessionKey` once, only while that session's
 cookie is current. It never issues or extends a session.
@@ -123,6 +132,11 @@ logs one `authentication.provider-unavailable-warning` at WARN. It carries `prov
 `oversized_response`, `malformed_response`, `provider_error`, or `client_rejected`), and,
 when present, the HTTP `status` or transport `code` such as `ECONNREFUSED`. It never carries URLs,
 authorization codes, tokens, response bodies, or user data. A rejected identity logs nothing.
+After that denial the callback returns to
+`/console/?authError=<provider>&authReason=provider-unavailable`, and the Console says sign-in is
+unavailable right now instead of suggesting an attach; the failure precedes any identity lookup,
+so the reason reveals nothing about accounts. A callback that fails inside OCE (its database or
+audit store) returns with `authReason=unavailable`.
 
 ### Organization and team allowlist
 
@@ -153,8 +167,11 @@ scope is requested.
 | Not an active member of any entry           | `MEMBERSHIP_REQUIRED`    | `membership`             |
 | No match, and a lookup GitHub didn't answer | `MEMBERSHIP_UNAVAILABLE` | `membership-unavailable` |
 
-Both are `authentication.login` denials whose `details` carry `provider: github` and the
-numeric GitHub `subject`. The callback returns to
+Both are `authentication.login` denials whose `details` carry `provider: github`, the
+numeric GitHub `subject`, a valid login returned by GitHub when available, and the attempt ID.
+Successful GitHub sign-ins and refusals after profile verification record the same identity
+fields. The login is diagnostic only; authorization uses the immutable subject. See
+[sign-in audit troubleshooting](../../guides/topics/audit-log.md#investigate-a-github-sign-in). The callback returns to
 `/console/?authError=github&authReason=<reason>`, and the Console explains the refusal.
 `MEMBERSHIP_UNAVAILABLE` covers a transport failure, the deadline, a redirect, an oversized or
 malformed answer, and any status other than `200` or `404`. It fails closed and logs

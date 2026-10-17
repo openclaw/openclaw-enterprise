@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-16"
-last_updated_session: "authoring-run/87760e44-3e59-404d-9a1f-7507abe11351"
+updated: "2026-10-17"
+last_updated_session: "authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a"
 ---
 
 # Production image upgrade flow
@@ -71,14 +71,11 @@ A runtime release also reads complete authorized inventory and records every run
 revision. Nonterminal deployment work, a missing active revision, or an unready
 Namespace stops preparation. Stopped and deleting Agents are excluded.
 
-`packages/occ/src/state/postgres-state.ts:operations.list` uses the queue's exact
-`isRepositoryCleanupWork` classifier before projecting resource operations.
-Successfully completed cleanup stays in PostgreSQL but is omitted from this
-projection, including history detached by `occ.finalize_agent_deletion`.
-Unsettled or permanently failed cleanup raises `DependencyUnavailableError`;
-unknown targets still follow existing validation. Inventory checks actual revision
-reconciliation work for queued or claimed deployments. Completed cleanup cannot
-clear that guard. See the [inventory limits](../reference/cli.md#resource-commands).
+`packages/occ/src/state/postgres-state.ts:operations.list` excludes repository
+cleanup using the queue's exact `repositoryCleanupSql` predicate. Cleanup may
+remain queued after an Agent is deleted. It stays in the work queue with its
+existing state; inventory neither waits for it nor marks it complete. Genuine
+revision reconciliation work still determines `deploymentInProgress`.
 
 For repository-enabled releases, the helper requires explicit immutable
 controller and broker images. It inventories every node matching the control
@@ -116,9 +113,10 @@ On the experimental two-cluster profile, each Pod also runs
 startup does not run. In each execution tenant Namespace where its identity holds
 the release-era tenant grant, SelfSubjectAccessReviews ask for the newer
 `openclaw-execution` rules (API: Pod and `pods/proxy` reads, plus `pods/log` and
-Event reads with runtime logs; worker: Pod `patch`). A missing rule refuses the
-candidate and points to
-[upgrading the execution chart](../testing/two-cluster-local.md#upgrade-the-execution-chart).
+Event reads with runtime logs; worker: Pod `patch` and `batch` Job `get`, `create`,
+and `delete`). Worker Job grants are required even with runtime logs disabled.
+A missing rule refuses the candidate and points to
+[upgrading the execution chart](../testing/kubernetes.md#upgrade-the-execution-chart).
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
 `openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
@@ -257,13 +255,10 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Debugging and Verification
 
-- `tests/integration/postgres-worker-agent-revision-teardown.test.mjs` exercises
-  deployment inventory through PostgreSQL State and the real worker: completed
-  cleanup with live and deleted owners, retained queued or claimed cleanup,
-  unknown session outcomes, injected terminal cleanup failure, and a surviving
-  Agent's queued and claimed replacement. Repository and Compute boundary
-  Drivers provide observations; this does not verify a deployed upgrade or live
-  credential service. Follow [PostgreSQL setup](../testing/postgresql.md).
+- The PostgreSQL revision-worker stop and teardown suites cover retained cleanup,
+  unknown session outcomes, and genuine queued/claimed deployments. Repository
+  and Compute boundary Drivers supply observations; this is not a live service
+  or deployed upgrade proof. See [PostgreSQL setup](../testing/postgresql.md).
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
   and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
 - For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
@@ -296,7 +291,9 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
-- 2026-10-16 08:42: Keep completed repository cleanup history out of resource operations while refusing unresolved cleanup during inventory reads. (authoring-run/87760e44-3e59-404d-9a1f-7507abe11351 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-10-17 19:01: Exclude repository cleanup in every state from deployment inventory while preserving genuine deployment guards. (authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a - edb197e6976a5737742cf7ee7fad43e3b06d5810)
+
+- 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
 
 - 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
 

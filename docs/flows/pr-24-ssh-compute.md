@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-10
-last_updated_session: authoring-run/f50ad5ce-853f-4d20-9c15-8da39cbe292e
+updated: 2026-10-14
+last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -76,8 +76,10 @@ operations require matching bindings and the selected Compute identity.
 Admission and dispatch require the explicit `runtime` binding. The snapshot
 contains only the method: neither source authorization nor credential resolution
 runs for it, while Agent/Configuration authorization and worker reauthorization
-remain required. `SshComputeDriver.validateHarnessAuth` rejects managed credentials
-and dedicated Harnesses; preparation also rejects OCC Secret delivery and Sandbox use.
+remain required. `SshComputeDriver.validateHarnessAuth` rejects dedicated
+Harnesses (a fixed `409`), then any other method through `requireHarnessAuthMethod`
+(`compute/harness-auth-method.ts`), which names `harnessAuth.method` (`400`).
+Preparation also rejects OCC Secret delivery and Sandbox use.
 SSH dispatches selected `beforeWorkloadStart` hooks during activation, before
 starting the candidate workload.
 
@@ -92,7 +94,11 @@ The system SSH client uses an explicit identity and known-hosts file, strict
 host-key checks, batch mode, and a 180-second operation timeout. The helper
 also enforces a 170-second deadline and detects closed output pipes with
 heartbeat writes. Cancellation terminates the local client; a systemd job
-already submitted can still complete.
+already submitted can still complete. Once stdout exceeds 64 Ki UTF-16 code
+units, the executor stops retaining subsequent chunks and reports
+`SSH helper output exceeded its limit.` The crossing chunk can exceed the
+threshold. The local client still receives SIGTERM, then SIGKILL after one
+second if needed; the operation settles on its close event.
 
 Host mutations take `<root>/.compute-lock` through a child holding kernel flock,
 with a 30-second acquisition timeout. The shared root defines the inventory and
@@ -207,6 +213,8 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:23: Document stdout retention and local-client settlement on overflow. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
 - 2026-10-10 06:15: Trace absolute unit enablement and relinking for owned cleanup outside systemd's load path. (authoring-run/f50ad5ce-853f-4d20-9c15-8da39cbe292e - 792304b6a09b5df4f46e3889066f231610b294cf)
 

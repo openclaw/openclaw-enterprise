@@ -36,6 +36,7 @@ import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
+import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
 import { createExternalDriver, loadDriverPackage } from "./driver-packages.ts";
 import { SshComputeDriver, type SshComputeDriverOptions } from "../drivers/compute/ssh/index.ts";
 import {
@@ -277,6 +278,19 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
       "observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.",
     );
   }
+  // URL parsing drops an empty user info (http://@host), which profile preflight refuses.
+  refuseWrittenUserinfo("observability.url", raw);
+  // Other IPv4 spellings parse as a different address, so startup must not store url.href.
+  refuseRewrittenIpv4Host("observability.url", raw, url);
+  // A tab or newline is deleted. A backslash before the query becomes a slash, so the stored
+  // href can name another host. A backslash in the query does not change the host.
+  const queryAt = raw.search(/[?#]/u);
+  const beforeQuery = queryAt === -1 ? raw : raw.slice(0, queryAt);
+  if (/[\t\n\r]/u.test(raw) || beforeQuery.includes("\\")) {
+    throw new Error(
+      "observability.url must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
+    );
+  }
   return Object.freeze({ url: url.href });
 }
 
@@ -415,6 +429,37 @@ function schemaMismatch(schema: Record<string, unknown>, configuration: unknown)
     // The generic message still fails closed.
   }
   return "";
+}
+
+/**
+ * The CA bundle a dedicated Harness node trusts for its Gateway connection.
+ * `OCC_GATEWAY_CA_PATH`, when set, names the Gateway-only bundle; an empty value means
+ * no private Gateway CA. The chart sets it whenever the API's `NODE_EXTRA_CA_CERTS`
+ * also carries other roots (the OIDC CA opt-in), so those roots stay out of Harness Pods.
+ * Without it, the API's `NODE_EXTRA_CA_CERTS` is the Gateway bundle.
+ */
+export async function readHarnessNodeCa(
+  environment: Readonly<Record<string, string | undefined>>,
+): Promise<string | undefined> {
+  const gatewayCaPath = environment.OCC_GATEWAY_CA_PATH;
+  const path = gatewayCaPath ?? environment.NODE_EXTRA_CA_CERTS;
+  if (path === undefined || path === "") {
+    return undefined;
+  }
+  if (gatewayCaPath !== undefined && !isAbsolute(gatewayCaPath)) {
+    throw new Error("OCC_GATEWAY_CA_PATH must identify an absolute mounted-file path.");
+  }
+  const bundle = await readFile(path, "utf8");
+  const certificates = bundle.match(
+    /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+  );
+  if (
+    certificates === null ||
+    certificates.reduce((rest, certificate) => rest.replace(certificate, ""), bundle).trim()
+  ) {
+    throw new Error("The Harness trust bundle must contain only public CA certificates.");
+  }
+  return certificates.map((certificate) => new X509Certificate(certificate).toString()).join("\n");
 }
 
 export async function loadInstallationConfiguration(options: {
@@ -800,25 +845,7 @@ export async function loadInstallationConfiguration(options: {
             nonempty(environment.OCC_GATEWAY_API_KEY_PATH, "OCC_GATEWAY_API_KEY_PATH"),
           ),
         ),
-        readNodeCa: async () => {
-          const path = environment.NODE_EXTRA_CA_CERTS;
-          if (path === undefined) {
-            return undefined;
-          }
-          const bundle = await readFile(path, "utf8");
-          const certificates = bundle.match(
-            /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
-          );
-          if (
-            certificates === null ||
-            certificates.reduce((rest, certificate) => rest.replace(certificate, ""), bundle).trim()
-          ) {
-            throw new Error("The Harness trust bundle must contain only public CA certificates.");
-          }
-          return certificates
-            .map((certificate) => new X509Certificate(certificate).toString())
-            .join("\n");
-        },
+        readNodeCa: () => readHarnessNodeCa(environment),
       },
     );
   }

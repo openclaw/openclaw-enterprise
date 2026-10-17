@@ -158,7 +158,7 @@ registry provenance or enforce a digest on its build argument.
 Disposable verification fixtures intentionally do not satisfy production image
 approval. The approved production boundary is the digest-pinned controller,
 gateway, and Agent image set above; local k3d fixtures and mutable local tags are
-testing inputs only. See [image and Helm testing](../testing/images.md) and
+testing inputs only. See [image and Helm testing](../testing/docker.md#images-and-helm) and
 [Kubernetes testing](../testing/kubernetes.md).
 
 ## Operational log collection boundary
@@ -263,7 +263,8 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 - **Sandbox source.** OpenShell policy decisions and supervisor tracing use the
   same tiers and audit. OCC reads them through a client narrowed to the
   read-only `GetSandboxLogs` RPC (`sandbox:read`), so this path cannot create,
-  delete or exec into a Sandbox. Records are classed `activity`; command lines
+  delete or exec into a Sandbox. A response over 4 MiB fails the read instead of
+  being cut; that limit bounds the unsanitized read. Records are classed `activity`; command lines
   and URLs are redacted and cut to 1 KiB.
 - **Errors.** Driver and cluster error text never reaches a client; failures map
   to fixed codes.
@@ -281,7 +282,7 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 
 ## Related
 
-- [Image and Helm testing](../testing/images.md)
+- [Image and Helm testing](../testing/docker.md#images-and-helm)
 - [Kubernetes testing](../testing/kubernetes.md)
 
 - [Production Kubernetes deployment](../guides/deploy.md)

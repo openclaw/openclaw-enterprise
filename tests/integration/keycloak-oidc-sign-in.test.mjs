@@ -20,7 +20,7 @@ import {
 } from "../helpers/production-sign-in.mjs";
 
 // Real Keycloak, prepared by scripts/ci/prepare.mjs for the keycloak-oidc lane
-// (docs/testing/keycloak.md): it imports tests/fixtures/keycloak/realm-oce.json and serves
+// (docs/testing/kubernetes.md#keycloak-oidc-tests): it imports tests/fixtures/keycloak/realm-oce.json and serves
 // https://keycloak.oce.localhost on 127.0.0.1:443 under a per-run CA that this process
 // trusts through NODE_EXTRA_CA_CERTS. Nothing here is stubbed: the browser fills Keycloak's
 // own login form, and the controller reaches the real token and JWKS endpoints with its
@@ -40,7 +40,7 @@ const missing =
   !process.env.NODE_EXTRA_CA_CERTS;
 // The lane fails on a skip; outside it, this names what is missing.
 const requiresKeycloak = missing
-  ? "requires the keycloak-oidc lane's prepared Keycloak (docs/testing/keycloak.md)"
+  ? "requires the keycloak-oidc lane's prepared Keycloak (docs/testing/kubernetes.md#keycloak-oidc-tests)"
   : false;
 
 function modulusBits(n) {

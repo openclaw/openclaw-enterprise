@@ -103,7 +103,10 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer active revision: the worker
-marks it superseded without calling Compute. Sibling Agents have independent
+marks it superseded without calling Compute. A stop or deletion owns the
+revisions admitted before it was requested. PostgreSQL stamps both times on
+its own clock, so controller clock skew cannot exempt a running revision.
+Sibling Agents have independent
 queue lanes, while revisions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
 but rejects harness bindings for Agent deployment; manual
@@ -194,20 +197,22 @@ failure that clears without a change to the revision is deferred like
 convergence instead: the Agent Gateway route refusing or dropping the worker's
 connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
 request that timed out, never reached the API server, or got 429 or 5xx
-(`KUBERNETES_API_UNAVAILABLE`), or an OpenShell gateway refusing new requests at
-its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`). Each such
+(`KUBERNETES_API_UNAVAILABLE`), an OpenShell gateway refusing new requests at
+its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`), or not
+answering a Harness status read (`SANDBOX_GATEWAY_UNAVAILABLE`). Each such
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time. Exceeding it fails the operation with
-`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
-credential rejection fails the deployment earlier with
+measured from operation creation on PostgreSQL's clock, so
+controller clock skew cannot move it. Exceeding it fails the operation with
+`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
+credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
-CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
-until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
-`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, and
-`RUNTIME_STARTUP_FAILED`. A dedicated gateway that refuses its own in-Pod CLI as
+CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
+version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
+and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
@@ -227,6 +232,15 @@ no longer matches the Agent's Backend, or whose credential is no longer issued,
 fails with `SERVICE_ACCOUNT_BACKEND_MISMATCH`. Each status message names the fix. See the
 [worker configuration reference](../settings/operations.md#controller-worker-environment) for
 defaults and supported overrides.
+
+Terminal credential preparation also fails at once through
+[`ComputePreparationFailedError`](../drivers/compute.md#core-lifecycle-operations).
+The worker saves failure and exact revision cleanup in one transaction. Cleanup
+continues after worker restart and does not reopen the failed deployment. The
+selected Compute Driver owns the external failure condition and resource cleanup.
+It may supply bounded preparation evidence through the public contracts type;
+OCC validates and persists it before deleting resources. Deployment status exposes
+cleanup separately and retains failure evidence after cleanup and restart.
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its
 revision-specific workload before the worker switches the Agent Service, but the

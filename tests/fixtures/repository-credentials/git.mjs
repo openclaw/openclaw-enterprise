@@ -22,6 +22,10 @@ export async function startGitSmartHttpFixture(
   const seed = join(directory, "seed");
   await mkdir(join(bare, ".."), { recursive: true });
   await run("git", ["init", "--bare", "--initial-branch=main", bare]);
+  // Git starts the receiving side of a local push without GIT_CONFIG_COUNT, so
+  // cleanEnvironment()'s maintenance.auto=false never reaches this repository's
+  // receive-pack; only its own configuration stops the detached maintenance.
+  await run("git", ["config", "maintenance.auto", "false"], { cwd: bare });
   await run("git", ["init", "--initial-branch=main", seed]);
   await run("git", ["config", "user.name", "Fixture"], { cwd: seed });
   await run("git", ["config", "user.email", "fixture@example.test"], { cwd: seed });
@@ -35,6 +39,7 @@ export async function startGitSmartHttpFixture(
   const trace = [];
   const children = new Set();
   let disconnectPush = false;
+  let heldFetch;
   const server = createServer(tls, (request, response) => {
     if (!authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
@@ -68,53 +73,80 @@ export async function startGitSmartHttpFixture(
       stdio: ["pipe", "pipe", "ignore"],
     });
     children.add(child);
-    let pending = Buffer.alloc(0);
-    let headersSent = false;
-    child.stdout.on("data", (chunk) => {
-      if (!headersSent) {
-        pending = Buffer.concat([pending, chunk]);
-        const end = pending.indexOf("\r\n\r\n");
-        if (end < 0) {
-          return;
+    // A single reader owns headers, body, and end, including while a gate is held.
+    void (async () => {
+      let pending = Buffer.alloc(0);
+      let headersSent = false;
+      for await (let chunk of child.stdout) {
+        if (!headersSent) {
+          pending = Buffer.concat([pending, chunk]);
+          const end = pending.indexOf("\r\n\r\n");
+          if (end < 0) {
+            continue;
+          }
+          const headers = {};
+          let status = 200;
+          for (const line of pending.subarray(0, end).toString().split("\r\n")) {
+            const colon = line.indexOf(":");
+            const key = line.slice(0, colon).toLowerCase();
+            const value = line.slice(colon + 1).trim();
+            if (key === "status") {
+              status = Number(value.split(" ")[0]);
+            } else {
+              headers[key] = value;
+            }
+          }
+          headersSent = true;
+          const hold = url.pathname.endsWith("/git-upload-pack") ? heldFetch : undefined;
+          if (hold) {
+            heldFetch = undefined;
+          }
+          if (!hold?.beforeHeaders) {
+            response.writeHead(status, headers);
+          }
+          if (hold) {
+            if (!hold.beforeHeaders) {
+              response.flushHeaders();
+            }
+            hold.started();
+            await hold.released;
+            if (hold.beforeHeaders && !response.destroyed) {
+              response.writeHead(status, headers);
+            }
+          }
+          if (response.destroyed) {
+            return;
+          }
+          if (drop) {
+            response.flushHeaders();
+          }
+          chunk = pending.subarray(end + 4);
         }
-        const headers = {};
-        let status = 200;
-        for (const line of pending.subarray(0, end).toString().split("\r\n")) {
-          const colon = line.indexOf(":");
-          const key = line.slice(0, colon).toLowerCase();
-          const value = line.slice(colon + 1).trim();
-          if (key === "status") {
-            status = Number(value.split(" ")[0]);
-          } else {
-            headers[key] = value;
+        if (!drop && !response.write(chunk)) {
+          await new Promise((resolve) => {
+            const done = () => {
+              response.off("drain", done);
+              response.off("close", done);
+              resolve();
+            };
+            response.once("drain", done);
+            response.once("close", done);
+          });
+          if (response.destroyed) {
+            return;
           }
         }
-        response.writeHead(status, headers);
-        if (drop) {
-          response.flushHeaders();
-        }
-        headersSent = true;
-        chunk = pending.subarray(end + 4);
       }
       if (drop) {
-        return;
+        response.destroy();
+      } else if (!response.destroyed) {
+        response.end();
       }
-      if (!response.write(chunk)) {
-        child.stdout.pause();
-      }
-    });
-    response.on("drain", () => child.stdout.resume());
+    })().catch(() => response.destroy());
     request.pipe(child.stdin);
     child.stdin.on("error", () => {});
     child.on("error", () => response.destroy());
-    child.once("close", () => {
-      children.delete(child);
-      if (drop) {
-        response.destroy();
-      } else {
-        response.end();
-      }
-    });
+    child.once("close", () => children.delete(child));
     response.once("close", () => {
       if (!drop && child.exitCode === null) {
         child.kill("SIGKILL");
@@ -133,6 +165,18 @@ export async function startGitSmartHttpFixture(
     repository,
     bare,
     trace,
+    holdNextFetch({ beforeHeaders = false } = {}) {
+      let started;
+      let release;
+      const observed = new Promise((resolve) => {
+        started = resolve;
+      });
+      const released = new Promise((resolve) => {
+        release = resolve;
+      });
+      heldFetch = { started, released, beforeHeaders };
+      return { observed, release };
+    },
     disconnectAfterNextAcceptedPush() {
       disconnectPush = true;
     },

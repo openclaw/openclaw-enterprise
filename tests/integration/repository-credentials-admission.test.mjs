@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -24,6 +22,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -362,10 +361,10 @@ test("Repository options expose only Namespace-approved display choices behind A
 
 test("Denied Agent discovery cannot start repository metadata lookups", async (t) => {
   const f = await fixture(t);
-  const directory = await mkdtemp(join(tmpdir(), "repository-options-auth-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await socketDirectory(t, "repository-options-auth-");
   const socket = join(directory, "control.sock");
   let lookups = 0;
+  let description = "a".repeat(187) + "😀".repeat(163);
   // The independent socket peer observes actual metadata requests; IAM and Driver policy are real.
   const server = createServer((request, response) => {
     lookups++;
@@ -377,7 +376,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
           providerInstanceId: f.registry.providerInstanceId,
           appId: f.registry.appId,
           githubInstallationId: f.registry.githubInstallationId,
-          descriptions: [{ repositoryRef: "project", repositoryId: "789", description: "Project" }],
+          descriptions: [{ repositoryRef: "project", repositoryId: "789", description }],
           pending: false,
         }),
       );
@@ -408,9 +407,19 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
   for (const path of [createPath, updatePath]) {
     const allowed = await observed.request("GET", path);
     assert.equal(allowed.status, 200, JSON.stringify(allowed));
-    assert.equal(allowed.data[0].description, "Project");
+    assert.equal(allowed.data[0].description, description);
   }
   assert.equal(lookups, 2);
+  // Both the Unix client and OCC use the API schema's Unicode character bound.
+  description = "😀".repeat(512);
+  const longest = await observed.request("GET", createPath);
+  assert.equal(longest.status, 200, JSON.stringify(longest));
+  assert.equal(longest.data[0].description, description);
+  description += "😀";
+  const oversized = await observed.request("GET", createPath);
+  assert.equal(oversized.status, 200, JSON.stringify(oversized));
+  assert.equal(Object.hasOwn(oversized.data[0], "description"), false);
+  const authorizedLookups = lookups;
 
   for (const action of ["create", "update"]) {
     f.iamState.restrictions.push({
@@ -426,7 +435,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
     assert.equal(denied.status, 403, JSON.stringify(denied));
     assert.equal(denied.error.code, "FORBIDDEN");
   }
-  assert.equal(lookups, 2);
+  assert.equal(lookups, authorizedLookups);
 });
 
 test("Repository options preserve an empty successful discovery", async (t) => {
@@ -471,6 +480,16 @@ test("Repository options refuse Driver display text with C0 controls or DEL", as
       }
     }
   }
+  override = { description: "😀".repeat(512) };
+  assert.equal(
+    (await controller.listRepositoryOptions(f.actorId, f.namespace.id)).options[0].description,
+    override.description,
+  );
+  override = { description: "😀".repeat(513) };
+  await assert.rejects(
+    controller.listRepositoryOptions(f.actorId, f.namespace.id),
+    /returned invalid repository options/,
+  );
 });
 
 test("Repository discovery supports a dedicated-only Compute Driver without admitting unsupported Harnesses", async (t) => {
@@ -497,18 +516,30 @@ test("Repository discovery supports a dedicated-only Compute Driver without admi
     assert.equal(options.status, 200, JSON.stringify(options));
     assert.equal(options.data[0].repositoryRef, "project");
 
+    if (status === 409) {
+      // Agent save refuses the topology every deployment refuses (finding 1117), with
+      // deployment's message, and stores no Agent.
+      const refused = await f.request("POST", f.collection, {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        executionMode,
+        repositoryBindings: selection,
+      });
+      assert.equal(refused.status, 409, JSON.stringify(refused));
+      assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+      assert.equal(
+        refused.error.message,
+        "The selected Compute Driver cannot deliver repository credentials to this Harness topology.",
+      );
+      assert.deepEqual((await f.request("GET", f.collection)).data, []);
+      continue;
+    }
     const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
     await f.prepareDeployment(agent);
-    const path = `${f.collection}/${agent.id}`;
-    const deployed = await f.request("POST", `${path}/deploy`);
+    const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
     assert.equal(deployed.status, status, JSON.stringify(deployed));
-    if (status === 409) {
-      assert.equal(deployed.error.code, "RESOURCE_CONFLICT");
-      assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
-    } else {
-      assert.equal(deployed.data.harness.mode, "dedicated");
-      assert.equal(deployed.data.repositoryCredentials.bindings[0].repositoryRef, "project");
-    }
+    assert.equal(deployed.data.harness.mode, "dedicated");
+    assert.equal(deployed.data.repositoryCredentials.bindings[0].repositoryRef, "project");
   }
 });
 
@@ -834,10 +865,10 @@ test("Deploy freezes public repository selection without exposing provider grant
   assert.equal(cleared.status, 200);
   const historical = await f.request("GET", `${path}/revisions/${deployed.data.id}`);
   assert.deepEqual(historical.data.repositoryCredentials, snapshot);
-  assert.deepEqual(
-    (await f.request("GET", `${path}/revisions`)).data[0].repositoryCredentials,
-    snapshot,
-  );
+  // The list names the revision without its saved settings; the snapshot stays on the GET.
+  const [listed] = (await f.request("GET", `${path}/revisions`)).data;
+  assert.equal(listed.id, deployed.data.id);
+  assert.equal(Object.hasOwn(listed, "repositoryCredentials"), false);
   const independent = await f.request("POST", `${path}/deploy`);
   assert.equal(independent.status, 202, JSON.stringify(independent));
   assert.equal(Object.hasOwn(independent.data, "repositoryCredentials"), false);
@@ -887,22 +918,45 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
 });
 
 test("Repository admission retains unknown Harness and execution-mode rejection", async (t) => {
-  for (const { harness, executionMode, status, code, message } of [
+  for (const { harness, executionMode, status, code, message, atSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
-    // The pinned runtime lacks native worker support, so admission refuses first.
-    { harness: "openclaw", executionMode: "dedicated", status: 400, code: "INVALID_REQUEST" },
-    // A Harness/mode mismatch names the execution mode the Configuration needs.
+    // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
+    // refuses this Harness/mode pair before deployment admission.
+    {
+      harness: "openclaw",
+      executionMode: "dedicated",
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message: /cannot deliver repository credentials to this Harness topology/,
+      atSave: true,
+    },
+    // A Harness/mode mismatch names the execution mode the Configuration needs, at Agent save
+    // as at deployment.
     {
       harness: "codex",
       executionMode: "embedded",
       status: 400,
       code: "INVALID_REQUEST",
       message: /selects the Codex Harness, which needs dedicated execution/,
+      atSave: true,
     },
   ]) {
     await t.test(`${harness}/${executionMode}`, async (t) => {
       const f = await fixture(t, { harness });
+      if (atSave) {
+        const refused = await f.request("POST", f.collection, {
+          name: `Repository Agent ${randomUUID()}`,
+          configurationId: f.configuration.id,
+          executionMode,
+          repositoryBindings: selection,
+        });
+        assert.equal(refused.status, status, JSON.stringify(refused));
+        assert.equal(refused.error.code, code);
+        assert.match(refused.error.message, message);
+        assert.deepEqual((await f.request("GET", f.collection)).data, []);
+        return;
+      }
       const agent = await f.createAgent({ executionMode, repositoryBindings: selection });
       await f.prepareDeployment(agent);
       const path = `${f.collection}/${agent.id}`;
@@ -1025,5 +1079,67 @@ test("Provisioning rejects a forbidden repository profile before queueing or cre
     f.controller.provisionAgent(f.actorId, { ...body, namespaceId: f.namespace.id }),
     /repository selections are not approved/,
   );
+  assert.deepEqual((await f.request("GET", f.collection)).data, []);
+});
+
+// Finding 1145: the provisioning request answers the 409 Agent create gives for repository
+// bindings its topology cannot deliver, instead of a 202 the worker's admission then fails.
+test("Provisioning refuses repository bindings on a topology Agent create refuses before queueing", async (t) => {
+  const configurationDriver = createTestConfigurationDriver();
+  // Accepting or refusing the request creates no Configuration; only the worker would.
+  configurationDriver.createExact = async () => assert.fail("The request created Configuration");
+  configurationDriver.inspectExact = async () => assert.fail("The request inspected Configuration");
+  const f = await fixture(t, {
+    harness: "codex",
+    configurationDriver,
+    compute: kubernetesCompute(KubernetesComputeDriver, true),
+  });
+  await f.state.transact((unit) =>
+    unit.namespaces.transitionNamespaceStatus(f.namespace.id, "provisioning", "ready"),
+  );
+  const secret = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
+    name: "Provisioning model",
+    value: "synthetic-model-key",
+  });
+  assert.equal(secret.status, 201);
+  const plan = (name) => ({
+    requestId: `req_${randomUUID()}`,
+    name,
+    executionMode: "dedicated",
+    configuration: { kind: "agent", values: f.configuration.values },
+    harnessAuth: { method: "api_key", source: secret.data.ref },
+    repositoryBindings: selection,
+  });
+  // Without a Sandbox the plan passes admission and reaches the provisioning queue, which
+  // in-memory state does not provide (the PostgreSQL provisioning tests cover acceptance).
+  await assert.rejects(
+    f.controller.provisionAgent(f.actorId, {
+      ...plan("Plain provisioning"),
+      namespaceId: f.namespace.id,
+    }),
+    /requires durable PostgreSQL state/,
+  );
+  // Selecting a Sandbox Driver puts every Agent in a Sandbox, where Kubernetes Compute delivers
+  // no repository credentials. No Sandbox runtime is invoked.
+  const sandbox = {
+    id: "repository-provisioning-sandbox",
+    capability: "sandbox",
+    implementation: "test-sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async cleanup() {},
+  };
+  f.controller.registerDriver(sandbox);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  const created = await f.request("POST", f.collection, {
+    name: "Sandboxed repository Agent",
+    configurationId: f.configuration.id,
+    executionMode: "dedicated",
+    repositoryBindings: selection,
+  });
+  assert.equal(created.status, 409, JSON.stringify(created));
+  const refused = await f.request("POST", `${f.collection}/provision`, plan("Sandboxed plan"));
+  assert.equal(refused.status, 409, JSON.stringify(refused));
+  assert.equal(refused.error.code, "RESOURCE_CONFLICT");
+  assert.equal(refused.error.message, created.error.message);
   assert.deepEqual((await f.request("GET", f.collection)).data, []);
 });

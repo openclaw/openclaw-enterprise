@@ -9,7 +9,10 @@ export const RuntimeImagesUnavailable = {
   name: "Debug metadata unavailable",
 };
 
+export const FirstVisits = { ...story("navigationFirstVisit") };
+export const RetryOpeningAnAgent = { ...story("navigationAgentReadRetry") };
 export const ReturnToLoadedPages = { ...story("navigationRetained") };
+export const SlowRechecks = { ...story("navigationSlowRecheck") };
 export const ReturnAccessDenied = { ...story("navigationDenied") };
 export const ReturnSessionExpired = { ...story("navigationExpired") };
 

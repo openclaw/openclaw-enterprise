@@ -8,6 +8,8 @@ import {
   type SanitizedRuntimeLogRecord,
 } from "@openclaw-enterprise/occ";
 
+import { RequestRateLimiter } from "./request-rate-limiter.ts";
+
 /** Operator switch and cursor key for the runtime status and log routes. */
 export interface AgentRuntimeLogsConfig {
   readonly enabled: boolean;
@@ -18,40 +20,25 @@ export interface AgentRuntimeLogsConfig {
 const RATE_PER_SECOND = 2;
 const RATE_BURST = 10;
 const MAX_CONCURRENT_READS = 16;
-const MAX_TRACKED_BUCKETS = 10_000;
 
 /**
  * Replica-local limits: a token bucket per principal per Agent (2 requests per second,
  * burst 10) and at most 16 concurrent Driver reads per API replica.
  */
 export class RuntimeLogLimiter {
-  private readonly buckets = new Map<string, { tokens: number; updatedAt: number }>();
+  private readonly rateLimit: RequestRateLimiter;
   private active = 0;
 
-  private readonly now: () => number;
-
   constructor(now: () => number = Date.now) {
-    this.now = now;
+    this.rateLimit = new RequestRateLimiter(RATE_BURST, RATE_PER_SECOND, now);
   }
 
   admit(principalId: string, agentId: string): void {
     const key = `${principalId}\0${agentId}`;
-    const now = this.now();
-    const bucket = this.buckets.get(key) ?? { tokens: RATE_BURST, updatedAt: now };
-    bucket.tokens = Math.min(
-      RATE_BURST,
-      bucket.tokens + ((now - bucket.updatedAt) / 1000) * RATE_PER_SECOND,
-    );
-    bucket.updatedAt = now;
-    if (bucket.tokens < 1) {
-      this.remember(key, bucket);
-      throw new RuntimeLogsError(
-        "RUNTIME_LOGS_RATE_LIMITED",
-        Math.max(1, Math.ceil((1 - bucket.tokens) / RATE_PER_SECOND)),
-      );
+    const retryAfter = this.rateLimit.consume(key);
+    if (retryAfter !== undefined) {
+      throw new RuntimeLogsError("RUNTIME_LOGS_RATE_LIMITED", retryAfter);
     }
-    bucket.tokens -= 1;
-    this.remember(key, bucket);
   }
 
   async run<T>(operation: () => Promise<T>): Promise<T> {
@@ -63,15 +50,6 @@ export class RuntimeLogLimiter {
       return await operation();
     } finally {
       this.active -= 1;
-    }
-  }
-
-  private remember(key: string, bucket: { tokens: number; updatedAt: number }): void {
-    this.buckets.delete(key);
-    this.buckets.set(key, bucket);
-    if (this.buckets.size > MAX_TRACKED_BUCKETS) {
-      // Oldest entries are full buckets by now; dropping them only resets idle callers.
-      this.buckets.delete(this.buckets.keys().next().value!);
     }
   }
 }
@@ -89,6 +67,7 @@ export function runtimeLogQuery(query: AgentRuntimeLogsQuery): RuntimeLogQuery {
   return {
     source: query.source,
     ...(query.pod === undefined ? {} : { pod: query.pod }),
+    ...(query.container === undefined ? {} : { container: query.container }),
     previous: query.previous === "true",
     tailLines: download
       ? RUNTIME_LOG_MAX_TAIL_LINES
@@ -153,7 +132,11 @@ function recordText(record: SanitizedRuntimeLogRecord): string {
  * The download body: the same sanitized records as the JSON page, one per line.
  * Like the JSON serializer it accepts only branded records.
  */
-export function runtimeLogDownloadBody(page: RuntimeLogPage, agentId: string): string {
+export function runtimeLogDownloadBody(
+  page: RuntimeLogPage,
+  agentId: string,
+  previous: boolean,
+): string {
   const stream = page.stream;
   const header = [
     `# agent=${agentId} revision=${page.revisionId} source=${page.source}`,
@@ -161,19 +144,25 @@ export function runtimeLogDownloadBody(page: RuntimeLogPage, agentId: string): s
     stream?.container === undefined ? "" : ` container=${stream.container}`,
     stream?.restartCount === undefined ? "" : ` restartCount=${stream.restartCount}`,
     stream?.sandbox === undefined ? "" : ` sandbox=${stream.sandbox}`,
+    page.source === "sandbox" ? "" : ` instance=${previous ? "previous" : "current"}`,
     ` observedAt=${page.observedAt} withheld=${page.withheld}`,
   ].join("");
   const lines = serializedRecords(page.records).map(recordText);
   return `${[header, ...lines].join("\n")}\n`;
 }
 
-/** `<agent>-<revision>-<source>-<pod or sandbox>.log`; every part is an OCC or Kubernetes name. */
-export function runtimeLogDownloadFileName(page: RuntimeLogPage, agentId: string): string {
+/** Previous container instances append `-previous`; names use OCC or Kubernetes identifiers. */
+export function runtimeLogDownloadFileName(
+  page: RuntimeLogPage,
+  agentId: string,
+  previous: boolean,
+): string {
   const name = [
     agentId,
     page.revisionId,
     page.source,
     page.stream?.pod ?? page.stream?.sandbox ?? "no-pod",
   ].join("-");
-  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}.log`;
+  const suffix = page.source !== "sandbox" && previous ? "-previous" : "";
+  return `${name.replace(/[^A-Za-z0-9_.-]/g, "_")}${suffix}.log`;
 }

@@ -85,7 +85,10 @@ export function createPresetFields(context, apply) {
                     ...(field.definition.type === "password"
                       ? {}
                       : {
-                          value: field.input.value,
+                          value:
+                            field.definition.type === "string"
+                              ? field.readValue()
+                              : field.input.value,
                           supplied: field.input.dataset.supplied,
                         }),
                     mode: field.mode?.value,
@@ -212,7 +215,9 @@ export function createPresetFields(context, apply) {
             ? Number(input.value)
             : definition.type === "boolean"
               ? input.value === "true"
-              : input.value;
+              : definition.type === "string"
+                ? field.readValue()
+                : input.value;
       }
       const passwordVariable = harnessSecretVariable(selected.template);
       const secretSelection = passwordVariable ? secretSelections.get(passwordVariable) : undefined;
@@ -295,26 +300,44 @@ export function createPresetFields(context, apply) {
                 element("option", { value: "true" }, "True"),
                 element("option", { value: "false" }, "False"),
               )
-            : element("input", {
-                id: `preset-variable-${name}`,
-                type: definition.type === "string" ? "text" : definition.type,
-                ...(definition.type === "number" ? { step: "any" } : {}),
-                autocomplete: "off",
-                required: needed,
-                ...(definition.type === "password" ? { spellcheck: "false" } : {}),
-              });
+            : definition.type === "string"
+              ? element("textarea", {
+                  id: `preset-variable-${name}`,
+                  rows: 2,
+                  autocomplete: "off",
+                  required: needed,
+                })
+              : element("input", {
+                  id: `preset-variable-${name}`,
+                  type: definition.type,
+                  ...(definition.type === "number" ? { step: "any" } : {}),
+                  autocomplete: "off",
+                  required: needed,
+                  ...(definition.type === "password" ? { spellcheck: "false" } : {}),
+                });
         input.dataset.supplied = String(Object.hasOwn(definition, "default"));
-        input.value = definition.default === undefined ? "" : String(definition.default);
+        let initialValue = definition.default === undefined ? "" : String(definition.default);
         const saved = retained?.fields?.[name];
         if (saved?.type === definition.type && definition.type !== "password") {
-          input.value = saved.value;
+          initialValue = saved.value;
           input.dataset.supplied = saved.supplied;
         }
+        input.value = initialValue;
+        // Textarea displays CRLF as LF. Keep an untouched default or restored value exact;
+        // an actual edit takes the browser's current string, including its line breaks.
+        let stringValue = definition.type === "string" ? initialValue : undefined;
+        const readValue = () => (definition.type === "string" ? stringValue : input.value);
         input.addEventListener("input", () => {
+          if (definition.type === "string") {
+            stringValue = input.value;
+          }
           input.dataset.supplied = "true";
           feedback.textContent = "";
         });
         input.addEventListener("change", () => {
+          if (definition.type === "string") {
+            stringValue = input.value;
+          }
           input.dataset.supplied = "true";
         });
         if (definition.type !== "password" || name !== harnessSecretVariable(preset.template)) {
@@ -329,7 +352,7 @@ export function createPresetFields(context, apply) {
                 : null,
             ),
           );
-          return { name, definition, input };
+          return { name, definition, input, readValue };
         }
         const mode = element(
           "select",

@@ -82,6 +82,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
 - `drivers/repo/github/credentials/`: GitHub policy, backend and closed Git/gh client bundle.
+- `drivers/repo/github/public-read/`: credential-free public GitHub reader and its Agent skill.
 - `backends/repository-credentials/control-client.ts`: configured private-service
   connection and complete response validation.
 - `composition/repository-credentials/`: registry and protected-file loading,
@@ -121,6 +122,9 @@ the standalone service/client images do not include the controller dependency
 graph. The full `deploy/runtime/Dockerfile` uses the repository root as its build
 context to include the emitted client router in the Agent image.
 
+Chart-owned startup scripts live under `deploy/helm/openclaw-enterprise/files/`
+and are embedded in rendered container commands; they ship with the chart.
+
 Select checks using the [testing guide](testing/README.md). Follow AGENTS.md's
 integration requirements for runtime changes. For documentation-only changes,
 use formatting, builds, and link checks; do not add or run tests solely for prose.
@@ -158,6 +162,7 @@ Do not install dependencies as a verification side effect.
 | `docs/contributing/`                  | Onboarding and workflows for people changing the platform source or docs.                          |
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
+| `docs/release/`                       | Release configuration, publication, promotion, and recovery procedures.                            |
 | `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |

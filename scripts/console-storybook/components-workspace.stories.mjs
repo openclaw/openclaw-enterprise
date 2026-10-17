@@ -8,9 +8,14 @@ export const WorkspaceUnavailable = {
   name: "No deployed revision",
 };
 export const WorkspaceDenied = { ...story("workspaceDenied"), name: "Access denied" };
+export const WorkspaceSaveDenied = { ...story("workspaceSaveDenied"), name: "Save denied" };
 export const WorkspaceMissing = { ...story("workspaceMissing"), name: "Missing file" };
 export const WorkspaceUnknown = { ...story("workspaceUnknown"), name: "Write outcome unknown" };
 
 export const WorkspaceNavigation = story("workspaceNavigation");
 
+export const WorkspaceMissingReadback = {
+  ...story("workspaceMissingReadback"),
+  name: "Missing file after uncertain create",
+};
 export const WorkspaceCleanCRLF = story("workspaceCleanCRLF");

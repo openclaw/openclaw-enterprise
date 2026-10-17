@@ -1,151 +1,111 @@
 # Testing
 
-Choose a test suite, prepare its prerequisites, and interpret its results.
-These guides are for contributors verifying Enterprise changes. Run commands
-from the repository root. For installation and supported product settings, use
-the [deployment guide](../guides/deploy.md) and [settings reference](../reference/settings.md).
+## Overview
 
-For all four shipped installation/preset combinations, run the [credentialed QA matrix](qa-matrix.md).
+Run tests from the repository root. This page lists the test suites and links to
+setup for suites that need external services.
 
-## Run tests
+| Test                  | Purpose                                               | Location                                                                    |
+| --------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
+| Conformance           | Unit-style domain and Driver contract checks.         | [`tests/conformance`](../../tests/conformance)                              |
+| Integration           | Component workflows, using fixtures or real services. | [`tests/integration`](../../tests/integration)                              |
+| Browser               | Console and docs site behavior in Chromium.           | [`tests/browser`](../../tests/browser)                                      |
+| Go                    | CLI and other Go packages.                            | `cmd/` and `internal/`                                                      |
+| Docs and test tooling | Docs site, generated references, and test helpers.    | [`tests/docs`](../../tests/docs) and [`tests/helpers`](../../tests/helpers) |
 
-| Command                 | Tests selected                                                            |
-| ----------------------- | ------------------------------------------------------------------------- |
-| `pnpm test`             | All conformance and integration tests.                                    |
-| `pnpm test:conformance` | Conformance tests only.                                                   |
-| `pnpm test:integration` | Integration tests only, including infrastructure and real-runtime suites. |
-| `pnpm podman:test`      | Retained Podman model suite; currently blocked by harness admission.      |
+## Automatic checks and blocking failures
 
-`pnpm test` can finish green with skipped infrastructure cases; inspect skips
-before claiming coverage. Run prepared infrastructure suites by exact filename,
-one suite at a time. Keep suite variables scoped to one shell or process so
-database, Kubernetes, image, or provider selectors do not accidentally select
-another suite. The test scripts above run `scripts/verify-workspace-boundary.mjs`
-before the Node.js test runner. The conformance suite includes the
-[repository dependency policy test](repository-boundaries.md).
-
-For test audits, proof selection, diff cleanup, and independent review, see
-[Developer skills](developer-skills.md). For source dependency analysis with an
-explicit policy, use the [module boundary analyzer](module-boundaries.md).
-For reusable builders, factory composition, resource ownership, and declarative
-cases, follow [Compose fixtures and readable scenarios](fixtures-and-scenarios.md).
-
-### Run an explicit file selection
-
-Use `test:files` to validate every selected path and option before starting tests:
-
-```sh
-pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
-```
-
-The runner accepts literal, existing `.test.js`, `.test.cjs`, `.test.mjs`,
-`.test.ts`, `.test.cts`, or `.test.mts` files inside this repository. Missing
-files, duplicates, paths outside the repository, and unsupported options fail
-before any selected file executes. Quote paths containing spaces or glob
-characters so the shell passes the literal filename. Run
-`node scripts/test-files.mjs --help` for concurrency, filter, and reporter options.
-
-Prepare dependencies and infrastructure first. This command does not run the
-workspace check or prepare fixtures. It preserves Node's failure, skip, todo,
-process isolation, and cancellation behavior. A valid file selection or a green
-filtered run does not prove that the intended cases ran; inspect the reported
-case and skip counts. Existing suite discovery and CI selection remain available.
-
-### Run the local installation lane
-
-The `dev-up-k3d` lane selects all four real local installation cases and fails
-on skips. Install Node.js 24 or newer, the repository-pinned pnpm, the Go
-version from `go.mod`, Docker, k3d, kubectl, and Helm. Then build the CLI as
-described in [Local Kubernetes installation](kubernetes.md#local-kubernetes-installation).
-The lane creates its own disposable clusters. Run it with a fresh results
-directory:
-
-```sh
-run_dir=$(mktemp -d)
-node scripts/ci/run-tests.mjs run dev-up-k3d \
-  --state "$run_dir/state.json" --results "$run_dir/results.json"
-```
-
-## Integration tests
-
-For local metrics collection and the provisioned Prometheus/Grafana dashboard,
-use [metrics testing](metrics.md).
-
-Each suite page owns its setup, environment variables, model defaults, cleanup,
-and coverage limits. See [GitHub Actions](ci.md) for CI coverage.
-
-| Need                           | Suite                                                                                                          |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Local source, API, and browser | [Local checks](local.md#local-checks) and [console browser checks](local.md#console-browser-checks)            |
-| Persistence and packaging      | [PostgreSQL](postgresql.md), [Images and Helm](images.md), and [Docker Compose](docker.md)                     |
-| Real runtime or host execution | [SSH](ssh.md), [Kubernetes](kubernetes.md), [Production TUI](production-tui.md), and [OpenShell](openshell.md) |
-| External provider integrations | [Slack](slack.md), [ChatGPT service accounts](service-accounts.md), and [Agent plugins](plugins.md)            |
+See [CI checks and gates](ci.md#checks-and-gates) for what runs automatically
+and which failures block merge, publication, or deployment.
 
 ## Requirements and credentials
 
-Use Node.js 24 or newer, the pnpm version pinned in
-[`package.json`](../../package.json), and the Go version selected by
-[`go.mod`](../../go.mod), with dependencies installed from the lockfiles:
+Install Node.js 24 or newer, the pnpm version in [`package.json`](../../package.json),
+the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
 pnpm install --frozen-lockfile
 ```
 
-The tests import TypeScript source directly. OCC CLI integrations build the real
-Go binary before invoking it; other local integrations also execute Git, `tar`,
-and pnpm.
+Browser tests also need Chromium; see [browser setup](local.md#console-browser-checks).
+Real-service tests may need Docker, Kubernetes, databases, or credentials; follow
+their linked guides. Keep credentials outside the repository. Commands do not
+automatically load `.env`; exported variables override `node --env-file` values.
 
-Supply real keys through your authorized credential manager or an existing
-private environment file. Test entrypoints do not automatically load `.env`.
-After preparing a file outside the repository:
+## Quickstart
+
+### Run all test files
+
+Start with a shell without integration opt-in variables; otherwise prepared
+suites can run concurrently:
 
 ```sh
-TEST_ENV_FILE=/absolute/path/to/private/runtime-test.env
-chmod 600 "$TEST_ENV_FILE"
-node --env-file="$TEST_ENV_FILE" --test tests/integration/docker-compute-real.test.mjs
+pnpm test                     # Conformance and integration files
+pnpm cli:test                 # Go
+pnpm docs:install             # Browser and docs dependencies
+pnpm test:console-browser     # Chromium
+node --test tests/docs/*.test.mjs tests/helpers/*.test.mjs
 ```
 
-That file must contain the inputs for the selected suite, including its opt-in
-and images. Node passes the loaded environment to test subprocesses. Existing
-exported values take precedence over the file, so avoid stale selectors or keys
-in the parent shell. Do not print credentials, commit them, or include them in
-command-line arguments. Suite pages document model defaults and compatibility.
+These commands select test files, but real-service cases may skip without their
+prerequisites. Check the skip count and use the suite guides to run those cases.
+For conformance tests alone, use `pnpm test:conformance`.
+
+### Run one test
+
+```sh
+pnpm test:files --test-reporter=spec -- tests/conformance/contracts.test.mjs
+pnpm test:files --test-name-pattern='the Driver contract exposes' -- tests/conformance/contracts.test.mjs
+```
+
+The second command selects one named case. `test:files` does not prepare
+fixtures or run the workspace check. Run `node scripts/test-files.mjs --help`
+for options.
+
+## Integration tests
+
+```sh
+pnpm test:integration
+```
+
+Choose the scope you need:
+
+| Scope                     | What it runs                                                                                                                                                  | Setup and commands                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                                                        | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
+| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci.md#run-a-protected-integration-lane).                                       |
+| QA matrix                 | Agent journeys across supported installations.                                                                                                                | [Scenarios, credentials, and commands](ci.md#qa-matrix).                                                           |
+
+For real-service cases, prepare the selected suite first. Some create remote
+resources or send messages. Use authorized disposable resources, scope selectors
+to one run, and run prepared suites one at a time.
+
+### Run the hosted local installation lane
+
+For the six `dev-up-k3d` cases, see [local Kubernetes setup](kubernetes.md#local-kubernetes-installation)
+or [hosted dispatch](ci.md#run-the-hosted-local-installation-lane).
 
 ## Results, cleanup, and troubleshooting
 
-Read the test runner's pass, failure, and skip counts. Record the selected files,
-commit, nonsecret image digests/model, and which optional cases were enabled.
-Do not report a skipped model turn, database case, or cluster case as verified.
-Keep optional live Configuration cases and mutually exclusive Slack selection
-distinct from missing prerequisites.
+Check pass, failure, and skip counts; a skip is not a pass. If a case is skipped,
+check its selectors and prerequisites. For provider failures, check credential
+and model access without printing secrets. Retain failure evidence and remove
+only resources created by the run.
 
-CI results artifacts also carry a per-file `measurements` array. A test adds one
-with `t.diagnostic("openclaw-ci-measurement <json>")`; the
-[reporter](../../scripts/ci/reporter.mjs) keeps only allowlisted shapes (today
-`kubelet-volume-refresh`, from the
-[volume refresh test](../../tests/integration/kubelet-volume-refresh-k3d.test.mjs),
-and `runtime-model-probe`, the Gateway model probe's time against its cap, from the
-runtime image model probe and startup probe tests) and drops other diagnostics.
+## Further reading
 
-Tests normally clean up their own temporary processes, resources, and files, but
-some suites leave clusters, databases, Slack messages, or provider accounts for
-inspection or follow-up. Retain failure evidence before cleanup. Remove only
-resources created for the run; do not delete shared Compose volumes, existing
-databases, or unrelated clusters.
-
-| Symptom                                                  | Check or recovery                                                                                                                      |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Green command with expected integration coverage absent  | Inspect skips and selection variables; target the exact suite with its full prerequisites.                                             |
-| Provider authentication or unsupported custom-tool error | Check credential/model access without printing the key; explicitly select a compatible model from the owning suite page.               |
-| Missing Helm or `yq`                                     | Install the required tools before claiming packaging coverage; these tests do not install them.                                        |
-| Kubernetes or OpenShell prerequisite failure             | Use the [Kubernetes](kubernetes.md) or [OpenShell](openshell.md) setup and recovery notes instead of running the all-integration glob. |
-
-## Related
-
-- [Deployment guide](../guides/deploy.md)
-- [Runtime image recipe](../../deploy/runtime/README.md)
-- [Contributor integration boundaries](../../AGENTS.md#running-integration-tests)
-
-For production telemetry and the optional demo backends, select a
-[Kubernetes observability lane](metrics.md#kubernetes-observability-acceptance).
-Model-turn logs have separate prerequisites and protected execution.
+- [GitHub Actions cheat sheet](../reference/cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
+- [Local, browser, and metrics tests](local.md)
+- [CI configuration and hosted test lanes](ci.md)
+- [PostgreSQL](postgresql.md)
+- [Docker, images, and Helm](docker.md)
+- [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
+- [OpenShell](openshell.md)
+- [SSH](ssh.md)
+- [Agent plugins](plugins.md)
+- [Repository credentials](repository-credentials.md)
+- [Slack and ChatGPT service accounts](slack.md)
+- [Test fixtures and scenarios](fixtures-and-scenarios.md)
+- [Module and repository boundaries](module-boundaries.md)
+- [Developer skills](developer-skills.md)
+- [Code review](autoreview.md)

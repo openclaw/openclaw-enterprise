@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProtectedFile } from "../../apps/controller/src/composition/repository-credentials/protected-file.ts";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 test("protected startup accepts RSA/TLS files without provider calls and rejects unsafe material", async (t) => {
   const { checkConfiguration } =
@@ -25,6 +26,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
   const directory = await mkdtemp(join(tmpdir(), "repository-configuration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tls = await createTlsMaterial(t);
+  const controlDirectory = await socketDirectory(t, "rcs-config-");
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -40,7 +42,7 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
       listen: "127.0.0.1:8443",
       tlsCertFile: cert,
       tlsKeyFile: tlsKey,
-      controlSocket: join(directory, "control.sock"),
+      controlSocket: join(controlDirectory, "control.sock"),
     },
     sessionPolicy: {
       maximumDurationSeconds: 172800,
@@ -206,6 +208,7 @@ test("development token authority loads only with both opt-ins and never reaches
   const directory = await mkdtemp(join(tmpdir(), "repository-token-configuration-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const tls = await createTlsMaterial(t);
+  const controlDirectory = await socketDirectory(t, "rcs-config-");
   const tokenFile = join(directory, "token");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -221,7 +224,7 @@ test("development token authority loads only with both opt-ins and never reaches
       listen: "127.0.0.1:8443",
       tlsCertFile: cert,
       tlsKeyFile: tlsKey,
-      controlSocket: join(directory, "control.sock"),
+      controlSocket: join(controlDirectory, "control.sock"),
     },
     sessionPolicy: {
       maximumDurationSeconds: 28800,
@@ -363,6 +366,57 @@ test("service admission bounds are finite and retain an explicit long-task polic
     },
   };
   assert.equal(validateServiceConfig(input).sessionPolicy.maximumDurationSeconds, 172800);
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000 } }).limits.maxExchangeMs,
+    1000,
+  );
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000, maxExchangeMs: 2000 } }).limits
+      .maxExchangeMs,
+    2000,
+  );
+  const defaults = validateServiceConfig(input).limits;
+  assert.equal(defaults.gitFetchResponseBytes, 256 * 1024 * 1024);
+  assert.equal(defaults.gitFetchFirstHeaderMs, 30000);
+  assert.equal(defaults.gitFetchStallMs, 5000);
+  assert.equal(defaults.gitFetchExchangeMs, 300000);
+  assert.equal(defaults.maxExchangeMs, 300000);
+  assert.equal(
+    validateServiceConfig({ ...input, limits: { exchangeMs: 1000 } }).limits.gitFetchExchangeMs,
+    1000,
+  );
+  const existing = validateServiceConfig({
+    ...input,
+    limits: { gitResponseBytes: 4096, stallMs: 2000, firstHeaderMs: 3000 },
+  }).limits;
+  assert.equal(existing.gitFetchResponseBytes, 4096);
+  assert.equal(existing.gitFetchStallMs, 2000);
+  assert.equal(existing.gitFetchFirstHeaderMs, 3000);
+  const specific = validateServiceConfig({
+    ...input,
+    limits: {
+      gitResponseBytes: 4096,
+      gitFetchResponseBytes: 8192,
+      stallMs: 2000,
+      gitFetchStallMs: 4000,
+      firstHeaderMs: 3000,
+      gitFetchFirstHeaderMs: 6000,
+    },
+  }).limits;
+  assert.equal(specific.gitFetchResponseBytes, 8192);
+  assert.equal(specific.gitFetchStallMs, 4000);
+  assert.equal(specific.gitFetchFirstHeaderMs, 6000);
+  // The control socket limit is 103 bytes, matching the control client and the Driver schema.
+  const socketPath = (bytes) => `/run/${"s".repeat(bytes - "/run/.sock".length)}.sock`;
+  const longest = socketPath(103);
+  assert.equal(Buffer.byteLength(longest), 103);
+  assert.equal(
+    validateServiceConfig({ ...input, gateway: { ...input.gateway, controlSocket: longest } })
+      .gateway.controlSocket,
+    longest,
+  );
+  const multibyte = `/run/${"\u00e9".repeat(50)}.sock`;
+  assert.ok(multibyte.length < 103 && Buffer.byteLength(multibyte) > 103);
   // Every guard refuses with the same message, so each input breaks exactly one guard:
   // removing any guard lets its input through.
   const gateway = (patch) => ({ ...input, gateway: { ...input.gateway, ...patch } });
@@ -376,6 +430,8 @@ test("service admission bounds are finite and retain an explicit long-task polic
     gateway({ publicOrigin: "https://credentials.example/alias" }),
     gateway({ listen: "127.0.0.1:0" }),
     gateway({ controlSocket: "run/credentials/control.sock" }),
+    gateway({ controlSocket: socketPath(104) }),
+    gateway({ controlSocket: multibyte }),
     policy({ maximumDurationSeconds: undefined }),
     policy({ maximumDurationSeconds: Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1 }),
     policy({ allowedProfiles: ["git-write", ...profiles] }),

@@ -6,7 +6,11 @@ installed version, run `occ --help` or add `--help` to a command.
 
 ## Global options
 
-Command-line flags override the corresponding environment variables.
+Command-line flags override the corresponding environment variables. An
+explicitly empty value, such as `--file=` or `--revision=`, is refused before
+the command does anything; omit the flag to use its default. Two exceptions
+clear their environment variable: `--ca-bundle=`, and `--namespace=`, which
+`service-key create` accepts for an Installation-scoped principal.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -61,13 +65,14 @@ input is not supported. The server validates document fields against the
 | `occ credential-source get ID`                         | Reads a credential source and its live gateway status, never its value.                                                                                                                                                                                                                                                                                                                           |
 | `occ credential-source delete ID`                      | Deletes an unreferenced credential source and the gateway's copy.                                                                                                                                                                                                                                                                                                                                 |
 | `occ credential-source update ID [--file FILE]`        | Pushes current Secret values, or the replacement `secrets` in `FILE`, to the gateway copy. Running Agents use them after a redeploy. An `oauth2-refresh-token` source needs `FILE` naming a new `refresh_token` Secret.                                                                                                                                                                           |
+| `occ credential-source rotate ID`                      | Mints a new token for a `refresh`-type source now; running Agents need no redeploy. See [rotate a refresh source](credential-sources.md#rotate-a-refresh-source).                                                                                                                                                                                                                                 |
 | `occ service-account list`                             | Lists the Namespace's ServiceAccounts: ID and name.                                                                                                                                                                                                                                                                                                                                               |
 | `occ service-account delete ID [--force]`              | Deletes an unreferenced ServiceAccount and revokes its access token. `--force` also deletes one whose ChatGPT Backend is gone; an administrator then revokes the token at the provider. See [service accounts](service-accounts.md#force-delete-when-the-backend-is-gone).                                                                                                                        |
 | `occ iam role list`                                    | Lists Namespace Roles.                                                                                                                                                                                                                                                                                                                                                                            |
 | `occ iam role get ID`                                  | Reads a Namespace Role.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ iam role create --file FILE`                      | Creates a Namespace Role with explicit permissions.                                                                                                                                                                                                                                                                                                                                               |
 | `occ iam role delete ID`                               | Deletes an unreferenced Namespace Role.                                                                                                                                                                                                                                                                                                                                                           |
-| `occ iam access-binding list`                          | Lists Namespace AccessBindings.                                                                                                                                                                                                                                                                                                                                                                   |
+| `occ iam access-binding list`                          | Lists Namespace AccessBindings. The SUBJECT KIND column distinguishes `identity` and `group` subjects in list, get, and create tables.                                                                                                                                                                                                                                                            |
 | `occ iam access-binding get ID`                        | Reads a Namespace AccessBinding.                                                                                                                                                                                                                                                                                                                                                                  |
 | `occ iam access-binding create --file FILE`            | Grants a Role to a principal for an exact resource.                                                                                                                                                                                                                                                                                                                                               |
 | `occ iam access-binding delete ID`                     | Deletes a Namespace AccessBinding.                                                                                                                                                                                                                                                                                                                                                                |
@@ -82,8 +87,8 @@ input is not supported. The server validates document fields against the
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                                                                                                                                                                                                                                                            |
-| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs) with configuration generation, deployment status, and `*` on the active one.                                                                                                                                                                                                                                                               |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision.                                                                                                                                                                                                                                                            |
+| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                     |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision you can read, and says on stderr how it relates to the active revision. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
 | `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's active revision; see [withdrawal](credential-sources/withdrawal.md).                                                                                                                                                                                                                                                                                 |
@@ -101,11 +106,11 @@ revision, not runtime health. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
 For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
-`agent get`, `agent list`, and `agent revisions` retain metadata and show
+`agent get` and `agent list` retain metadata and show
 `CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
-`configurationReadError`. Revision history leaves deployment status null for
-unreadable rows; if the Agent itself is unreadable, it skips all status reads
-and explains why on stderr. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
+`configurationReadError`. Revision history lists summaries, so it leaves
+deployment status null for an unreadable revision and names it on stderr; if
+the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
 `service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
 explicit zero is refused before output-file creation or API issuance.
@@ -126,20 +131,22 @@ unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, active revision, and whether deployment work is queued or
 claimed.
 
-Completed repository cleanup remains stored as history, including after its
-Agent and revision are deleted, and does not prevent inventory reads. Queued,
-claimed, or permanently failed cleanup makes inventory unavailable; resolve
-the cleanup obligation before using inventory for a coordinated deployment.
+Deployment inventory reports Agent deployment work. It does not report whether
+repository cleanup has finished. Cleanup records remain in the work queue with
+their existing state, including after the Agent is deleted.
 
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the
 [Agent logs](../guides/topics/agent-logs.md) routes. Without `--revision ID`,
-both read the latest revision when it is newer than the active one and has Pods
-(a deploy in progress or a failed replacement, whose Pods hold the failure),
-else the active revision, else the latest revision. They print the revision they
-read to stderr; a reader without Agent `operate` cannot check for Pods, so the
-notice names the newer revision to pass. `runtime` accepts `-o table|json|yaml`
+a candidate with Pods is read unless exact active metadata proves it older.
+Unreadable or invalid active metadata does not exclude that Pod candidate.
+A candidate with only provider Harness status (`running`, `starting`, or `lost`)
+needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
+both read the active revision, else the latest revision. They print the revision they
+read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
+notice names the other readable revision to pass. Notices call any other revision newer or
+older only when the active revision's metadata proves it. `runtime` accepts `-o table|json|yaml`
 and needs Agent `operate` and `read` plus `read` on the revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
@@ -156,7 +163,7 @@ checking for a newer one, and an Agent with no active revision needs
 | `--pod NAME`           | Pod to read when the source has more than one.                                                                                                                                                             |
 | `--previous`           | Read the container instance before the last restart.                                                                                                                                                       |
 | `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                                                                                                 |
-| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, up to `24h`.                                                                                                                                            |
+| `--since DURATION`     | Only lines newer than a Go duration such as `10m`, at least `1s`, up to `24h`. Omit the flag for no time filter.                                                                                           |
 | `--follow`             | Poll every 2 seconds with the view's cursor until Ctrl-C.                                                                                                                                                  |
 | `--level LEVEL`        | Only `error`, `warn`, `info` or `debug` lines and above, filtered by OCC after `--tail` (the last N lines are read, then filtered, so fewer may print); lines of unknown level stay. Default: every level. |
 | `-o text` or `-o json` | Text lines (default) or NDJSON, one API record per line.                                                                                                                                                   |
@@ -189,9 +196,17 @@ without the HTTP envelope. Deleting a Configuration prints
 
 Failures go to stderr and the CLI exits nonzero. For HTTP errors, the CLI prints
 the status and, when present, the API error code and message, and the
-`Retry-After` delay in seconds. It does not print
+`Retry-After` delay, rounded up to seconds. The client accepts delay-seconds
+and HTTP-date ([HTTP semantics](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3))
+within its existing positive, one-hour bound. Accepted date delays round up to
+whole seconds for retry notices and waits; expired or invalid dates retain
+the normal follow interval. It does not print
 the server's request ID. To capture that ID for a failed request, use the
 [HTTP API directly](../guides/http-api.md#troubleshoot).
+
+OCC's generic `403` adds a `hint:` line naming the grants the command needs, or
+the Namespace of a Namespace-scoped key used elsewhere. It never depends on the
+IDs passed: OCC refuses a missing ID the same way.
 
 ## Local development
 

@@ -183,6 +183,15 @@ export const AgentRuntimeLogsQuery = Type.Object(
     pod: Type.Optional(
       Type.String({ minLength: 1, maxLength: 253, pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$" }),
     ),
+    container: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 253,
+        pattern: "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$",
+        description:
+          "Actual container in an owned Pod, including init containers. Defaults to the first advertised main container.",
+      }),
+    ),
     previous: Type.Optional(Type.Union([Type.Literal("true"), Type.Literal("false")])),
     tailLines: Type.Optional(
       Type.String({
@@ -208,7 +217,7 @@ export const AgentRuntimeLogsQuery = Type.Object(
     cursor: Type.Optional(
       Type.String({
         maxLength: 2048,
-        pattern: "^v1\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
+        pattern: "^v[12]\\.[A-Za-z0-9_-]{1,1900}\\.[A-Za-z0-9_-]{43}$",
         description: "Opaque cursor returned by the previous page of the same view.",
       }),
     ),
@@ -216,6 +225,31 @@ export const AgentRuntimeLogsQuery = Type.Object(
       Type.Union([Type.Literal("true"), Type.Literal("false")], {
         description:
           "`true` returns the last 1000 lines as a text/plain attachment and is audited per download; it cannot be combined with `cursor`.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * Query strings are not coerced; `limit` is exact decimal text. The cursor holds only the
+ * revision number the next page starts below (at most 15 digits, so always a safe integer). It
+ * needs no signature: every listed revision is still authorized one by one, and the server only
+ * issues a cursor naming a revision the caller can read.
+ */
+export const AgentRevisionListQuery = Type.Object(
+  {
+    limit: Type.Optional(
+      Type.String({
+        pattern: "^(?:[1-9][0-9]?|100)$",
+        description: "Revisions per page, 1 to 100; default 50.",
+      }),
+    ),
+    cursor: Type.Optional(
+      Type.String({
+        maxLength: 32,
+        pattern: "^v1\\.[1-9][0-9]{0,14}$",
+        description: "Opaque cursor from `meta.nextCursor` of the previous page.",
       }),
     ),
   },
@@ -282,10 +316,6 @@ export const HarnessAuthBindingSchema = Type.Union([
         ),
       ]),
     },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    { method: Type.Literal("oauth"), source: SecretReference },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -433,7 +463,7 @@ const PluginDiscoveryAccessToken = Type.String({
 export const DiscoverAgentPluginsBody = Type.Union([
   Type.Object(
     {
-      oauthLogin: SecretReference,
+      credentialSource: CredentialSourceReference,
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
       q: Type.Optional(Type.String({ maxLength: 1024 })),
     },
@@ -466,7 +496,10 @@ export const DiscoverAgentPluginsBody = Type.Union([
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
   Type.Object(
-    { oauthLogin: SecretReference, pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
+    {
+      credentialSource: CredentialSourceReference,
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -488,7 +521,7 @@ export const DiscoverAgentPluginDetailsBody = Type.Union([
 
 export const DiscoverSavedAgentPluginsBody = Type.Object(
   {
-    oauthLogin: Type.Optional(SecretReference),
+    credentialSource: Type.Optional(CredentialSourceReference),
     cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
     q: Type.Optional(Type.String({ maxLength: 1024 })),
   },
@@ -498,7 +531,7 @@ export const DiscoverSavedAgentPluginsBody = Type.Object(
 export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
   {
     pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    oauthLogin: Type.Optional(SecretReference),
+    credentialSource: Type.Optional(CredentialSourceReference),
   },
   { additionalProperties: false },
 );
@@ -573,7 +606,18 @@ export const CreateConfigurationBody = Type.Object(
 );
 
 export const UpdateConfigurationBody = Type.Object(
-  { values: ConfigurationValues, secretBindings: Type.Optional(SecretBindings) },
+  {
+    values: ConfigurationValues,
+    secretBindings: Type.Optional(SecretBindings),
+    expectedGeneration: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        description:
+          "The generation this update replaces, from the caller's last read. A Configuration at another generation refuses the update with 409 and an `/expectedGeneration` detail, and keeps its content. Omitted, the update replaces whatever generation is current.",
+      }),
+    ),
+  },
   { additionalProperties: false },
 );
 
@@ -703,7 +747,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
+          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
@@ -839,6 +883,7 @@ export const ERROR_CODES = Object.freeze([
   "RUNTIME_LOGS_CURSOR_INVALID",
   "RUNTIME_LOGS_POD_INVALID",
   "RUNTIME_LOGS_SOURCE_UNAVAILABLE",
+  "NATIVE_ADMIN_RETURN_RATE_LIMITED",
   "RUNTIME_LOGS_RATE_LIMITED",
   "RUNTIME_LOGS_CLUSTER_RBAC",
   "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
@@ -924,6 +969,7 @@ export const ErrorResponse = Type.Object(
           Type.Literal("RUNTIME_LOGS_CURSOR_INVALID"),
           Type.Literal("RUNTIME_LOGS_POD_INVALID"),
           Type.Literal("RUNTIME_LOGS_SOURCE_UNAVAILABLE"),
+          Type.Literal("NATIVE_ADMIN_RETURN_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_RATE_LIMITED"),
           Type.Literal("RUNTIME_LOGS_CLUSTER_RBAC"),
           Type.Literal("RUNTIME_LOGS_SANDBOX_NOT_FOUND"),
@@ -973,6 +1019,7 @@ export type RevisionParams = Type.Static<typeof RevisionParams>;
 export type DeploymentParams = Type.Static<typeof DeploymentParams>;
 export type ServiceAccountDeleteQuery = Type.Static<typeof ServiceAccountDeleteQuery>;
 export type AgentRuntimeLogsQuery = Type.Static<typeof AgentRuntimeLogsQuery>;
+export type AgentRevisionListQuery = Type.Static<typeof AgentRevisionListQuery>;
 export type WorkspaceFileName = Type.Static<typeof WorkspaceFileName>;
 export type AgentRuntimeCredentialsBody = Type.Static<typeof AgentRuntimeCredentialsBody>;
 export type WorkspaceFileParams = Type.Static<typeof WorkspaceFileParams>;

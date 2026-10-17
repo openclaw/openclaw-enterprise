@@ -39,11 +39,12 @@ graph TD
   A["Read authorized Agent metadata"] --> B{"Revision history?"}
   B -->|No| F["Render metadata and saved-settings error"]
   B -->|Yes| C["Read Agent active revision and saved-settings error"]
-  C --> D{"Agent or revision settings unreadable?"}
+  C --> D{"Agent settings unreadable?"}
   D -->|Yes| E["Keep metadata; leave deployment status null"]
   D -->|No| G["Read strict deployment status"]
   G -->|Readable| F
   G -->|Forbidden or absent| E
+  G -->|Unavailable| N["Notice on stderr; status null"] --> F
   G -->|Other failure| H["Return command error"]
   E --> F
 ```
@@ -80,8 +81,12 @@ If the Agent has a saved-settings error, strict deployment reads cannot decode
 that Agent. The CLI skips deployment enrichment for the entire history and
 prints a notice on stderr naming the affected field. It preserves every
 readable revision and metadata-only revision returned by the browsing API.
-If the Agent is readable but one historical revision has the error, only that
-row skips enrichment. Healthy siblings retain their normal status reads.
+Revision history pages hold summaries, newest first (`--limit`, `--cursor`),
+which carry no saved settings and so no `configurationReadError`. If the Agent
+is readable but one historical revision is not, that row's status read answers
+`503`: the CLI prints a notice naming the revision and leaves its status null.
+Healthy siblings retain their normal status reads. When a page is full,
+a notice prints the `--cursor` that continues the history.
 
 Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and
@@ -91,7 +96,8 @@ runtime commands continue to use their existing strict contracts.
 
 `internal/occcli/output.go:printAgent` uses `printBrowsingItems` for individual
 Agents and Agent collections. `printAgentRevisionList` first renders the active
-marker for tables and then uses the same helper. Tables add `CONFIGURATION
+marker for tables and then uses the same helper; revision summaries have no
+error column. Tables add `CONFIGURATION
 ERROR` when at least one row has `configurationReadError`; the cell contains
 the formal code and field. Healthy rows in a mixed collection have no error
 value, and all-healthy tables retain their existing columns.
@@ -122,8 +128,8 @@ contract, and exercises the compiled CLI through the shipped API listener. It
 checks list/detail/history output, structured errors, healthy sibling history,
 strict mutation refusal, and unchanged stored legacy settings. It does not run
 Gateway workloads or model turns. The focused Go command tests additionally
-check that healthy deployment enrichment still occurs beside a metadata-only
-historical revision. See the PostgreSQL testing guide for owned database setup.
+check that healthy deployment enrichment still occurs beside an unreadable
+historical revision, and that `--cursor` continues the history. See the PostgreSQL testing guide for owned database setup.
 
 ## Related docs
 
@@ -139,4 +145,5 @@ historical revision. See the PostgreSQL testing guide for owned database setup.
 
 ## Changelog
 
+- 2026-10-14: Revision history lists summaries a page at a time; an unreadable historical revision reports its status read on stderr. (fix-1323-lists)
 - 2026-10-10 00:17: Trace CLI metadata browsing and the accompanying saved-settings error consumption fix. (authoring-run/9acffaba-7af3-4c0f-a2ab-f1ac1e7a7afc - bc09216080e8699976a75b778abf256a20388b5d)

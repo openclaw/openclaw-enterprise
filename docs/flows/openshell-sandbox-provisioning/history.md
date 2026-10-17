@@ -8,6 +8,7 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-10-17 08:30: Native OpenClaw workers take the bearer-passthrough `APP_SERVER_PORT` exposure too, so a held model-check failure fails the revision instead of waiting for a node that never connects. (finding 1642)
 - 2026-10-02 15:28: Put the short-lived workspace-node bootstrap token in the development provider file and removed WebSocket credential rewriting so the signed device proof covers the token received by the Gateway. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 - 2026-10-02 13:35: Routed same-cluster OpenShell workspace-node enrollment to the Agent Gateway Service and applied the exact route to the supervisor Pod that originates proxy traffic; enrollment waits for the provider-endpoint Gateway rollout, and other Sandbox Drivers retain private WSS. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 - 2026-10-02 13:23: Made workspace-node retries unbounded by retaining split setup after OpenShell removes its startup projection and scheduling each next launch when the child exits. (authoring-run/a0516064-6f8a-4e9f-8237-df9bedcec479 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)

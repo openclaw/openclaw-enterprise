@@ -52,8 +52,10 @@ stop on unexpected changes.
 Follow the [contribution and review policy](CONTRIBUTING.md#prepare-a-pull-request)
 through merge. Core team authors may use their authorized merge bypass for their
 own PRs after the applicable review, CI, and specific holds are satisfied. Ask
-for human feedback on architectural RFCs early; implementation and RFC revision
-can proceed in parallel. Follow the [RFC process](docs/contributing/rfcs.md).
+for human feedback on architectural RFCs early. Driver contract changes require
+[RFC submission before code](#submit-an-rfc-before-changing-a-driver-contract);
+after submission, implementation and RFC revision can proceed in parallel.
+Follow the [RFC process](docs/contributing/rfcs.md).
 New contributors wait for maintainer feedback.
 
 ## Development style
@@ -77,6 +79,17 @@ For example, GitHub App token issuance implemented as a Backend must follow the
 [Backend contract](docs/reference/backends.md) and participate in composition.
 Token minting and revocation alone are insufficient; see
 [PR #136](https://github.com/openclaw/openclaw-enterprise/pull/136).
+
+### Submit an RFC before changing a Driver contract
+
+Changes to a Driver contract require an RFC submitted for human review before
+implementation. This includes adding, removing, or changing interface members,
+configuration contracts, or required behavior, even when signatures stay the same.
+
+If no submitted RFC covers the change, stop coding. Ask the human to pause
+implementation and [submit the proposal for review](docs/contributing/rfcs.md),
+updating the existing RFC if it owns this decision. Once submitted, code and
+RFC review can proceed in parallel unless a specific decision or hold says to wait.
 
 ### Require integration tests; reject low-value tests
 
@@ -248,6 +261,10 @@ The user approved keeping the complete generated HTTP API reference in one page
 for browsing and search. Keep it generated from the OpenAPI contract; the checker
 reports its word count without requiring a split. This exception covers no other
 page.
+
+Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
+The user approved keeping CI configuration and test coverage in one guide. The
+checker still reports its word count. This exception applies only to that page.
 
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word

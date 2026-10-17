@@ -170,6 +170,13 @@ dashboard and NetworkPolicy changes. A changed configuration restarts Prometheus
 Grafana, and Loki: their disposable data is lost, and a `kubectl port-forward` to
 Grafana stops working until you start it again.
 
+`cluster.port` and `occ.metricsPort` must be decimal integers from 1 through
+65535 with no leading zero. Defaults are 443 and 9464. A saved string such as
+`"010"` used to install, and Kubernetes applied port 8. Upgrade now rejects that
+spelling before it changes the policy. Set the field to the applied decimal,
+`8` in that example, and rerun the block; the NetworkPolicy port stays 8. See
+the [port notice](../deploy/breaking-changes-before-2026-10-13.md#2026-10-12-demo-networkpolicy-ports-must-be-canonical-decimals).
+
 For a custom release, read its generated Service names with
 `helm get manifest RELEASE -n NAMESPACE` before adapting the port-forward command
 below. Short DNS-label names stay unchanged; other names include the original
@@ -218,7 +225,8 @@ If Secret creation fails, the first may exist. Follow
 Create `$OBS_FILES/occ-demo.yaml` from saved values. Replace selector maps because
 Helm merges overlays and can retain old labels. Keep `occ-before.yaml` unchanged
 for restoration. This enables metrics at their existing port; if it is not 9464,
-match demo `occ.metricsPort` to `metrics.port`.
+match demo `occ.metricsPort` to `metrics.port`. Write that port as a decimal
+with no leading zero.
 
 ```bash
 (
@@ -420,4 +428,4 @@ Except for a demo install wait timeout (see above), do not rerun failed or inter
 
 Redirect external Collectors away from Loki first. [Remove only the demo](demo-cleanup.md#remove-only-the-demo) restores the saved OCC revision and verifies the Collector state.
 
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

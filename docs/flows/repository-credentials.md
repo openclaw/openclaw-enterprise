@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: "2026-10-06"
-last_updated_session: authoring-run/6fa93358-8fd9-4675-9684-511f79da8969
+updated: 2026-10-15
+last_updated_session: authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb
 ---
 
 # Repository credential service flow
@@ -107,8 +107,19 @@ journal reserves the exact attempt before bearer delivery; recovery durably fenc
 a missing admission. The broker opens the session before reserving, so a capacity
 or shutdown refusal leaves no receipt and the same admission can retry or be
 fenced. When the broker refuses a reserved admission as invalid, or cannot record
-its session, it fences its own reservation. Known nondelivery closes the session.
+its session, it fences its own reservation. A fence that does not commit stays
+with that admission, and the next open or recovery fences it; past the admission
+window a sweep retries it and forgets it once the fence commits, so it stops
+counting toward capacity. Known nondelivery closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
+
+The receipt and operator control clients reject private-socket replies over
+16,384 bytes before destroying the response.
+[`RepositoryReceiptClient.call`](../../apps/controller/src/drivers/repo/credentials/receipt-client.ts)
+reports `RECEIPT_UNAVAILABLE`;
+[`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
+retains the admission ID in `control-request-failed` and also closes the request.
+Neither waits for the oversized response to end.
 
 Factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
@@ -239,7 +250,11 @@ bounded transport headers before dispatch. Credential bytes stay
 inside private adapter/sender callbacks. The sender's final-response-header wait
 starts after the bounded input pipeline finishes, unless headers have already
 arrived. Connection, upload, stall and total deadlines remain active in their
-respective phases.
+respective phases. Upload-pack plans carry separate response byte, first-header,
+stall and total budgets; discovery, receive-pack and API requests retain their
+ordinary limits. The service caps every plan by `maxExchangeMs` and the session
+deadline. Static-token plans also cap upload-pack to the available lease. The
+streaming byte counter applies backpressure without buffering the pack.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -348,6 +363,14 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 04:44: Bound upload-pack streaming separately while retaining exchange and credential fencing. (authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
+
+- 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
+- 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
+
+- 2026-10-12 07:39: A refused admission keeps a reservation whose fence did not commit, and the next open or recovery fences it. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-06 19:36: Preserve native child signal exit statuses in the shared client executor. (authoring-run/6fa93358-8fd9-4675-9684-511f79da8969 - 86bf3dd99470b86d4c46568f48455f695daabde5)
 

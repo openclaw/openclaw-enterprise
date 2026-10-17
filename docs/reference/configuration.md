@@ -19,7 +19,12 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry. Reviewed
+bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
+must serialize to less than 1 MiB; a save over that is refused with
+`400 INVALID_REQUEST` and a message naming the limit. Configuration POST/PATCH
+bodies allow six times 1 MiB plus 32 KiB (6.2 MiB), room for the values and the
+envelope in six-byte JSON escapes; a caller without the create or update grant
+is refused before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
@@ -59,27 +64,34 @@ observability:
 ```
 
 `url` must be an absolute HTTP or HTTPS URL without embedded credentials or a
-fragment. Unknown fields fail startup. The API exposes the URL only after an
+fragment. An IPv4 host must be four decimal octets from 0 to 255 with no
+leading zeros; shorthand, hex, a single integer, a leading zero, or any `@`
+before the host stops API and worker startup with log code
+`OBSERVABILITY_URL_INVALID` until you correct the URL and restart. A tab, newline,
+or a backslash before the query is refused the same way; a backslash in the query
+stays. A DNS name is unchanged. See the
+[breaking-change notice](../guides/deploy/breaking-changes.md). Unknown fields
+fail startup. The API exposes the URL only after an
 Installation `administer` check; the console hides the link when unset or
 unauthorized. The destination handles its own authentication. This setting does
 not select an OpenTelemetry exporter or embed a dashboard. Compose development
 can use this block alone with its default Drivers; mount the same file into API
 and worker containers.
 
-The optional `runtime` block declares a runtime image built with native worker
-support, which dedicated native OpenClaw requires:
+The optional `runtime` block declares a custom runtime image with dedicated
+native OpenClaw support:
 
 ```yaml
 runtime:
   nativeWorkerSupport: custom-image
 ```
 
-`custom-image` is the only value. It is off by default, and no API or Agent
-Configuration field can set it. When set, the Installation API reports
-`capabilities.nativeWorkers` and admission accepts dedicated native OpenClaw.
-Declare it only for a runtime image built from an OpenClaw source with required
-worker placement and native worker inference. It is unsupported with the pinned
-runtime image, whose Gateways and Harnesses refuse to start. See
+`custom-image` is the only declaration value; no API or Agent Configuration
+field can set it. The pinned runtime already supplies native-worker support,
+so its Dedicated OpenClaw flow needs no declaration. Use this optional block
+only for a separately selected custom image with automatic required worker
+placement and node-local inference. It does not add runtime features or waive
+the required provisioning SandboxDriver and its containment facets. See
 [Native worker support](harness-execution.md#native-worker-support).
 
 ## Create, read, update, and delete
@@ -105,35 +117,55 @@ after the referenced Namespace-owned Secrets exist.
 OCC generates the `cfg_` identifier and derives ownership from the exact route
 Namespace; callers cannot select either field. GET, PATCH, and DELETE operate
 on `/namespaces/:namespaceId/configurations/:configurationId`. A PATCH body
-requires the replacement `values` and may also set `secretBindings`, for example:
+requires the replacement `values` and may also set `secretBindings` and
+`expectedGeneration`. For a Configuration last read at generation `1`, send:
 
 ```json
 {
   "values": {
     "agents": { "defaults": { "sandbox": { "mode": "all" } } }
-  }
+  },
+  "expectedGeneration": 1
 }
 ```
 
-GET and PATCH return HTTP `200`; PATCH always includes a replacement `values`
-document and increments its server-managed `generation` exactly once, so
-omitted `models` and `secrets` sections disappear. Omitting `secretBindings` on
-PATCH preserves the existing bindings; send `{}` to clear them. PATCH cannot
-change or accept `kind`, `generation`, or ownership fields. Successful DELETE
-returns HTTP `204` with no body.
+GET and PATCH return HTTP `200`. PATCH replaces the whole `values` document, so
+omitted `models` and `secrets` sections disappear. Omitting `secretBindings`
+preserves the existing bindings; send `{}` to clear them. Use the `generation` OCC
+returns: it normally advances by one, but recovery from an interrupted write can
+skip a number. Do not send `kind`, `generation`, or ownership fields in a PATCH.
+Successful DELETE returns HTTP `204` with no body.
+
+`expectedGeneration` is an optional positive safe integer from the caller's last
+GET. OCC compares it with the current generation while holding the Configuration
+lock. A mismatch returns `409 RESOURCE_CONFLICT` without replacing values or
+Secret bindings or incrementing the generation. Read the Configuration again,
+merge the intended edits with its current values, and submit that generation;
+do not retry the stale body with a newer number. Omitting `expectedGeneration`
+replaces whichever generation is current, without this freshness check. The
+console's Configuration and channel saves include it.
 
 Creation requires `kind: "agent"`; missing or unsupported kinds are rejected.
 Additional consumer kinds are reserved for future approved resources and are
 not accepted. `values` must be a JSON object. It can contain the nested objects,
 arrays, strings, finite numbers, booleans, and nulls used by native OpenClaw
 configuration. OCC preserves the native document without interpreting its
-fields or resolving SecretRefs, except that Configuration create and update and
-Agent provisioning check each model provider's `baseUrl` and `api`, and those of
-its `models` entries: `baseUrl` must be an absolute `http` or `https` URL, and
-`api` must be a model API the pinned OpenClaw runtime supports, such as
+fields or resolving SecretRefs, except that Configuration create and update,
+Agent provisioning and Preset saves check each model provider's `baseUrl` and
+`api`, and those of its `models` entries: `baseUrl` must be an absolute `http`
+or `https` URL, and `api` must be a model API the pinned OpenClaw runtime supports, such as
 `openai-responses`, `openai-completions`, `anthropic-messages`, or `ollama`.
 A blank provider `baseUrl` and values with `${VAR}` references are left to the
-runtime. The `400` names the field as a JSON pointer within `values`.
+runtime (a `$${VAR}` escape is no reference), and a Preset `baseUrl` or `api`
+that waits on a variable without a default is checked once filled. At save, such
+a `baseUrl` needs a literal `http` or `https` scheme, or one a variable
+completes, and each variable stands for one host, port, IPv6 address or path
+token. The `400` names the field as a JSON pointer within `values`, and says
+when the host's numeric or `0x` last label makes the URL parser refuse it as
+IPv4. They also refuse a `models` that is not a list and a `headers`
+or `request.headers` name that is not a valid HTTP field name, naming the
+setting and the header; a Preset header name that waits on such a variable
+is checked once filled, on every Compute.
 
 Create and update also refuse, with the `400` Kubernetes Compute deployment
 gives, an `agents` roster the pinned OpenClaw Gateway rejects on every topology:
@@ -141,7 +173,9 @@ a non-object `agents`, `agents.defaults`, `agents.entries` or entry; any
 `agents.list` except an empty one beside an empty roster; an Agent ID OpenClaw
 rejects, or two it normalizes to one; an entry's `default`; `agents.ownership`
 other than `explicit`; more than one entry without it; or `explicit` with no
-entry. The message names the setting and the rule. A Configuration saved before
+entry. The message names the setting and the rule. Preset saves refuse them
+too; an Agent ID or `agents.ownership` that waits on a variable is checked as
+far as its written text goes, and in full once filled. A Configuration saved before
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
 Rules that depend on the topology stay at deployment, because a Configuration
@@ -221,6 +255,12 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   selected Kubernetes identity's namespaced ConfigMap Role separately.
 - **Configuration operation returns `404`:** Confirm the Configuration ID
   belongs to the Namespace in the request path.
+- **Configuration update returns `409 RESOURCE_CONFLICT`:** A detail at
+  `/expectedGeneration` means your copy is stale. Read the Configuration again,
+  merge your changes, and send the generation you just read. In the console,
+  choose **Reload draft**, review the result, and save only the changes you still
+  intend. Rereading does not clear a provisioning reservation, which also returns
+  `409` but has no `/expectedGeneration` detail.
 - **Configuration deletion returns `409`:** An Agent still references that
   Configuration. Reassign every referencing Agent, or
   [delete the Agents](agents.md#deletion) and wait for teardown before retrying.

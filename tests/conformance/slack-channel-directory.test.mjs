@@ -66,6 +66,13 @@ test("Slack directory accepts only literal IP or managed Service proxy endpoints
   ]) {
     assert.throws(() => new SlackChannelDriver(globalThis.fetch, proxyUrl), /managed Kubernetes/);
   }
+  // The unspecified address names no proxy.
+  for (const proxyUrl of ["http://0.0.0.0:3128", "https://0.0.0.0:8443"]) {
+    assert.throws(
+      () => new SlackChannelDriver(globalThis.fetch, proxyUrl),
+      /^Error: Slack directory proxy must not use host 0\.0\.0\.0, which names no proxy address\.$/,
+    );
+  }
 });
 
 test("bundled Slack proxy process restricts methods and CONNECT targets", async (t) => {
@@ -401,6 +408,44 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
       assert.deepEqual(recovered.candidates, [{ id: "UALICE", name: "alice" }]);
       assert.equal(recovered.complete, true);
       assert.equal(calls, 3, "the retry reaches both auth.test and users.list");
+    });
+  }
+});
+
+test("Slack credential checks refuse redirects instead of resending the bot token", async (t) => {
+  // Undici follows these by default and resends the authorization header to the same origin;
+  // a redirect to an {ok:true} body then passed the check (finding 1349).
+  for (const status of [301, 302, 307, 308]) {
+    await t.test(`HTTP ${status}`, async (t) => {
+      const requests = [];
+      const server = createServer((request, response) => {
+        requests.push(request.url);
+        if (request.url === "/api/auth.test") {
+          response.writeHead(status, { location: "/api/redirected", "content-length": "0" });
+          response.end();
+          return;
+        }
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }));
+      });
+      t.after(async () => {
+        server.closeAllConnections();
+        await new Promise((resolve) => server.close(resolve));
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${server.address().port}`;
+      const driver = new SlackChannelDriver((url, options) =>
+        globalThis.fetch(new URL(new URL(url).pathname, origin), options),
+      );
+
+      await assert.rejects(
+        driver.validateCredentials(
+          { channels: { slack: { mode: "http", botToken: { source: "env", id: "SLACK_BOT" } } } },
+          async (_id, _field, use) => use(token),
+        ),
+        { reason: "unavailable", path: "/channels/slack/botToken" },
+      );
+      assert.deepEqual(requests, ["/api/auth.test"]);
     });
   }
 });

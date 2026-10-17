@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-10
-last_updated_session: authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f
+updated: 2026-10-16
+last_updated_session: authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2
 ---
 
 # Common Operational Logging Flow
@@ -86,6 +86,8 @@ and credential withdrawal keys include the operation UUID; deletion keys have no
 operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
 lowercase hexadecimal characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
+The local worker emitter also retains `stopYields` from throttled drain-yield and
+completion records as a nonnegative safe integer; the Collector does not export this count.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and bounded message. The worker never serializes the raw exception, and
@@ -186,7 +188,8 @@ keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 message is dropped (as are span lifecycle records).
 OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
 the local diagnostic message is excluded from remote export.
-`authentication.sign-in-limit-warning` keeps `occ.code`, and
+`authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
+`occ.code`, and
 `authentication.sign-in-limited` keeps only `occ.sign_in.lane`; its local key
 hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
@@ -211,7 +214,9 @@ of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
 keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `authentication.activation-warning`, `authentication.password-sign-in-warning`
+carries none. `native_admin.compute_owner_mismatch` (native admin refused because the active
+revision belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
 `presets.default-refresh-skipped` (a default Preset copy kept because policy refused
@@ -282,6 +287,12 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 00:17: Reject negative and nonnumeric stop-yield counts at the local logging boundary. (authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2 - f916021bf235e9f8e91630484948eb6fc88ccfa7)
+
+- 2026-10-15 23:23: Preserve worker stop-yield counts through the local logging sanitizer. (authoring-run/74e7fe0c-15bc-4a73-ba8a-9ec426a17d06 - 04514330688378316bd0641b8d5560da56aeff85)
+
+- 2026-10-14 01:40: Export `native_admin.compute_owner_mismatch` with the Agent's IDs; the Compute Driver names stay local. (fix-1287)
 
 - 2026-10-10 05:47: Retain admitted Agent provisioning work IDs in Collector correlation metadata. (authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f - cd30d20a297fdb0f2b712122b705aa4c168564ff)
 

@@ -326,7 +326,12 @@ export async function loadDriverPackage(
   }
   const packageDirectory = dirname(installedManifestPath);
   const contained = relative(packageDirectory, entryPath);
-  if (contained === "" || contained.startsWith("..") || isAbsolute(contained)) {
+  if (
+    contained === "" ||
+    contained === ".." ||
+    contained.startsWith(`..${sep}`) ||
+    isAbsolute(contained)
+  ) {
     throw new Error(`${path}.package entry escapes its installed package root.`);
   }
   // Node loads `.mjs` as ESM without reading a package scope, and `.js` by the nearest
@@ -354,9 +359,12 @@ export async function loadDriverPackage(
     }
   }
 
+  const entryUrl = pathToFileURL(entryPath);
+  entryUrl.search = exported.search;
+  entryUrl.hash = exported.hash;
   let imported: unknown;
   try {
-    imported = await import(pathToFileURL(entryPath).href);
+    imported = await import(entryUrl.href);
   } catch {
     throw new Error(`${path}.package failed to load its compiled Driver module.`);
   }

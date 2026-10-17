@@ -1,4 +1,9 @@
-import { refuseRewrittenIpv4AuthHost } from "./auth/configuration.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+  refuseRewrittenIpv4Host,
+  refuseWrittenUserinfo,
+} from "./auth/configuration.ts";
 import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/index.ts";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -12,10 +17,9 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
-const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
@@ -59,11 +63,28 @@ function startupFailureCode(error) {
   if (/Slack directory proxy/i.test(message)) {
     return "CHANNEL_DIRECTORY_PROXY_INVALID";
   }
+  if (
+    /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
+      message,
+    )
+  ) {
+    return "OBSERVABILITY_URL_INVALID";
+  }
+  if (
+    /(?:Gateway|Agent) image (?:must use an immutable SHA-256 digest|repository path must be lowercase|must be a container image reference Kubernetes can pull)/.test(
+      message,
+    )
+  ) {
+    return "RUNTIME_IMAGE_INVALID";
+  }
   if (/ServiceAccounts require PostgreSQL persistence/.test(message)) {
     return "SERVICE_ACCOUNT_REQUIRES_POSTGRES";
   }
   if (/OCC_DATABASE_URL|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
+  }
+  if (/SQLite-compatible gateway storage class/.test(message)) {
+    return "GATEWAY_STORAGE_CLASS_INVALID";
   }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
@@ -74,7 +95,8 @@ function startupFailureCode(error) {
 function startupFailure(logger, error) {
   emitOccLogEvent(logger, {
     event: "startup-error",
-    ...(startupDependencyFailure(error) ?? { code: startupFailureCode(error) }),
+    ...(startupDependencyFailure(error) ??
+      startupPolicyNameFailure(error) ?? { code: startupFailureCode(error) }),
   });
   process.exitCode = 1;
 }
@@ -224,10 +246,13 @@ function configuration() {
   } catch {
     throw new Error("OCC_AUTH_BASE_URL must be a valid absolute URL.");
   }
-  refuseRewrittenIpv4AuthHost(configuredAuthBaseURL, parsedAuthBaseURL);
+  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", configuredAuthBaseURL);
+  refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", configuredAuthBaseURL, parsedAuthBaseURL);
   const authBaseURL = parsedAuthBaseURL.toString().replace(/\/$/, "");
-  if (mode === "development" && !loopbackHosts.has(new URL(authBaseURL).hostname)) {
-    throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback host.");
+  // The same rule createFastifyApp applies to the development browser origin, checked here so
+  // startup refuses it as AUTH_BASE_URL_INVALID before loading anything else.
+  if (mode === "development" && !isDevelopmentBrowserOrigin(authBaseURL)) {
+    throw new Error(`Development OCC_AUTH_BASE_URL must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
   }
 
   // { github?, google?, oidc? }: each configured provider carries the recovery user ID.
@@ -314,6 +339,7 @@ async function start() {
     }
     if (
       typeof drivers.computeDriver.storeServiceAccountCredential !== "function" ||
+      typeof drivers.computeDriver.findServiceAccountCredential !== "function" ||
       typeof drivers.computeDriver.deleteServiceAccountCredential !== "function"
     ) {
       throw new Error("The selected Compute Driver cannot manage ServiceAccount credentials.");

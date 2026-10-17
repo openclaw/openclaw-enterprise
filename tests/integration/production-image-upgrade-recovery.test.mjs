@@ -22,10 +22,11 @@ const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(64)}`;
 
 // This fixture substitutes the external command protocols, not the upgrade
 // script. It records accepted writes independently of the client response.
+// getBuiltinModule, not require: each stand-in loads as ESM when TMPDIR is inside this repo.
 const executable = `#!/usr/bin/env node
-const fs = require('fs');
-const path = require('path');
-const { execFileSync, spawnSync } = require('child_process');
+const fs = process.getBuiltinModule('fs');
+const path = process.getBuiltinModule('path');
+const { execFileSync, spawnSync } = process.getBuiltinModule('child_process');
 const root = process.env.UPGRADE_FIXTURE;
 const tool = path.basename(process.argv[1]);
 const args = process.argv.slice(2);
@@ -439,7 +440,7 @@ async function fixture(
     // These cases exercise upgrade orchestration after a successful qualification.
     // The separately selected real-image test verifies compatibility itself.
     const wrapper = `#!${process.execPath}
-const {spawnSync} = require('child_process');
+const {spawnSync} = process.getBuiltinModule('child_process');
 const args = process.argv.slice(2);
 if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
   const identity = (image) => ({image, platform: args[3], rootDigest: image.split('@').at(-1), manifestDigest: image.split('@').at(-1), configDigest: image.split('@').at(-1)});
@@ -1572,7 +1573,7 @@ const tenantNamespaces = ["oce-unbound", "oce-tenant"].map((name) => ({
 }));
 const rule = (attributes) =>
   [
-    attributes.group === "apps" ? "apps" : "core",
+    attributes.group || "core",
     attributes.verb,
     attributes.resource + (attributes.subresource ? `/${attributes.subresource}` : ""),
   ].join(" ");
@@ -1584,9 +1585,16 @@ const releaseTenantRules = [
   "core list pods",
   "core get pods/proxy",
 ];
+// Bootstrap Jobs use the batch API even when runtime log access is disabled.
+const currentWorkerRules = [
+  "core patch pods",
+  "batch get jobs",
+  "batch create jobs",
+  "batch delete jobs",
+];
 const currentTenantRules = [
   ...releaseTenantRules,
-  "core patch pods",
+  ...currentWorkerRules,
   "core get pods/log",
   "core get events",
   "core list events",
@@ -1612,12 +1620,12 @@ test("a two-cluster execution chart without the new tenant grants stops the star
   await assert.rejects(f.run(), (error) => {
     for (const [component, missing] of [
       ["api", "get pods/log, get events, list events"],
-      ["worker", "patch pods"],
+      ["worker", "patch pods, get jobs, create jobs, delete jobs"],
     ]) {
       assert.match(
         error.stderr,
         new RegExp(
-          `the ${component} startup preflight stopped: Kubernetes Compute startup preflight refused the candidate release: The execution cluster's tenant ${component} grant in Namespace oce-tenant lacks ${missing}\\. Upgrade the openclaw-execution chart before this release\\. No OCC writer was stopped; the old release keeps serving\\. Upgrade the execution release as in docs/testing/two-cluster-local\\.md#upgrade-the-execution-chart`,
+          `the ${component} startup preflight stopped: Kubernetes Compute startup preflight refused the candidate release: The execution cluster's tenant ${component} grant in Namespace oce-tenant lacks ${missing}\\. Upgrade the openclaw-execution chart before this release\\. No OCC writer was stopped; the old release keeps serving\\. Upgrade the execution release as in docs/testing/kubernetes\\.md#upgrade-the-execution-chart`,
         ),
       );
     }
@@ -1654,6 +1662,9 @@ test("a two-cluster execution chart with the new tenant grants passes the startu
       .sort(),
     [
       "apps list deployments",
+      "batch create jobs",
+      "batch delete jobs",
+      "batch get jobs",
       "core get events",
       "core get pods",
       "core get pods",
@@ -1712,7 +1723,7 @@ test("a two-cluster upgrade with runtime logs off needs no log grants in the exe
     },
     executionCluster: {
       namespaces: tenantNamespaces,
-      allows: tenantGrants([...releaseTenantRules, "core patch pods"]),
+      allows: tenantGrants([...releaseTenantRules, ...currentWorkerRules]),
     },
   });
   await f.run();
@@ -1724,6 +1735,9 @@ test("a two-cluster upgrade with runtime logs off needs no log grants in the exe
       .sort(),
     [
       "apps list deployments",
+      "batch create jobs",
+      "batch delete jobs",
+      "batch get jobs",
       "core get pods",
       "core get pods",
       "core get pods/proxy",

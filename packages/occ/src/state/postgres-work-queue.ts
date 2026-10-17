@@ -48,9 +48,13 @@ export interface RecoveryRequest {
 }
 
 export interface RecoverySummary {
+  /** Expired claims this pass recovered. */
   readonly recovered: number;
+  /** Work queued again: recovered claims, and queued work at its limit given one more attempt. */
   readonly requeued: number;
+  /** Work this pass failed permanently, from expired claims or queued exhaustion. */
   readonly failedPermanent: number;
+  /** Queued work at its attempt limit that this pass failed permanently. */
   readonly exhaustedQueued: number;
   /** The work this pass failed permanently, for follow-up the worker owns. */
   readonly failed: readonly ControllerWork[];
@@ -79,12 +83,18 @@ interface WorkRow {
   readonly attempt_count: number;
   readonly claim_token: string | null;
   readonly lease_expires_at: Date | string | null;
+  readonly lease_active?: boolean;
+  readonly age_ms?: number;
   readonly completed_at: Date | string | null;
   readonly reason_code: string | null;
   readonly result_data: Record<string, unknown> | null;
   readonly created_at: Date | string;
   readonly updated_at: Date | string;
 }
+
+/** The work's age on PostgreSQL's clock, for a claim or renewal to return. */
+const CLAIM_AGE_SQL = (alias: string) =>
+  `GREATEST(0, EXTRACT(EPOCH FROM clock_timestamp() - ${alias}.created_at) * 1000)::double precision AS age_ms`;
 
 const MAX_BACKOFF_MS = 300_000;
 export const PENDING_WORK_PREDICATE = "state IN ('queued', 'claimed')";
@@ -106,6 +116,19 @@ const MAINTENANCE_KEY = new RegExp(
 const REVISION_RECONCILE_KEY = new RegExp(`^agent_revision:${REVISION_ID_PATTERN}:reconcile$`);
 /** Recovery evidence that a published deployment got its one extra attempt. */
 const ACTIVE_REVISION_RECOVERY = "ACTIVE_REVISION_RECOVERY";
+/** Recovery evidence that a deployment with a started predecessor stop got its one extra attempt. */
+const PREDECESSOR_STOP_RECOVERY = "PREDECESSOR_STOP_RECOVERY";
+
+function backoffDelayMsSql(
+  attemptCount: string,
+  maximum: string,
+  initial: string,
+  jitter: string,
+): string {
+  return `LEAST(${maximum}::double precision,
+    ${initial}::double precision * POWER(2::double precision,
+      LEAST(GREATEST(${attemptCount} - 1, 0), 30))) * ${jitter}::double precision`;
+}
 
 /** Cleanup dispatch and retry exemption require an exact immutable revision target. */
 export function repositoryCleanupRevisionId(
@@ -142,7 +165,7 @@ export function isRepositoryRuntimeRetirementWork(
   );
 }
 
-function repositoryCleanupSql(alias: string): string {
+export function repositoryCleanupSql(alias: string): string {
   return `(${alias}.namespace_target IS NULL AND ${alias}.agent_target IS NULL
     AND (
       (${alias}.agent_id IS NOT NULL
@@ -225,6 +248,7 @@ function transferRepositoryCleanupSql(continuingRevision = "false"): string {
       JOIN cleanup_namespaces AS namespace ON namespace.id = source.namespace_id
       -- Credential withdrawal work (agent_target = 'credentials_withdrawn', see
       -- CREDENTIAL_WITHDRAWAL_TARGET) leaves its active revision running, so it owns no cleanup.
+      -- admitted_at and created_at are both on this database's clock (finding 1195).
       WHERE (source.revision_id = revision.id AND source.agent_id = revision.agent_id
           AND source.agent_target IS NULL)
         OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
@@ -429,6 +453,50 @@ const RECOVERING_REFUSED_STOPS_SQL = `
         )
     ),`;
 
+// Work bound evidence of `work` with reason `code` (the lookup matches
+// audit_events_work_attempt_idx and the bindings of PostgresWorkQueue.findWorkAttempt).
+function workEvidenceExistsSql(code: string): string {
+  return `EXISTS (
+          SELECT 1 FROM occ.audit_events AS prior
+          WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
+            AND prior.resource_kind = 'agent_revision'
+            AND prior.details->>'workId' = work.idempotency_key
+            AND prior.namespace_id = work.namespace_id
+            AND prior.actor_id = work.actor_id
+            AND prior.resource_id = work.revision_id
+            AND prior.occurred_at >= work.created_at
+            AND prior.details->>'reasonCode' = '${code}'
+        )`;
+}
+
+// A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
+// serving revision's Gateway; only a worker pass finishes that stop before the deployment fails
+// (finding 1090). Recovery that would end such a deployment on its attempt limit (an expired
+// claim, or queued exhaustion) without a pass instead requeues it once with one more attempt,
+// so the predecessor is not left with its Harness, workspace and credentials and no Gateway
+// (finding 1107). PREDECESSOR_STOP_RECOVERY evidence bounds this to once per deployment, so a
+// pass that keeps crashing cannot requeue it forever: the next limit ends it as before. It never
+// follows an ACTIVE_REVISION_RECOVERY grant (the pointer was published, so the predecessors were
+// already stopped); that recovery keeps its own once-only grant, so a deployment gets at most
+// two. `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is
+// maxAttempts.
+function recoveringPredecessorStopsSql(candidates: string, excluded: string): string {
+  return `
+    recovering_predecessor_stops AS MATERIALIZED (
+      SELECT work.idempotency_key
+      FROM occ.controller_work AS work
+      JOIN ${candidates} AS candidate ON candidate.idempotency_key = work.idempotency_key
+      WHERE work.attempt_count >= $2::integer
+        AND work.namespace_target IS NULL AND work.agent_target IS NULL
+        AND work.agent_id IS NOT NULL AND work.revision_id IS NOT NULL
+        AND work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
+        AND ${excluded}
+        AND ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
+        AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
+        AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
+    ),`;
+}
+
 export class WorkClaimLostError extends Error {
   constructor() {
     super("The controller work claim is missing, expired, or owned by another worker.");
@@ -476,6 +544,7 @@ export function asWork(value: unknown): ControllerWork {
     attemptCount: row.attempt_count,
     ...(row.claim_token === null ? {} : { claimToken: row.claim_token }),
     ...(row.lease_expires_at === null ? {} : { leaseExpiresAt: asDate(row.lease_expires_at) }),
+    ...(typeof row.lease_active === "boolean" ? { leaseActive: row.lease_active } : {}),
     ...(row.completed_at === null ? {} : { completedAt: asDate(row.completed_at) }),
     ...(row.reason_code === null ? {} : { reasonCode: row.reason_code }),
     ...(row.result_data === null ? {} : { resultData: Object.freeze({ ...row.result_data }) }),
@@ -486,10 +555,13 @@ export function asWork(value: unknown): ControllerWork {
 
 function asClaimedWork(value: unknown): ClaimedWork {
   const work = asWork(value);
+  const ageMs = asRow(value).age_ms;
   if (
     work.state !== "claimed" ||
     work.claimToken === undefined ||
-    work.leaseExpiresAt === undefined
+    work.leaseExpiresAt === undefined ||
+    typeof ageMs !== "number" ||
+    !Number.isFinite(ageMs)
   ) {
     throw new ScopeViolationError("PostgreSQL returned an invalid claimed controller work row.");
   }
@@ -498,6 +570,7 @@ function asClaimedWork(value: unknown): ClaimedWork {
     state: "claimed" as const,
     claimToken: work.claimToken,
     leaseExpiresAt: work.leaseExpiresAt,
+    ageMs,
   });
 }
 
@@ -788,17 +861,21 @@ export class PostgresWorkQueue {
   async enqueueRepositoryCleanup(
     claim: WorkClaim,
     owner: RepositoryRevisionOwner,
-    purpose: "sessions" | "terminal-runtime" = "sessions",
+    purpose: "sessions" | "terminal-runtime" | "failed-preparation" = "sessions",
   ): Promise<ControllerWork | undefined> {
     validateClaim(claim);
     const revisionId = nonempty(owner.revisionId, "Repository cleanup revision ID");
     if (revisionId.length !== 40 || !new RegExp(`^${REVISION_ID_PATTERN}$`).test(revisionId)) {
       throw new ScopeViolationError("Repository cleanup requires an exact revision ID.");
     }
-    if (purpose !== "sessions" && purpose !== "terminal-runtime") {
+    if (
+      purpose !== "sessions" &&
+      purpose !== "terminal-runtime" &&
+      purpose !== "failed-preparation"
+    ) {
       throw new ScopeViolationError("Repository cleanup requires a supported purpose.");
     }
-    const retireRuntime = purpose === "terminal-runtime";
+    const retireRuntime = purpose !== "sessions";
     const key = `agent_revision:${revisionId}:repository_cleanup:${retireRuntime ? "retire:" : ""}${createHash(
       "sha256",
     )
@@ -832,12 +909,13 @@ export class PostgresWorkQueue {
          WHERE revision.namespace_id = $3 AND revision.agent_id = $4 AND revision.id = $5
            AND NOT ${repositoryCleanupSql("source")}
            AND (NOT $7::boolean OR (source.revision_id = revision.id
-             AND revision.admitted_spec->'repository_credentials' IS NOT NULL))
+             AND ($8::boolean OR revision.admitted_spec->'repository_credentials' IS NOT NULL)))
            AND (
              (source.agent_id = revision.agent_id AND source.revision_id IS NOT NULL
                -- Excludes credential withdrawal work; see CREDENTIAL_WITHDRAWAL_TARGET.
                AND source.agent_target IS NULL
                AND revision.revision_number <= source_revision.revision_number)
+             -- admitted_at and created_at are both on this database's clock (finding 1195).
              OR (source.agent_target = 'stopped' AND source.revision_id IS NULL
                AND source.agent_id = revision.agent_id AND revision.admitted_at <= source.created_at)
              OR (source.agent_target = 'deleted' AND source.revision_id IS NULL
@@ -874,6 +952,7 @@ export class PostgresWorkQueue {
         revisionId,
         key,
         retireRuntime,
+        purpose === "failed-preparation",
       ],
     );
     const row = result.rows[0] as
@@ -914,7 +993,7 @@ export class PostgresWorkQueue {
                updated_at = clock_timestamp()
            FROM candidate
            WHERE work.idempotency_key = candidate.idempotency_key
-           RETURNING work.*`,
+           RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
           [claimToken, this.maxAttempts, this.leaseDurationMs],
         );
         return claimed.rows[0] === undefined ? undefined : asClaimedWork(claimed.rows[0]);
@@ -934,14 +1013,14 @@ export class PostgresWorkQueue {
   async heartbeat(claim: WorkClaim): Promise<ClaimedWork | undefined> {
     validateClaim(claim);
     const renewed = await this.client.query(
-      `UPDATE occ.controller_work
+      `UPDATE occ.controller_work AS work
        SET lease_expires_at = clock_timestamp() + $3::double precision * interval '1 millisecond',
            updated_at = clock_timestamp()
        WHERE idempotency_key = $1
          AND state = 'claimed'
          AND claim_token = $2::uuid
          AND lease_expires_at > clock_timestamp()
-       RETURNING *`,
+       RETURNING work.*, ${CLAIM_AGE_SQL("work")}`,
       [claim.idempotencyKey, claim.claimToken, this.leaseDurationMs],
     );
     return renewed.rows[0] === undefined ? undefined : asClaimedWork(renewed.rows[0]);
@@ -950,16 +1029,23 @@ export class PostgresWorkQueue {
   /**
    * Whether some Work could be claimed now. Work for an Agent or Namespace that
    * already has a claim (the caller's own included) does not count: no worker
-   * could take it.
+   * could take it. Neither does Work named in `except`.
    */
-  async claimableWorkWaiting(): Promise<boolean> {
+  async claimableWorkWaiting(
+    options: { readonly except?: readonly string[] } = {},
+  ): Promise<boolean> {
+    const except = options.except ?? [];
+    if (!Array.isArray(except) || except.some((key) => typeof key !== "string")) {
+      throw new ScopeViolationError("The excluded controller work keys are invalid.");
+    }
     const waiting = await this.client.query(
       `SELECT EXISTS (
          SELECT 1
          FROM occ.controller_work AS work
          WHERE ${this.claimablePredicate("$1")}
+           AND work.idempotency_key <> ALL($2::text[])
        ) AS waiting`,
-      [this.maxAttempts],
+      [this.maxAttempts, except],
     );
     const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
     if (typeof value !== "boolean") {
@@ -984,17 +1070,27 @@ export class PostgresWorkQueue {
 
   async findWork(idempotencyKey: string): Promise<ControllerWork | undefined> {
     const found = await this.client.query(
-      `SELECT * FROM occ.controller_work WHERE idempotency_key = $1`,
+      `SELECT *, state = 'claimed' AND lease_expires_at > clock_timestamp() AS lease_active
+       FROM occ.controller_work WHERE idempotency_key = $1`,
       [nonempty(idempotencyKey, "Controller work idempotency key")],
     );
     return found.rows[0] === undefined ? undefined : asWork(found.rows[0]);
   }
 
-  /** The latest evidence bound to this work item, or the latest with `code` when given. */
+  /**
+   * The latest evidence bound to this work item, or the latest with `code` (one of `code`, for a
+   * list) when given.
+   */
   async findWorkAttempt(
     idempotencyKey: string,
-    code?: string,
+    code?: string | readonly string[],
   ): Promise<ControllerWorkAttempt | undefined> {
+    const codes =
+      code === undefined
+        ? null
+        : (typeof code === "string" ? [code] : [...code]).map((each) =>
+            nonempty(each, "Controller work attempt code"),
+          );
     // A revision can also have maintenance and cleanup work. Only evidence bound
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
@@ -1007,13 +1103,10 @@ export class PostgresWorkQueue {
          AND event.kind = 'mutation' AND event.action = 'reconcile'
          AND event.details->>'workId' = work.idempotency_key
          AND event.occurred_at >= work.created_at
-         AND ($2::text IS NULL OR event.details->>'reasonCode' = $2::text)
+         AND ($2::text[] IS NULL OR event.details->>'reasonCode' = ANY($2::text[]))
        WHERE work.idempotency_key = $1
        ORDER BY event.occurred_at DESC, event.id DESC LIMIT 1`,
-      [
-        nonempty(idempotencyKey, "Controller work idempotency key"),
-        code === undefined ? null : nonempty(code, "Controller work attempt code"),
-      ],
+      [nonempty(idempotencyKey, "Controller work idempotency key"), codes],
     );
     const row = found.rows[0] as
       { occurred_at: Date | string; reason_code: string; refusal: string | null } | undefined;
@@ -1152,11 +1245,7 @@ export class PostgresWorkQueue {
          SET state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
-               COALESCE($8::double precision,
-                 LEAST($5::double precision,
-                   $6::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                   $7::double precision) * interval '1 millisecond',
+               COALESCE($8::double precision, ${backoffDelayMsSql("attempt_count", "$5", "$6", "$7")}) * interval '1 millisecond',
              claim_token = NULL,
              lease_expires_at = NULL,
              updated_at = clock_timestamp()
@@ -1201,10 +1290,7 @@ export class PostgresWorkQueue {
              available_at = CASE
                WHEN ${exhausted} THEN available_at
                ELSE clock_timestamp() +
-                 LEAST($6::double precision,
-                   $7::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                   $8::double precision * interval '1 millisecond'
+                 ${backoffDelayMsSql("attempt_count", "$6", "$7", "$8")} * interval '1 millisecond'
              END,
              claim_token = NULL,
              lease_expires_at = NULL,
@@ -1341,7 +1427,9 @@ export class PostgresWorkQueue {
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)";
     const refusedStop =
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_refused_stops)";
-    const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop})`;
+    const predecessorStop =
+      "work.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)";
+    const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop} AND NOT ${predecessorStop})`;
     const stale = await this.client.query(
       `WITH candidates AS (
          SELECT idempotency_key
@@ -1353,27 +1441,29 @@ export class PostgresWorkQueue {
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
        ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_ACTIVATIONS_SQL}
-       ${RECOVERING_REFUSED_STOPS_SQL} transitioned AS (
+       ${RECOVERING_REFUSED_STOPS_SQL} ${recoveringPredecessorStopsSql(
+         "candidates",
+         `work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_activations)
+          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
+       )} transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = CASE
                WHEN ${exhaustedClaim} THEN 'failed_permanent'
                ELSE 'queued'
              END,
              attempt_count = CASE
-               WHEN ${recovering} THEN GREATEST($2::integer - 1, 0)
+               WHEN ${recovering} OR ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
                WHEN ${refusedStop} THEN GREATEST(work.attempt_count - 1, 0)
                ELSE work.attempt_count
              END,
              available_at = CASE
                WHEN ${exhaustedClaim} THEN work.available_at
-               -- The runtime already runs: nothing to back off from.
-               WHEN ${recovering} THEN clock_timestamp() +
+               -- The runtime already runs, or a half-stopped predecessor waits: nothing to back
+               -- off from.
+               WHEN ${recovering} OR ${predecessorStop} THEN clock_timestamp() +
                  $6::double precision * $7::double precision * interval '1 millisecond'
                ELSE clock_timestamp() +
-                 LEAST($5::double precision,
-                   $6::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(work.attempt_count - 1, 0), 30))) *
-                   $7::double precision * interval '1 millisecond'
+                 ${backoffDelayMsSql("work.attempt_count", "$5", "$6", "$7")} * interval '1 millisecond'
              END,
              claim_token = NULL,
              lease_expires_at = NULL,
@@ -1396,7 +1486,9 @@ export class PostgresWorkQueue {
        ${insertEvidenceCteSql(
          "",
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
-            THEN '${ACTIVE_REVISION_RECOVERY}' ELSE $4::text END`,
+            THEN '${ACTIVE_REVISION_RECOVERY}'
+            WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
+            THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
          `COALESCE((SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
             WHERE stop.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
@@ -1424,11 +1516,19 @@ export class PostgresWorkQueue {
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), ${continuingMaintenanceSql("candidates")} transitioned AS (
+       ), ${continuingMaintenanceSql("candidates")} ${recoveringPredecessorStopsSql(
+         "candidates",
+         "true",
+       )} transitioned AS (
+         -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET state = 'failed_permanent',
-             completed_at = clock_timestamp(),
-             reason_code = $4::text,
+         SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
+             attempt_count = CASE
+               WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
+               ELSE work.attempt_count
+             END,
+             completed_at = CASE WHEN ${predecessorStop} THEN NULL ELSE clock_timestamp() END,
+             reason_code = CASE WHEN ${predecessorStop} THEN NULL ELSE $4::text END,
              result_data = NULL,
              updated_at = clock_timestamp()
          FROM candidates
@@ -1437,20 +1537,29 @@ export class PostgresWorkQueue {
        ), ${continueMaintenanceSql("$5")} ${FAIL_EXHAUSTED_NAMESPACES_SQL},
        ${transferRepositoryCleanupSql(CONTINUING_MAINTENANCE_SOURCE_SQL)}
        ${SETTLE_PROVISIONING_FAILURE_SQL}
-       ${INSERT_EVIDENCE_SQL}`,
+       ${insertEvidenceCteSql(
+         "",
+         `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+       )}
+       SELECT transitioned.* FROM transitioned`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],
     );
 
     const recovered = stale.rows.map(asWork);
+    const exhaustedRows = exhausted.rows.map(asWork);
+    const exhaustedFailed = exhaustedRows.filter(({ state }) => state === "failed_permanent");
     const failed = [
       ...recovered.filter(({ state }) => state === "failed_permanent"),
-      ...exhausted.rows.map(asWork),
+      ...exhaustedFailed,
     ];
     return Object.freeze({
       recovered: recovered.length,
-      requeued: recovered.filter(({ state }) => state === "queued").length,
+      requeued:
+        recovered.filter(({ state }) => state === "queued").length +
+        exhaustedRows.length -
+        exhaustedFailed.length,
       failedPermanent: failed.length,
-      exhaustedQueued: exhausted.rows.length,
+      exhaustedQueued: exhaustedFailed.length,
       failed: Object.freeze(failed),
     });
   }

@@ -71,8 +71,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let drawerControls = null;
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
+  const mobileLayout = window.matchMedia("(max-width: 760px)");
 
-  window.matchMedia("(max-width: 760px)").addEventListener("change", (event) => {
+  mobileLayout.addEventListener("change", (event) => {
     if (!event.matches) {
       drawerControls?.close(false);
     }
@@ -98,6 +99,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function publicPanel(title, description, actionLabel, action) {
+    menuControls = null;
+    drawerControls = null;
     app.replaceChildren(
       element(
         "main",
@@ -116,6 +119,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function accountMenu() {
+    // A page load can render the shell twice (a Loading or retained preview, then the
+    // fresh view). Keep the same menu so one opened in between stays open and clickable.
+    // reset(), publicPanel() and a session-less render drop it, so each navigation
+    // starts with a closed menu.
+    if (menuControls) {
+      return menuControls.account;
+    }
     const account = element("div", { className: "account" });
     const menu = element("div", {
       className: "menu",
@@ -181,7 +191,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaceSelect.disabled = namespaceAdmissionPending || !session || readable.length === 0;
     namespaceSelect.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
-      let placeholder = "Checking access…";
+      // Once this session knows the Namespace list, admission names the selection instead of
+      // flashing "Checking access…"; the choices stay hidden until access is confirmed.
+      let placeholder = namespaceAdmissionPending
+        ? (namespaces.find((item) => item.id === namespaceId)?.name ?? "Checking access…")
+        : "Checking access…";
       if (session && !namespaceAdmissionPending) {
         placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
       }
@@ -217,7 +231,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function updateNamespaces(readable) {
+  function updateNamespaces(readable, { preservePageScope = false } = {}) {
     if (!namespaceSelect?.isConnected) {
       return;
     }
@@ -233,6 +247,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     namespaces = readable;
     namespaceAdmissionPending = false;
     updateNamespaceSelector();
+    if (preservePageScope) {
+      return;
+    }
     const scope = app.querySelector(".content .scope");
     if (scope && route().feature === "agents") {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
@@ -247,13 +264,43 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       observabilityUrl,
       namespaceAdmissionPending = true,
     } = state);
+    // A page held during a navigation shows Namespace recovery only if it already did.
+    const recovery = state.recovery ?? true;
     namespaceSelect = null;
+    // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
+    const menuFocus = menuControls?.account.contains(document.activeElement)
+      ? document.activeElement
+      : null;
+    // Like the menu, a mobile drawer opened between a page load's two renders stays open.
+    // After reset() or publicPanel(), or in a render without a session, it starts closed.
+    const drawerOpen =
+      Boolean(session) &&
+      mobileLayout.matches &&
+      Boolean(drawerControls?.shell.classList.contains("drawer-open"));
+    const drawerFocus =
+      drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
+        ? document.activeElement
+        : null;
+    // Focus the person moved to a sidebar control during a load stays on it through the load's
+    // later renders (loading, then the page). reset() runs as each load starts, so the first
+    // render keeps none.
+    const sidebarFocus =
+      !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(document.activeElement)
+        ? document.activeElement
+        : null;
+    if (!session) {
+      menuControls = null;
+    }
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
     const icons = { agents: "◇", namespaces: "▤" };
     for (const name of ["agents", "namespaces"]) {
       const link = element(
         "a",
-        { href: pageUrl(name), ...(feature === name ? { "aria-current": "page" } : {}) },
+        {
+          href: pageUrl(name),
+          "data-nav": name,
+          ...(feature === name ? { "aria-current": "page" } : {}),
+        },
         element("span", { className: "nav-icon", "aria-hidden": "true" }, icons[name]),
         pages[name],
       );
@@ -330,13 +377,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
       feature === "agents"
-        ? `Namespace · ${session ? (selected?.name ?? "No available selection") : "Checking access"}`
+        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
-    const refresh = button("Refresh", () => void loadPage());
+    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
+    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
     refresh.disabled = true;
     const header = element(
       "header",
@@ -350,13 +398,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "div",
         { className: "page-actions" },
-        feature === "namespaces" ? null : namespaceSelector(),
+        scopeSelector,
         feature === "settings" ? null : refresh,
       ),
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (session && feature !== "agents" && namespaceId !== null && !selected) {
+    if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
       if (feature === "namespaces" && namespaces.length) {
         main.append(
           element(
@@ -393,11 +441,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         mobileToggle.focus();
       }
     }
-    function openDrawer() {
+    function openDrawer(focus = true) {
       shell.classList.add("drawer-open");
       main.inert = true;
       mobileToggle.setAttribute("aria-expanded", "true");
-      nav.querySelector("a").focus();
+      if (focus) {
+        nav.querySelector("a").focus();
+      }
     }
     sidebar.prepend(button("Close navigation", () => closeDrawer(), { className: "drawer-close" }));
     shell.append(
@@ -408,7 +458,44 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
     app.replaceChildren(shell);
-    return { view, refresh, diagnostics };
+    if (drawerOpen) {
+      // Focus moves to the same control in the new drawer; close if it has none.
+      const target = drawerFocus && sameControl(drawerFocus, sidebar);
+      if (drawerFocus && !target) {
+        closeDrawer();
+      } else {
+        // Focus left on the page body would stay outside the drawer, behind inert content.
+        openDrawer(!target && !menuFocus && document.activeElement === document.body);
+        target?.focus({ preventScroll: true });
+      }
+    }
+    if (sidebarFocus) {
+      sameControl(sidebarFocus, sidebar)?.focus({ preventScroll: true });
+    }
+    if (menuFocus) {
+      menuFocus.focus({ preventScroll: true });
+      // If focus can't return (the menu is hidden), don't leave it open out of sight.
+      if (document.activeElement !== menuFocus) {
+        menuControls?.close();
+      }
+    }
+    return { view, refresh, diagnostics, scopeSelector };
+  }
+
+  function sameControl(node, root) {
+    // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
+    // Other links (Observability) keep the href comparison.
+    const nav = node.getAttribute("data-nav");
+    return (
+      [...root.querySelectorAll(node.localName)].find(
+        (candidate) =>
+          candidate.className === node.className &&
+          (nav
+            ? candidate.getAttribute("data-nav") === nav
+            : candidate.getAttribute("href") === node.getAttribute("href")) &&
+          candidate.textContent === node.textContent,
+      ) ?? null
+    );
   }
 
   function renderRows(view, feature, items) {
@@ -488,6 +575,29 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The shown shell's control, outside its page view, that matches one from an earlier
+    // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
+    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // phone width its navigation drawer starts closed too, so every control from the open drawer
+    // gives way to the drawer's toggle (finding 1680).
+    matchingControl(node) {
+      const shell = app.querySelector(":scope > .shell");
+      if (!shell) {
+        return null;
+      }
+      if (
+        mobileLayout.matches &&
+        node.closest(".sidebar") &&
+        !shell.classList.contains("drawer-open")
+      ) {
+        return shell.querySelector(".mobile-toggle");
+      }
+      if (node.closest(".account")) {
+        return shell.querySelector(".account-toggle");
+      }
+      // The sidebar, toggle and header precede the page view, so their match is found first.
+      return sameControl(node, shell);
+    },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;

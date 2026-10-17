@@ -63,19 +63,23 @@ requires a true flag and no failure.
 Methods without a return value must reject if they cannot complete. The revision
 context is optional in TypeScript; the worker supplies it after authorization.
 
+`prepareRevision` throws `ComputePreparationFailedError` for terminal initialization.
+OCC atomically fails deployment with durable `stopRevision` cleanup.
+Restart resumes cleanup, not preparation; codes exclude credentials.
+
 ### Optional additions
 
-| Method or declaration                                                  | When it is needed                                                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bindAgent({ namespace, agent })`                                      | Receives the approved Namespace, Agent, and ServicePrincipal before the worker operates on a revision; may be asynchronous. Failure stops that attempt before further runtime work.                                                                                                           |
-| `validateHarnessAuth(harness, auth, configuration)`                    | Deployment and provisioning require this side-effect-free check of the Harness, authentication snapshot, and native Configuration. A missing method is a dependency-unavailable error. A thrown `ConfigurationHarnessError` answers `400` with its message; other errors become a conflict.   |
-| `validateGatewaySettings(configuration)`                               | Optional side-effect-free deployment check after `validateHarnessAuth`. Throw `ComputeGatewaySettingError` for a native gateway setting every preparation would refuse; OCC answers `409` with its message, which names the setting and never its value. Leave other refusals to preparation. |
-| `activateRevision(revision, context?)`, `deactivateRevision(revision)` | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                                                                                                                                   |
-| `setLifecycleDrivers(drivers)`                                         | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                                                                                                                                   |
-| `describePrepareRevisionFailure(error)`                                | Returns bounded safe fields for rejected preparation. OCC attributes them to the revision without serializing the raw error. Omission preserves generic retries.                                                                                                                              |
-| `resolveSandboxNamespace`, `withdrawCredentialSource`                  | [Credential Gateway](credential-gateway.md#optional-additions) hooks for registration and withdrawal.                                                                                                                                                                                         |
-| `activationOrder`, `maintenanceIntervalMs`                             | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                                                                                                    |
-| `requiresStoppedPredecessors(revision)`                                | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                                                                                                                                      |
+| Method or declaration                                                                               | When it is needed                                                                                                                                                                   |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bindAgent({ namespace, agent })`                                                                   | Receives the approved Namespace, Agent, and ServicePrincipal before the worker operates on a revision; may be asynchronous. Failure stops that attempt before further runtime work. |
+| `validateHarnessAuth`, `validateConfiguration`, `validateGatewaySettings`, `validateWorkspaceSetup` | Side-effect-free [admission checks](compute-admission.md) at save, provisioning and deployment. Deployment and provisioning require `validateHarnessAuth`.                          |
+| `activateRevision(revision, context?)`, `deactivateRevision(revision)`                              | Production startup requires both. The worker also calls activation if a development Driver provides it. See [revision stages](#production-revision-stages).                         |
+| `setLifecycleDrivers(drivers)`                                                                      | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                         |
+| `describePrepareRevisionFailure(error)`                                                             | Returns bounded safe fields for rejected preparation. OCC attributes them to the revision without serializing the raw error. Omission preserves generic retries.                    |
+| `resolveSandboxNamespace`, `withdrawCredentialSource`                                               | [Credential Gateway](credential-gateway.md#optional-additions) hooks for registration and withdrawal.                                                                               |
+| `withdrawHarnessExposure(revision, signal)`                                                         | Withdraws a native worker's provider exposure outside a pass. The worker calls it at start for revisions already active and for failed candidates, with bounded logged retries.     |
+| `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                          |
+| `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                            |
 
 ### Optional startup preflight
 
@@ -131,8 +135,8 @@ permanently on its first worker attempt; one with neither method is unaffected.
 
 ### Startup failure evidence
 
-`ComputeReadiness.runtimeFailure` optionally reports a bounded startup failure,
-collected and classified by Compute, for the exact observed revision: safe
+`ComputeReadiness.runtimeFailure` optionally reports a bounded startup failure
+for the exact observed revision: safe
 `component`, `check`, `checkedAt`, `code`, and optional
 [`cause`](../agents/deployment.md#model-check-failure-cause) fields, never
 credentials or provider errors. An unavailable or untrusted observation omits it.
@@ -141,7 +145,8 @@ Runtimes hold published evidence until restart, so the worker
 [fails at once](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
 with `RUNTIME_` plus the code (`RUNTIME_CPU_STARVED` for
 `MODEL_PROBE_CPU_STARVED`; `RUNTIME_STARTUP_FAILED` for `UNAVAILABLE` and
-`INCOMPATIBLE_RESPONSE`); other codes persist at the convergence deadline. The
+`INCOMPATIBLE_RESPONSE`), or `WORKSPACE_SETUP_REFUSED` for a refused
+setup; other codes persist at the convergence deadline. The
 [deployment status API](../agents.md#deployment-status) returns saved evidence
 without invoking Compute.
 
@@ -149,22 +154,22 @@ without invoking Compute.
 
 After [OCC authorization](../agents.md#current-runtime-diagnostics),
 `diagnoseAgentDeployment(binding)` returns current checks for an exact revision
-using its approved Namespace and Agent. The Driver maps native evidence to generic `component`, `check`, `state`,
-nullable `checkedAt` and optional safe `code` fields. It verifies runtime
-identity, bounds size and time, and omits credentials, provider output and logs.
-OCC rejects mismatched revisions, invalid timestamps, more than 32 checks and
-unsupported states.
+using its approved Namespace and Agent. The Driver maps native evidence to `component`, `check`, `state`,
+nullable `checkedAt` and optional `code` fields. It verifies runtime
+identity, bounds size and time, and omits credentials, provider output, logs.
+OCC rejects mismatched revisions, invalid timestamps, over 32 checks and
+unsupported states; values outside `packages/contracts/src/runtime-failure.mjs` read `UNRECOGNIZED`.
 
 The call does not update deployment work, rerun the startup probe, send
 messages, or prove a model response. Missing support returns dependency
-unavailable; Drivers unable to collect safe evidence should omit the method.
+unavailable; Drivers unable to collect safe evidence omit the method.
 
 ### Optional runtime status and logs
 
 `describeAgentRuntime(binding, signal, options)` returns Pod status, restarts,
 the newest 100 Events per Pod and log sources of a revision, or one source without Events.
 A terminated container reports its current exit as `lastTermination`; otherwise
-that field reports the prior exit.
+it reports the prior exit.
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,

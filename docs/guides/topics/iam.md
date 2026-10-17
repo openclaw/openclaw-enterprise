@@ -127,6 +127,61 @@ for its target's kind, because those grants could never apply. Pass the
 Installation administrator `roleId` at creation only for someone who
 administers the whole Installation.
 
+## Remove a person
+
+Accounts cannot be deleted; disable the account instead. As a human Installation
+administrator with your session in `OCC_SESSION_COOKIE_JAR` (step 1 of
+[Add a person](#add-a-person)), set `USER_ID` to the account's `id`, kept from its
+creation. Without it, read it from the database with your approved access:
+`SELECT id FROM occ."user" WHERE email = 'person@example.com'`. Read the account
+version, then disable:
+
+```bash
+VERSION="$(curl --fail-with-body --silent --show-error \
+  --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+  "$OCC_URL/api/auth/accounts/$USER_ID" | jq -er .data.version)" &&
+jq -n --argjson version "$VERSION" '{expectedVersion: $version}' |
+  curl --fail-with-body --silent --show-error \
+    --cookie "$OCC_SESSION_COOKIE_JAR" -H "Origin: $OCC_ORIGIN" \
+    -H 'Content-Type: application/json' --data-binary @- \
+    "$OCC_URL/api/auth/accounts/$USER_ID/disable"
+```
+
+The response shows `disabled: true`. Every session of the account ends at once, and
+password and GitHub, Google or OIDC sign-in are refused; an external sign-in tells the
+person the account is disabled. IAM grants stay, unused. The recovery account cannot be
+disabled, and account controls need external sign-in (on a password-only Installation
+they return `409`). `POST .../enable` with the same body reverses it.
+
+Disabling does not end service keys. Keys belong to ServicePrincipals, and OCE does not
+record whom a key was issued for, so find a person's keys by the name given at issuance
+(name them after the person, as in [CLI access](../cli.md#give-a-member-or-automation-cli-access)).
+Issuance and revocation are audited with the key's ID and name; this query lists keys
+issued with a name prefix and not yet revoked:
+
+```sql
+SELECT issued.occurred_at, issued.details ->> 'serviceKeyId' AS key_id,
+       issued.details ->> 'serviceKeyName' AS name,
+       issued.details ->> 'servicePrincipalId' AS service_principal_id
+FROM occ.audit_events issued
+WHERE issued.action = 'openclaw.auth.service-keys.create'
+  AND issued.outcome = 'success'
+  AND issued.details ->> 'serviceKeyName' LIKE 'nora-%'
+  AND NOT EXISTS (
+    SELECT 1 FROM occ.audit_events revoked
+    WHERE revoked.action = 'openclaw.auth.service-keys.revoke'
+      AND revoked.outcome = 'success'
+      AND revoked.details ->> 'serviceKeyId' = issued.details ->> 'serviceKeyId')
+ORDER BY issued.occurred_at;
+```
+
+Revoke each with `occ service-key revoke <key-id>` or
+[the HTTP request](../../reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key).
+Keys past their expiry are already refused. If a ServicePrincipal served only this
+person, also delete its AccessBindings in each Namespace: find them with
+`occ iam access-binding list` and remove each with `occ iam access-binding delete <id>`.
+Finally, disable the person at their identity provider as well.
+
 ## Let a person run an existing Agent
 
 People cannot receive Namespace-wide `create`, so an Installation administrator

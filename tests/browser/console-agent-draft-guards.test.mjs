@@ -9,10 +9,12 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
   pathRequests,
+  persistedDeploymentError,
   repositoryCheckbox,
   secretOptionLabel,
   setSlackSelection,
@@ -20,7 +22,11 @@ import {
   waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import {
+  createRepositoryLaunchFixture,
+  focusedDescription,
+  focusedText,
+} from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {
@@ -36,7 +42,6 @@ test("Agent deployment requires a reload after repository access changes", async
     namespace.id,
     "Repository deploy review",
     nativeValues("repository-deploy-review"),
-    { harnessAuth: { method: "runtime" } },
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const initial = await fixture.request("PATCH", path, {
@@ -167,6 +172,263 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
 });
 
+// Deploy new version disabled the pressed button, dropping keyboard focus to the document, and
+// flashed "Checking Configuration…" then "Requesting deployment…" for a frame each (finding 1619).
+// One delayed status now covers the request and holds focus until the outcome is known.
+test("Deploy new version keeps keyboard focus and shows one delayed status", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment focus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deployment focus",
+    nativeValues("deployment-focus"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const status = page.locator(".agent-draft-actions p[role=status]");
+  await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+  const focusedRole = () =>
+    page.evaluate(() => globalThis.document.activeElement?.getAttribute("role") ?? null);
+  const pressDeploy = async () => {
+    await deploy.focus();
+    await page.keyboard.press("Enter");
+  };
+
+  // A failed read re-enables Deploy: focus returns to it, described by the failure.
+  const unavailable = "Service unavailable. The read could not be completed. Try again.";
+  const failedRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await failedRead.requested;
+  assert.equal(await focusedRole(), "status");
+  failedRead.release();
+  await page.getByText(unavailable).waitFor();
+  assert.equal(await focusedText(page), "Deploy new version");
+  assert.equal(await focusedDescription(page), unavailable);
+
+  // A reader who moved on while the read ran keeps their place.
+  const movedOn = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await movedOn.requested;
+  await page.evaluate(() => globalThis.document.activeElement?.blur());
+  movedOn.release();
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
+
+  // A stale draft keeps Deploy disabled, so the refusal itself takes focus.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("changed"));
+  await pressDeploy();
+  const stale = "Configuration or authentication changed. Reload this draft before deploying.";
+  await page.getByText(stale, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), stale);
+
+  // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
+  // focus. The API's catch-all outage names no refusal (finding 1638).
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    once: true,
+    method: "POST",
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: {
+          code: "DEPENDENCY_UNAVAILABLE",
+          message: "A required platform dependency is unavailable.",
+        },
+      }),
+    },
+  });
+  await pressDeploy();
+  await unknownOutcome.requested;
+  unknownOutcome.release();
+  const failure = page.locator(".agent-draft-actions p[role=alert]");
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.getAttribute("role") === "alert",
+  );
+  assert.ok((await failure.textContent()).length > 0);
+  assert.equal(await focusedText(page), await failure.textContent());
+  assert.equal(await status.textContent(), "");
+  assert.equal(await deploy.isDisabled(), true);
+
+  // An admitted deployment shows one status while its request runs, and the status keeps
+  // focus until the new version opens.
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  await page.evaluate(() => {
+    const shown = [];
+    const node = globalThis.document.querySelector(".agent-draft-actions p[role=status]");
+    new globalThis.MutationObserver(() => {
+      if (node.textContent && node.textContent !== shown.at(-1)) {
+        shown.push(node.textContent);
+      }
+    }).observe(node, { childList: true, characterData: true, subtree: true });
+    globalThis.deployStatusTexts = shown;
+  });
+  const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    method: "POST",
+  });
+  await pressDeploy();
+  await admitted.requested;
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), "Deploying…");
+  // The text sits in the 250 ms delayed-status span, so a quick request never shows it.
+  assert.equal(await status.locator(".delayed-status").textContent(), "Deploying…");
+  admitted.release();
+  await page.waitForURL(/revision=rev_/);
+  assert.deepEqual(await page.evaluate(() => globalThis.deployStatusTexts), ["Deploying…"]);
+});
+
+// After an admitted deployment the draft page stays on screen, inert, while the new version
+// loads. Focus fell from the Deploying… status to the page body for 100-580 ms until the new
+// version's heading took it (finding 1626). The held page's heading now keeps it, through the
+// loading page when admission or the Agent read outlasts 250 ms, and hands it to the new
+// version's heading as the page shows, even while the version is still being read. Going Back
+// during the load keeps it too, until the draft's heading takes it. A reader who left the status
+// during the request is not pulled back while the page is held.
+for (const [scenario, heldRead, heldMs, reader] of [
+  ["a quick Agent read", "agent", 100, "stays"],
+  ["a slow Agent read", "agent", 700, "stays"],
+  ["a slow Namespace access check", "namespaces", 700, "stays"],
+  ["a version read that outlasts the 2 s reveal wait", "revision", 2600, "stays"],
+  ["a reader who goes Back during a slow Agent read", "agent", 700, "goes back"],
+  ["a reader who moved on", "agent", 700, "moves on"],
+]) {
+  test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
+    const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Deployment hand-off",
+      nativeValues("deployment-hand-off"),
+      { harnessAuth: { method: "runtime" } },
+    );
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+    );
+    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+      method: "POST",
+    });
+    await page.getByRole("button", { name: "Deploy new version" }).focus();
+    await page.keyboard.press("Enter");
+    await admitted.requested;
+    assert.equal(await focusedText(page), "Deploying…");
+    if (reader === "moves on") {
+      await page.evaluate(() => globalThis.document.activeElement?.blur());
+    }
+    // Every frame from admission until the new version shows: the focused node (numbered, so a
+    // replaced heading counts as a new one), and whether the loading page stood in.
+    await page.evaluate(() => {
+      const ids = new WeakMap();
+      let next = 0;
+      const trail = [];
+      const state = { trail, loadingShown: false, stopped: false };
+      const sample = () => {
+        if (state.stopped) {
+          return;
+        }
+        const node = globalThis.document.activeElement;
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (trail.at(-1) !== entry) {
+          trail.push(entry);
+        }
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||=
+          shown.includes("Reading this Agent.") || shown.includes("Checking Namespace access.");
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.focusFrames = state;
+      sample();
+    });
+    const heldPath = {
+      agent: path,
+      namespaces: "/namespaces",
+      revision: `${path}/revisions/rev_*`,
+    }[heldRead];
+    const versionRead = await holdRequests(t, page, `${fixture.origin}${heldPath}`, {
+      once: true,
+      method: "GET",
+    });
+    admitted.release();
+    await versionRead.requested;
+    if (reader === "goes back") {
+      // The Loading page has replaced the held draft by now; Back returns to the draft.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await page.goBack({ waitUntil: "commit" });
+      versionRead.release();
+      await page.waitForURL(/revision=draft/);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, heldMs));
+      versionRead.release();
+      await page.waitForURL(/revision=rev_/);
+    }
+    await page.waitForFunction(
+      () =>
+        globalThis.document.activeElement?.tagName === "H1" &&
+        globalThis.document.activeElement.isConnected &&
+        !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
+        globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+    );
+    const { trail, loadingShown } = await page.evaluate(() => {
+      globalThis.focusFrames.stopped = true;
+      return globalThis.focusFrames;
+    });
+    if (heldRead !== "revision" && heldMs > 250) {
+      assert.ok(loadingShown, trail.join(" | "));
+    }
+    assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
+    if (reader === "moves on") {
+      // Nothing takes focus while the page is held; the new version's heading takes it once shown.
+      assert.deepEqual(trail.slice(0, -1), ["BODY"], trail.join(" | "));
+    } else {
+      assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
+      assert.ok(!trail.includes("BODY"), trail.join(" | "));
+      // The held heading shows the same name: the focused heading at the end is a later one.
+      assert.notEqual(
+        trail.at(-1),
+        trail.find((entry) => entry.startsWith("H1#")),
+        trail.join(" | "),
+      );
+    }
+  });
+}
+
 for (const [field, change] of [
   ["execution mode", { executionMode: "dedicated" }],
   ["Backend", { backendId: backendFixtures[0].id }],
@@ -183,7 +445,19 @@ for (const [field, change] of [
   ],
 ]) {
   test(`Agent deployment requires a reload after ${field} changes`, async (t) => {
-    const { fixture, namespace } = await createRuntimeAuthFixture(t, `Deployment ${field}`);
+    // SSH Compute runs only embedded Agents, and Agent save refuses a change to dedicated, so
+    // the execution mode case runs on Kubernetes Compute with a Secret-backed key.
+    const kubernetes = field === "execution mode";
+    const { fixture, namespace } = kubernetes
+      ? await (async () => {
+          const created = await createConsoleAppFixture(t);
+          await created.bootstrap();
+          return {
+            fixture: created,
+            namespace: await created.createNamespace(`Deployment ${field}`, { ready: true }),
+          };
+        })()
+      : await createRuntimeAuthFixture(t, `Deployment ${field}`);
     const pluginDriver = new CodexPluginDriver();
     fixture.controller.registerDriver(pluginDriver);
     fixture.controller.selectDriver("plugin", pluginDriver.id);
@@ -191,8 +465,12 @@ for (const [field, change] of [
       namespace.id,
       `Deployment ${field}`,
       nativeValues("deployment-settings"),
-      { harnessAuth: { method: "runtime" } },
+      kubernetes ? {} : { harnessAuth: { method: "runtime" } },
     );
+    const ready = () =>
+      kubernetes
+        ? page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor()
+        : page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
     await login(
@@ -201,7 +479,7 @@ for (const [field, change] of [
       `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
     );
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await ready();
     assert.equal(await deploy.isEnabled(), true);
 
     // A second operator changes the desired Agent state without editing its Configuration.
@@ -226,7 +504,7 @@ for (const [field, change] of [
     assert.equal(await result, "blocked", `stale ${field} must not be submitted`);
     assert.equal(await deploy.isDisabled(), true);
     await page.reload();
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await ready();
     assert.equal(await deploy.isEnabled(), true);
   });
 }
@@ -306,6 +584,107 @@ for (const tab of ["configuration", "repositories"]) {
     await page.waitForURL(/revision=rev_/);
   });
 }
+
+test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) => {
+  const { fixture, namespace, modelSecret, grantModelAccess } =
+    await createConsoleRepositoryLaunchFixture(t);
+  // A loopback listener cannot serve the Gateway Service's Pod-IP traffic, so deployment
+  // refuses it. The Configuration itself saves, as it does for an operator.
+  const values = createHarnessConfiguration("codex", "gpt-5.1");
+  values.gateway.bind = "loopback";
+  const configuration = await fixture.createConfiguration(namespace.id, values);
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Typed deploy refusals",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: modelSecret.ref },
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = created.data;
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  const deployResponse = () =>
+    page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}${path}/deploy` &&
+        response.request().method() === "POST",
+    );
+  async function refusal(status) {
+    const response = deployResponse();
+    await deploy.click();
+    const body = await (await response).json();
+    assert.equal((await response).status(), status, JSON.stringify(body));
+    return body.error.message;
+  }
+
+  // The caller may operate the model Secret, but the Agent's own service principal may not.
+  // The API names that principal and the grant to add; the console shows the same sentence.
+  const denied = await refusal(403);
+  assert.match(
+    denied,
+    new RegExp(`^The Agent service principal ${agent.servicePrincipalId} is not authorized`),
+  );
+  await page.getByText(denied, { exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+
+  // With that grant in place, the next refusal is the Configuration setting itself.
+  await grantModelAccess(agent);
+  const conflict = await refusal(409);
+  assert.match(conflict, /^Configuration setting gateway\.bind /);
+  await page.getByText(conflict, { exact: true }).waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  const revisions = await fixture.request("GET", `${path}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
+
+  // The caller's own denial is generic by design: it names nothing the caller may not read,
+  // and nothing to fix, so the console keeps its guidance about the grants deploy needs.
+  fixture.policy.restrictions.push({
+    id: "deny-typed-refusal-deploy",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "deploy",
+    effect: "deny",
+  });
+  assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  await page
+    .getByText("Deployment denied. Check Agent deploy permission", { exact: false })
+    .waitFor();
+  assert.equal(await deploy.isEnabled(), true);
+  fixture.policy.restrictions.pop();
+
+  // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
+  for (const body of [
+    JSON.stringify({
+      error: {
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+      },
+    }),
+    "",
+  ]) {
+    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+      route.fulfill({ status: 409, contentType: "application/json", body }),
+    );
+    await deploy.click();
+    await page
+      .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
+      .waitFor();
+    assert.equal(await deploy.isEnabled(), true);
+    await page.unroute(`${fixture.origin}${path}/deploy`);
+  }
+});
 
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
@@ -410,8 +789,11 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         effect: "deny",
       });
       await page.getByRole("button", { name: "Save authentication source" }).click();
+      // A refused Agent save names the grants it needs (finding 1530).
       await page
-        .getByText("Access denied. You do not have permission for this operation.")
+        .getByText(
+          "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+        )
         .waitFor();
       assert.equal(await deploy.isEnabled(), true);
       fixture.policy.restrictions.pop();
@@ -668,7 +1050,11 @@ for (const changed of ["generation", "identity"]) {
       (await fixture.request("GET", configurationPath)).data.values,
       changed === "generation" ? newerValues : values,
     );
-    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
+    // The chosen Secret stays shown, unsaved, for Reload draft to carry (finding 1512).
+    await waitForInputValue(
+      page.getByLabel("Slack app token"),
+      secretOptionLabel(replacementSecret),
+    );
     assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
     assert.equal(await deploy.isDisabled(), true);
     assert.equal(
@@ -679,9 +1065,53 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(await deploy.isDisabled(), true);
     await page.getByRole("button", { name: "Credentials", exact: true }).click();
     await page.getByRole("button", { name: "Reload draft", exact: true }).click();
+    if (changed === "generation") {
+      // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
+      // (finding 1640).
+      await page
+        .getByText(
+          "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.",
+          {
+            exact: true,
+          },
+        )
+        .waitFor();
+      assert.equal(await deploy.isDisabled(), true);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    }
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await deploy.isEnabled(), true);
   });
+}
+
+// A dedicated Codex Agent whose Slack tokens are bound, so its draft is ready to deploy.
+async function createSlackBoundAgent(fixture, namespace, name, marker) {
+  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-draft-guard");
+  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-draft-guard");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    name,
+    nativeValues(marker, {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          channels: {},
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  return agent;
 }
 
 for (const action of ["disable", "drawer"]) {
@@ -689,14 +1119,11 @@ for (const action of ["disable", "drawer"]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pending channel ${action}`, { ready: true });
-    const agent = await fixture.createAgent(
-      namespace.id,
+    const agent = await createSlackBoundAgent(
+      fixture,
+      namespace,
       `Pending channel ${action} Agent`,
-      nativeValues("pending-channel", {
-        harnessId: "codex",
-        channels: { slack: { enabled: true, mode: "socket", channels: {} } },
-      }),
-      { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
+      "pending-channel",
     );
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
@@ -715,7 +1142,7 @@ for (const action of ["disable", "drawer"]) {
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
     await login(page, fixture, url);
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
     assert.equal(
       await page
         .locator(".channels-section")
@@ -775,14 +1202,11 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Uncertain channel save", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
+  const agent = await createSlackBoundAgent(
+    fixture,
+    namespace,
     "Uncertain channel Agent",
-    nativeValues("uncertain-channel", {
-      harnessId: "codex",
-      channels: { slack: { enabled: true, mode: "socket", channels: {} } },
-    }),
-    { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
+    "uncertain-channel",
   );
   const { page } = await newPage(t, fixture);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -797,7 +1221,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
   await login(page, fixture, url);
-  await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await page
@@ -929,6 +1353,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  const failure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
   // The in-memory fixture has no worker records; supply the persisted failure shape.
   await page.route(`${fixture.origin}${path}/deployments/${revision.id}`, async (route) => {
     await route.fulfill({
@@ -940,10 +1365,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
           namespaceId: namespace.id,
           agentId: agent.id,
           status: "failed",
-          error: {
-            code: "RUNTIME_AUTHENTICATION_FAILED",
-            message: "Deployment runtime credentials were rejected.",
-          },
+          error: failure,
           warnings: [],
           progress: null,
         },
@@ -955,17 +1377,23 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   await login(page, fixture, url);
 
   const activity = page.locator(".deployment-status");
-  await activity
-    .getByText("RUNTIME_AUTHENTICATION_FAILED: Deployment runtime credentials were rejected.")
-    .waitFor();
-  await activity.getByText(/The model provider rejected this version's credential/).waitFor();
+  // The API's message carries the next step, so occ and HTTP clients get it too (finding
+  // 1393); the console shows it once and adds only the link to Credentials.
   assert.match(
-    await activity.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
+    failure.message,
+    /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
+  );
+  await activity
+    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
+    .waitFor();
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  assert.match(
+    await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
   );
   // The draft has no Logs tab, so the failure links to the failed version's output.
   assert.match(
-    await activity
+    await recovery
       .getByRole("link", { name: `Open v${revision.revision} Logs` })
       .getAttribute("href"),
     new RegExp(`revision=${revision.id}&tab=logs`),

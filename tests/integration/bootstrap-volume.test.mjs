@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
@@ -27,10 +28,11 @@ async function writeFakeKubectl(directory, options = {}) {
   const logs =
     options.logs ??
     `${JSON.stringify({ event: "bootstrap-volume.prepared", uid: 1000, gid: 1000, mode: "0700" })}\n`;
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   await writeFile(
     kubectl,
     `#!/usr/bin/env node
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(statePath)}, JSON.stringify({ args }) + "\\n");
 if (args.includes("create")) {
@@ -131,6 +133,34 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
     ),
     /--image must be an approved immutable SHA-256 image reference/,
   );
+  // Kubernetes also rejects an uppercase repository path; only the registry host and the tag
+  // may use uppercase, as in the chart and profile preflight.
+  for (const name of [
+    "registry.example.invalid/openclaw/Controller",
+    "registry.example.invalid:5000/Openclaw/controller:release_1",
+    "Controller",
+  ]) {
+    await assert.rejects(
+      execute(
+        helper,
+        [
+          "--kubeconfig",
+          kubeconfig,
+          "--context",
+          "ctx",
+          "--namespace",
+          "openclaw-system",
+          "--claim",
+          "claim",
+          "--image",
+          `${name}@sha256:${"a".repeat(64)}`,
+        ],
+        base,
+      ),
+      /--image repository path must be lowercase/,
+      name,
+    );
+  }
   // A digest is exactly 64 hex characters.
   for (const digest of ["a".repeat(63), "a".repeat(65)]) {
     await assert.rejects(
@@ -519,4 +549,54 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
   }
   // Every refusal happens before kubectl runs.
   await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" });
+});
+
+// The helper takes exactly the references Kubernetes can pull with a lowercase SHA-256 digest,
+// as profile preflight and the chart do for images.controller, and writes an accepted one,
+// such as an IPv6 registry host, into the preparation Pod as written.
+test("prepare-bootstrap-volume gives image references Kubernetes' verdict", async (t) => {
+  for (const [label, reference, problem] of imageReferenceCases) {
+    const { directory, kubeconfig, statePath, manifestPath } = await fixture(t);
+    const run = execute(
+      helper,
+      [
+        "--kubeconfig",
+        kubeconfig,
+        "--context",
+        "ctx",
+        "--namespace",
+        "openclaw-system",
+        "--claim",
+        "claim",
+        "--image",
+        reference,
+      ],
+      { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+    );
+    if (immutableImageAccepted(reference, problem)) {
+      await run;
+      assert.equal(
+        loadYaml(await readFile(manifestPath, "utf8")).spec.containers[0].image,
+        reference,
+        label,
+      );
+      continue;
+    }
+    await assert.rejects(
+      run,
+      (error) => {
+        assert.match(
+          error.stderr,
+          problem === "uppercase-repository" && /@sha256:[a-f0-9]{64}$/.test(reference)
+            ? /--image repository path must be lowercase/
+            : /--image must be an approved immutable SHA-256 image reference/,
+          label,
+        );
+        return true;
+      },
+      label,
+    );
+    // A refused reference never reaches kubectl.
+    await assert.rejects(readFile(statePath, "utf8"), { code: "ENOENT" }, label);
+  }
 });

@@ -13,10 +13,34 @@ normalized Secret bindings, and server-generated `cfg_` identity are persisted b
 [PostgreSQL platform state](../../../packages/occ/src/state/postgres-state.ts);
 the live configuration document is not duplicated into Configuration metadata.
 OCC owns API-level native Configuration validation before it calls the selected
-bundled or installed Configuration Driver: model provider settings, and
+bundled or installed Configuration Driver: model provider settings,
 `requireDeployableRoster` in
 [the roster rules](../../../packages/occ/src/openclaw-roster.ts), which refuses
-an `agents` roster every deployment refuses with deployment's own text. The Driver owns backing document
+an `agents` roster or a model fallback on another provider than its primary's
+that every deployment refuses with deployment's own text, and
+[the settings rules](../../../packages/occ/src/configuration-settings.ts), which
+refuse a Codex approval policy the Gateway refuses and a literal
+`gateway.auth.password`, and the selected Compute Driver's optional
+[`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
+Kubernetes refuses unsupported channels, model credentials outside the Harness
+authentication binding, and model selections or provider `apiKey`s off the
+primary model's provider. Configuration create and update, Agent provisioning and
+Preset save run this one set (`validateConfigurationContent` in
+[OCC](../../../packages/occ/src/index.ts)); a Preset value that waits on a
+variable is checked as far as its written text goes, and in full once filled.
+Create, update and provisioning first ask the Driver's optional
+[`validateSize`](../../reference/drivers/configuration.md#optional-validation)
+to refuse a document too large to store, so no content rule walks it. Its
+`ConfigurationSizeError` returns `400 INVALID_REQUEST` naming the limit, not the
+generic invalid-configuration text.
+A stored row that predates a rule still reads and an edit can replace it: a
+bundled Driver checks a stored document only against
+the credential-reference rules in force before 2026-10-12, and every write and
+deployment against all of them. Those include a `${NAME}` reference or SecretRef
+in every slot OpenClaw marks sensitive, channel and plugin secrets included
+([list](../../reference/configuration/secrets.md#secret-boundaries)), checked in
+[the credential rules](../../../apps/controller/src/drivers/configuration/model-auth.ts),
+which a Preset save runs too. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
@@ -75,7 +99,13 @@ prerequisites.
 `createAgent` and `updateAgent` in
 [OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
-is `"agent"`. `deployAgent` then locks the Agent, authorizes a read of the
+is `"agent"`. They also run deployment's checks of the Agent against that
+Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
+the Sandbox execution mode, the Harness and its mode, and the Compute checks.
+With a Compute Driver and a Harness resolver selected, every Agent save reads
+its Configuration once from the Configuration Driver, inside the save's
+transaction; a Driver outage then fails the save with `503` instead of letting
+an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
@@ -88,7 +118,11 @@ When the selected Sandbox Driver exposes `configureAgent`, OCC transforms a
 frozen copy before Configuration Driver validation and Harness selection. The
 stored reusable Configuration and its generation remain unchanged. Compute then
 checks the Harness authentication binding (Kubernetes Compute also runs the shared
-`requireOpenClawRoster`, then the dedicated OpenClaw and Codex `main` Agent rules) and, through optional
+`requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
+[the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
+preparation and the Gateway entrypoint apply after a dedicated deployment stops its
+predecessors: enabled channels need a dedicated workload and `runtime.channels`, and a
+Gateway hosting a workspace node needs the file-transfer plugin) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
 a setting every preparation would refuse with `409`, naming the setting and never
 its value, before a revision exists. Kubernetes and Docker Compute also refuse
@@ -98,7 +132,9 @@ pass: a `gateway.bind` other than `auto`, `lan` or `custom`, `custom` unless
 Kubernetes renders `lan` for an omitted or `auto` bind; a revision prepared before
 that keeps its immutable gateway document, and maintenance accepts exactly that
 earlier rendering, until the Agent is deployed again. Every Compute Driver refuses native TLS and
-the retired Codex `untrusted` approval policy this way. The selected PluginDriver's
+a Codex approval policy outside `never`, `on-request` and `on-failure` this way;
+Kubernetes also refuses a `gateway.auth.password` other than the
+`OPENCLAW_GATEWAY_PASSWORD` reference. The selected PluginDriver's
 optional `validateAgentConfiguration` then checks plugin selections against the
 admitted values. OCC freezes
 the admitted values, including any remaining inline unresolved SecretRefs, into

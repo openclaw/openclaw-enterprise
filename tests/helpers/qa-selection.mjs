@@ -59,11 +59,15 @@ export function selectQaMatrix(env = process.env) {
   }
   if (repository) {
     requiredEnv.push("OCC_TEST_QA_REPOSITORY_AUTHORIZED", "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY");
-    requiredEnv.push(
-      env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY
-        ? "OCC_TEST_QA_GITHUB_OBSERVER_BINARY"
-        : "OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE",
-    );
+    if (env.QA_REPOSITORY_FIXTURE === "isolated") {
+      requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY");
+    } else if (env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY) {
+      requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_BINARY");
+    } else if (env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY) {
+      requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY");
+    } else {
+      requiredEnv.push("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE");
+    }
   }
   if (activeScenarios.includes("slack")) {
     requiredEnv.push(

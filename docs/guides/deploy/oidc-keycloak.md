@@ -51,14 +51,10 @@ certificate. OCE requires:
   signature algorithm at RS256 and do not add an audience mapper: OCE rejects an
   additional audience.
 
-For a private CA, the chart version covered by this guide has no OIDC CA value
-or turnkey mount. Use an explicit, upgrade-safe deployment customization to mount a combined public CA
-bundle for the API, configure `NODE_EXTRA_CA_CERTS` to read it, and restart the
-Node process after trust changes. Preserve any existing Gateway CA roots in that
-bundle: the chart may already set `NODE_EXTRA_CA_CERTS` for Gateway routing, so
-replacing it with only the Keycloak CA can break Gateway trust. See
-[Gateway trust and rotation](../../reference/gateway-routing.md#tls-and-certificate-lifecycle).
-Verify the customized deployment and its trust after each upgrade.
+For a private CA, set `auth.oidc.caSecretName` and `auth.oidc.caSecretKey`; see
+[Trust a private IdP CA](oidc-sign-in.md#trust-a-private-idp-ca). The chart combines
+the Keycloak root with any selected Gateway CA for the API only. Do not set
+`NODE_EXTRA_CA_CERTS` separately.
 
 The chart's OIDC NetworkPolicy permits API egress on TCP 443. For an in-cluster
 Keycloak endpoint behind a Service with a non-443 `targetPort`, add a separate
@@ -100,7 +96,7 @@ The checked-in realm and its fixed identities are **disposable CI/local fixtures
 Do not import the fixture realm as a production provisioning shortcut: its test
 users and placeholder credentials are not production identities or secrets. For
 the test-only import and generated credentials, see the
-[Keycloak OIDC lane](../../testing/keycloak.md).
+[Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests).
 
 ## Configure and enable OCE
 
@@ -165,9 +161,8 @@ OCE sign-out ends the local OCE session, not the Keycloak session; a person may
 sign in again while the Keycloak session remains active. Disabling a user in
 Keycloak prevents new provider sign-ins but does not end an existing OCE session.
 For offboarding, disable the OCE account and separately revoke applicable service
-keys. Follow
-[Changes, rotation and outages](oidc-sign-in.md#changes-rotation-and-outages) for
-session limits, client-secret rotation, issuer or client-ID changes, and recovery.
+keys. Follow [Operate OIDC sign-in](oidc-operations.md) for offboarding commands,
+client-secret and signing-key rotation, outages and the audit record.
 
 ## CI verification and limits
 
@@ -175,13 +170,13 @@ The `keycloak-oidc` CI lane uses the pinned real Keycloak and Chromium, the
 imported test realm, `start-dev` storage, fixture TLS and test HTTPS ingress. It
 composes the production API in a host process; it does not deploy a production
 Keycloak topology. The lane runs in full-mode pull request CI and on pushes to
-`main`, but is not a dependency of `CI Required`; documentation-only and test-only
-CI modes do not run it.
+`main`, and `CI Required` requires it. Documentation-only CI does not run it;
+test-only CI runs it when its test changes.
 
 The lane checks discovery and the signing key, attached sign-in with both client
 authentication methods, signing-key rotation, refusal of an unattached user, and
 local sign-out and user disablement behavior. See the
-[Keycloak OIDC lane](../../testing/keycloak.md#verified-flows) for each test and
+[Keycloak OIDC lane](../../testing/kubernetes.md#verified-keycloak-flows) for each test and
 its evidence. Keycloak behind a TLS proxy, Keycloak in the same cluster as the API,
 other major versions, and a production `start` deployment with a persistent external
 database are not qualified by this fixture. Operator browser and recovery checks
@@ -191,4 +186,4 @@ remain necessary for the actual deployment.
 
 - [Enable OIDC sign-in](oidc-sign-in.md)
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
-- [Keycloak OIDC lane](../../testing/keycloak.md)
+- [Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests)

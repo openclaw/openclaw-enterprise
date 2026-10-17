@@ -38,16 +38,29 @@ export const backendFixtures = Object.freeze([
 
 function computeDriver({
   repositoryCredentials = false,
+  channelRuntime = false,
   discoverHarnessModels = async () => [],
+  agentProvisioning = false,
+  sandboxDriver,
+  credentialGatewayDriver,
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
     repositoryCredentials,
+    sandboxDriver,
+    credentialGatewayDriver,
+    channelRuntime,
   });
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
-    // In-memory State has no durable provisioning queue; this fixture supports draft creation.
-    agentProvisioning: undefined,
+    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
+    // does not provision unless repository credentials ask for them.
+    ...(channelRuntime && !repositoryCredentials
+      ? { requiresAgentRuntimeCredentials: undefined }
+      : {}),
+    // Most Console cases use drafts. Branch-selection tests can retain the actual
+    // Compute capability while verifying that their flow avoids the durable queue.
+    ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
     // Catalog data is the external Compute boundary; Console/OCC/IAM routes remain real.
     discoverHarnessModels,
     async ensureNamespace(namespace) {
@@ -55,6 +68,10 @@ function computeDriver({
     },
     async deleteNamespace(namespace) {
       return { namespaceId: namespace.id, namespaceDeleted: true };
+    },
+    // The same fixture placement is shared by source management and the Sandbox.
+    async resolveSandboxNamespace(namespace) {
+      return { ...namespace, name: `console-${namespace.id}` };
     },
     async prepareRevision(revision) {
       return {
@@ -250,16 +267,33 @@ export async function createConsoleAppFixture(t, options = {}) {
           const namespaces = await view.namespaces.listNamespaces();
           const roles = [];
           const bindings = [];
+          const identities = [];
           for (const namespace of namespaces) {
+            // Browser-created Agents must participate in the same live IAM evaluation
+            // as their browser-created credential grants.
+            for (const agent of await view.agents.listAgents(namespace.id)) {
+              identities.push({
+                id: agent.servicePrincipalId,
+                kind: "service_principal",
+                namespaceId: agent.namespaceId,
+                agentId: agent.id,
+              });
+            }
             roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
             bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
           }
-          return { roles, bindings };
+          return { roles, bindings, identities };
         };
         const unit = policyUnit.getStore();
         const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
         return {
           ...policy,
+          identities: [
+            ...policy.identities,
+            ...managed.identities.filter(
+              (identity) => !policy.identities.some((existing) => existing.id === identity.id),
+            ),
+          ],
           roles: [...policy.roles, ...managed.roles],
           bindings: [...policy.bindings, ...managed.bindings],
         };
@@ -299,7 +333,11 @@ export async function createConsoleAppFixture(t, options = {}) {
       options.computeDriver ??
       computeDriver({
         repositoryCredentials: options.repositoryCredentials === true,
+        channelRuntime: options.channelRuntime === true,
         discoverHarnessModels: options.discoverHarnessModels,
+        agentProvisioning: options.agentProvisioning,
+        sandboxDriver: options.sandboxDriver,
+        credentialGatewayDriver: options.credentialGatewayDriver,
       }),
     configurationDriver:
       configurationDriver ?? createTestConfigurationDriver({ id: "console-configuration" }),
@@ -572,6 +610,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         configurationId: configuration.id,
         ...(options.backendId === undefined ? {} : { backendId: options.backendId }),
         harnessAuth,
+        ...(options.credentialSources === undefined
+          ? {}
+          : { credentialSources: options.credentialSources }),
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
       },
     });

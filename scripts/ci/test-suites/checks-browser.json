@@ -4,12 +4,15 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
-    "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console.test.mjs",
+    "tests/browser/console-retained-revalidation.test.mjs",
+    "tests/browser/console-agent-detail-2.test.mjs",
+    "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console-agent-logs.test.mjs",
     "tests/browser/console-agent-repositories.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
+    "tests/browser/console-agent-overview.test.mjs",
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs"
   ],
@@ -21,6 +24,9 @@
       "path": "tests/browser/console-agent-detail.test.mjs"
     },
     {
+      "path": "tests/browser/console-agent-detail-2.test.mjs"
+    },
+    {
       "path": "tests/browser/console-agent-logs.test.mjs"
     },
     {
@@ -30,6 +36,9 @@
       "path": "tests/browser/console.test.mjs"
     },
     {
+      "path": "tests/browser/console-retained-revalidation.test.mjs"
+    },
+    {
       "path": "tests/browser/docs-compute-matrix.test.mjs"
     },
     {
@@ -37,6 +46,9 @@
     },
     {
       "path": "tests/integration/repository-credentials-client-config.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-overview.test.mjs"
     }
   ]
 }

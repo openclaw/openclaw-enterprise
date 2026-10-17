@@ -1,4 +1,4 @@
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
 import { createHash, randomBytes } from "node:crypto";
 import { request as httpRequest, type ClientRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -17,6 +17,21 @@ interface ServiceTransportOptions {
   readonly endpoint: string;
   readonly rootCertificate?: Buffer;
   readonly requestTimeoutMs: number;
+}
+
+/** The gateway listener, or the service behind it, did not answer one bounded request. */
+export class OpenShellServiceTransportError extends DependencyUnavailableError {
+  readonly reason: "timeout" | "unreachable";
+
+  constructor(reason: "timeout" | "unreachable") {
+    super(
+      reason === "timeout"
+        ? "OpenShell service request timed out."
+        : "OpenShell service is unreachable.",
+    );
+    this.name = "OpenShellServiceTransportError";
+    this.reason = reason;
+  }
 }
 
 const MAX_SERVICE_RESPONSE_BYTES = 16 * 1024;
@@ -51,6 +66,11 @@ export function serviceTarget(
   ) {
     throw new OpenShellGatewayFailure(
       "OpenShell service URL must be an HTTP origin without credentials, query, or fragment.",
+    );
+  }
+  if (gatewayEndpointRewritesIpv4(options.endpoint)) {
+    throw new OpenShellGatewayFailure(
+      "OpenShell gateway endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
     );
   }
   const endpoint = options.endpoint.includes("://")
@@ -136,11 +156,11 @@ function send(
     };
     const timer = setTimeout(() => {
       request.destroy();
-      finish(() => reject(new DependencyUnavailableError("OpenShell service request timed out.")));
+      finish(() => reject(new OpenShellServiceTransportError("timeout")));
     }, options.requestTimeoutMs);
     signal.addEventListener("abort", abort, { once: true });
     request.on("error", () =>
-      finish(() => reject(new DependencyUnavailableError("OpenShell service is unreachable."))),
+      finish(() => reject(new OpenShellServiceTransportError("unreachable"))),
     );
     handle(
       request,
@@ -234,7 +254,7 @@ export async function serviceWebSocketHandshake(
         resolve(response.statusCode === 101 && response.headers["sec-websocket-accept"] === accept);
       });
       request.on("response", (response: IncomingMessage) => {
-        response.resume();
+        response.destroy();
         resolve(false);
       });
     },

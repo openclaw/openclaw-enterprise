@@ -1,7 +1,11 @@
-import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contracts";
+import type {
+  ConfigurationValidationOptions,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
+import { providerModelsListError } from "./model-provider-settings.ts";
 
 function configuredRuntime(value: unknown): string | undefined {
   const runtimeValue = asRecord(value)?.agentRuntime;
@@ -17,7 +21,106 @@ function configuredRuntime(value: unknown): string | undefined {
   return runtime.id;
 }
 
-function configuredModels(value: unknown): readonly string[] {
+// Builds a refusal that names a model selection: agents.defaults.model or an agents.entries model.
+type SelectionMessage = (rest: string) => string;
+
+const defaultModelMessage: SelectionMessage = (rest) =>
+  `Configuration setting agents.defaults.model${rest}`;
+
+const entryModelMessage =
+  (key: string): SelectionMessage =>
+  (rest) =>
+    agentEntryMessage(key, (path) => `Configuration setting ${path}.model${rest}`);
+
+function isModelReference(selected: unknown): selected is string {
+  return (
+    isNonEmptyString(selected) &&
+    selected.includes("/") &&
+    !selected.startsWith("/") &&
+    !selected.endsWith("/")
+  );
+}
+
+// OpenClaw's `openrouter:auto` or `openrouter:free`, which `splitModelRef` reads as the openrouter
+// provider's, though it has no slash. A reference with a slash is isModelReference's to judge:
+// `splitModelRef` gives `codex/` an id too.
+function isOpenRouterSelector(selected: unknown): selected is string {
+  return (
+    isNonEmptyString(selected) &&
+    !selected.includes("/") &&
+    splitModelRef(selected).id !== undefined
+  );
+}
+
+// A fallback keeps the primary model's provider. Named, never echoed (finding 1298).
+function requirePrimaryProvider(models: readonly string[], setting: SelectionMessage): void {
+  const primaryProvider = splitModelRef(models[0]!).provider;
+  if (models.some((selected) => splitModelRef(selected).provider !== primaryProvider)) {
+    throw new ConfigurationHarnessError(
+      setting(".fallbacks must use the primary model's provider."),
+    );
+  }
+}
+
+/**
+ * The fallback rule of resolveConfiguredHarnessId alone, over every well-formed selection. Every
+ * deployment refuses a fallback on another provider, so Configuration save (through
+ * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
+ * policy rule leaves the rest to deployment (finding 1298). OpenClaw's `openrouter:auto` and
+ * `openrouter:free` count as openrouter references (finding 1320). On a Preset save
+ * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
+ * the first one, as in `openrouter:{{ vars.kind }}`) is checked once filled, on the Configuration
+ * a launch creates (finding 1305).
+ */
+export function requireFallbackProviders(
+  values: Readonly<OpenClawConfigurationDocument>,
+  { unresolved }: ConfigurationValidationOptions = {},
+): void {
+  const agents = asRecord(values.agents);
+  const selections: [unknown, readonly string[], SelectionMessage][] = [
+    [asRecord(agents?.defaults)?.model, ["agents", "defaults", "model"], defaultModelMessage],
+  ];
+  // An entry without its own model has nothing to check here; skipping it keeps a large roster
+  // cheap (finding 1321).
+  for (const [key, entry] of Object.entries(asRecord(agents?.entries) ?? {})) {
+    const model = asRecord(entry)?.model;
+    if (model !== undefined) {
+      selections.push([model, ["agents", "entries", key, "model"], entryModelMessage(key)]);
+    }
+  }
+  // OpenClaw's `openrouter:auto` and `openrouter:free` selectors name the openrouter provider
+  // without a slash (`splitModelRef`), so they are checked as the other references are (finding
+  // 1320), as a fallback and as the primary.
+  const writtenProvider = (
+    selected: unknown,
+    path: readonly (string | number)[],
+  ): selected is string => {
+    const literals = unresolved?.(path);
+    return (
+      (isModelReference(selected) || isOpenRouterSelector(selected)) &&
+      (literals === undefined || literals[0]!.includes("/"))
+    );
+  };
+  for (const [value, at, setting] of selections) {
+    const selection = asRecord(value);
+    if (
+      writtenProvider(selection?.primary, [...at, "primary"]) &&
+      Array.isArray(selection.fallbacks)
+    ) {
+      requirePrimaryProvider(
+        [
+          selection.primary,
+          ...selection.fallbacks.filter((selected: unknown, index: number): selected is string =>
+            writtenProvider(selected, [...at, "fallbacks", index]),
+          ),
+        ],
+        setting,
+      );
+    }
+  }
+}
+
+function configuredModels(value: unknown, setting: SelectionMessage): readonly string[] {
   if (value === undefined) {
     return [];
   }
@@ -28,24 +131,14 @@ function configuredModels(value: unknown): readonly string[] {
   }
   const model = typeof value === "string" ? value : configured?.primary;
   const models = [model, ...(fallbacks ?? [])].map((selected) => {
-    if (
-      !isNonEmptyString(selected) ||
-      !selected.includes("/") ||
-      selected.startsWith("/") ||
-      selected.endsWith("/")
-    ) {
+    if (!isModelReference(selected)) {
       throw new ConfigurationHarnessError(
         "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
       );
     }
     return selected;
   });
-  const primaryProvider = splitModelRef(models[0]!).provider;
-  if (models.some((selected) => splitModelRef(selected).provider !== primaryProvider)) {
-    throw new ConfigurationHarnessError(
-      "Configured model fallbacks must retain the primary provider.",
-    );
-  }
+  requirePrimaryProvider(models, setting);
   return models;
 }
 
@@ -71,32 +164,49 @@ function matchingSelectableModels(
   );
 }
 
-// A provider catalog ID is the complete model ref or the remainder after the provider.
-function isCatalogModelId(id: unknown, reference: string): boolean {
-  return id === reference || id === splitModelRef(reference).id;
-}
+// A provider catalog's rows keyed by id, built once per resolution so that looking up each
+// selected model costs the same however long the catalog is (finding 1316). A row names a model
+// by its complete ref or by the remainder after the provider (always shorter).
+type CatalogIndex = ReadonlyMap<string, readonly Readonly<Record<string, unknown>>[]>;
 
-const providerModelsArrayMessage = (path: string): string =>
-  `Configuration setting ${path}.models must be an array of model entries.`;
+function catalogIndex(rows: readonly unknown[]): CatalogIndex {
+  const index = new Map<string, Readonly<Record<string, unknown>>[]>();
+  for (const value of rows) {
+    const row = asRecord(value);
+    if (typeof row?.id === "string") {
+      const listed = index.get(row.id);
+      if (listed === undefined) {
+        index.set(row.id, [row]);
+      } else {
+        listed.push(row);
+      }
+    }
+  }
+  return index;
+}
 
 function providerModelEntry(
   providerId: string,
   provider: Readonly<Record<string, unknown>>,
   model: string,
+  catalogs: Map<string, CatalogIndex>,
 ): Readonly<Record<string, unknown>> | undefined {
   const configured = provider.models;
   if (configured === undefined) {
     return undefined;
   }
   if (!Array.isArray(configured)) {
-    throw new ConfigurationHarnessError(
-      modelProviderMessage(providerId, providerModelsArrayMessage),
-    );
+    throw providerModelsListError(providerId);
   }
-  const matches = configured.filter((candidate) =>
-    isCatalogModelId(asRecord(candidate)?.id, model),
-  );
-  if (matches.length > 1) {
+  let index = catalogs.get(providerId);
+  if (index === undefined) {
+    index = catalogIndex(configured);
+    catalogs.set(providerId, index);
+  }
+  const { id } = splitModelRef(model);
+  const complete = index.get(model) ?? [];
+  const remainder = (id === undefined ? undefined : index.get(id)) ?? [];
+  if (complete.length + remainder.length > 1) {
     throw new ConfigurationHarnessError(
       modelProviderMessage(
         providerId,
@@ -105,7 +215,7 @@ function providerModelEntry(
       ),
     );
   }
-  return asRecord(matches[0]);
+  return complete[0] ?? remainder[0];
 }
 
 /**
@@ -152,15 +262,26 @@ export function resolveConfiguredHarnessId(
   const defaults = asRecord(agents?.defaults);
   const entries = asRecord(agents?.entries);
   const providerConfigurations = asRecord(asRecord(values.models)?.providers);
-  const defaultSelection = configuredModels(defaults?.model);
+  const defaultSelection = configuredModels(defaults?.model, defaultModelMessage);
   const defaultModels = asRecord(defaults?.models);
-  const candidates: Array<{ model: string; entry?: Readonly<Record<string, unknown>> }> =
-    defaultSelection.map((model) => ({ model }));
+  // The candidates are every model of every selection, in document order: agents.defaults' and
+  // each agents.entries entry's, with the entry whose `models` policy applies to them. An entry
+  // without its own model shares the defaults' list instead of copying it, so the work stays in
+  // step with the document's size (finding 1316).
+  const selections: Array<{
+    models: readonly string[];
+    entry?: Readonly<Record<string, unknown>>;
+  }> = [{ models: defaultSelection }];
+  // The first candidate: every selection's primary must be this one.
+  let primary = defaultSelection[0];
 
   for (const [key, value] of Object.entries(entries ?? {})) {
     // requireAgentsShape refused every entry that is not an object.
     const entry = asRecord(value)!;
-    const selection = entry.model === undefined ? defaultSelection : configuredModels(entry.model);
+    const selection =
+      entry.model === undefined
+        ? defaultSelection
+        : configuredModels(entry.model, entryModelMessage(key));
     const model = selection[0];
     if (model === undefined) {
       throw new ConfigurationHarnessError(
@@ -171,7 +292,7 @@ export function resolveConfiguredHarnessId(
         ),
       );
     }
-    if (candidates[0] !== undefined && model !== candidates[0].model) {
+    if (primary !== undefined && model !== primary) {
       throw new ConfigurationHarnessError(
         agentEntryMessage(
           key,
@@ -180,24 +301,33 @@ export function resolveConfiguredHarnessId(
         ),
       );
     }
+    primary ??= model;
     const models = asRecord(entry.models);
     if (entry.models !== undefined && !matchingSelectableModels(models, model)) {
       throw new ConfigurationHarnessError(
         agentEntryMessage(key, (path) => `Configuration setting ${path}.models ${selectableRule}`),
       );
     }
-    candidates.push(...selection.map((model) => ({ model, entry })));
+    selections.push({ models: selection, entry });
   }
 
-  if (
-    defaults?.models !== undefined &&
-    !matchingSelectableModels(defaultModels, candidates[0]?.model)
-  ) {
+  if (defaults?.models !== undefined && !matchingSelectableModels(defaultModels, primary)) {
     throw new ConfigurationHarnessError(
-      candidates[0] === undefined
+      primary === undefined
         ? "Configuration setting agents.defaults.models needs a primary model: set agents.defaults.model or an agents.entries model."
         : `Configuration setting agents.defaults.models ${selectableRule}`,
     );
+  }
+
+  // The catalog ids that name each provider's candidates (complete ref or remainder), so each
+  // catalog row is checked in constant time.
+  const catalogIds = new Map<string, Set<string>>();
+  for (const models of new Set(selections.map(({ models }) => models))) {
+    for (const model of models) {
+      const { provider, id } = splitModelRef(model);
+      const ids = catalogIds.get(provider) ?? new Set<string>();
+      catalogIds.set(provider, ids.add(model).add(id!));
+    }
   }
 
   for (const [providerId, value] of Object.entries(providerConfigurations ?? {})) {
@@ -214,18 +344,13 @@ export function resolveConfiguredHarnessId(
       continue;
     }
     if (!Array.isArray(provider.models)) {
-      throw new ConfigurationHarnessError(
-        modelProviderMessage(providerId, providerModelsArrayMessage),
-      );
+      throw providerModelsListError(providerId);
     }
+    const ids = catalogIds.get(providerId);
     if (
       provider.models.some((value) => {
         const id = asRecord(value)?.id;
-        return !candidates.some(
-          (candidate) =>
-            splitModelRef(candidate.model).provider === providerId &&
-            isCatalogModelId(id, candidate.model),
-        );
+        return !(typeof id === "string" && ids?.has(id) === true);
       })
     ) {
       throw new ConfigurationHarnessError(
@@ -238,22 +363,23 @@ export function resolveConfiguredHarnessId(
     }
   }
 
-  if (candidates.length === 0) {
+  if (primary === undefined) {
     return "openclaw";
   }
   const resolved = new Set<string>();
   const plugins = asRecord(asRecord(values.plugins)?.entries);
+  const catalogs = new Map<string, CatalogIndex>();
 
-  for (const candidate of candidates) {
-    const providerId = splitModelRef(candidate.model).provider;
+  // The Harness one candidate selects; refusals name no candidate.
+  const resolveCandidate = (model: string, entryPolicy: unknown): string => {
+    const providerId = splitModelRef(model).provider;
     const provider = asRecord(providerConfigurations?.[providerId]);
     const providerModel =
       provider === undefined
         ? undefined
-        : providerModelEntry(providerId, provider, candidate.model);
-    const entryModels = asRecord(candidate.entry?.models);
+        : providerModelEntry(providerId, provider, model, catalogs);
     const policies = new Set(
-      [entryModels?.[candidate.model], defaultModels?.[candidate.model], providerModel, provider]
+      [entryPolicy, defaultModels?.[model], providerModel, provider]
         .map(configuredRuntime)
         .filter((runtime): runtime is string => runtime !== undefined),
     );
@@ -290,7 +416,38 @@ export function resolveConfiguredHarnessId(
         "The Codex Harness requires the native codex model provider.",
       );
     }
-    resolved.add(selected ?? "openclaw");
+    return selected ?? "openclaw";
+  };
+
+  // A candidate depends only on its model and the entry's policy for it, so one that repeats an
+  // earlier one is skipped: the earlier one resolved the same way. The defaults come first, so an
+  // entry that shares their list adds only the models its own `models` policy names, in the
+  // defaults' order.
+  const position = new Map<string, number>();
+  defaultSelection.forEach((model, index) => {
+    if (!position.has(model)) {
+      position.set(model, index);
+    }
+  });
+  const resolvedModels = new Set<string>();
+  for (const { models, entry } of selections) {
+    const entryModels = asRecord(entry?.models);
+    const candidates =
+      entry !== undefined && models === defaultSelection
+        ? Object.keys(entryModels ?? {})
+            .filter((model) => position.has(model))
+            .sort((left, right) => position.get(left)! - position.get(right)!)
+        : models;
+    for (const model of candidates) {
+      const entryPolicy = entryModels?.[model];
+      if (entryPolicy === undefined) {
+        if (resolvedModels.has(model)) {
+          continue;
+        }
+        resolvedModels.add(model);
+      }
+      resolved.add(resolveCandidate(model, entryPolicy));
+    }
   }
 
   if (resolved.size !== 1) {

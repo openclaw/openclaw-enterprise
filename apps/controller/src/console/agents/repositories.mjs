@@ -1,5 +1,6 @@
-import { element, button } from "../dom.mjs";
+import { element, button, setText } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
+import { visibleText } from "./logs-view.mjs";
 import {
   repositoryProfiles,
   repositoryProfile,
@@ -13,6 +14,25 @@ const DESCRIPTION_REQUEST_DELAY = 250;
 const DESCRIPTION_REFRESH_DELAY = 2_000;
 const DESCRIPTION_REFRESH_MAX_DELAY = 30_000;
 const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
+// A description shows like a log line (visibleText escapes invisible and bidi characters), except
+// for the joiners and the England, Scotland and Wales flags the credential service keeps (group 1),
+// so emoji and Persian or Indic words display intact. Keep in step with hiddenCharacter in
+// apps/controller/src/drivers/repo/github/credentials/descriptions.ts.
+const DESCRIPTION_CHARACTER =
+  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[^]/gu;
+
+function descriptionText(value) {
+  return String(value).replace(
+    DESCRIPTION_CHARACTER,
+    (character, kept) => kept ?? visibleText(character),
+  );
+}
+
+// Search casing that does not follow the browser locale (#2317): en-US lower case, where the
+// Turkish capital İ lowers to i and a combining dot above, so the dot is dropped, and the
+// dotless ı reads as i, so a query of İstanbul or ıstanbul finds istanbul (finding 1252).
+const searchCase = (value) =>
+  value.toLocaleLowerCase("en-US").replaceAll("ı", "i").replaceAll("i\u0307", "i");
 
 function recentRepositories(key) {
   if (!key) {
@@ -31,10 +51,10 @@ function recentRepositories(key) {
 
 function repositoryResults(options, recent, { query: queryText, browsing, page: requestedPage }) {
   const small = options.length <= 5;
-  const query = queryText.trim().toLocaleLowerCase();
+  const query = searchCase(queryText.trim());
   const rank = (entry) => {
     const names = [entry.displayName, entry.repositoryRef].flatMap((value) => {
-      const name = value.toLocaleLowerCase();
+      const name = searchCase(value);
       return [name, name.split("/").at(-1)];
     });
     if (names.includes(query)) {
@@ -56,7 +76,7 @@ function repositoryResults(options, recent, { query: queryText, browsing, page: 
     .filter(
       (entry) =>
         !query ||
-        [entry.displayName, entry.repositoryRef].some((v) => v.toLocaleLowerCase().includes(query)),
+        [entry.displayName, entry.repositoryRef].some((v) => searchCase(v).includes(query)),
     )
     .sort(
       (a, b) =>
@@ -452,8 +472,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     const list = element("ul", { className: "repository-results-list" });
     for (const entry of visible) {
       const selected = state.selected.has(entry.repositoryRef);
-      const displayName = entry.displayName.toLocaleLowerCase();
-      const reference = entry.repositoryRef.toLocaleLowerCase();
+      const displayName = searchCase(entry.displayName);
+      const reference = searchCase(entry.repositoryRef);
       const showReference =
         reference !== displayName && reference !== displayName.split("/").at(-1);
       const readOnly = entry.allowedProfiles.every((profile) => profile === "git-read");
@@ -480,7 +500,11 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           { className: "repository-identity" },
           element("strong", {}, entry.displayName),
           typeof entry.description === "string" && entry.description.trim()
-            ? element("span", { className: "repository-description" }, entry.description)
+            ? element(
+                "span",
+                { className: "repository-description" },
+                descriptionText(entry.description),
+              )
             : null,
           showReference || readOnly
             ? element(
@@ -871,9 +895,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           description = element("span", { className: "repository-description" });
           identity.querySelector("strong").after(description);
         }
-        if (description.textContent !== entry.description) {
-          description.textContent = entry.description;
-        }
+        setText(description, descriptionText(entry.description));
       } else {
         description?.remove();
       }

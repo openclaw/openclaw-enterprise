@@ -2,12 +2,12 @@
 set -euo pipefail
 
 profile="${1:-baseline}"
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+root_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 bin_dir="${RUNNER_TEMP:-/tmp/claw-ent-ci-implementation}/bin"
 platform="$(uname -s)-$(uname -m)"
 
 mkdir -p "${bin_dir}"
-cd "${root_dir}"
+CDPATH="" cd "${root_dir}"
 export PATH="${bin_dir}:${PATH}"
 
 need_command() {
@@ -245,7 +245,9 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    pnpm exec playwright install --with-deps chromium
+    # Every test launches Chromium headless, which runs the headless shell, so
+    # skip the full Chrome for Testing download (about 190 MB, 7 s).
+    pnpm exec playwright install --with-deps --only-shell chromium
   else
     echo "Skipping local browser installation; browser setup is CI-only." >&2
   fi

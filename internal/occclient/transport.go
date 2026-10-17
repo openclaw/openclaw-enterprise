@@ -9,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,13 +32,19 @@ type Config struct {
 type Client struct {
 	ctx        context.Context
 	baseURL    *url.URL
-	serviceKey string
+	serviceKey serviceKey
 	http       *http.Client
+}
+
+type serviceKey struct {
+	key       string
+	namespace string
 }
 
 type serviceKeyEnvelope struct {
 	Data struct {
-		Key string `json:"key"`
+		Key         string         `json:"key"`
+		NamespaceID jsontext.Value `json:"namespaceId"`
 	} `json:"data"`
 }
 
@@ -56,6 +63,9 @@ type APIError struct {
 	Message    string
 	RetryAfter time.Duration
 	Location   string
+	// ServiceKeyNamespace is local metadata recorded with the key for this request.
+	// It is not an assertion by the server or a source of authorization.
+	ServiceKeyNamespace string
 	// redirectOrigin is the Location's scheme://host when it differs from OCC_URL.
 	redirectOrigin string
 }
@@ -79,7 +89,7 @@ func (err *APIError) Error() string {
 	}
 	if err.RetryAfter > 0 {
 		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
-		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(err.RetryAfter/time.Second))
+		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(math.Ceil(err.RetryAfter.Seconds())))
 	}
 	return message
 }
@@ -206,7 +216,7 @@ func (client *Client) executeQuery(
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("failed to create OCC request: %w", err)
 	}
-	request.Header.Set("x-api-key", client.serviceKey)
+	request.Header.Set("x-api-key", client.serviceKey.key)
 	if body != nil {
 		request.Header.Set("content-type", "application/json")
 	}
@@ -259,7 +269,7 @@ func resourceURL(baseURL *url.URL, segments []string) (*url.URL, error) {
 }
 
 func (client *Client) apiError(status int, header http.Header, body []byte) error {
-	result := &APIError{Status: status}
+	result := &APIError{Status: status, ServiceKeyNamespace: client.serviceKey.namespace}
 	var envelope errorEnvelope
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Code != "" {
 		result.Code = envelope.Error.Code
@@ -267,6 +277,10 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	}
 	if seconds, err := strconv.Atoi(header.Get("retry-after")); err == nil && seconds > 0 && seconds <= 3600 {
 		result.RetryAfter = time.Duration(seconds) * time.Second
+	} else if until, err := http.ParseTime(header.Get("retry-after")); err == nil {
+		if remaining := time.Until(until); remaining > 0 && remaining <= time.Hour {
+			result.RetryAfter = (remaining + time.Second - 1).Truncate(time.Second)
+		}
 	}
 	if status >= http.StatusMultipleChoices && status < http.StatusBadRequest {
 		// Drop userinfo, query, and fragment: a sign-in redirect can carry tokens there.
@@ -285,20 +299,23 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	return result
 }
 
-func readServiceKey(path string) (string, error) {
+func readServiceKey(path string) (serviceKey, error) {
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("failed to read service-key file %s: %w", path, err)
+		return serviceKey{}, fmt.Errorf("failed to read service-key file %s: %w", path, err)
 	}
 	var envelope serviceKeyEnvelope
 	if err := json.Unmarshal(contents, &envelope); err != nil {
-		return "", fmt.Errorf("invalid service-key file %s: %w", path, err)
+		return serviceKey{}, fmt.Errorf("invalid service-key file %s: %w", path, err)
 	}
 	key := envelope.Data.Key
 	if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n") {
-		return "", fmt.Errorf("invalid service-key file %s", path)
+		return serviceKey{}, fmt.Errorf("invalid service-key file %s", path)
 	}
-	return key, nil
+	// Optional display metadata must not make an otherwise usable key unreadable.
+	var namespace string
+	_ = json.Unmarshal(envelope.Data.NamespaceID, &namespace)
+	return serviceKey{key: key, namespace: namespace}, nil
 }
 
 func httpTransport(caBundle string) (*http.Transport, error) {

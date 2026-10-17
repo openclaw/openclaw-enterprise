@@ -685,11 +685,17 @@ export const agentRevisions = occSchema.table(
         AND (${table.admittedSpec} #>> '{harness,mode}') IN ('embedded', 'dedicated')
         AND jsonb_typeof(${table.admittedSpec}->'compute') = 'object'
         AND ((${table.admittedSpec}->'compute') ?& ARRAY['id', 'implementation'])
-        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation') = '{}'::jsonb
+        AND ((${table.admittedSpec}->'compute') - 'id' - 'implementation' - 'admission') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,id}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,id}'), '') <> ''
         AND jsonb_typeof(${table.admittedSpec} #> '{compute,implementation}') = 'string'
         AND COALESCE(btrim(${table.admittedSpec} #>> '{compute,implementation}'), '') <> ''
+        AND (
+          NOT ((${table.admittedSpec}->'compute') ? 'admission')
+          OR (jsonb_typeof(${table.admittedSpec} #> '{compute,admission}') = 'string'
+              AND char_length(${table.admittedSpec} #>> '{compute,admission}') BETWEEN 1 AND 1024
+              AND (${table.admittedSpec} #>> '{compute,admission}') ~ '^[ -~]+$')
+        )
         AND (
           NOT (${table.admittedSpec} ? 'sandbox_driver_id')
           OR (
@@ -1150,6 +1156,13 @@ export const controllerWork = occSchema.table(
         AND (
           (
             ${table.state} = 'failed_permanent'
+            AND ${table.reasonCode} IN ('HARNESS_CREDENTIAL_BOOTSTRAP_FAILED', 'HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT')
+            AND (${table.resultData} - 'preparation') = '{}'::jsonb
+            AND occ.compute_preparation_failure_is_valid(${table.resultData}->'preparation')
+          )
+          OR
+          (
+            ${table.state} = 'failed_permanent'
             AND ${table.reasonCode} = 'CONVERGENCE_DEADLINE_EXCEEDED'
             AND ${table.resultData} ? 'timeoutMs'
             AND (${table.resultData} - 'timeoutMs' - 'runtimeFailure') = '{}'::jsonb
@@ -1320,8 +1333,8 @@ export const agentProvisioningWork = occSchema.table(
       sql`${table.status} <> 'succeeded' OR (${table.completedPhase} = 'handoff' AND ${table.agentId} IS NOT NULL AND ${table.revisionId} IS NOT NULL)`,
     ),
     check(
-      "agent_provisioning_failed_before_handoff",
-      sql`${table.status} NOT IN ('failed', 'cancelled') OR ${table.revisionId} IS NULL`,
+      "agent_provisioning_admitted_revision_status_valid",
+      sql`${table.revisionId} IS NULL OR ${table.status} IN ('running', 'succeeded', 'failed')`,
     ),
   ],
 );

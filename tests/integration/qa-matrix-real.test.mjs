@@ -13,7 +13,7 @@ test(
   {
     skip: selected
       ? false
-      : "Set OCC_TEST_QA_MATRIX=1; see docs/testing/qa-matrix.md for authorized credentials.",
+      : "Set OCC_TEST_QA_MATRIX=1; see docs/testing/ci.md#qa-matrix for authorized credentials.",
     timeout: 14_400_000,
   },
   async (context) => {

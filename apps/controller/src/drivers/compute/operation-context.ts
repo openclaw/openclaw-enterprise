@@ -2,9 +2,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 
+/**
+ * Which optional wait asks whether other Work is waiting: an ordinary stop's Gateway drain, or any
+ * other wait (a refused candidate's stop, the workspace node binding ack or pairing, D221).
+ */
+export type ComputeWorkWait = "gateway-drain" | "optional";
+
 const operationSignals = new AsyncLocalStorage<AbortSignal>();
-const workWaitingChecks = new AsyncLocalStorage<() => Promise<boolean>>();
-const yieldingStops = new AsyncLocalStorage<true>();
+const workWaitingChecks = new AsyncLocalStorage<(wait: ComputeWorkWait) => Promise<boolean>>();
+/**
+ * How a stop's termination waits may yield: every wait of a refused candidate's stop, or only the
+ * Gateway drain of an ordinary stop.
+ */
+type YieldingStop = "refused-candidate" | "gateway-drain";
+const yieldingStops = new AsyncLocalStorage<YieldingStop>();
 
 export function currentComputeAbortSignal(): AbortSignal | undefined {
   return operationSignals.getStore();
@@ -20,10 +31,10 @@ export async function withComputeAbortSignal<Result>(
 
 /**
  * Runs a worker operation that can tell Compute whether other Work is waiting
- * for the worker that runs it.
+ * for the worker that runs it. `check` learns which kind of wait asks.
  */
 export async function withComputeWorkWaiting<Result>(
-  check: () => Promise<boolean>,
+  check: (wait: ComputeWorkWait) => Promise<boolean>,
   operation: () => Promise<Result>,
 ): Promise<Result> {
   return workWaitingChecks.run(check, operation);
@@ -37,13 +48,13 @@ export async function withComputeWorkWaiting<Result>(
  * Outside a worker operation, or when the check fails, nothing is waiting, so
  * the caller keeps its normal bounded wait.
  */
-export async function computeWorkWaiting(): Promise<boolean> {
+export async function computeWorkWaiting(wait: ComputeWorkWait = "optional"): Promise<boolean> {
   const check = workWaitingChecks.getStore();
   if (check === undefined) {
     return false;
   }
   try {
-    return (await check()) === true;
+    return (await check(wait)) === true;
   } catch {
     return false;
   }
@@ -54,22 +65,40 @@ export async function computeWorkWaiting(): Promise<boolean> {
  * waiting: the caller retries the whole stop later (a refused candidate's stop).
  * Such a stop deletes the runtime before it waits for the Gateway to drain, so a
  * wait that ends leaves only later steps, such as artifact cleanup, to that retry.
- * Other stops keep their order and their full bounded wait.
  */
 export async function withYieldingComputeStop<Result>(
   operation: () => Promise<Result>,
 ): Promise<Result> {
-  return yieldingStops.run(true, operation);
+  return yieldingStops.run("refused-candidate", operation);
 }
 
-/** Whether this operation is a yielding (refused-candidate) stop. */
+/**
+ * Runs an ordinary stop whose Gateway drain wait may end early when other Work is waiting: the
+ * caller retries the whole stop later, repeating the idempotent deletes and the bounded wait
+ * (finding 1088). The stop keeps its order: the Gateway drains into the running Harness, which
+ * is deleted only once the Gateway's Pods are gone, and the Harness's own waits never yield.
+ */
+export async function withYieldingGatewayDrain<Result>(
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  return yieldingStops.run("gateway-drain", operation);
+}
+
+/** Whether this operation is a refused candidate's stop, which deletes the Harness first. */
 export function isYieldingComputeStop(): boolean {
-  return yieldingStops.getStore() === true;
+  return yieldingStops.getStore() === "refused-candidate";
 }
 
-/** Whether a stop's termination wait should end now because other Work is waiting. */
-export async function computeStopShouldYield(): Promise<boolean> {
-  return yieldingStops.getStore() === true && (await computeWorkWaiting());
+/**
+ * Whether a stop's termination wait for `role`'s Pods should end now because other Work is
+ * waiting. Other stops keep their full bounded waits.
+ */
+export async function computeStopShouldYield(role?: "agent" | "gateway"): Promise<boolean> {
+  const mode = yieldingStops.getStore();
+  if (mode === "gateway-drain") {
+    return role === "gateway" && (await computeWorkWaiting("gateway-drain"));
+  }
+  return mode === "refused-candidate" && (await computeWorkWaiting("optional"));
 }
 
 /**

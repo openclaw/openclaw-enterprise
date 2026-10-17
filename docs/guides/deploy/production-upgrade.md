@@ -24,7 +24,7 @@ The command supports the production Helm and Kubernetes Compute path. It does
 not build images, create backups, provision infrastructure, or prove model and
 external integration behavior. It upgrades only the `openclaw-enterprise` chart:
 on the experimental two-cluster profile, first
-[upgrade the execution chart](../../testing/two-cluster-local.md#upgrade-the-execution-chart).
+[upgrade the execution chart](../../testing/kubernetes.md#upgrade-the-execution-chart).
 
 ## Prepare the release
 
@@ -79,7 +79,7 @@ deployment snapshots the current draft, not the previous active revision.
 
 A controller-only release does not deploy Agents, but the new worker can
 restart their Pods once
-([details](breaking-changes.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
+([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
 Restarting the repository
 broker loses delivered sessions. Before a release,
 plan interruption and authorized replacement revisions for affected Agents;

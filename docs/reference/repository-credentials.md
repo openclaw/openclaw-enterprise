@@ -18,7 +18,7 @@ owns consumer access to the credential sidecar and the repository-bound Codex
 proxy policy, which allows the exact broker hostname with `allow_local_binding = true`
 and `mode = "full"`, disabling Codex's private-address guard and permitting every
 HTTP method at otherwise allowed destinations. Explicit denies, NetworkPolicy,
-TLS and broker authorization still apply. Unbound Agents keep their policy.
+TLS and broker authorization still apply. Operators can enable [anonymous public reads](public-github-reads.md).
 
 The separate service owns protected configuration, private sender callbacks and
 the `open`, `status`, `close` and `shutdown` controls; separate Git/gh artifacts
@@ -120,6 +120,7 @@ the [installation procedure](../guides/deploy/production-installation.md).
 `GET /namespaces/:namespaceId/agents/repository-options` requires Agent `create`;
 the exact-Agent editing route requires `update`. Both return approved
 `repositoryRef`, `displayName`, `allowedProfiles` and optional `description`.
+Descriptions allow 512 Unicode code points.
 `descriptionRefs` accepts up to 20 unique, comma-separated refs;
 `meta.descriptionsPending` signals background work, and missing descriptions never
 block selection. Authorized discovery failure yields
@@ -127,8 +128,8 @@ block selection. Authorized discovery failure yields
 yields 409. Only success or that outage permits a fresh ordinary draft; editing
 requires success. Writes reauthorize and resolve.
 
-The service rechecks approved refs and fetches metadata with a private,
-repository-scoped Metadata-read token, validating GitHub's numeric repository ID;
+The service rechecks approval and fetches metadata with repository-scoped
+Metadata-read tokens, verifying GitHub's numeric repository ID;
 the Driver checks provider, App, installation and repository IDs. Lookups share
 provider capacity and token cleanup with sessions and are cached for five minutes.
 Descriptions never grant access.
@@ -313,10 +314,13 @@ workflows are unsupported.
 
 The generated defaults scope helper reset, `credential.useHttpPath=true`, verified
 TLS, optional CA trust and disabled redirects to the exact gateway HTTPS origin.
-The helper checks effective protocol, host/port, username and repository path;
-escaped paths, dot segments, extra components and unmatched names receive no
-bearer. A literal name ending in `.git` can overlap another admitted identity;
-the helper compares both spellings and refuses ambiguity or alternate grants.
+The helper checks effective protocol, host/port, username and repository path.
+Git decodes percent-escapes in the host, username and path first, so an escaped
+spelling of an admitted gateway host and repository receives a bearer; it can
+reach no other host, and the gateway refuses any `%` in a request path. Dot
+segments, extra components and unmatched names receive no bearer. A literal
+name ending in `.git` can overlap another admitted identity; the helper compares
+both spellings and refuses ambiguity or alternate grants.
 
 Duplicate repository bindings remain valid. Select one with `OCE_REPOSITORY_REF`;
 gh also propagates `OCE_REPOSITORY_SELECTION` containing generation, repository
@@ -344,8 +348,20 @@ slots per session, one provider action and 64 queued actions, 64 sockets per
 listener, and 32 exchanges total and four per session. Headers are limited to 32 KiB/64 pairs;
 request targets to 8 KiB. Git fetch input is 1 MiB; push input and Git output are
 256 MiB. API input is 1 MiB and response data 8 MiB. Git gzip input has independent
-wire and decoded limits. Exchanges have a five-minute total bound and 60-second
-credential margin. The
+wire and decoded limits. Exchanges have a five-minute total bound, a 30-second
+response-header wait, a five-second progress timeout and a 60-second credential margin.
+
+For larger upload-pack responses, operators can configure `gitFetchResponseBytes`,
+`gitFetchFirstHeaderMs`, `gitFetchStallMs`, `gitFetchExchangeMs` and `maxExchangeMs`
+in the protected service configuration. For example, set these to 17179869184
+(16 GiB), 60000, 60000, 1800000 and 1800000 respectively. Existing explicit
+`gitResponseBytes`, `firstHeaderMs`, `stallMs` and `exchangeMs` overrides also apply
+to upload-pack unless the corresponding upload-pack limit is set. `maxExchangeMs`
+caps every exchange; an `exchangeMs` override sets this ceiling unless configured
+separately. Session expiry can end requests sooner. Credential validity must cover
+the deadline plus the credential margin; development static-token upload-pack is
+capped at the lease less two margins. Each stream consumes a socket and exchange slot.
+The
 [dispatch flow](../flows/repository-credentials.md#4-reserve-acquire-and-dispatch)
 owns upstream-origin capture, adapter-header reconstruction and per-phase
 client-header, response-header, connection, input and stall deadlines.

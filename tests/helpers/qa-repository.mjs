@@ -1,14 +1,16 @@
+import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
-import { protectedText, registerQaSecret } from "./qa-secrets.mjs";
+import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
 
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
@@ -270,18 +272,307 @@ export async function prepareQaRepository(f) {
   await f.saveInstallation(f.configuration);
 }
 
-export async function stopQaAgent(f, agent) {
+// The serial worker waits for the Gateway's whole active-work drain, bounded by
+// GATEWAY_STOP_TIMEOUT_MS plus one Kubernetes request, before it deletes the
+// Harness and clears activeRevisionId (finding 1088). Allow that bound plus three
+// minutes for the Harness to terminate and the API to observe it, as
+// first-agent-smoke does. This is a QA allowance, not a product bound. While
+// ordinary stops hold the serial worker, a stop queued behind another Agent's
+// full drain (OCC_TEST_QA_CONCURRENCY > 1) can still exceed it; the slow-stop
+// evidence below then names the drain.
+export const QA_STOP_TIMEOUT_MS = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
+// A stop slower than this passes, but leaves evidence. One still running past it
+// captures the platform logs once, while the Gateway is still draining: its drain
+// lines name the work it waits for (finding 1076).
+export const QA_SLOW_STOP_MS = 60_000;
+
+// `now` is the clock for both the slow-stop threshold and the timeout; tests pass a
+// fake one with `interval: 0`, so neither bound costs real time.
+export async function stopQaAgent(
+  f,
+  agent,
+  { timeout = QA_STOP_TIMEOUT_MS, slowAfter = QA_SLOW_STOP_MS, now = Date.now, interval } = {},
+) {
+  // Evidence files are created exclusively: a repeated stop of one Agent gets its own names.
+  agent.stopCalls = (agent.stopCalls ?? 0) + 1;
+  const label = agent.stopCalls === 1 ? agent.id : `${agent.id}-${agent.stopCalls}`;
+  const startedAt = now();
   await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
-  await waitFor("ordinary Agent stop removes every runtime Pod", async () => {
-    const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`);
-    const pods = JSON.parse(
-      await f.kubectl("get", "pods", "-A", "-l", `openclaw.dev/agent=${agent.id}`, "-o", "json"),
-    ).items;
-    return (
-      current.desiredRuntimeState === "stopped" && !current.activeRevisionId && pods.length === 0
+  let last;
+  let slow;
+  try {
+    await waitFor(
+      "ordinary Agent stop removes every runtime Pod",
+      async () => {
+        const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`);
+        const pods = JSON.parse(
+          await f.kubectl(
+            "get",
+            "pods",
+            "-A",
+            "-l",
+            `openclaw.dev/agent=${agent.id}`,
+            "-o",
+            "json",
+          ),
+        ).items;
+        last = { current, pods };
+        const done =
+          current.desiredRuntimeState === "stopped" &&
+          !current.activeRevisionId &&
+          pods.length === 0;
+        if (!done && !slow && now() - startedAt > slowAfter) {
+          slow = await captureSlowStop(f, label, last, now() - startedAt, slowAfter);
+        }
+        return done;
+      },
+      timeout,
+      { describe: () => describeStopObservation(last), interval, now },
     );
-  });
+  } catch (error) {
+    if (last && /^Timed out: /.test(error.message)) {
+      try {
+        const file = await recordPlatformLogs(f, `${label}-stop-timeout`, last.pods);
+        if (file) {
+          error.message += `; API and worker logs: ${file}`;
+        }
+      } catch (logError) {
+        error.message += `; API and worker logs unavailable (${logError.message})`;
+      }
+      if (slow?.platformLogs) {
+        error.message += `; drain evidence after ${Math.round(slow.observedAfterMs / 1000)} s: ${slow.platformLogs}`;
+      }
+    }
+    throw error;
+  }
+  const elapsedMs = now() - startedAt;
+  if (slow || elapsedMs > slowAfter) {
+    try {
+      await f.record(`${label}-slow-stop`, { thresholdMs: slowAfter, ...slow, elapsedMs });
+    } catch {
+      // Diagnostic only: a stop that completed must not fail on its evidence.
+    }
+    process.stderr.write(
+      `QA slow stop (diagnostic, not a failure): Agent ${agent.id} took ${Math.round(elapsedMs / 1000)} s` +
+        `${slow?.platformLogs ? `; drain evidence: ${slow.platformLogs}` : ""}\n`,
+    );
+  }
   agent.stopped = true;
+}
+
+async function captureSlowStop(f, label, observation, elapsedMs, thresholdMs) {
+  const slow = {
+    thresholdMs,
+    observedAfterMs: elapsedMs,
+    observation: JSON.parse(describeStopObservation(observation)),
+  };
+  try {
+    slow.platformLogs = await recordPlatformLogs(f, `${label}-slow-stop`, observation.pods);
+  } catch (error) {
+    slow.platformLogsUnavailable = redactedQaTail(error.message, qaLogEnv(f), {
+      lines: 4,
+      lineChars: 400,
+    });
+  }
+  return slow;
+}
+
+// Only identifiers and lifecycle fields: no specs, environments or Secret data.
+export function describeStopObservation(observation) {
+  if (!observation) {
+    return "none";
+  }
+  const { current, pods } = observation;
+  const remaining = pods.slice(0, 10).map(({ metadata = {}, status = {} }) => ({
+    namespace: metadata.namespace,
+    name: metadata.name,
+    phase: status.phase,
+    deletionTimestamp: metadata.deletionTimestamp ?? null,
+    finalizers: metadata.finalizers ?? [],
+  }));
+  return JSON.stringify({
+    desiredRuntimeState: current?.desiredRuntimeState,
+    activeRevisionId: current?.activeRevisionId ?? null,
+    pods: remaining,
+    ...(pods.length > remaining.length ? { omittedPods: pods.length - remaining.length } : {}),
+  });
+}
+
+const platformLogLines = 600;
+const platformLogLineChars = 2_000;
+// Fixed launcher settings, not secrets: the generated cluster and project name,
+// its state directory (under the runner's temp directory), the k3s image the
+// workflows pin and the driver names appear on many lines, and replacing them (or
+// "kubernetes") would garble the logs. The controller, runtime and repository
+// image overrides and anything secret-bearing stay private.
+const publicLauncherSettings = new Set([
+  "OCC_DEVELOPMENT_COMPOSE_PROJECT",
+  "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+  "OCC_DEVELOPMENT_CONTAINER_ENGINE",
+  "OCC_DEVELOPMENT_CONTROL_PLANE",
+  "OCC_DEVELOPMENT_K3S_IMAGE",
+  "OCC_DEVELOPMENT_KUBERNETES_CLUSTER",
+  "OCC_DEVELOPMENT_SANDBOX_DRIVER",
+  "OCC_DEVELOPMENT_STATE_DIRECTORY",
+]);
+
+// The Gateway drains in-flight work for up to 315 s on SIGTERM and logs what it
+// waits for. Keep only its own drain and shutdown messages.
+const gatewayDrainLine =
+  /draining active work|active-work drain|all active work drained|shutdown budget|shutdown drain|received SIG(TERM|INT)/i;
+const gatewayDrainLines = 40;
+// Extra worker reads (rollout Pods, previous containers) keep a shorter tail.
+const extraWorkerLogLines = 200;
+const platformEvents = 60;
+
+// Lifecycle fields only: which Pods ran, when they started and why they restarted.
+function podRestarts({ metadata = {}, status = {} }) {
+  return {
+    name: metadata.name,
+    component: metadata.labels?.["app.kubernetes.io/component"],
+    phase: status.phase,
+    startTime: status.startTime ?? null,
+    deletionTimestamp: metadata.deletionTimestamp ?? null,
+    containers: (status.containerStatuses ?? []).map(({ name, restartCount, lastState }) => ({
+      name,
+      restartCount,
+      lastTerminated: lastState?.terminated
+        ? {
+            reason: lastState.terminated.reason,
+            exitCode: lastState.terminated.exitCode,
+            finishedAt: lastState.terminated.finishedAt,
+          }
+        : null,
+    })),
+  };
+}
+
+function qaLogEnv(f) {
+  return Object.fromEntries(
+    Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
+  );
+}
+
+// The QA evidence artifact is uploaded on every run, and only its *.json files;
+// keep the API and worker log tails there, redacted, for the kubernetes control
+// plane (Compose runs them as containers outside the cluster), plus each worker
+// Pod during a rollout, a restarted worker's previous log, platform Pod restarts, recent
+// Events in the platform and remaining Agent Namespaces, and the drain lines of each
+// remaining Gateway Pod. Returns the file name.
+async function recordPlatformLogs(f, label, remainingPods = []) {
+  if (f.controlPlane !== "kubernetes") {
+    return;
+  }
+  const env = qaLogEnv(f);
+  const tail = (text, lines = platformLogLines, lineChars = platformLogLineChars) =>
+    redactedQaTail(text, env, { lines, lineChars });
+  const attempt = async (read) => {
+    try {
+      return await read();
+    } catch (error) {
+      return { unavailable: tail(error.message, 12, 800) };
+    }
+  };
+  const platformNamespace = f.state.platformNamespace;
+  const containerTail = async (target, container, ...options) => {
+    const lines = target.startsWith("deployment/") ? platformLogLines : extraWorkerLogLines;
+    return tail(
+      await f.kubectl(
+        "-n",
+        platformNamespace,
+        "logs",
+        target,
+        "--container",
+        container,
+        ...options,
+        "--timestamps",
+        `--tail=${lines}`,
+        "--request-timeout=30s",
+      ),
+      lines,
+    );
+  };
+  const logs = {};
+  logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
+  logs.worker = await attempt(() =>
+    containerTail("deployment/openclaw-enterprise-worker", "worker"),
+  );
+  const platformPods = await attempt(async () =>
+    JSON.parse(
+      await f.kubectl(
+        "-n",
+        platformNamespace,
+        "get",
+        "pods",
+        "-o",
+        "json",
+        "--request-timeout=30s",
+      ),
+    ).items.map(podRestarts),
+  );
+  logs.platformPods = platformPods;
+  // `logs deployment/...` reads one Pod and never its previous container: during
+  // a rollout read every worker Pod by name, and a restarted one's previous log.
+  const workerPods = Array.isArray(platformPods)
+    ? platformPods.filter(({ component }) => component === "worker")
+    : [];
+  for (const pod of workerPods) {
+    if (workerPods.length > 1) {
+      (logs.workerPods ??= {})[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    }
+    if (pod.containers.find(({ name }) => name === "worker")?.restartCount > 0) {
+      (logs.workerPrevious ??= {})[pod.name] = await attempt(() =>
+        containerTail(pod.name, "worker", "--previous"),
+      );
+    }
+  }
+  const eventNamespaces = [
+    platformNamespace,
+    ...new Set(
+      remainingPods
+        .map(({ metadata }) => metadata?.namespace)
+        .filter((namespace) => namespace && namespace !== platformNamespace),
+    ),
+  ];
+  logs.events = {};
+  for (const namespace of eventNamespaces) {
+    logs.events[namespace] = await attempt(async () =>
+      JSON.parse(
+        await f.kubectl("-n", namespace, "get", "events", "-o", "json", "--request-timeout=30s"),
+      )
+        .items.map((event) => ({
+          time: event.lastTimestamp ?? event.eventTime ?? event.metadata?.creationTimestamp ?? null,
+          type: event.type,
+          reason: event.reason,
+          object: `${event.involvedObject?.kind}/${event.involvedObject?.name}`,
+          count: event.count ?? 1,
+          message: tail(event.message ?? "", 1, 400)[0] ?? "",
+        }))
+        .sort((left, right) => String(left.time ?? "").localeCompare(String(right.time ?? "")))
+        .slice(-platformEvents),
+    );
+  }
+  for (const { metadata = {} } of remainingPods) {
+    if (metadata.labels?.["openclaw.dev/workload-role"] !== "gateway") {
+      continue;
+    }
+    (logs.gatewayDrain ??= {})[metadata.name] = await attempt(async () => {
+      const text = await f.kubectl(
+        "-n",
+        metadata.namespace,
+        "logs",
+        metadata.name,
+        "--container",
+        "gateway",
+        "--timestamps",
+        `--tail=${platformLogLines * 4}`,
+        "--request-timeout=30s",
+      );
+      const kept = text.split("\n").filter((line) => gatewayDrainLine.test(line));
+      return kept.length === 0 ? [] : tail(kept.join("\n"), gatewayDrainLines, 800);
+    });
+  }
+  return f.record(`${label}-platform-logs`, { capturedAt: new Date().toISOString(), logs });
 }
 
 export async function verifyQaRepository(f, agent, profile = "git-full") {
@@ -293,15 +584,25 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   );
   const entry = f.repositoryEntry;
   const repository = entry.repository;
-  const observerToken = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE
-    ? await protectedText(
-        process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE,
-        "independent GitHub observer credential",
-      )
+  const observerTokenPath = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE;
+  const observerAppInput = process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY;
+  const observerBinary = process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY;
+  if (process.env.QA_REPOSITORY_FIXTURE === "isolated") {
+    assert.ok(observerAppInput, "isolated repository fixture requires App-backed observer input");
+    assert.ok(
+      !observerTokenPath,
+      "isolated repository fixture must not use a static observer token",
+    );
+    assert.ok(!observerBinary, "isolated repository fixture must not use a managed gh wrapper");
+  }
+  const observerToken = observerTokenPath
+    ? await protectedText(observerTokenPath, "independent GitHub observer credential")
     : undefined;
-  assert.ok(
-    observerToken || process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY,
-    "select an independent observer credential or managed gh wrapper",
+  const selectedObservers = [observerToken, observerAppInput, observerBinary].filter(Boolean);
+  assert.equal(
+    selectedObservers.length,
+    1,
+    "select exactly one independent observer credential, App input directory, or managed gh wrapper",
   );
   // A selected managed wrapper may authenticate from its caller's environment.
   // Forward credentials only to the host observer/Git calls, never the launcher
@@ -309,22 +610,31 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   const observerEnvironment = observerToken
     ? { GH_TOKEN: observerToken }
     : Object.fromEntries(
-        ["GH_TOKEN", "GITHUB_TOKEN"]
-          .filter((name) => process.env[name])
-          .map((name) => [name, process.env[name]]),
+        observerAppInput
+          ? []
+          : ["GH_TOKEN", "GITHUB_TOKEN"]
+              .filter((name) => process.env[name])
+              .map((name) => [name, process.env[name]]),
       );
   for (const value of Object.values(observerEnvironment)) {
     registerQaSecret(value);
   }
-  const observe = createRepositoryObserver({
-    repository,
-    binary: process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY ?? "gh",
-    run: (cmd, args, options) =>
-      f.run(cmd, args, {
-        ...options,
-        env: { ...f.env, ...options?.env, ...observerEnvironment },
-      }),
-  });
+  const runObserverCommand = (cmd, args, options) =>
+    f.run(cmd, args, {
+      ...options,
+      env: { ...f.env, ...options?.env, ...observerEnvironment },
+    });
+  const observe = observerAppInput
+    ? await createGitHubAppRepositoryObserver({
+        repository,
+        inputDirectory: observerAppInput,
+        run: runObserverCommand,
+      })
+    : createRepositoryObserver({
+        repository,
+        binary: observerBinary ?? "gh",
+        run: runObserverCommand,
+      });
   const { data: remote } = await observe("GET");
   assert.equal(String(remote.id), String(entry.repositoryId));
   assert.equal(remote.full_name.toLowerCase(), repository.toLowerCase());

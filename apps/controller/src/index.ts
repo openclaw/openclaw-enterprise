@@ -36,6 +36,7 @@ import {
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
+  type CredentialSourceReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -74,10 +75,15 @@ import Fastify, {
   type FastifySchema,
   type HTTPMethods,
   type InjectOptions,
+  type RouteGenericInterface,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
+import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "./auth/configuration.ts";
 import {
   OCC_SERVICE_KEY_HEADER,
   SERVICE_KEY_NAME_MAX_LENGTH,
@@ -113,10 +119,14 @@ import {
   unstorableTextFailure,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
+import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
+  nativeAdminReturnSchema,
+  limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -129,6 +139,7 @@ import {
   runtimeLogQuery,
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
+import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
@@ -136,6 +147,8 @@ import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
   readonly installationId?: string;
+  /** Exact browser origin for a loopback-owned development endpoint. */
+  readonly browserOrigin?: string;
   readonly trustedCidrs?: readonly string[];
 }
 
@@ -221,8 +234,14 @@ const DEFAULT_BODY_LIMIT = 64 * 1024;
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 // A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
 const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
-const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
+// The bundled Kubernetes Configuration Driver stores values up to 1 MiB of JSON (its ConfigMap
+// cap). A Configuration write must admit that plus the envelope (`kind` and up to 64 Secret
+// bindings, each a 253-character name and a reference: under 32 KiB), all written with
+// six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
+const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -257,8 +276,48 @@ function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
 // builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
 // chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
 // the serializer options, so build each distinct combination once.
-function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
+//
+// Stored documents (Configuration values, Preset templates, revision snapshots) are
+// SafeJsonValue trees of up to 1 MiB each. fast-json-stringify writes that recursive anyOf by
+// running ajv on every node to pick a branch: about 160 ms per MiB against 3 ms for
+// JSON.stringify, in one synchronous call per list response (finding 1323). For any JSON value
+// the walk writes exactly JSON.stringify's bytes: the branches are the disjoint JSON types, the
+// object branch keeps every own key (additionalProperties is SafeJsonValue again), and strings,
+// numbers, booleans and null come out as JSON.stringify writes them. It strips, coerces and
+// redacts nothing. So serializers see SafeJsonValue as a typeless schema, which
+// fast-json-stringify writes with JSON.stringify. Request validation and OpenAPI keep the
+// full schema, and the fields around each document are serialized as before.
+const SAFE_JSON_VALUE_ID = "SafeJsonValue";
+const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
+
+export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
   const buildSerializerCompiler = SerializerSelector();
+  // Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
+  // content. A different schema registered under that $id keeps its own serializer.
+  const contractSafeJsonValue = new WeakMap<object, boolean>();
+  const isContractSafeJsonValue = (schema: unknown): boolean => {
+    if (typeof schema !== "object" || schema === null) {
+      return false;
+    }
+    let known = contractSafeJsonValue.get(schema);
+    if (known === undefined) {
+      known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
+      contractSafeJsonValue.set(schema, known);
+    }
+    return known;
+  };
+  const serializedSchemas = (
+    externalSchemas: Parameters<SerializerSelector.SerializerFactory>[0],
+  ): Parameters<SerializerSelector.SerializerFactory>[0] => {
+    const shared = externalSchemas as Record<string, unknown> | undefined;
+    if (shared === undefined || !isContractSafeJsonValue(shared[SAFE_JSON_VALUE_ID])) {
+      return externalSchemas;
+    }
+    return {
+      ...shared,
+      [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
+    } as typeof externalSchemas;
+  };
   const sharedSchemaIds = new WeakMap<object, number>();
   // Never pruned. That is safe only while every serializer is built at route registration,
   // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
@@ -275,7 +334,7 @@ function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
     return id;
   };
   return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(externalSchemas, options);
+    const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
     const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
     // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
     // schema that is not a plain object compiles uncached instead.
@@ -376,6 +435,16 @@ function validateTrustedDevelopmentCidrs(development: DevelopmentAdmission): voi
   }
 }
 
+function developmentBrowserOrigin(development: DevelopmentAdmission): URL | undefined {
+  if (development.browserOrigin === undefined) {
+    return undefined;
+  }
+  if (!development.enabled || !isDevelopmentBrowserOrigin(development.browserOrigin)) {
+    throw new Error(`The development browser origin must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
+  }
+  return new URL(development.browserOrigin);
+}
+
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -393,10 +462,9 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  if (depth > 24) {
-    throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path: cappedPath(path), code: "TOO_DEEP" },
-    ]);
+  // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
+  if (depth > MAX_JSON_BODY_DEPTH) {
+    throw tooDeepFailure(path);
   }
   if (value === null || typeof value !== "object") {
     return;
@@ -419,7 +487,12 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
 
 /** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
 function authorizesBeforeBody(operation: OccApiRoute): boolean {
-  return operation.operationId === "createPreset" || operation.operationId === "updatePreset";
+  return (
+    operation.operationId === "createPreset" ||
+    operation.operationId === "updatePreset" ||
+    operation.operationId === "createConfiguration" ||
+    operation.operationId === "updateConfiguration"
+  );
 }
 
 function operationTarget(
@@ -1031,6 +1104,7 @@ function clientInstallation(
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const development = Object.freeze({ ...options.development });
+  const browserOrigin = developmentBrowserOrigin(development);
   if (
     options.controller &&
     development.installationId !== undefined &&
@@ -1156,6 +1230,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.removeContentTypeParser("text/plain");
+  // Refuse a body nested deeper than any document the API stores before it is parsed: parsing
+  // allocates every level, and schema validation recurses through them (a 6 MB body of nested
+  // arrays cost about 300 MB of heap, then overflowed the stack into a 500).
+  const parseJson = app.getDefaultJsonParser(
+    app.initialConfig.onProtoPoisoning ?? "error",
+    app.initialConfig.onConstructorPoisoning ?? "error",
+  );
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const tooDeep = tooDeepJsonPath(body as string);
+    if (tooDeep !== undefined) {
+      done(tooDeepFailure(tooDeep), undefined);
+      return;
+    }
+    parseJson(request, body as string, done);
+  });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
   app.addSchema(PluginApproversSchema);
@@ -1515,6 +1604,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       !decision ||
       typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
       decision.driverId !== selected.id ||
       !validAuthorizationEvidence(decision.evidence)
     ) {
@@ -1525,6 +1615,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
     }
     return { selected, target, decision };
+  }
+
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
   }
 
   async function denial(
@@ -1652,6 +1767,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   });
 
+  // A proxy that adds forwarded headers, with api.trustedProxy unset or not covering it,
+  // makes every API call fail with 403 while sign-in still works. Tell the operator why, at
+  // most once a minute; the record names the cause only, never an address.
+  let forwardedRefusalWarnedAt: number | undefined;
+  function warnForwardedRefusal(): void {
+    const now = performance.now();
+    if (forwardedRefusalWarnedAt !== undefined && now - forwardedRefusalWarnedAt < 60_000) {
+      return;
+    }
+    forwardedRefusalWarnedAt = now;
+    options.logger?.warn({
+      event: "authentication.forwarded-refused-warning",
+      code:
+        options.trustedProxies === undefined
+          ? "TRUSTED_PROXY_NOT_CONFIGURED"
+          : "TRUSTED_PROXY_PEER_UNTRUSTED",
+    });
+  }
+
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
@@ -1666,7 +1800,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
-      operation.operationId !== "deleteServiceAccount"
+      operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "listAgentRevisions"
     ) {
       throw failure(
         400,
@@ -1692,10 +1827,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const host = request.headers.host;
     let hostname: string;
+    let requestHost: string;
     try {
-      hostname = new URL(`http://${host ?? "127.0.0.1"}`).hostname;
+      const parsed = new URL(`http://${host ?? "127.0.0.1"}`);
+      hostname = parsed.hostname;
+      requestHost = parsed.host;
     } catch {
       hostname = "";
+      requestHost = "";
     }
     const remoteAddress = request.raw.socket.remoteAddress ?? "127.0.0.1";
     const origin = request.headers.origin;
@@ -1709,6 +1848,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } else if (Array.isArray(origin)) {
       originAllowed = false;
     }
+    const browserEndpointAllowed =
+      browserOrigin !== undefined &&
+      requestHost === browserOrigin.host &&
+      (origin === undefined || origin === browserOrigin.origin);
     // Forwarded headers are never used for admission. They are tolerated only from a
     // configured trusted proxy, which adds them to every request it relays.
     const forwarded =
@@ -1716,11 +1859,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.headers).some(
         (name) => name === "forwarded" || name === "x-real-ip" || name.startsWith("x-forwarded-"),
       );
+    if (forwarded && !development.enabled) {
+      warnForwardedRefusal();
+    }
     if (
       forwarded ||
       (development.enabled &&
-        (!LOOPBACK_HOSTNAMES.has(hostname) ||
-          !originAllowed ||
+        (((!LOOPBACK_HOSTNAMES.has(hostname) || !originAllowed) && !browserEndpointAllowed) ||
           !trustedDevelopmentAddress(development, remoteAddress)))
     ) {
       throw failure(
@@ -1728,7 +1873,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "FORBIDDEN",
         development.enabled
           ? "Development admission is restricted to direct loopback requests."
-          : "Production admission requires a direct request.",
+          : "Production admission requires a direct request or forwarded headers from a configured trusted proxy.",
       );
     }
 
@@ -1848,11 +1993,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /**
-   * Preset writes accept bodies up to PRESET_BODY_LIMIT (6 MiB + 8 KiB), far above the
-   * general limit. Their grant check needs only the path and the caller, so it runs here,
-   * in onRequest, before the body is read: a caller without the grant gets the same 403 or
-   * 404 and audit row as when the check ran in the handler, and the controller never
-   * buffers the body. The handler repeats the check in its transaction.
+   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
+   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
+   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
+   * handler, and the controller never buffers the body. The handler repeats the check in its
+   * transaction, with the Secret binding checks that need the body.
    */
   async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
     const context = contexts.get(request);
@@ -1863,6 +2009,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
     const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "createConfiguration" ||
+      operation.operationId === "updateConfiguration"
+    ) {
+      await controller.authorizeConfigurationWrite(
+        context.actorId,
+        params.namespaceId as string,
+        operation.operationId === "updateConfiguration" ? params.configurationId : undefined,
+      );
+      return;
+    }
     await controller.authorizePresetWrite(
       context.actorId,
       params.namespaceId as string,
@@ -2039,6 +2196,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "deleteNamespace") {
       const namespace = await controller.transact(async (unit) => {
         const deleting = await controller!.deleteNamespace(context.actorId, namespaceId);
@@ -2127,9 +2296,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2143,9 +2312,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2173,9 +2342,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2192,9 +2361,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         {
           pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
       );
       reply.header("cache-control", "no-store");
@@ -2229,6 +2398,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
         mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
@@ -2254,6 +2441,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
+      return;
     }
 
     if (
@@ -2501,12 +2705,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2536,9 +2741,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
@@ -2592,6 +2797,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const bodyErrors = {
       413: { description: "Payload Too Large", ...error },
       415: { description: "Unsupported Media Type", ...error },
+    };
+    // Refuse request text that cannot be stored unchanged, as on OCC API routes.
+    const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
+      const unstorable =
+        unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", body);
+      if (unstorable !== undefined) {
+        throw unstorable;
+      }
     };
     const accountBody = (
       createAuthAccountOperation.schema as {
@@ -2694,6 +2907,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
+        preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
@@ -3136,13 +3350,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => resolveIdentity(request, accountReadOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, accountReadOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3272,7 +3490,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => resolveIdentity(request, operation),
+          preValidation: async (request) => {
+            refuseUnstorableText(request);
+            await resolveIdentity(request, operation);
+          },
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -3427,7 +3648,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => resolveIdentity(request, recoveryReplaceOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, recoveryReplaceOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3533,13 +3757,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => resolveIdentity(request, enrolOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, enrolOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3563,7 +3791,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+            "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -3681,7 +3909,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
-        preValidation: async (request) => resolveIdentity(request, createAuthAccountOperation),
+        preValidation: async (request) => {
+          // Passwords are hashed before persistence; their existing schema and hashing
+          // rules remain authoritative. Validate every other submitted field unchanged.
+          const body = request.body;
+          refuseUnstorableText(
+            request,
+            typeof body === "object" && body !== null && !Array.isArray(body)
+              ? { ...body, password: undefined }
+              : body,
+          );
+          await resolveIdentity(request, createAuthAccountOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3809,6 +4048,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      nativeAdminReturnOperation.path,
+      {
+        schema: nativeAdminReturnSchema,
+        // Bound session admission per direct peer. Proxies share this more generous budget;
+        // the resolver separately limits expensive lookups by authenticated principal.
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, nativeAdminReturnOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      },
+      nativeAdmin.resolveReturn,
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -3839,7 +4093,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
             : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : {}),
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);
@@ -3888,9 +4145,16 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
@@ -4001,7 +4265,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        host: "auth.openai.com",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
       });

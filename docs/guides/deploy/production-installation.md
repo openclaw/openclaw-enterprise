@@ -30,7 +30,7 @@ Workstation `docker login` does not authenticate cluster nodes.
 
 ## Build and publish production images
 
-Use the separately approved [publication workflow](../../../.github/containers.md)
+Use the separately approved [publication workflow](../../release/containers.md)
 or build these images for your registry:
 
 | Image      | Source                                                                                                         | Used by                                     |
@@ -83,7 +83,7 @@ else
 fi
 ```
 
-Before installation, [check each digest](../../testing/images.md#check-published-images)
+Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
 them.
 
@@ -154,9 +154,11 @@ or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
 
 ### Advanced: copy manual YAML examples
 
-Use this branch only when deliberately skipping profiles; it refuses to overwrite
-existing configuration YAML. The manual example selects the curated Codex PluginDriver catalog,
-unlike the `codex` profile's default hosted PAT-backed discovery.
+Without profiles, this branch refuses overwrites and selects curated discovery;
+Codex profiles use hosted discovery.
+
+Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
+the startup Secret alone grants none.
 
 ```bash
 (
@@ -176,7 +178,7 @@ unlike the `codex` profile's default hosted PAT-backed discovery.
 
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
-[Verify installation image selections](../../testing/images.md#verify-installation-image-selections).
+[Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
 ### Shared bootstrap PVC and configuration checks
 
@@ -409,7 +411,7 @@ helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --wait --timeout 5m
 ```
 
-For an explicitly [published chart release](../../../.github/chart-publication.md#pull-and-install)
+For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
 verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
 with `--version "$OCE_VERSION"`.
@@ -506,7 +508,8 @@ Activation is one-way: the database refuses older images' sessions and
 4. Run `helm upgrade` with the compatible image. The api Deployment uses
    `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
    and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through restricted access, verify password recovery, new session admission,
+5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, new session admission,
    the expected Namespaces and existing Agent detail, and rejected stale sessions.
    Reopen ingress only after these checks, retaining one serving controller.
 

@@ -26,7 +26,8 @@ function nonempty(value: unknown): value is string {
 }
 
 function identifier(value: string): string {
-  if (!nonempty(value)) {
+  // A `.` or `..` segment would resolve to a parent path, such as the account itself.
+  if (!nonempty(value) || value === "." || value === "..") {
     throw new DependencyUnavailableError("The ChatGPT account identity is invalid.");
   }
   return encodeURIComponent(value);
@@ -209,10 +210,29 @@ export class ChatGPTClient {
         await response.body?.cancel().catch(() => {});
         throw new Error("oversized");
       }
-      const contents = await response.text();
-      if (Buffer.byteLength(contents) > MAX_RESPONSE_BYTES) {
-        throw new Error("oversized");
+      const reader = response.body?.getReader();
+      if (reader === undefined) {
+        throw new Error("invalid");
       }
+      const chunks: Uint8Array[] = [];
+      let bytes = 0;
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) {
+            break;
+          }
+          bytes += chunk.value.byteLength;
+          if (bytes > MAX_RESPONSE_BYTES) {
+            await reader.cancel();
+            throw new Error("oversized");
+          }
+          chunks.push(chunk.value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      const contents = Buffer.concat(chunks, bytes).toString("utf8");
       const parsed: unknown = JSON.parse(contents);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("invalid");

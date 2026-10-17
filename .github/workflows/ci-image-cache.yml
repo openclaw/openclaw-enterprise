@@ -1,8 +1,10 @@
 name: CI Image Cache
 
 # Writes main's BuildKit cache for the controller and runtime images that the CI
-# image lanes restore. A merge cancels main's CI run, often before Images and
-# Packaging exports; this run is never cancelled, so main's cache catches up.
+# image lanes restore; it is the only writer. This run starts on every image
+# input change (and on a schedule, from main's newest commit) and is never
+# cancelled once started, and runs queue in order, so the newest commit's export
+# lands last.
 # GitHub scopes cache writes to the run's ref: pull_request runs read main's
 # entries but write only their own merge ref.
 on:
@@ -33,13 +35,20 @@ on:
       - scripts/lib/**
       - tsconfig.base.json
       - tsconfig.json
+  # The kept runtime image reaches Blacksmith's shared Docker store only if this
+  # job's store commit wins against concurrent jobs' commits from the same
+  # snapshot, and on 10-14 one of five did. A run whose store already holds
+  # main's image builds from cache and commits nothing, so retrying on a
+  # schedule costs about two minutes.
+  schedule:
+    - cron: "7,27,47 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# One export at a time, never cancelled; a newer push replaces only the pending
-# run, which the Actions list then shows as cancelled.
+# One export at a time, never cancelled; a newer push or scheduled run replaces
+# only the pending run, which the Actions list then shows as cancelled.
 concurrency:
   group: ci-image-cache-${{ github.ref }}
   cancel-in-progress: false
@@ -54,14 +63,16 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' }}
     # The image lanes' runner, so the cache is written where they read it.
     runs-on: blacksmith-8vcpu-ubuntu-2404
-    timeout-minutes: 30
+    # Each image's build may take 20 min and its cache export 20 min more
+    # (prepare.mjs); the two images run side by side.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Verify checkout source
         run: test "$(git rev-parse --verify 'HEAD^{commit}')" = "$GITHUB_SHA"
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

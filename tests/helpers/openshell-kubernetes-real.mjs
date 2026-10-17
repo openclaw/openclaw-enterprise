@@ -2,6 +2,7 @@ import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { rootCertificates } from "node:tls";
 import { join } from "node:path";
@@ -20,8 +21,8 @@ const transportSecretPrefix = "openclaw-agent-transport";
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell 021400be8af471f8669369e679de3e18cf0bd672
-// crates/openshell-driver-kubernetes/src/config.rs:309,513-545.
+// NVIDIA/OpenShell 5a7728c304b5528e954e9ae900cf21f84e1a12b1
+// crates/openshell-driver-kubernetes/src/config.rs:288,524-560.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -74,6 +75,82 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
     }
     callback(null, address.address, address.family);
   };
+}
+
+/** Initialize Codex once through its exposed service, without starting a thread or turn. */
+export async function assertExposedCodexInitializes(serviceUrl, appServerToken) {
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const socketRequire = createRequire(controllerRequire.resolve("@kubernetes/client-node"));
+  const WebSocket = socketRequire("ws");
+  const url = new URL(serviceUrl);
+  const socket = new WebSocket(url, {
+    lookup: createOpenShellServiceLoopbackLookup(url.hostname),
+    headers: { authorization: `Bearer ${appServerToken}` },
+    perMessageDeflate: false,
+    closeTimeout: 1_000,
+  });
+
+  let stage = "WebSocket upgrade";
+  try {
+    await new Promise((resolve, reject) => {
+      // Report only the stage and status; peer payloads and close reasons can contain credentials.
+      const fail = (detail) => reject(new Error(`OpenShell exposed Codex ${stage}: ${detail}.`));
+      const deadline = setTimeout(() => fail("timed out after 5 s"), 5_000);
+      socket.once("close", (code) => {
+        clearTimeout(deadline);
+        fail(`socket closed (code ${code})`);
+      });
+      socket.once("error", () => fail("WebSocket error"));
+      socket.once("unexpected-response", (_request, response) => {
+        fail(`HTTP ${response.statusCode}`);
+        response.destroy();
+      });
+      const id = 1;
+      socket.once("open", () => {
+        stage = "initialize response after HTTP 101";
+        const params = {
+          clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+          capabilities: { experimentalApi: true },
+        };
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params }));
+      });
+      socket.on("message", function receiveInitialize(data) {
+        let message;
+        try {
+          message = JSON.parse(data);
+        } catch {
+          return fail("invalid JSON");
+        }
+        if (message?.id !== id || "method" in message) {
+          return;
+        }
+        if (message.error !== undefined) {
+          const code = message.error?.code;
+          return fail(Number.isSafeInteger(code) ? `RPC error (code ${code})` : "RPC error");
+        }
+        if (message.result === undefined || message.result === null) {
+          return fail("missing initialize result");
+        }
+        socket.off("message", receiveInitialize);
+        stage = "initialized notification write";
+        const notification = { jsonrpc: "2.0", method: "initialized", params: {} };
+        socket.send(JSON.stringify(notification), (error) => {
+          if (error) {
+            return fail("WebSocket write failed");
+          }
+          clearTimeout(deadline);
+          resolve();
+        });
+      });
+    });
+  } catch (error) {
+    socket.terminate();
+    throw error;
+  }
+  // Codex does not acknowledge initialized. Send a normal close; this route may not echo it.
+  socket.close(1000);
 }
 
 // Model egress comes only from the credential source's profile, bound to native Codex.
@@ -142,6 +219,7 @@ export function createOpenShellInstallationConfiguration({
         readiness: {
           serviceName: "openshell-gateway",
           podSelector: { "app.kubernetes.io/name": "openshell" },
+          timeoutMs: 120_000,
         },
         // Compute owns ordinary Harness DNS; OpenShell's own `openshell-sandbox-supervisors`
         // policy covers supervisor egress, and the installer scopes gateway DNS/API access below.
@@ -275,7 +353,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.3-pre.2 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.4 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -386,6 +464,9 @@ export function createOpenShellKubernetesFixture({
   kubernetesContext,
   gatewayImage,
   codexImage,
+  // How long a Codex turn observes a command still running when the turn completes. A suite
+  // whose probe commands bound themselves (curl --max-time) passes that bound plus a margin.
+  codexCommandGraceMs = 5_000,
   databaseUrl,
   openShellGatewayImage,
   openShellSandboxImage,
@@ -394,7 +475,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.3-pre.2",
+  openShellChartVersion = "0.1.4",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -403,6 +484,12 @@ export function createOpenShellKubernetesFixture({
     codexImage,
     databaseUrl,
   });
+  assert.ok(
+    Number.isSafeInteger(codexCommandGraceMs) &&
+      codexCommandGraceMs > 0 &&
+      codexCommandGraceMs <= 60_000,
+    "codexCommandGraceMs must be a positive number of milliseconds, at most 60 s.",
+  );
 
   async function kubectl(...args) {
     return base.kubectl(...args);
@@ -415,8 +502,11 @@ export function createOpenShellKubernetesFixture({
       "OCC_TEST_OPENSHELL_K3D_REAL=1 is required for the real OpenShell integration.",
     );
     assert.ok(
-      process.env.OPENAI_API_KEY,
-      "OPENAI_API_KEY is required for the API binding workflow; a model turn additionally requires genuine upstream Secret projection support.",
+      process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ||
+        process.env.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim()
+        ? process.env.OPENAI_API_KEY
+        : process.env.CODEX_ACCESS_TOKEN,
+      "The selected Harness requires OPENAI_API_KEY (native or custom endpoint) or CODEX_ACCESS_TOKEN (default Codex).",
     );
     assert.ok(
       openShellHelmPath,
@@ -979,7 +1069,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.3-pre.2 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.4 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -987,7 +1077,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.3-pre.2 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.4 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")
@@ -1051,20 +1141,100 @@ export function createOpenShellKubernetesFixture({
       const timeout = setTimeout(() => fail(new Error("Codex harness turn timed out")), 300000);
       const pending = new Map();
       const items = [];
+      const pendingCommands = new Map();
+      let threadId, turnId, commandDeadline, turnCompletedAt;
+      // Start time and output volume of each command, never its output.
+      const commandTimes = new Map();
       let nextId = 1;
       let assistant = "";
       let finished = false;
+      let failedCommands = 0;
+      let approvalRequests = 0;
+      const sandboxSignals = new Set();
+
+      function rememberFailureSignals(message) {
+        if (message.id !== undefined && message.method === "item/commandExecution/requestApproval") {
+          approvalRequests += 1;
+        }
+        const item = message.params?.item;
+        if (message.method === "item/completed" && item?.type === "commandExecution" && Number.isSafeInteger(item.exitCode) && item.exitCode !== 0) {
+          failedCommands += 1;
+        }
+        // Retain only fixed labels from command output, never prompts, commands or payloads.
+        let output;
+        if (item?.type === "commandExecution") {
+          output = item.aggregatedOutput;
+        } else if (message.method === "item/commandExecution/outputDelta") {
+          output = message.params?.delta;
+        }
+        if (typeof output !== "string") {
+          return;
+        }
+        for (const [pattern, label] of [
+          [/bubblewrap|bwrap/i, "bubblewrap"],
+          [/user namespace|new namespace|unshare|CLONE_NEWUSER/i, "namespace"],
+          [/operation not permitted|permission denied/i, "permission_denied"],
+          [/filesystem-restricted execution requires bubblewrap/i, "restricted_requires_bubblewrap"],
+        ]) {
+          if (pattern.test(output.slice(0, 16384))) {
+            sandboxSignals.add(label);
+          }
+        }
+      }
+
+      // Timing of commands still running, so an unknown outcome says how long it waited.
+      function pendingCommandTimes() {
+        const now = performance.now();
+        return [...pendingCommands.keys()].map((id) => {
+          const { startedAt, deltas = 0, bytes = 0 } = commandTimes.get(id) ?? {};
+          return {
+            startedBeforeTurnEndMs: startedAt !== undefined && turnCompletedAt !== undefined
+              ? Math.floor(turnCompletedAt - startedAt) : null,
+            runningMs: startedAt === undefined ? null : Math.floor(now - startedAt),
+            outputDeltas: deltas,
+            outputBytes: bytes,
+          };
+        });
+      }
 
       function fail(error) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
+        process.stderr.write("\nNative execution summary: " + JSON.stringify({
+          failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          commandGraceMs: ${codexCommandGraceMs},
+          sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
+          pendingCommands: pendingCommandTimes(),
+        }));
         process.exit(1);
+      }
+
+      function unknownCommandOutcome() {
+        fail(new Error("Codex command outcome is unknown; not sending another turn"));
+      }
+
+      function waitForCommandDeadline() {
+        // A timer can wake early. Keep the deadline anchored to the end of the turn.
+        const remaining = turnCompletedAt + ${codexCommandGraceMs} - performance.now();
+        if (remaining <= 0) return unknownCommandOutcome();
+        commandDeadline = setTimeout(waitForCommandDeadline, Math.ceil(remaining));
+      }
+
+      function finish() {
+        clearTimeout(commandDeadline);
+        finished = true;
+        clearTimeout(timeout);
+        // Exit once the result is flushed. Through the OpenShell service route the WebSocket
+        // close handshake never completes, so waiting for it would hold kubectl exec open.
+        process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
       }
 
       function request(method, params = {}) {
         const id = nextId++;
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-        return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+        return new Promise((resolve, reject) => {
+          pending.set(id, { method, resolve, reject });
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        });
       }
 
       const socket = new WebSocket(appServerUrl, {
@@ -1075,21 +1245,29 @@ export function createOpenShellKubernetesFixture({
         try {
           await request("initialize", {
             clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+            capabilities: { experimentalApi: true },
           });
           socket.send(JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} }));
           // A Gateway serving an OpenShell Harness names the Sandbox workspace root; Codex
           // cannot start exec tools in a working directory that does not exist there.
+          const workspace = process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace";
           const started = await request("thread/start", {
-            cwd: process.env.OPENCLAW_REMOTE_WORKSPACE_ROOT ?? "/home/node/workspace",
+            cwd: workspace,
             model: ${JSON.stringify(providerModel)},
             approvalPolicy: "on-request",
-            sandbox: "danger-full-access",
+            approvalsReviewer: "user",
+            permissions: ":danger-full-access",
             config: { project_doc_max_bytes: 131072 },
           });
+          // Fail before inference when account policy refuses the outer-sandbox mode.
+          if (started.sandbox?.type !== "dangerFullAccess") {
+            throw new Error("OpenShell requires the Codex account to allow :danger-full-access.");
+          }
+          threadId = started.thread.id;
           await request("turn/start", {
-            threadId: started.thread.id,
+            threadId,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
-            sandboxPolicy: { type: "dangerFullAccess", networkAccess: true },
+            permissions: ":danger-full-access",
           });
         } catch (error) {
           fail(error);
@@ -1097,28 +1275,82 @@ export function createOpenShellKubernetesFixture({
       });
 
       socket.addEventListener("message", ({ data }) => {
+        if (finished) return;
         const message = JSON.parse(String(data));
+        const { method, params } = message;
+        const item = params?.item;
+        const decline = message.id !== undefined && (
+          method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
+        );
+        const commandEvent = item?.type === "commandExecution" &&
+          (method === "item/started" || method === "item/completed");
+        const command = commandEvent && threadId && turnId &&
+          params.threadId === threadId && params.turnId === turnId;
+        // Before the turn ends, an unbound command leaves the probe outcome unknown.
+        // Afterward we observe only the commands already outstanding on our turn.
+        if (!commandDeadline && commandEvent && !command) return unknownCommandOutcome();
+        const starting = method === "item/started" && command;
+        const ending = method === "item/completed" && command;
+        if (method === "item/commandExecution/outputDelta" && params?.turnId === turnId &&
+            commandTimes.has(params.itemId)) {
+          const time = commandTimes.get(params.itemId);
+          time.deltas += 1;
+          time.bytes += typeof params.delta === "string" ? params.delta.length : 0;
+        }
+        if (commandDeadline) {
+          if (starting) return unknownCommandOutcome();
+          if (ending) {
+            // Only a terminal matching a command outstanding at turn completion can
+            // settle it. Never discard a second command and then report only the first.
+            if (!pendingCommands.has(item.id) || pendingCommands.get(item.id) !== item.command ||
+                !["completed", "failed"].includes(item.status) || !Number.isSafeInteger(item.exitCode)) {
+              return unknownCommandOutcome();
+            }
+          } else if (!decline) return;
+        }
+        rememberFailureSignals(message);
         items.push(message);
-        if (message.id !== undefined) {
+        if (starting) {
+          pendingCommands.set(item.id, item.command);
+          commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
+        }
+        if (ending) {
+          pendingCommands.delete(item.id);
+          if (commandDeadline && !pendingCommands.size) finish();
+          return;
+        }
+        if (decline) {
+          // Boundary probes must observe denials, never grant escalation or wait for a human.
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { decision: "decline" } }));
+          return;
+        }
+        if (message.id !== undefined && method === undefined) {
           const entry = pending.get(message.id);
           pending.delete(message.id);
           if (entry) {
-            if (message.error) entry.reject(new Error(message.error.message));
-            else entry.resolve(message.result);
+            if (message.error) return entry.reject(new Error(message.error.message));
+            if (entry.method === "turn/start") {
+              // Notifications can arrive in this socket read, before an await continuation runs.
+              const id = message.result?.turn?.id;
+              if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
+              turnId = id;
+            }
+            entry.resolve(message.result);
           }
-        } else if (message.method === "item/completed") {
-          const item = message.params?.item;
+        } else if (method === "item/completed") {
           if (item?.type === "agentMessage") assistant = item.text ?? "";
         } else if (message.method === "turn/completed") {
-          if (message.params?.turn?.status !== "completed") {
+          if (params?.turn?.status !== "completed" || params.threadId !== threadId || params.turn.id !== turnId) {
             fail(new Error("Codex harness turn did not complete successfully"));
             return;
           }
-          finished = true;
-          clearTimeout(timeout);
-          // Exit once the result is flushed. Through the OpenShell service route the WebSocket
-          // close handshake never completes, so waiting for it would hold kubectl exec open.
-          process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
+          // A command can outlive its turn: Codex returns a long command to the model, which
+          // may reply before it ends. Observe only its original socket until its completion
+          // event or the fixture's bound; the overall turn deadline still applies. Never extend
+          // either deadline on activity.
+          turnCompletedAt = performance.now();
+          if (pendingCommands.size) waitForCommandDeadline();
+          else finish();
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
           // and turn/completed still requires a completed status.
@@ -1126,10 +1358,14 @@ export function createOpenShellKubernetesFixture({
         }
       });
       socket.addEventListener("error", () => {
-        if (!finished) fail(new Error("Codex harness connection failed"));
+        if (finished) return;
+        if (commandDeadline) return unknownCommandOutcome();
+        fail(new Error("Codex harness connection failed"));
       });
       socket.addEventListener("close", () => {
-        if (!finished) fail(new Error("Codex harness connection closed before completion"));
+        if (finished) return;
+        if (commandDeadline) return unknownCommandOutcome();
+        fail(new Error("Codex harness connection closed before completion"));
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];

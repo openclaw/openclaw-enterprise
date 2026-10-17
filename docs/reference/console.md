@@ -5,13 +5,13 @@ workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
 
-Start with [Create and deploy Agents](console/create-and-deploy.md) or
+See [Create and deploy Agents](console/create-and-deploy.md) or
 [Understand Agent detail](../guides/console/agent-details.md). Operator setup and
 runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-At your administrator-provided address, enter your provisioned account email as
+Enter your provisioned account email as
 **Username**, then its password, and select **Login**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or a password reset. To set up your own
@@ -22,6 +22,7 @@ Installation, see the
 The console uses the [email/password session contract](authentication.md) with
 same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
+See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Identify the control-plane build
 
@@ -33,8 +34,8 @@ release revision into the console HTML.
 ## Browse and select a Namespace
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
-Set up models during Agent creation; the [experimental Backends](backends.md)
-tab is hidden. Namespace rows are read-only.
+Configure models during creation. [Experimental Backends](backends.md) stay
+hidden; Namespace rows are read-only.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -42,30 +43,29 @@ tab is hidden. Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses a light appearance and OCC-served fonts. Full-page client
-navigation focuses the destination heading when the previous control disappears.
-On mobile, **Open navigation** opens a drawer; widening to desktop closes it
-and releases page controls.
+The Console uses light appearance and OCC-served fonts. Navigation focuses the
+destination heading; **Open navigation** opens the mobile drawer.
 
-When available, a retained view stays mounted and inert while a full-page return
-is revalidated: matching data reactivates it, changed data rebuilds it, and
-Refresh always rebuilds. Agent-detail refocus revalidates access without
-rebuilding, preserving editors, form input, open Slack searches, and the enabled
-header selector. Retained views are scoped to account, session, route, and
-Namespace; sign-out, session changes, exit, or Backend denial clear them.
+Opening an Agent shows its details page immediately. While it loads, **Back to
+Agents** returns to your place. A slow return to a retained page says **Still
+checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
+Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
+**Open navigation**. Views belong to one account, session, route,
+and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 The header's **Namespace** selector switches readable scopes on desktop and
 mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
-Selection persists in `?namespace=<id>` across navigation, reload, and Back.
-An unreadable ID shows **Namespace unavailable**. On Namespaces, **Choose a valid
-namespace** updates the URL and removes the warning without leaving the page.
-Page load, Refresh, and admission-starting navigation disable the selector and
-hide its choices during session and Namespace checks; retained-view reads do not.
-Without readable alternatives, Agents and Namespaces show provisioning and access guidance;
-global pages remain available.
+The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
+ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
+updates the URL in place.
+
+During session and Namespace checks, the selector is disabled and hides its choices.
+Once the list is known, it names the destination's Namespace. On returns to the same page,
+later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
+get access; global pages remain available.
 
 Switching Namespace from Agent detail or creation returns to Agents in the new
 scope; global pages stay open. The selector cannot broaden API authorization.
@@ -83,7 +83,8 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Agent creation and deployment
 
-Supported Dedicated provisioning deploys the first revision during creation. Otherwise, creation
+Dedicated provisioning waits for first activation; failure links the original
+request’s existing Agent and revision. Otherwise, creation
 saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
@@ -96,7 +97,6 @@ or policy choices.
 ## Inspect detail, revisions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
-The selected tab stays visible in the horizontal strip at narrow widths.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
 scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
@@ -120,15 +120,15 @@ while the catalog list and plugin details scroll within the picker.
 **Save plugin selections** updates the Agent; deployment snapshots them.
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Current version**
-displays `activeRevisionId`, which can differ from the viewed snapshot and does
-not prove live serving.
-**Deployment activity** shows the latest visible version's persisted result;
-the viewed version shows its own recorded outcome.
-For a failed deployment, **Open vN Logs** opens that exact version and brings
-its Logs panel into view, including when starting from the draft or another
-version. The panel shows runtime output or the applicable access or availability
-message; see [Agent logs](../guides/topics/agent-logs.md).
+binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
+**Deployment details** follows the newest readable deployment. Routine completion
+starts folded; pending work, failures, startup warnings, and cleanup are expanded.
+The viewed version retains its own result. Unreadable outcomes remain unknown.
+Bootstrap failures retain safe evidence; cleanup refreshes separately.
+
+A failure puts **Open vN Logs** near the top. It opens the failed version's
+[Logs panel](../guides/topics/agent-logs.md), showing output or the applicable
+access or availability message, even from the draft or another version.
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent
@@ -212,14 +212,16 @@ through the API or operator workflow.
 
 ## Stop and resume an Agent
 
-Open the Agent, select **Stop Agent**, review the effect on running work, and
+Open the Agent, select **Stop Agent**, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
 retaining revision history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
-Refresh before retrying an uncertain result. Permission denials remain visible,
-and the console never repeats a stop request automatically.
+Refresh before retrying an uncertain result. Denials remain visible; the console
+never repeats a stop automatically. After Stop, **Request Stop again** confirms
+a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
+finished.
 
 To resume, open **Create new version** and select **Deploy new version**, which
 creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
@@ -227,19 +229,19 @@ worker lifecycle and preservation guarantees.
 
 ## Delete an Agent
 
-Select **Delete Agent** below the Agent detail tabs, then **Permanently delete
-Agent** in the confirmation dialog. This requires exact
-Agent `delete`; `read` or `operate` is not enough. Deletion permanently removes
-the Agent, its version history, and its workspace data; Namespace-owned
-Configurations and Secrets remain; see
-[Agent deletion](agents.md#deletion).
+Select **Delete Agent**, then **Permanently delete Agent**. Exact Agent `delete`
+is required; `read` or `operate` is not enough. Deletion removes the Agent, its
+versions, and its workspace data. Namespace Configurations and Secrets remain;
+see [Agent deletion](agents.md#deletion).
 
-An accepted request starts asynchronous cleanup, and the detail page shows the
-Agent as deleting; **Refresh deletion status** checks progress. Once the API
-confirms the Agent is gone, the console returns to Agents in the same Namespace.
-An access denial stays on the detail page and says deletion requires permission.
-An unconfirmed outcome may have succeeded; refresh before retrying. The console
-never resends a delete request automatically.
+**Refresh deletion status** follows asynchronous cleanup. When the API confirms
+the Agent is gone, the console returns to that Namespace. A deleting Agent keeps
+**Request deletion again** behind confirmation. Failed cleanup can be replenished;
+queued or running cleanup is unchanged. An uncertain repeat stays disabled until
+a status read confirms deletion. The API keeps retry ownership and exact-Agent
+permission. A denial stays visible, and a refused repeat keeps the retry-ownership explanation.
+Refresh before retrying an unconfirmed outcome. The console never resends a
+delete automatically.
 
 ## Failures and logout
 
@@ -248,6 +250,9 @@ dependencies, missing resources, and network failures clear affected rows and
 offer recovery. Backend error text is not rendered; include any displayed request
 ID when reporting an API failure. A current protected `401` clears private
 content and closes open channel editors and harness authentication controls.
+Interrupted response bodies and request deadlines keep the interrupted-read
+recovery path. View cancellation does not show a new failure, and a failed
+response never automatically retries a mutation.
 Backend discovery shows only configured IDs and types; see its
 [limits](backends.md#read-configured-backends).
 
@@ -273,23 +278,22 @@ for the release binding, limits, and deployment failure behavior.
 
 ## Edit workspace files
 
-Open **Workspace files** on an Agent to load the same four files. This view reads the live Agent workspace, not the
-Configuration draft or browsed AgentRevision, and requires an active revision
-and reachable gateway; selection alone does not prove access. Files are never
-copied into a Configuration or revision.
+Open **Workspace files** on an Agent to load the same four files from the live
+workspace, not the Configuration draft or a browsed AgentRevision. Loading needs
+an active revision and a reachable gateway; selection does not prove access.
+Files are not copied into a Configuration or revision.
 
-Each file has its own **Save** and **Reload**. A save creates or replaces only
-that file through the [workspace file API](agents.md#workspace-files); the editor
-enforces the API's 16 KiB UTF-8 and Unicode limits. Loading requires Agent `read`; saving
-requires `operate`. Writes have no version check: the last writer wins. Reload
-replaces unsaved edits with the current file. The editor uses LF line endings:
-loading a CRLF file does not enable Save or rewrite it, and saving an edit writes LF.
+Each file has **Save** and **Reload**. Save creates or replaces that file through
+the [workspace file API](agents.md#workspace-files), within its 16 KiB UTF-8 and Unicode limit.
+Loading requires Agent `read`; saving requires `operate`. The last writer wins.
+Reload replaces unsaved edits. The editor uses LF: loading a CRLF file does not
+enable Save or rewrite it, and saving an edit writes LF.
 
-A failed write preserves the editor contents. An unknown outcome disables that
-file's Save until a successful reload, so it is never replayed automatically; review the loaded contents before
-writing again. Files load and
-save independently, so one file's result says nothing about another's. For
-unavailable gateways, follow the
+A failed write keeps the editor contents. An unknown outcome disables Save until
+Reload confirms the file or its absence. Review what loaded, or enter new content
+when the file is missing, before saving again. A denial or unavailable read leaves
+Save disabled. The editor never replays a write. Each file saves independently.
+For an unavailable gateway, follow the
 [workspace access setup](../guides/deploy/workspace-routing.md#agent-workspace-files).
 
 ## Open the native admin UI
@@ -305,7 +309,7 @@ revision, and reports when native admin is unsupported. Installation
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open native admin UI** opens the Agent's active revision in a new tab, even
+**Open admin console** opens the Agent's active revision in a new tab, even
 from a draft or older revision. Its visible warning is part of the operator
 contract: native UI changes to the gateway bypass OCE and are not recorded in
 AgentRevisions. Use OCE for durable configuration. The tab shares

@@ -28,9 +28,10 @@ Agent into native admin access:
    **Native admin UI** on the Agent detail page. For stale drafts or uncertain
    saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
 
-The [first-Agent command](../first-agent.md) creates a separate Agent with native UI
-disabled and refuses to reuse it after outside Configuration edits. Create a
-console-managed Agent for this native admin walkthrough.
+For the Compose control plane with Kubernetes Compute and OpenShell, the
+[first-Agent command](../first-agent.md) can perform these per-Agent steps with
+`--control-ui`. Other local profiles still require the console-managed workflow
+above. The helper refuses to reuse its Agent after outside Configuration edits.
 
 <a id="requirements"></a>
 
@@ -189,7 +190,9 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
 }
 ```
 
-Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them. The editor preserves Secret bindings, but its freshness check cannot prevent a concurrent write racing with the save.
+Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them.
+
+The editor preserves Secret bindings. If someone saves a newer Configuration first, OCC refuses your stale save. Choose **Reload draft**, check your edits against the current values, then save only the changes you still intend. See [Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete) for the API contract.
 
 Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. For `stopped` or `unavailable`, follow the [troubleshooting checks](#troubleshooting) before changing configuration.
 
@@ -266,7 +269,7 @@ the same file and verify its contents are retained.
 
 ## Tests
 
-Open the console, choose a running Agent with an active revision, and verify the **Native admin UI** section on its detail page reports available for an administrator. Select **Open native admin UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
+Open the console, choose a running Agent with an active revision, and verify the **Gateway administration** section on its detail page reports available for an administrator. Select **Open admin console** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and performs a reversible native admin edit against a disposable Agent.
 
@@ -275,6 +278,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Symptom                                             | Check                                                                                                                                                                                 |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                         |
+| A copied Agent chat link opens the console          | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.     |
 | Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                            |
 | API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                      |
 | API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                |

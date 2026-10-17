@@ -22,6 +22,19 @@ import {
 } from "../helpers/postgres-platform-state.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
+// Revision lists return summaries, newest first (finding 1323).
+const revisionSummary = (revision) => ({
+  id: revision.id,
+  namespaceId: revision.namespaceId,
+  agentId: revision.agentId,
+  revision: revision.revision,
+  backendId: revision.backendId,
+  configurationId: revision.configurationId,
+  configurationGeneration: revision.configurationGeneration,
+  harness: revision.harness,
+  createdAt: revision.createdAt,
+});
+
 test(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
   requiresPostgresAndKubernetesConfiguration,
@@ -41,7 +54,11 @@ test(
         name: "PostgreSQL restart integration",
       });
       assert.equal(created.status, 201);
-      installation = created.data;
+      // The read adds the capabilities derived from the selected Drivers (#2670).
+      const read = await request(first, "GET", "/installation");
+      assert.equal(read.status, 200);
+      assert.equal(read.data.id, created.data.id);
+      installation = read.data;
     }
 
     const namespace = await request(first, "POST", "/namespaces", {
@@ -279,7 +296,7 @@ test(
     ]);
     assert.equal(firstHistory.status, 200);
     assert.equal(secondHistory.status, 200);
-    assert.deepEqual(firstHistory.data, [revision]);
+    assert.deepEqual(firstHistory.data, [revisionSummary(revision)]);
     assert.deepEqual(secondHistory.data, []);
 
     const actor = await pool.query(
@@ -752,7 +769,10 @@ test(
       `/namespaces/${namespaceA}/agents/${primary.id}/revisions`,
     );
     assert.equal(history.status, 200);
-    assert.deepEqual(history.data, [firstRevision, secondRevision]);
+    assert.deepEqual(history.data, [
+      revisionSummary(secondRevision),
+      revisionSummary(firstRevision),
+    ]);
     const firstRevisionRead = await request(
       api,
       "GET",

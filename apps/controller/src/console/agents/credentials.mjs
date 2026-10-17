@@ -1,6 +1,6 @@
-import { element, button } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { element, button, focusSaveOutcome } from "../dom.mjs";
+import { configurationConflictMessage, isStaleGeneration, namespacePath } from "./list.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
@@ -92,7 +92,9 @@ function credentialError(error, mutation = false) {
   if (error.status === 403) {
     text = "Access denied. You do not have permission for this credential operation.";
   } else if (error.status === 409) {
-    text = "Credential metadata conflicts with the saved Agent state or selected Secrets.";
+    text =
+      configurationConflictMessage(error, mutation) ??
+      "Credential metadata conflicts with the saved Agent state or selected Secrets.";
   } else if (error.status === 400) {
     text = "Check the selected Secrets and reload this Agent.";
   } else if (error.status === 429) {
@@ -109,6 +111,57 @@ function credentialError(error, mutation = false) {
 
 function isDefinitiveRejection(error) {
   return [400, 403, 404, 409, 429].includes(error.status);
+}
+
+// Reapplies the Secret choices a save conflict carried over the reread bindings, when they were
+// made on this Configuration. A choice another browser also changed is named (finding 1512).
+function applyCarriedSecrets(state, carried) {
+  if (!carried) {
+    return;
+  }
+  if (carried.configurationId !== state.configuration.id) {
+    state.carriedNote =
+      "Your channel Secret choices were not reapplied: this Agent now uses another Configuration.";
+    return;
+  }
+  // No Slack token form renders for these, so the note shows in the section instead
+  // (finding 1525).
+  if (!slackEnabled(state.values)) {
+    state.carriedNote =
+      "Your channel Secret choices were not reapplied: Slack is off in the reloaded Configuration.";
+    return;
+  }
+  if (namedSlackAccountKeys(state.values) !== null) {
+    state.carriedNote =
+      "Your channel Secret choices were not reapplied: the reloaded Configuration uses named Slack accounts.";
+    return;
+  }
+  const saved = state.configuration.secretBindings ?? {};
+  const sameSecret = (left, right) => secretIdForBinding(left) === secretIdForBinding(right);
+  const keys = SLACK_SECRET_BINDINGS.map((binding) => binding.key).filter(
+    (key) =>
+      carried.changedSecrets?.[key] &&
+      !sameSecret(carried.secretBindings?.[key], carried.initialSecretBindings?.[key]) &&
+      !sameSecret(carried.secretBindings?.[key], saved[key]),
+  );
+  if (!keys.length) {
+    state.carriedNote = "The reloaded bindings already include your Secret choices.";
+    return;
+  }
+  state.draftSeed = {
+    secretBindings: {
+      ...saved,
+      ...Object.fromEntries(keys.map((key) => [key, carried.secretBindings[key]])),
+    },
+    changedSecrets: Object.fromEntries(keys.map((key) => [key, carried.changedSecrets[key]])),
+  };
+  const names = keys.map((key) => {
+    const label = SLACK_SECRET_BINDINGS.find((binding) => binding.key === key).label;
+    return sameSecret(saved[key], carried.initialSecretBindings?.[key])
+      ? label
+      : `${label} (also changed in another browser)`;
+  });
+  state.carriedNote = `Your Secret choices are applied over the reloaded bindings: ${names.join(", ")}. Review them, then save.`;
 }
 
 function renderSlackBindings(state) {
@@ -140,6 +193,7 @@ export function createChannelSecretsPanel({
   configuration,
   values,
   revisionsLoaded,
+  carried = null,
   onConfigurationChange,
   onChange,
   onReload,
@@ -150,23 +204,36 @@ export function createChannelSecretsPanel({
     values,
     saving: false,
     saveError: null,
-    saveErrorBeforeWrite: false,
+    saveErrorStep: null,
     saveMessage: "",
     saveGrantWarning: "",
     pendingSecretGrants: {},
     outcomeUnknown: false,
     reloadRequired: false,
+    // Unsaved Secret choices the form reopens with, and what a save conflict carries.
+    draftSeed: null,
+    // The form shows a Secret choice the saved bindings do not have (finding 1640).
+    unsavedSecrets: false,
+    carried: null,
+    carriedNote: "",
   };
+  applyCarriedSecrets(state, carried);
   const section = element("section", { className: "agent-card channel-secrets" });
 
   function saveErrorText() {
-    if (state.saveErrorBeforeWrite) {
-      return (
-        "Could not check the saved Configuration. Try again before saving channel Secrets." +
-        (state.saveError.requestId ? ` Request ID: ${state.saveError.requestId}` : "")
-      );
+    const { saveError, saveErrorStep, saveGrantWarning } = state;
+    if (saveErrorStep === "grant" && saveGrantWarning) {
+      return saveGrantWarning;
     }
-    return state.saveGrantWarning || credentialError(state.saveError, true);
+    const message =
+      saveErrorStep === "preflight"
+        ? "Could not check the saved Configuration. Try again before saving channel Secrets." +
+          (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
+        : credentialError(saveError, true);
+    // Report this failed save first. A grant can still be outstanding from an earlier save.
+    return saveGrantWarning
+      ? `${message} Access to a previously saved Secret is still unconfirmed.`
+      : message;
   }
 
   function canEnterChannelCredentials() {
@@ -232,6 +299,7 @@ export function createChannelSecretsPanel({
       !state.outcomeUnknown &&
       !state.reloadRequired &&
       !state.saveGrantWarning &&
+      !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
   }
@@ -260,32 +328,58 @@ export function createChannelSecretsPanel({
     if (missing.length) {
       return `Complete these in Credentials before deploying: ${missing.join(", ")}.`;
     }
+    if (state.unsavedSecrets) {
+      // A member who cannot read a saved Secret cannot pick it again: the picker offers the
+      // unreadable binding only while the draft still holds it (finding 1649). A page reload
+      // drops unsaved choices for every reader, with the page's other unsaved edits.
+      return "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
+    }
     return "Ready to deploy.";
   }
 
+  // The last render's save outcome and next-step controls, for focus after a save.
+  const shown = {};
+
   function renderChannelForm(error) {
+    state.unsavedSecrets = false;
     if (!slackEnabled(state.values)) {
       return null;
     }
     if (namedSlackAccountKeys(state.values) !== null) {
       return element(
-        "p",
-        { className: "hint" },
-        "Named Slack accounts use their own token keys. Bind them through the Configuration API.",
+        "div",
+        {},
+        element(
+          "p",
+          { className: "hint" },
+          "Named Slack accounts use their own token keys. Bind them through the Configuration API.",
+        ),
+        state.carriedNote
+          ? element("p", { className: "hint", role: "status" }, state.carriedNote)
+          : null,
       );
     }
     const formId = "runtime-channel-secrets-form";
     const draft = {
       secretBindings: { ...(state.configuration.secretBindings ?? {}) },
       changedSecrets: {},
+      ...structuredClone(state.draftSeed ?? {}),
     };
+    // Reopen the form with its unsaved choices after a refused write or a draft reload.
+    state.draftSeed = null;
     const pickers = [];
-    const status = element("p", { className: "hint", role: "status" }, state.saveMessage);
+    const status = element(
+      "p",
+      { className: "hint", role: "status" },
+      state.saveMessage || state.carriedNote,
+    );
     const save = element(
       "button",
       { type: "submit", form: formId, className: "primary" },
       "Save channel Secrets",
     );
+    shown.status = status;
+    shown.save = save;
     function createTokenPicker(binding) {
       const picker = createSecretReferenceField({
         context,
@@ -300,10 +394,12 @@ export function createChannelSecretsPanel({
           draft.changedSecrets = { ...draft.changedSecrets, [binding.key]: secret };
           state.saveError = null;
           state.saveMessage = "";
+          state.carriedNote = "";
           updateGrantWarning();
           error.textContent = state.saveGrantWarning;
           status.textContent = "";
           updateControls();
+          onChange();
         },
         createSecretName: () => `${state.agent.name} ${binding.secretName}`,
         createDialogTitle: `Create ${binding.label} Secret`,
@@ -320,6 +416,13 @@ export function createChannelSecretsPanel({
       return picker.field;
     }
     const updateControls = () => {
+      // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
+      // an unsaved authentication source does.
+      state.unsavedSecrets = SLACK_SECRET_BINDINGS.some(
+        (binding) =>
+          secretIdForBinding(draft.secretBindings[binding.key]) !==
+          secretIdForBinding(state.configuration.secretBindings?.[binding.key]),
+      );
       const changedSecrets = Object.values(draft.changedSecrets);
       const pendingSecrets = pendingSecretGrants();
       const missing = SLACK_SECRET_BINDINGS.filter(
@@ -363,8 +466,9 @@ export function createChannelSecretsPanel({
       }
       state.saving = true;
       state.saveError = null;
-      state.saveErrorBeforeWrite = false;
+      state.saveErrorStep = null;
       state.saveMessage = "";
+      state.carriedNote = "";
       state.saveGrantWarning = "";
       status.textContent = "Saving channel Secret bindings...";
       error.textContent = "";
@@ -372,6 +476,16 @@ export function createChannelSecretsPanel({
       onChange();
       let mutationStarted = false;
       let configurationSaved = false;
+      // A conflict keeps these choices for Reload draft instead of dropping them (finding 1512).
+      const carryChoices = () => {
+        state.reloadRequired = true;
+        state.draftSeed = structuredClone(draft);
+        state.carried = {
+          configurationId: state.configuration.id,
+          initialSecretBindings: structuredClone(state.configuration.secretBindings ?? {}),
+          ...structuredClone(draft),
+        };
+      };
       try {
         const configurationPath = `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(state.configuration.id)}`;
         const [freshAgent, freshConfiguration] = await Promise.all([
@@ -387,10 +501,10 @@ export function createChannelSecretsPanel({
           freshConfiguration.id !== state.configuration.id ||
           freshConfiguration.generation !== state.configuration.generation
         ) {
-          state.reloadRequired = true;
+          carryChoices();
           return;
         }
-        // The preflight cannot prevent a concurrent write before this PATCH.
+        // A write from another browser after the preflight is refused with 409 (finding 1505).
         mutationStarted = true;
         state.configuration = await context.request(
           `${namespacePath(context.namespaceId)}/configurations/${encodeURIComponent(
@@ -398,15 +512,21 @@ export function createChannelSecretsPanel({
           )}`,
           {
             method: "PATCH",
-            body: { values: state.values, secretBindings: draft.secretBindings },
+            body: {
+              values: state.values,
+              secretBindings: draft.secretBindings,
+              expectedGeneration: state.configuration.generation,
+            },
           },
         );
         configurationSaved = true;
+        state.draftSeed = null;
+        state.carriedNote = "";
         state.values = state.configuration.values;
         onConfigurationChange?.(state.configuration);
         const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
         for (const secret of grantTargets) {
-          await ensureSecretOperateBinding(context, state.agent, secret);
+          await ensureCredentialOperateBinding(context, state.agent, secret);
           markSecretGrantConfirmed(secret);
         }
         if (!context.isCurrent()) {
@@ -425,8 +545,25 @@ export function createChannelSecretsPanel({
           context.onExpired();
           return;
         }
+        if (isStaleGeneration(cause) && mutationStarted && !configurationSaved) {
+          carryChoices();
+          return;
+        }
+        if (
+          mutationStarted &&
+          !configurationSaved &&
+          cause.status === 409 &&
+          cause.code === "RESOURCE_CONFLICT"
+        ) {
+          // The write was refused. Keep the choices in this form, without requesting a reload.
+          state.draftSeed = draft;
+        }
         state.saveError = cause;
-        state.saveErrorBeforeWrite = !mutationStarted;
+        state.saveErrorStep = configurationSaved
+          ? "grant"
+          : mutationStarted
+            ? "configuration"
+            : "preflight";
         state.saveMessage = "";
         state.outcomeUnknown =
           mutationStarted && !configurationSaved && !isDefinitiveRejection(cause);
@@ -439,6 +576,9 @@ export function createChannelSecretsPanel({
           updateControls();
           render();
           onChange();
+          // The rebuilt section replaced the pressed button: focus the next step, described
+          // by the outcome, or the outcome itself (finding 1481).
+          focusSaveOutcome(section, [shown.reload, shown.save], shown.outcome);
         }
       }
     });
@@ -470,6 +610,45 @@ export function createChannelSecretsPanel({
       { className: "error", role: "alert" },
       state.saveError ? saveErrorText() : state.saveGrantWarning,
     );
+    const reloadMessage = state.reloadRequired
+      ? element(
+          "p",
+          { className: "error", role: "status" },
+          "Configuration changed. Reload this draft before saving channel Secrets.",
+        )
+      : null;
+    const unknownMessage =
+      state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
+        ? element(
+            "p",
+            { className: "error", role: "status" },
+            "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
+          )
+        : null;
+    const reload =
+      state.outcomeUnknown || state.reloadRequired
+        ? button("Reload draft", (event) => {
+            // The page rebuilds this section from the reread draft, with the Secret choices a
+            // save conflict kept applied over it.
+            event.currentTarget.disabled = true;
+            void onReload(state.reloadRequired && !state.outcomeUnknown ? state.carried : null);
+          })
+        : null;
+    shown.save = null;
+    shown.status = null;
+    const form = renderChannelForm(error);
+    shown.reload = reload;
+    shown.outcome = state.saveError
+      ? error
+      : (reloadMessage ?? unknownMessage ?? (shown.status?.textContent ? shown.status : null));
+    if (!slackEnabled(state.values) && state.carriedNote) {
+      // Shown only to say carried Secret choices were not reapplied (finding 1525).
+      section.replaceChildren(
+        element("h2", {}, "Channel Secrets"),
+        element("p", { className: "hint", role: "status" }, state.carriedNote),
+      );
+      return;
+    }
     section.replaceChildren(
       ...[
         element("h2", {}, "Channel Secrets"),
@@ -480,36 +659,18 @@ export function createChannelSecretsPanel({
         ),
         renderSlackBindings(state),
         error,
-        state.reloadRequired
-          ? element(
-              "p",
-              { className: "error", role: "status" },
-              "Configuration changed. Reload this draft before saving channel Secrets.",
-            )
-          : null,
-        state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
-          ? element(
-              "p",
-              { className: "error", role: "status" },
-              "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
-            )
-          : null,
-        state.outcomeUnknown || state.reloadRequired
-          ? element(
-              "div",
-              { className: "form-actions credential-actions" },
-              button("Reload draft", onReload),
-            )
-          : null,
+        reloadMessage,
+        unknownMessage,
+        reload ? element("div", { className: "form-actions credential-actions" }, reload) : null,
         renderUnavailableReason(),
-        renderChannelForm(error),
+        form,
       ].filter(Boolean),
     );
   }
 
   render();
   return {
-    section: slackEnabled(values) ? section : null,
+    section: slackEnabled(values) || state.carriedNote ? section : null,
     canDeploy,
     deployGateMessage,
     isSaving: () => state.saving,

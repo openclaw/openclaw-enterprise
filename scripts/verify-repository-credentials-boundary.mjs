@@ -25,6 +25,7 @@ const requiredEntrypoints = [
 ];
 const clientDirectory = "drivers/repo/github/credentials/client/";
 const clientContracts = "drivers/repo/credentials/client-contracts.ts";
+const publicReadDirectory = "drivers/repo/github/public-read/";
 const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", ".tsx", ".jsx"]);
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
@@ -38,6 +39,12 @@ const reviewedImports = {
   // The registry-backed metadata owner sends one authorized, metadata-only GET.
   "drivers/repo/github/credentials/descriptions.ts": {
     "node:https": ["request"],
+  },
+  // Separate tokenless listener and fixed-origin anonymous GET; this owner and
+  // the credential owners cannot import one another, in either direction.
+  "drivers/repo/github/public-read/server.ts": {
+    "node:http": ["createServer"],
+    "node:https": ["Agent", "get"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
   "drivers/repo/github/credentials/client/config.ts": {
@@ -366,6 +373,14 @@ function inspectSource(path, root, sources, ast) {
       }
       if (!sources.has(target)) {
         deny(node, `runtime import has no scanned credential source: ${specifier}`);
+        return;
+      }
+      if (file.startsWith(publicReadDirectory) !== target.startsWith(publicReadDirectory)) {
+        deny(
+          node,
+          "public GitHub reader and repository credential owners cannot load one another: " +
+            target,
+        );
         return;
       }
       if (
