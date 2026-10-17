@@ -86,9 +86,9 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 `gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
 enforce [Gateway admission](../gateway-outbound.md). Pure
 `revisionAccessStatus(revision)` returns `none`, `current` or `withdrawn`.
-OCC persists removal before calling `withdrawRevisionAccess(revision)`, which
-awaits route/workload termination even if approval returns. See the
-[withdrawal flow](../../flows/gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance).
+OCC persists removal before `withdrawRevisionAccess(revision)`
+awaits termination despite restored approval.
+[Withdrawal flow](../../flows/gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance).
 
 ### Optional startup preflight
 
