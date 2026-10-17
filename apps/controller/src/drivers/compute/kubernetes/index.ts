@@ -6120,11 +6120,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (
-          !(await this.providerHarnessReady(revision, namespace, requirements.labels)) ||
-          !(await this.workspaceNodeReady(revision, namespace))
-        ) {
+        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
           return incomplete();
+        }
+        if (!(await this.workspaceNodeReady(revision, namespace))) {
+          // The provider's Harness Pod is Ready, so only its node connection is
+          // outstanding: say so, as the Compute-owned Harness path does (D222).
+          return incomplete("WORKSPACE_NODE_PENDING");
         }
         if (credentialContext !== undefined) {
           const statuses = await this.requireCredentialGateway().attachmentStatus({
