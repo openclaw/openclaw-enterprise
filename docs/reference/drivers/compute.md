@@ -81,6 +81,15 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 | `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                          |
 | `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                            |
 
+### Optional Gateway access
+
+`gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
+enforce [Gateway admission](../gateway-outbound.md). Pure
+`revisionAccessStatus(revision)` returns `none`, `current` or `withdrawn`.
+OCC persists removal before `withdrawRevisionAccess(revision)`
+awaits termination despite restored approval.
+[Withdrawal flow](../../flows/gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance).
+
 ### Optional startup preflight
 
 `preflight()` checks dependencies before production startup completes; a thrown
@@ -279,13 +288,12 @@ cleanup signal. See the [hook execution flow](../../flows/compute-driver-lifecyc
 
 ### Optional active-runtime maintenance
 
-`maintenanceIntervalMs` must be a positive safe integer. After activation or
-maintenance, OCC atomically queues another pass for the same Agent, revision and
-original deployment Principal, which prepares and activates the revision again.
-Failed observations schedule another authorized pass without changing the active
-revision. Maintenance survives worker restarts and ends when a newer revision
-replaces or [supersedes](#production-revision-stages) it. Without an interval,
-lifecycle work responds to events. New deployments have limited retries.
+`maintenanceIntervalMs` is a positive safe integer. OCC atomically queues the same
+Agent, revision and deployer for preparation/activation. Transient failures
+reauthorize and retry without changing the active revision. Maintenance survives
+restart until [superseded](#production-revision-stages). Terminal refusal withdraws
+admitted access first. Without an interval, events trigger lifecycle. Deployment
+retries remain bounded.
 
 ### Plugin startup warnings
 

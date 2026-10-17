@@ -1265,7 +1265,7 @@ test(
       const candidateValues = JSON.parse(await run("yq", ["-o=json", ".", valuesPath]));
       candidateValues.api = {
         ...candidateValues.api,
-        channelDirectoryProxyUrl: "http://198.51.100.25:3128",
+        controlPlaneOutboundProxyUrl: "http://198.51.100.25:3128",
       };
       const candidateInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));
       candidateInstallation.drivers.plugin = {
@@ -1361,7 +1361,7 @@ test(
         ({ name }) => name === "api",
       );
       assert.equal(
-        apiContainer.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL").value,
+        apiContainer.env.find(({ name }) => name === "OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL").value,
         "http://198.51.100.25:3128",
       );
       const upgradedInstallation = JSON.parse(await run("yq", ["-o=json", ".", installationPath]));

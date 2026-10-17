@@ -1,3 +1,4 @@
+import { GatewayOutboundCapabilitiesResponse } from "./resources.ts";
 import { Type } from "typebox";
 
 import {
@@ -1159,6 +1160,23 @@ export const occApiRoutes = [
         501: ErrorResponseRef,
         ...createErrors,
       },
+    },
+  },
+  {
+    operationId: "getAgentGatewayOutboundCapabilities",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/gateway-outbound/capabilities",
+    action: "openclaw.agents.gateway_outbound.capabilities.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Read Gateway outbound availability and whether the caller may configure this exact Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: GatewayOutboundCapabilitiesResponse, ...readErrors },
     },
   },
   {

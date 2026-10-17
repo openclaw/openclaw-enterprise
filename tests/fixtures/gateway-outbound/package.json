@@ -1,0 +1,10 @@
+{
+  "name": "oce-outbound-proof",
+  "version": "0.0.0",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}

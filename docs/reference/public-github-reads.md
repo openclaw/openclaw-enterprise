@@ -40,16 +40,22 @@ domain glob. It leaves the native proxy policy intact. The egress policy selects
 only the revision that opted in. Preparing or activating a successor preserves
 the serving revision's choice; stopping or retiring a revision removes its own policy.
 Reader selection is frozen at admission. A revision created before the reader was
-enabled stays unselected even if its proxy already allowed that address. Disabling
-or changing the configured reader peer does not itself trigger reconciliation of
-an active revision. To avoid interruption, deploy an unselected successor and
-retire the old revision before changing the peer; stopping the Agent also terminates
-its Harness. If a selected revision is prepared or activated after its peer is
-removed or changed, Compute first removes that revision's grant to narrow new
-connections, then stops its Harness and waits for its Pods to terminate before
-reporting a configuration failure. Removing a NetworkPolicy does not guarantee
-that an existing connection closes. A GET admitted before withdrawal completes
-may drain; the stopped Harness cannot start a new one afterward. Deploy a new revision to select a replacement peer. Apply the
+enabled stays unselected even if its proxy already allowed that address.
+Compute maintenance normally rechecks reader configuration every 30 seconds; the
+next pass observes a removed or changed peer. Queue delay and Pod shutdown also
+count, so that interval is not a withdrawal deadline. To avoid interruption,
+deploy an unselected successor and retire the old revision before changing the
+peer; stopping the Agent also terminates its Harness.
+
+When the admitted peer is refused, Compute removes the revision's grant to narrow
+new connections and terminates its exact admitted Harness before reporting failure.
+Terminal active-version refusal also withdraws the reader, even if its peer remains
+unchanged or authority returns while removal retries. A revision with
+[Gateway outbound access](gateway-outbound.md) must close both routes before its
+terminal result is recorded. Removing a NetworkPolicy alone does not guarantee
+existing connections close. An admitted GET may drain before Harness termination;
+that Harness cannot start new requests afterward. A new authorized revision is
+required to restore access or select a replacement peer. Apply the
 database migration before starting a controller that writes the new admission
 fact, and complete the rollout before admitting revisions with that controller.
 

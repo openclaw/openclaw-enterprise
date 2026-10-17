@@ -128,6 +128,13 @@ Cleanup timeout/grace overrides that are not positive numbers use defaults.
 Deadlines include pipe drain; bounded waiting does not prove deletion. Preparation
 verifies imported image references on every node and fails on import timeout.
 
+The `k3d-fixture-state` lane also imports the actual controller image as
+`OCC_TEST_PRODUCTION_CONTROLLER_IMAGE` for enabled Slack provisioning through
+the managed Gateway proxy. Preparation builds it if no image was selected; file
+preparation reuses its recorded immutable reference. Gateway and provider responses
+remain fixtures: this checks proxy resource lifecycle and Secret projection,
+not native Slack connectivity. See the [fixture procedure](kubernetes.md#kubernetes-http-fixture).
+
 <a id="github-actions"></a>
 
 <a id="tests-in-each-workflow"></a>

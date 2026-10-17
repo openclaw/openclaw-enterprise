@@ -1204,7 +1204,7 @@ function receiptsMatchEntries(receipts, entries) {
   );
 }
 
-async function seedCanonicalData(db, { preset = false } = {}) {
+async function seedCanonicalData(db, { preset = false, computeAdmission = false } = {}) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
   const configuration = `cfg_${randomUUID()}`;
@@ -1248,7 +1248,11 @@ async function seedCanonicalData(db, { preset = false } = {}) {
           draft_spec: {},
           harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
           harness_auth: { method: "runtime" },
-          compute: { id: "kubernetes", implementation: "test" },
+          compute: {
+            id: "kubernetes",
+            implementation: "test",
+            ...(computeAdmission ? { admission: "migration-compute-admission" } : {}),
+          },
         },
       ],
     );
@@ -1550,6 +1554,7 @@ async function canonicalData(db) {
           ? [
               "repository_bindings",
               "repository_access",
+              "gateway_outbound",
               "harness_auth_credential_source_id",
               "plugin_approvers",
               "credential_sources",
@@ -1637,10 +1642,12 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preGatewayOutbound"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
-        await seedCanonicalData(db, { preset: prefix >= 25 });
+        // Preserve Compute's existing fingerprint when the Gateway constraint is added.
+        await seedCanonicalData(db, { preset: prefix >= 25, computeAdmission: prefix >= 55 });
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", true), {
@@ -2024,6 +2031,7 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preGatewayOutbound"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2109,11 +2117,12 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preGatewayOutbound"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
-          await seedCanonicalData(db, { preset: prefix >= 25 });
+          await seedCanonicalData(db, { preset: prefix >= 25, computeAdmission: prefix >= 55 });
         }
         const before = await historySnapshot(db);
         const data = prefix ? await canonicalData(db) : undefined;
@@ -2122,7 +2131,9 @@ test(
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
+        // 0058 grants access only after creating its functions and Agent column.
         const rollbackTag = [
+          [57, "GRANT"],
           [56, "CREATE FUNCTION"],
           [55, "CREATE TRIGGER"],
           [54, "ALTER TABLE"],

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
+  assertManagedGatewayOutbound,
   assertInvalidHarnessAuthStaysUnready,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertDedicatedNativeChildRelay,
@@ -33,6 +34,25 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
+
+test(
+  "production dedicated Gateway outbound enforces native plugin routing and withdraws active authority",
+  {
+    skip: process.env.OCC_TEST_GATEWAY_OUTBOUND_K3D !== "1",
+    timeout: 1_200_000,
+  },
+  async (context) => {
+    assert.ok(
+      process.env.OCC_TEST_OPENAI_MODEL?.trim(),
+      "the native outbound proof must explicitly select its authorized provider model",
+    );
+    const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayOutbound: { mode: "restricted", hosts: ["example.com"] },
+      publicGithubRead: true,
+    });
+    await assertManagedGatewayOutbound(context, topology);
+  },
+);
 
 test(
   "candidate dedicated Skill source uploads honor default and denied node-write policy",

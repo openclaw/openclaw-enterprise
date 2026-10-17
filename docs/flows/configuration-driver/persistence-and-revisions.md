@@ -121,7 +121,7 @@ checks the Harness authentication binding (Kubernetes Compute also runs the shar
 `requireOpenClawRoster`, the dedicated OpenClaw and Codex `main` Agent rules, and
 [the rules](../../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts)
 preparation and the Gateway entrypoint apply after a dedicated deployment stops its
-predecessors: enabled channels need a dedicated workload and `runtime.channels`, and a
+predecessors: enabled supported channels need a dedicated workload and enabled `runtime.gatewayOutbound`, and a
 Gateway hosting a workspace node needs the file-transfer plugin) and, through optional
 `validateGatewaySettings`, the native gateway settings: Kubernetes Compute refuses
 a setting every preparation would refuse with `409`, naming the setting and never

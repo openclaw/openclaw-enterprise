@@ -123,3 +123,14 @@ export const SharingUnknown = { ...story("agentSharingUnknown") };
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
+
+export const GatewayNetwork = story("gatewayNetwork");
+export const GatewayNetworkRestricted = story("gatewayNetworkRestricted");
+export const GatewayNetworkEmpty = story("gatewayNetworkEmpty");
+export const GatewayNetworkReadOnly = story("gatewayNetworkReadOnly");
+export const GatewayNetworkDisabled = story("gatewayNetworkDisabled");
+export const GatewayNetworkEmbedded = story("gatewayNetworkEmbedded");
+export const GatewayNetworkLoading = story("gatewayNetworkLoading");
+export const GatewayNetworkError = story("gatewayNetworkError");
+
+export const GatewayNetworkAdmitted = story("gatewayNetworkAdmitted");

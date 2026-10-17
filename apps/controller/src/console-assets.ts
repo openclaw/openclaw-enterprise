@@ -51,6 +51,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/workspace.mjs",
       "agents/access.mjs",
       "agents/detail.mjs",
+      "agents/gateway-outbound.mjs",
       "agents/deletion.mjs",
       "agents/stop.mjs",
       "agents/native-admin.mjs",

@@ -190,6 +190,9 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 56) {
         return "preCanonicalHarnessAuth";
       }
+      if (receipts.length === 57) {
+        return "preGatewayOutbound";
+      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -299,6 +302,9 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 56) {
     return "preCanonicalHarnessAuth";
+  }
+  if (receipts.length === 57) {
+    return "preGatewayOutbound";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

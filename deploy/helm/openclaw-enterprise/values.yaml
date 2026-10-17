@@ -238,9 +238,9 @@ database:
 api:
   port: 8080
   clients: []
-  # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.
-  # The proxy must allow CONNECT to slack.com:443; empty disables lookup in production.
-  channelDirectoryProxyUrl: ""
+  # Optional exact HTTP(S) endpoint for trusted control-plane provider requests.
+  # The selected Driver owns its required hosts; the external proxy enforces them.
+  controlPlaneOutboundProxyUrl: ""
   # API-only HTTPS egress to explicit provider IPv4 /32 hosts for discovery and login.
   # Hosted codex-plugin needs auth.openai.com and chatgpt.com. Its installation
   # profile resolves these unless CIDRs are supplied; refresh on DNS changes.
@@ -266,12 +266,13 @@ api:
     # generic only; ingress-nginx and aws always read x-forwarded-for.
     clientAddressHeader: ""
 
-slackProxy:
-  # Optional chart-managed HTTP CONNECT proxy for Slack channel traffic. It is
-  # inert until enabled. HTTPS egress excludes private and reserved IPv4 ranges.
+outboundProxy:
+  # API-only proxy. Gateway instances are owned separately by Kubernetes Compute.
   enabled: false
-  serviceName: openclaw-enterprise-slack-proxy
+  serviceName: openclaw-enterprise-outbound-proxy
   port: 3128
+  # Required when enabled. Include actual infrastructure endpoints, even public IPs.
+  denyCidrs: []
   resources:
     requests:
       cpu: 25m

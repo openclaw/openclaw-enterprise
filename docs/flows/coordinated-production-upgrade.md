@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-12"
-last_updated_session: "authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031"
+updated: "2026-10-15"
+last_updated_session: "authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8"
 ---
 
 # Production image upgrade flow
@@ -62,8 +62,8 @@ graph TD
 The script verifies the protected files, cluster, deployed Helm release, and
 matching OCC and Secret Installation IDs. It compares protected and live
 configuration in full, including selected image fields. It captures separate
-reviewed candidate files and accepts changes only to the Slack directory proxy
-and the curated Codex PluginDriver selection. All other Helm and Installation
+reviewed candidate files and accepts changes only to the control-plane outbound
+proxy (`api.controlPlaneOutboundProxyUrl`) and curated Codex PluginDriver selection. All other Helm and Installation
 settings remain protected, including new fields. The guard compares broker
 resource references, not the contents of referenced ConfigMaps or Secrets.
 Image flags select images after this comparison.
@@ -280,6 +280,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 10:01: Name the canonical control-plane outbound proxy in candidate protection. (authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8 - 313a70262e432192306a2db431bf0b6f0459a957)
 
 - 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
 

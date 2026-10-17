@@ -43,7 +43,7 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `name`
 - `configuration_id`
 - `backend_id`
-- `execution_mode`
+- `execution_mode`, `gateway_outbound`
 - `plugins`
 - `plugin_approvers`
 - `repository_bindings`

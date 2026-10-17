@@ -60,8 +60,8 @@ function startupFailureCode(error) {
   if (/ChatGPT admin-key Secret/.test(message)) {
     return "CHATGPT_ADMIN_KEY_UNAVAILABLE";
   }
-  if (/Slack directory proxy/i.test(message)) {
-    return "CHANNEL_DIRECTORY_PROXY_INVALID";
+  if (/Control-plane outbound proxy/i.test(message)) {
+    return "CONTROL_PLANE_OUTBOUND_PROXY_INVALID";
   }
   if (
     /observability\.url (?:IPv4 host must be four decimal octets|must not contain user info|must not contain a tab|must be an absolute HTTP)/.test(
@@ -210,8 +210,9 @@ function configuration() {
   }
 
   const gatewayApiKeyPath = process.env.OCC_GATEWAY_API_KEY_PATH;
-  const channelDirectoryProxyUrl = process.env.OCC_CHANNEL_DIRECTORY_PROXY_URL;
-  const channelDirectoryManagedProxyHost = process.env.OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST;
+  const controlPlaneOutboundProxyUrl = process.env.OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL;
+  const controlPlaneOutboundProxyManagedHost =
+    process.env.OCC_CONTROL_PLANE_OUTBOUND_PROXY_MANAGED_HOST;
   if (gatewayApiKeyPath !== undefined) {
     if (gatewayApiKeyPath.trim().length === 0 || !isAbsolute(gatewayApiKeyPath)) {
       throw new Error("OCC_GATEWAY_API_KEY_PATH must identify an absolute mounted-file path.");
@@ -266,10 +267,10 @@ function configuration() {
       ...humanLogin,
       ...(clientAddress === undefined ? {} : { clientAddress }),
       ...(gatewayApiKeyPath === undefined ? {} : { gatewayApiKeyPath }),
-      ...(channelDirectoryProxyUrl === undefined ? {} : { channelDirectoryProxyUrl }),
-      ...(channelDirectoryManagedProxyHost === undefined
+      ...(controlPlaneOutboundProxyUrl === undefined ? {} : { controlPlaneOutboundProxyUrl }),
+      ...(controlPlaneOutboundProxyManagedHost === undefined
         ? {}
-        : { channelDirectoryManagedProxyHost }),
+        : { controlPlaneOutboundProxyManagedHost }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
       agentRuntimeLogsEnabled,
     });

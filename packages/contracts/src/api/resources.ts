@@ -1,3 +1,4 @@
+import { GatewayOutboundSelectionSchema } from "./common.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
@@ -292,6 +293,12 @@ const CredentialSourceCatalogSchema = Type.Object(
 
 const InstallationCapabilitiesSchema = Type.Object(
   {
+    gatewayOutbound: Type.Optional(
+      Type.Object(
+        { restricted: Type.Boolean(), publicHttps: Type.Boolean() },
+        { additionalProperties: false },
+      ),
+    ),
     credentialSources: Type.Optional(
       Type.Object(
         { types: Type.Array(CredentialSourceCatalogSchema) },
@@ -377,6 +384,7 @@ export const AgentSchema = Type.Object(
     backendId: Type.Union([BackendId, Type.Null()]),
     harnessAuth: Type.Union([HarnessAuthBindingSchema, Type.Null()]),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
+    gatewayOutbound: Type.Optional(GatewayOutboundSelectionSchema),
     executionMode: HarnessExecutionModeSchema,
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
     pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
@@ -394,6 +402,7 @@ const ConfigurationReadErrorSchema = Type.Object(
   {
     code: Type.Literal("SAVED_CONFIGURATION_UNREADABLE"),
     field: Type.Union([
+      Type.Literal("gatewayOutbound"),
       Type.Literal("plugins"),
       Type.Literal("pluginApprovers"),
       Type.Literal("repositoryBindings"),
@@ -409,7 +418,7 @@ const ConfigurationReadErrorSchema = Type.Object(
 );
 
 const agentReadDescription =
-  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.";
+  "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, credentialSources, and gatewayOutbound.";
 
 export const AgentReadSchema = Type.Union(
   [
@@ -423,6 +432,7 @@ export const AgentReadSchema = Type.Union(
           "repositoryAccess",
           "harnessAuth",
           "credentialSources",
+          "gatewayOutbound",
         ]).properties,
         configurationReadError: ConfigurationReadErrorSchema,
       },
@@ -1145,6 +1155,31 @@ export const AgentRevisionSchema = Type.Object(
     configurationKind: ConfigurationKindSchema,
     configurationGeneration: ConfigurationGeneration,
     configuration: ConfigurationValues,
+    gatewayOutbound: Type.Optional(
+      Type.Object(
+        {
+          selection: GatewayOutboundSelectionSchema,
+          denyCidrs: Type.Array(Type.String({ minLength: 1, maxLength: 128 }), { maxItems: 64 }),
+          requirements: Type.Array(
+            Type.Object(
+              {
+                source: Type.String({ maxLength: 128 }),
+                destinations: Type.Array(
+                  Type.Object(
+                    { host: Type.String({ maxLength: 253 }), includeSubdomains: Type.Boolean() },
+                    { additionalProperties: false },
+                  ),
+                  { maxItems: 64 },
+                ),
+              },
+              { additionalProperties: false },
+            ),
+            { maxItems: 32 },
+          ),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     harness: Type.Object(
       {
         id: Type.String({ minLength: 1 }),
@@ -1828,3 +1863,34 @@ export type PresetWire = Type.Static<typeof PresetSchema>;
 export type PresetSummaryWire = Type.Static<typeof PresetSummarySchema>;
 export type PresetResponse = Type.Static<typeof PresetResponse>;
 export type PresetListResponse = Type.Static<typeof PresetListResponse>;
+
+export const GatewayOutboundCapabilitiesResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        restricted: Type.Boolean(),
+        publicHttps: Type.Boolean(),
+        canConfigure: Type.Boolean(),
+        requirements: Type.Optional(
+          Type.Array(
+            Type.Object(
+              {
+                source: Type.String(),
+                destinations: Type.Array(
+                  Type.Object(
+                    { host: Type.String(), includeSubdomains: Type.Boolean() },
+                    { additionalProperties: false },
+                  ),
+                ),
+              },
+              { additionalProperties: false },
+            ),
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);

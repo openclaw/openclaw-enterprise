@@ -45,7 +45,11 @@ export async function createConsoleRepositoryLaunchFixture(
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        gatewayOutbound: {
+          enabled: true,
+          image: "controller:local",
+          denyCidrs: ["10.0.0.0/8"],
+        },
       },
     },
     { id: "console-launch-compute" },

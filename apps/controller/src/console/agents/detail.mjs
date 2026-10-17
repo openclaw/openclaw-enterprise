@@ -4,6 +4,7 @@ import {
   createHarnessAuthFields,
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
+import { renderGatewayOutbound } from "./gateway-outbound.mjs";
 import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
@@ -1047,6 +1048,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     "configuration",
     "plugins",
     "channels",
+    "network",
     ...(selected === "draft" ? ["repositories", "credentials"] : []),
     "workspace",
     ...(selected === "draft" ? [] : ["logs"]),
@@ -1229,7 +1231,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
-        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+        (["configuration", "plugins", "repositories", "channels", "network"].includes(
+          selectedTab,
+        ) &&
           draftEditorNavigationBlock))
     );
   }
@@ -1253,6 +1257,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ["configuration", "Configuration"],
     ["plugins", "Plugins"],
     ["channels", "Channels"],
+    ["network", "Network"],
     ...(selected === "draft"
       ? [
           ["repositories", "Repositories"],
@@ -2190,12 +2195,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     // Authentication edits staged in Credentials but not yet saved.
     let authenticationUnsaved = false;
+    const retainedNetwork = context.drafts.get("gatewayOutbound");
     const retainedEditor = context.drafts.get("configuration");
     const draftEditorState = {
-      dirty: Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
+      dirty:
+        selectedTab === "network"
+          ? Boolean(retainedNetwork?.dirty)
+          : Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
       saving: false,
-      outcomeUnknown: retainedEditor?.outcomeUnknown ?? false,
-      reloadRequired: retainedEditor?.reloadRequired ?? false,
+      outcomeUnknown:
+        (selectedTab === "network" ? retainedNetwork : retainedEditor)?.outcomeUnknown ?? false,
+      reloadRequired:
+        (selectedTab === "network" ? retainedNetwork : retainedEditor)?.reloadRequired ?? false,
     };
     const retainedPlugins = context.drafts.get("plugins");
     const pluginEditorState = {
@@ -2250,6 +2261,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         : "";
     activeCredentials = credentials;
     function editedSubject() {
+      if (selectedTab === "network") {
+        return "Gateway network access";
+      }
       if (selectedTab === "repositories") {
         return "repository access";
       }
@@ -2275,6 +2289,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         Boolean(deployReloadMessage) ||
         authenticationPending ||
         authenticationUnsaved ||
+        (selectedTab !== "network" &&
+          Boolean(
+            context.drafts.get("gatewayOutbound")?.dirty ||
+            context.drafts.get("gatewayOutbound")?.outcomeUnknown ||
+            context.drafts.get("gatewayOutbound")?.reloadRequired,
+          )) ||
         retainedConfiguration.dirty ||
         retainedConfiguration.reloadRequired ||
         draftEditorState.dirty ||
@@ -2416,6 +2436,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           if (
             freshAgent.executionMode !== agent.executionMode ||
             freshAgent.backendId !== agent.backendId ||
+            JSON.stringify(freshAgent.gatewayOutbound ?? { mode: "channelsOnly" }) !==
+              JSON.stringify(agent.gatewayOutbound ?? { mode: "channelsOnly" }) ||
             JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(agent.plugins ?? {})
           ) {
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
@@ -2504,14 +2526,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       element(
         "ol",
         { className: "draft-steps" },
-        element("li", {}, "Edit and save Configuration, plugins, or Channels"),
+        element("li", {}, "Edit and save Configuration, plugins, Channels, or Network access"),
         element("li", {}, "Check authentication and credentials"),
         element("li", {}, "Deploy the saved draft"),
       ),
       element(
         "p",
         { className: "muted" },
-        "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
+        "Deployment creates an immutable version from the saved Configuration, plugin selections, and Gateway network access. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
       ),
       draft ? element("div", { className: "form-actions" }, deploy, setupCredentials) : deploy,
       deployStatus,
@@ -2553,7 +2575,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             ? "Reload this draft before leaving the editor."
             : draftEditorState.saving
               ? `Wait for ${editedSubject()} save to finish before leaving the editor.`
-              : draftEditorState.dirty && selectedTab === "repositories"
+              : draftEditorState.dirty && ["repositories", "network"].includes(selectedTab)
                 ? `Save or cancel ${editedSubject()} edits before leaving this tab.`
                 : null;
         updateNavigationControls();
@@ -2937,6 +2959,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     if (selectedTab === "repositories" && draft) {
       content.append(renderRepositoryEditor(context, data));
+    } else if (selectedTab === "network") {
+      content.append(
+        renderGatewayOutbound(context, {
+          agent,
+          snapshot,
+          draft,
+          executionMode,
+          path,
+          onState: data.setDraftEditorState,
+          onSaved: () => context.navigate(target("draft", "network"), namespaceId, true),
+          onReload: () => {
+            context.drafts.forget("gatewayOutbound");
+            context.navigate(target("draft", "network"), namespaceId, true);
+          },
+        }),
+      );
     } else if (selectedTab === "plugins") {
       content.append(
         renderAgentPlugins(context, {

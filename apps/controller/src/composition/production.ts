@@ -21,7 +21,7 @@ import {
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
-import { SlackChannelDriver } from "../drivers/channel/slack.ts";
+import { createBundledChannelCapabilities } from "./channel.ts";
 import type {
   InstallationRuntimeDrivers,
   ServiceAccountDriverFactory,
@@ -61,8 +61,8 @@ export interface ProductionConfig {
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly gatewayApiKeyPath?: string;
-  readonly channelDirectoryProxyUrl?: string;
-  readonly channelDirectoryManagedProxyHost?: string;
+  readonly controlPlaneOutboundProxyUrl?: string;
+  readonly controlPlaneOutboundProxyManagedHost?: string;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
   readonly agentRuntimeLogsEnabled?: boolean;
@@ -249,6 +249,14 @@ export async function composeProduction(config: ProductionConfig) {
     }
 
     phaseCompleted("computePreflight");
+    const { driver: channelDriver, channelNetworkRequirements } = createBundledChannelCapabilities({
+      ...(config.controlPlaneOutboundProxyUrl === undefined
+        ? {}
+        : { proxyUrl: config.controlPlaneOutboundProxyUrl }),
+      ...(config.controlPlaneOutboundProxyManagedHost === undefined
+        ? {}
+        : { managedProxyHost: config.controlPlaneOutboundProxyManagedHost }),
+    });
     const controller = new OpenClawController(persistedInstallation, {
       state,
       recordOperations: true,
@@ -257,6 +265,7 @@ export async function composeProduction(config: ProductionConfig) {
       bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
       refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
       loggingLevel: config.drivers.installation.logging.level,
+      channelNetworkRequirements,
       ...(installation.runtime === undefined
         ? {}
         : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
@@ -267,20 +276,8 @@ export async function composeProduction(config: ProductionConfig) {
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
-    {
-      const channelDriver = new SlackChannelDriver(
-        globalThis.fetch,
-        config.channelDirectoryProxyUrl,
-        {
-          managedProxyHosts:
-            config.channelDirectoryManagedProxyHost === undefined
-              ? []
-              : [config.channelDirectoryManagedProxyHost],
-        },
-      );
-      controller.registerDriver(channelDriver);
-      controller.selectDriver("channel", channelDriver.id);
-    }
+    controller.registerDriver(channelDriver);
+    controller.selectDriver("channel", channelDriver.id);
     if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
