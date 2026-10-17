@@ -738,6 +738,63 @@ async function onDiskConfigurationPackage(t, exports) {
   return owner;
 }
 
+test("Driver export URLs retain the selected query and fragment during construction", async (t) => {
+  for (const suffix of ["?profile=selected", "#configuration", "?profile=selected#configuration"]) {
+    await t.test(suffix, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, `./compiled/index.js${suffix}`);
+      const compiled = join(owner, "node_modules", configurationPackage, "compiled");
+      await cp(join(compiled, "index.js"), join(compiled, "base.js"));
+      // This compiled package selects its accepted endpoint from its exported module URL.
+      // Native import and the Installation loader must supply the same selected profile.
+      await writeFile(
+        join(compiled, "index.js"),
+        [
+          'import { createDriver as createBaseDriver, validateConfiguration as validateBase } from "./base.js";',
+          'export { configurationSchema } from "./base.js";',
+          "const selected = new URL(import.meta.url);",
+          "export function validateConfiguration(configuration) {",
+          "  validateBase(configuration);",
+          '  if (configuration.endpoint !== "memory:" + selected.search + selected.hash) {',
+          '    throw new Error("The selected Driver export URL profile was lost.");',
+          "  }",
+          "}",
+          "export function createDriver(options) {",
+          "  validateConfiguration(options.configuration);",
+          "  return createBaseDriver(options);",
+          "}",
+        ].join("\n"),
+      );
+      const endpoint = `memory:${suffix}`;
+      const native = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const driver = await import(${JSON.stringify(configurationPackage)}); driver.validateConfiguration({ endpoint: ${JSON.stringify(endpoint)} });`,
+        ],
+        { cwd: owner, encoding: "utf8" },
+      );
+      assert.equal(native.status, 0, native.stderr);
+      const configuration = installation();
+      configuration.drivers.configuration = {
+        ...selectedConfiguration(),
+        configuration: { endpoint },
+      };
+      const drivers = await load(owner, configuration);
+      const value = {
+        id: `cfg_${randomUUID()}`,
+        namespaceId: `ns_${randomUUID()}`,
+        kind: "agent",
+        generation: 1,
+        createdAt: new Date().toISOString(),
+        values: { agents: { defaults: { workspace: "/tmp/profile" } } },
+      };
+      assert.deepEqual(await drivers.configurationDriver.create(value), value);
+      assert.deepEqual(await drivers.configurationDriver.read(value), value);
+    });
+  }
+});
+
 function importConfigurationPackage(owner) {
   return spawnSync(
     process.execPath,

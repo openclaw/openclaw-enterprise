@@ -1,14 +1,14 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-16"
-last_updated_session: "authoring-run/5e253249-62fe-4167-90cb-1b82da91396c"
+updated: "2026-10-17"
+last_updated_session: "authoring-run/400ef44f-ab67-4b2e-901a-064afa6e9e12"
 ---
 
 # Agent Native Admin UI Flow
 
 ## Overview
 
-Deployment prepares enabled Kubernetes native admin policy in an immutable Agent revision without changing its reusable Configuration. The console returns the active gateway's stable URL after exact-Agent `administer` authorization. The Agent host uses the OCE session cookie; OCC rechecks access before proxying HTTP and WebSockets.
+Deployment prepares enabled Kubernetes native admin policy in an immutable revision, preserving reusable Configuration. Exact-Agent `administer` authorization exposes its stable URL; OCC checks the OCE session and access before proxying HTTP and WebSockets.
 
 ## Entry Points
 
@@ -245,6 +245,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Related docs
 
+- [Proposed Compute preparation contract](../../specs/rfcs/0021-native-admin-deployment-preparation.md)
 - [Agent native admin UI](../reference/agent-native-admin.md)
 - [Platform console](../reference/console.md#open-the-native-admin-ui)
 - [Gateway routing with Envoy](../reference/gateway-routing.md#native-admin-ui-routing)
@@ -257,6 +258,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-17 19:03: Linked the submitted Compute contract proposal and refreshed upstream provisioning support. (authoring-run/400ef44f-ab67-4b2e-901a-064afa6e9e12 - 54614e31d67a9825684d1906feed3a6ab1c671c9)
 - 2026-10-16 12:59: Retained copied-chat recovery and first-deployment preparation while adopting the current Sandbox contract. (authoring-run/5e253249-62fe-4167-90cb-1b82da91396c - 9c309cf67287428bdd762232d542759db7465198)
 - 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
 - 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)

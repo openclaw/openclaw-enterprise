@@ -5,14 +5,14 @@
       "rule": "unresolved-dynamic-import",
       "from": "apps/controller/src/composition/driver-packages.ts",
       "to": "",
-      "specifier": "unknown:sha256:e7ef793d2ca83cf43fe9dc1001737b21f64cc822094cdc628ca250c48b5c8c4e",
+      "specifier": "unknown:sha256:0ef0fa1a3fa96c146b7b5e37279459d5d3f4f10cf485fd16a9d69d5e48c06168",
       "kind": "dynamic-import",
       "typeOnly": false,
       "bindings": ["*"],
       "owner": "Driver package composition",
       "reason": "The installed Driver loader validates configured package identity, trusted root and entrypoint at runtime; its target is deliberately not a statically enumerable workspace import.",
       "removeWhen": "Remove this exception if the supported installed Driver loader is removed or replaced by static registration.",
-      "loaderIdentity": "loader:sha256:7ff88ab4ec77112db71ba0c06f2dcd349619af60cfe2ab198e92801c3ea34d85"
+      "loaderIdentity": "loader:sha256:a9a43677d6d34779f90f8775cae76a16afbb92fa5b309f6008a9263167593338"
     },
     {
       "rule": "cross-provider-implementation",
@@ -148,6 +148,22 @@
       "owner": "Console asset delivery",
       "reason": "The Console serves this shared browser-compatible contract module through an explicit same-origin asset route backed by its authored source.",
       "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
+    },
+    {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/src/runtime-failure.mjs",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
+      "kind": "import",
+      "typeOnly": false,
+      "bindings": [
+        "value:RUNTIME_DIAGNOSTIC_CHECKS",
+        "value:RUNTIME_DIAGNOSTIC_CODES",
+        "value:RUNTIME_FAILURE_CHECKS"
+      ],
+      "owner": "Kubernetes runtime programs",
+      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
+      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
     },
     {
       "rule": "unresolved-local-import",

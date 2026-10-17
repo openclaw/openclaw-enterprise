@@ -10,6 +10,8 @@ export function createTestKubernetesComputeDriver(
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     gatewayRouting,
+    sandboxDriver,
+    credentialGatewayDriver,
   } = {},
 ) {
   const resources = {
@@ -55,7 +57,7 @@ export function createTestKubernetesComputeDriver(
           }
         : {}),
     },
-    { id },
+    { id, sandboxDriver, credentialGatewayDriver },
   );
 }
 

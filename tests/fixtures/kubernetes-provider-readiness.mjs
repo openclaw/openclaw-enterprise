@@ -106,7 +106,7 @@ export function providerReadinessFixture({
     undefined,
     preparedAuth(driver, namespace, false),
   );
-  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key");
+  const { labels } = driver.harnessRequirementsFromDeployment(deployment, "api_key", false);
   const requests = [];
   let observe = () => ({ apiVersion: "v1", kind: "PodList", items: [] });
   const core = {
@@ -147,11 +147,18 @@ export function providerReadinessFixture({
         };
       }
       assert.equal(name, driver.workspaceNodeName(revision));
+      const nodeSecret = driver.manifest(
+        "v1",
+        "Secret",
+        name,
+        driver.pluginRuntimeOwnership(revision),
+        { name: namespace, plane: "execution" },
+      );
+      // Like the API server, the stored object carries a resource version.
+      nodeSecret.metadata.uid = "workspace-node-secret-uid";
+      nodeSecret.metadata.resourceVersion = "1";
       return {
-        ...driver.manifest("v1", "Secret", name, driver.pluginRuntimeOwnership(revision), {
-          name: namespace,
-          plane: "execution",
-        }),
+        ...nodeSecret,
         data: {
           deviceId: Buffer.from("provider-node").toString("base64"),
           // A current setup code, as preparation keeps renewing it.
@@ -161,6 +168,10 @@ export function providerReadinessFixture({
     },
     async listNamespace() {
       return { items: [] };
+    },
+    // The connected readiness check records the enrolled revision in the node Secret.
+    async replaceNamespacedSecret({ body }) {
+      return body;
     },
     async listNamespacedPod(request) {
       if (request.labelSelector.includes("openclaw.dev/workload-role=gateway")) {

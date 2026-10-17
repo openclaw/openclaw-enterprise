@@ -10,6 +10,7 @@ import type {
   CredentialSourceInput,
   CredentialSourceStatus,
   CredentialSourceType,
+  CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import {
   CredentialSourceConfigError,
@@ -33,12 +34,22 @@ import {
   type OpenShellGatewayPlacement,
 } from "../../backends/openshell.ts";
 import {
+  confirmSandboxAbsent,
+  gatewayIdentityRefusal,
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
   type OpenShellProviderResponse,
   type OpenShellRefreshStrategy,
 } from "../sandbox/openshell-gateway-client.ts";
+
+import {
+  CODEX_OAUTH_TYPE,
+  CODEX_ACCESS_TOKEN_ENV,
+  CODEX_ACCOUNT_CONFIG,
+  CODEX_OAUTH_TOKEN_URL,
+  codexAccountMetadata,
+} from "../credential-refresh/codex-device-authorization.ts";
 
 export interface OpenShellCredentialGatewayOptions {
   /** Absolute paths of the Harness binaries allowed to reach model endpoints. */
@@ -415,6 +426,52 @@ function bearerTokenEndpoint(config: Readonly<Record<string, string>>): {
 const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   {
     catalog: Object.freeze({
+      type: CODEX_OAUTH_TYPE,
+      config: Object.freeze([]),
+      secrets: Object.freeze([]),
+      rotation: "refresh",
+      deviceAuthorization: Object.freeze({ harnessId: "codex" }),
+      harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "chatgptAuthTokens" }),
+    }),
+    refresh: Object.freeze({
+      strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+      configMaterial: Object.freeze(["client_id"]),
+    }),
+    validate() {},
+    credentials: () => Object.freeze({ access_token: CODEX_ACCESS_TOKEN_ENV }),
+    profile: (sourceId, _config, options) => ({
+      id: openShellProviderName(sourceId),
+      displayName: "Codex OAuth (Experimental)",
+      category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
+      credentials: [
+        {
+          name: "access_token",
+          envVars: [CODEX_ACCESS_TOKEN_ENV],
+          required: true,
+          authStyle: "bearer",
+          headerName: "authorization",
+          refresh: {
+            strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+            tokenUrl: CODEX_OAUTH_TOKEN_URL,
+            scopes: [],
+            refreshBeforeSeconds: 300,
+            material: [
+              { name: "client_id", required: true, secret: false },
+              { name: "refresh_token", required: true, secret: true },
+            ],
+          },
+        },
+      ],
+      endpoints: [
+        { host: "chatgpt.com", port: 443, protocol: "rest", path: "/backend-api/**" },
+        { host: "api.openai.com", port: 443, protocol: "rest", path: "/v1/**" },
+      ],
+      binaries: options.binaries,
+      inferenceCapable: true,
+    }),
+  },
+  {
+    catalog: Object.freeze({
       type: "openai",
       config: Object.freeze([
         Object.freeze({
@@ -649,8 +706,8 @@ function catalogTypes(
 ): readonly OpenShellSourceType[] {
   return SOURCE_TYPES.filter(
     (entry) =>
-      entry.catalog.harnessAuth !== undefined ||
-      (options.toolBinaries !== undefined && (entry.refresh === undefined || refresh)),
+      (entry.catalog.harnessAuth !== undefined || options.toolBinaries !== undefined) &&
+      (entry.refresh === undefined || refresh),
   );
 }
 
@@ -867,7 +924,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         );
       }
     }
-    return { state: "ready" };
+    return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
 
   /**
@@ -917,6 +974,27 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return { state: "ready" };
   }
 
+  async withSourceToken<T>(
+    context: CredentialSourceContext,
+    use: (token: CredentialSourceToken) => Promise<T>,
+  ): Promise<T> {
+    const provider = await this.codexProvider(context);
+    const account = codexAccountMetadata(provider.config);
+    // Only the operator channel can export credentials. OpenShell may refresh to
+    // satisfy its lifetime guarantee; the Driver never receives refresh material here.
+    const token = await this.credentialClient(context).getProviderCredential(
+      openShellWorkspaceName(context.namespace),
+      provider.name,
+      CODEX_ACCESS_TOKEN_ENV,
+      context.signal,
+    );
+    return use({
+      accessToken: token.value,
+      accountId: account.accountId,
+      ...(account.isFedramp === undefined ? {} : { isFedramp: account.isFedramp }),
+    });
+  }
+
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
     knownSourceType(context.source.type);
     const provider = await this.client(context).getProvider(
@@ -929,6 +1007,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     if (!ownedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
+    }
+    if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
+      return { state: "pending" };
     }
     return { state: "ready" };
   }
@@ -1013,7 +1094,20 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         this.placement(context),
         context.signal,
       );
-      attachments.push(Object.freeze({ sourceId: source.id, ref: name }));
+      attachments.push(
+        Object.freeze({
+          sourceId: source.id,
+          ref: name,
+          ...(source.type === CODEX_OAUTH_TYPE
+            ? {
+                externalChatgptAuth: {
+                  ...codexAccountMetadata(provider.config),
+                  accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
+                },
+              }
+            : {}),
+        }),
+      );
     }
     return Object.freeze(attachments);
   }
@@ -1049,53 +1143,116 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   /**
    * Detaches the source's provider from the revision's Sandbox. Only a REVOKED receipt reports
-   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes.
+   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes. A
+   * missing Sandbox reports `absent` only once GetWorkspace proves this identity still sees the
+   * Workspace and a second GetSandbox still finds none: GetSandbox and DetachSandboxProvider
+   * answer NOT_FOUND alike for a Sandbox that is gone and for one the identity may not see
+   * (finding 1676), and `absent` settles the withdrawal while a hidden Sandbox would keep
+   * resolving the credential. A Sandbox the second read finds (a role restored between the
+   * reads, finding 1692) is detached instead; a detach that misses it again is unconfirmed, and
+   * the worker retries. A refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`, which the worker
+   * records as the withdrawal's reason and fails it with; a replay tries again once the
+   * identity's role is restored.
    */
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const provider = openShellProviderName(context.sourceId);
     const sandbox = context.sandbox.resourceName;
+    const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
+    const refused = gatewayIdentityRefusal(workspace, unconfirmed);
+    const read = () => client.getSandbox({ name: sandbox, workspace }, context.signal);
+    const listsProvider = (record: { readonly spec?: { readonly providers?: unknown } }) => {
+      const providers = record.spec?.providers;
+      return Array.isArray(providers) && providers.includes(provider);
+    };
+    // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
+    const detach = () =>
+      refused(() => client.detachSandboxProvider(workspace, sandbox, provider, context.signal));
+    const settle = async (receiptId: string | undefined): Promise<CredentialAttachmentStatus> => {
+      const status = await refused(() =>
+        client.getSandboxProviderStatus(workspace, sandbox, provider, context.signal, receiptId),
+      );
+      const state = attachmentState(status.state);
+      return Object.freeze({
+        sourceId: context.sourceId,
+        state: state === "revoked" ? "revoked" : "pending",
+        ...(status.reason === undefined ? {} : { reason: status.reason }),
+      });
+    };
+    const absent = async (): Promise<CredentialAttachmentStatus> => {
+      const restored = await confirmSandboxAbsent(
+        client,
+        workspace,
+        context.signal,
+        refused,
+        () =>
+          new OpenShellCredentialGatewayFailure(
+            `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
+          ),
+        read,
+      );
+      if (restored === undefined) {
+        // A missing Sandbox has no placeholders left to resolve, once it is confirmed missing.
+        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+      }
+      if (context.recheck === true && !listsProvider(restored)) {
+        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
+      }
+      const detached = await detach();
+      if (detached === undefined) {
+        throw new OpenShellCredentialGatewayFailure(
+          `OpenShell GetSandbox finds Sandbox ${sandbox} but DetachSandboxProvider did not, so ${unconfirmed}.`,
+        );
+      }
+      return settle(detached.receiptId);
+    };
     if (context.recheck === true) {
       // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
       // for example after a create that OpenShell accepted before the withdrawal landed after it.
-      const existing = await client.getSandbox({ name: sandbox, workspace }, context.signal);
+      const existing = await refused(read);
       if (existing === undefined) {
-        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+        return absent();
       }
-      const providers = existing.spec?.providers;
-      if (!Array.isArray(providers) || !providers.includes(provider)) {
+      if (!listsProvider(existing)) {
         return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
       }
     }
-    // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
-    const detached = await client.detachSandboxProvider(
-      workspace,
-      sandbox,
-      provider,
-      context.signal,
-    );
-    // A missing Sandbox has no placeholders left to resolve.
-    if (detached === undefined) {
-      return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+    const detached = await detach();
+    return detached === undefined ? absent() : settle(detached.receiptId);
+  }
+
+  private async codexProvider(
+    context: CredentialSourceContext,
+  ): Promise<OpenShellProviderResponse> {
+    if (
+      context.source.type !== CODEX_OAUTH_TYPE ||
+      context.source.driverId !== this.id ||
+      context.source.namespaceId !== context.namespace.id
+    ) {
+      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
     }
-    const status = await client.getSandboxProviderStatus(
-      workspace,
-      sandbox,
-      provider,
+    const provider = await this.client(context).getProvider(
+      openShellWorkspaceName(context.namespace),
+      openShellProviderName(context.source.id),
       context.signal,
-      detached.receiptId,
     );
-    const state = attachmentState(status.state);
-    return Object.freeze({
-      sourceId: context.sourceId,
-      state: state === "revoked" ? "revoked" : "pending",
-      ...(status.reason === undefined ? {} : { reason: status.reason }),
-    });
+    if (!provider || !ownedBy(provider, context.source.id)) {
+      throw new ScopeViolationError(
+        "The OpenShell provider is not owned by this Codex OAuth source.",
+      );
+    }
+    return provider;
   }
 
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
     return this.backend.client.clientForNamespace(context.namespace.name);
+  }
+
+  private credentialClient(
+    context: CredentialGatewayContext & { readonly namespace: { name: string } },
+  ) {
+    return this.backend.client.credentialClientForNamespace(context.namespace.name);
   }
 
   private placement(

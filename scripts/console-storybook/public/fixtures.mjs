@@ -18,6 +18,25 @@ function initialDeploymentProgress(status) {
   return { lastAttempt: null, nextAttemptAt: status === "queued" ? createdAt : null };
 }
 
+// Another browser's save in configurationChangedElsewhere: objects merge, other values replace.
+function mergeElsewhere(target, changes) {
+  for (const [key, value] of Object.entries(changes)) {
+    const current = target[key];
+    if (
+      value !== null &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      current !== null &&
+      typeof current === "object" &&
+      !Array.isArray(current)
+    ) {
+      mergeElsewhere(current, value);
+    } else {
+      target[key] = structuredClone(value);
+    }
+  }
+}
+
 function slackChannels(scenario) {
   if (scenario.slackChannels !== undefined) {
     return structuredClone(scenario.slackChannels);
@@ -187,6 +206,8 @@ export function installFixture(scenario, evidence) {
   const deployments = new Map();
   const provisioning = new Map();
   const credentials = new Map();
+  const credentialSources = new Map();
+  let credentialRegistrationFailed = false;
   const deviceLogins = new Map();
   const files = new Map();
   const secrets = new Map();
@@ -276,7 +297,7 @@ export function installFixture(scenario, evidence) {
           : scenario.auth === "codex_pat"
             ? { method: "codex_pat", source: secretRef("sec_demo_service_account") }
             : scenario.auth === "oauth"
-              ? { method: "oauth", source: secretRef("sec_demo_oauth_deployed") }
+              ? { method: "credential_source", sourceId: "cs_00000000-0000-4000-8000-000000000010" }
               : auth;
   let selectedRevisionId = null;
   if (scenario.candidateSuperseded) {
@@ -299,6 +320,10 @@ export function installFixture(scenario, evidence) {
     configurationId: config.id,
     executionMode: "dedicated",
     harnessAuth: selectedAuth,
+    credentialSources: structuredClone(
+      scenario.credentialSources ??
+        (selectedAuth?.method === "credential_source" ? [{ sourceId: selectedAuth.sourceId }] : []),
+    ),
     ...(scenario.agentPlugins ? { plugins: structuredClone(scenario.agentPlugins) } : {}),
     ...(scenario.agentPluginApprovers !== undefined
       ? { pluginApprovers: structuredClone(scenario.agentPluginApprovers) }
@@ -339,6 +364,7 @@ export function installFixture(scenario, evidence) {
       configuration: structuredClone(configuration.values),
       secretBindings: structuredClone(configuration.secretBindings),
       harnessAuth: structuredClone(owner.harnessAuth),
+      credentialSources: structuredClone(owner.credentialSources),
       ...(owner.pluginApprovers !== undefined
         ? { pluginApprovers: structuredClone(owner.pluginApprovers) }
         : {}),
@@ -575,7 +601,7 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
-  const response = (data, status = 200, errorCode, meta = {}, errorMessage) =>
+  const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
     new Response(
       JSON.stringify({
         ...(errorCode
@@ -583,6 +609,7 @@ export function installFixture(scenario, evidence) {
               error: {
                 code: errorCode,
                 message: errorMessage ?? "The selected preview simulates this failure.",
+                ...(details ? { details } : {}),
               },
             }
           : { data }),
@@ -603,7 +630,9 @@ export function installFixture(scenario, evidence) {
         (rule.method ?? "GET") !== method ||
         (rule.path && rule.path !== path) ||
         (rule.prefix && !path.startsWith(rule.prefix)) ||
+        (rule.pathIncludes && !path.includes(rule.pathIncludes)) ||
         (rule.suffix && !path.endsWith(rule.suffix)) ||
+        (rule.queryParam && !url.searchParams.has(rule.queryParam)) ||
         (rule.bodyHasIds !== undefined && rule.bodyHasIds !== Array.isArray(body.ids))
       ) {
         continue;
@@ -656,7 +685,10 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (rule.status) {
-        return error(rule.status, rule.code, rule.message);
+        return response(null, rule.status, rule.code, {}, rule.message, rule.details);
+      }
+      if (rule.data !== undefined) {
+        return response(rule.data);
       }
     }
     if (path === "/api/auth/providers" && method === "GET") {
@@ -702,8 +734,19 @@ export function installFixture(scenario, evidence) {
           ...(scenario.unsupportedProvisioning === true
             ? {}
             : { agentProvisioning: { executionModes: ["dedicated"] } }),
-          ...(scenario.nativeWorkerSupport
-            ? { nativeWorkers: { support: scenario.nativeWorkerSupport } }
+          ...(scenario.nativeWorkerSupport === false
+            ? {}
+            : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
+          ...(scenario.openclawExecutionModes === undefined
+            ? {}
+            : {
+                openclaw: {
+                  executionModes: scenario.openclawExecutionModes,
+                  ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
+                },
+              }),
+          ...(scenario.credentialSourceTypes !== undefined
+            ? { credentialSources: { types: scenario.credentialSourceTypes } }
             : {}),
           ...(scenario.pluginCapabilities ? { pluginPolicies: scenario.pluginCapabilities } : {}),
           ...(scenario.pluginDiscoveryCredential
@@ -735,20 +778,16 @@ export function installFixture(scenario, evidence) {
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const source = secretRef(nextId("sec"));
+          const session = secretRef(nextId("sec"));
           const login = {
-            source,
+            session,
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(source.id, login);
-          secrets.set(
-            source.id,
-            secretMetadata(source.id, "Codex OAuth login (Experimental, simulated)"),
-          );
+          deviceLogins.set(session.id, login);
           return response(login);
         }
         const login = deviceLogins.get(id);
@@ -758,6 +797,7 @@ export function installFixture(scenario, evidence) {
         if (poll && method === "POST") {
           if (!scenario.oauthPending) {
             login.status = "ready";
+            login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };
           }
           return response(login);
         }
@@ -903,6 +943,47 @@ export function installFixture(scenario, evidence) {
           complete: !nextCursor,
         });
       }
+      if (resource === "credential-sources") {
+        if (method === "GET") {
+          return response([...credentialSources.values()]);
+        }
+        if (method === "POST") {
+          const uncertain = scenario.credentialRegistrationOutcome && !credentialRegistrationFailed;
+          const saved = {
+            ...body,
+            id: nextId("csr"),
+            namespaceId,
+            driverId: "credential-gateway-storybook",
+            state:
+              uncertain && scenario.credentialRegistrationOutcome === "deleting"
+                ? "deleting"
+                : "ready",
+            createdAt,
+          };
+          credentialSources.set(saved.id, saved);
+          if (uncertain) {
+            // Preserve the server-owned registration after an uncertain response;
+            // recovery operates on the saved source, never another model Secret.
+            credentialRegistrationFailed = true;
+            return error(503, "DEPENDENCY_UNAVAILABLE");
+          }
+          return response(saved, 201);
+        }
+      }
+      if (resource.startsWith("credential-sources/")) {
+        const id = resource.split("/")[1];
+        const source = credentialSources.get(id);
+        if (!source) {
+          return error(404, "NOT_FOUND");
+        }
+        if (method === "GET") {
+          return response(source);
+        }
+        if (method === "DELETE") {
+          credentialSources.delete(id);
+          return new Response(null, { status: 204 });
+        }
+      }
       if (resource === "configurations" && method === "POST") {
         const saved = {
           ...body,
@@ -926,6 +1007,7 @@ export function installFixture(scenario, evidence) {
             if (configurationReads.has(saved.id)) {
               configurationChangedElsewhere = true;
               saved.generation += 1;
+              mergeElsewhere(saved.values, scenario.configurationChangedElsewhere.values ?? {});
             }
             configurationReads.add(saved.id);
           }
@@ -992,6 +1074,9 @@ export function installFixture(scenario, evidence) {
           createdAt,
           activeRevisionId: null,
           servicePrincipalId: "identity_demo_provisioned",
+          ...(agentBody.harnessAuth?.method === "credential_source"
+            ? { credentialSources: [{ sourceId: agentBody.harnessAuth.sourceId }] }
+            : {}),
         };
         agents.set(saved.id, saved);
         credentials.set(saved.id, { transportConfigured: true });
@@ -1012,7 +1097,13 @@ export function installFixture(scenario, evidence) {
             namespaceId,
             agentId: saved.id,
             status: scenario.provisionedDeploymentStatus ?? "queued",
-            progress: initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued"),
+            progress:
+              scenario.provisionedDeploymentAttempt === undefined
+                ? initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued")
+                : {
+                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
+                    nextAttemptAt: createdAt,
+                  },
             reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
             error:
               scenario.provisionedDeploymentStatus !== "failed"
@@ -1130,6 +1221,19 @@ export function installFixture(scenario, evidence) {
                     revisionId: current.revisionId,
                   }
                 : {}),
+              // After handoff the job names its first deployment's wait, as it does for a
+              // reader of that deployment (#2744).
+              ...(scenario.provisioningNamesDeploymentWait &&
+              current.reads > 1 &&
+              (current.status === "queued" || current.status === "running")
+                ? {
+                    progress: {
+                      phase: "deployment",
+                      lastAttempt:
+                        deployments.get(current.revisionId)?.progress?.lastAttempt ?? null,
+                    },
+                  }
+                : {}),
             },
           });
         }
@@ -1179,7 +1283,14 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "/permissions" && method === "GET") {
           const allowed = !scenario.readOnlyPermissionSummary;
-          return response({ update: allowed, deploy: allowed, operate: allowed, delete: allowed });
+          return response(
+            scenario.agentPermissionSummary ?? {
+              update: allowed,
+              deploy: allowed,
+              operate: allowed,
+              delete: allowed,
+            },
+          );
         }
         if (suffix === "/stop" && method === "POST") {
           saved.desiredRuntimeState = "stopped";
@@ -1633,7 +1744,9 @@ export function installFixture(scenario, evidence) {
           return response(
             scenario.emptySecrets
               ? []
-              : [...secrets.values()].map((secret) => structuredClone(secret)),
+              : [...secrets.values()]
+                  .filter(({ id }) => id !== scenario.unreadableSecretId)
+                  .map((secret) => structuredClone(secret)),
           );
         }
         if (method === "POST") {
@@ -1649,7 +1762,7 @@ export function installFixture(scenario, evidence) {
       if (resource.startsWith("secrets/")) {
         const id = resource.split("/")[1];
         const secret = secrets.get(id);
-        if (!secret) {
+        if (!secret || id === scenario.unreadableSecretId) {
           return error(404);
         }
         if (method === "GET") {

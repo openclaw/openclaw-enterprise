@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-10
-last_updated_session: authoring-run/cda14eba-9150-4d7e-9956-e276bfed4c64
+updated: 2026-10-16 13:47
+last_updated_session: authoring-run/6e734247-4639-4e34-8432-e2d0f546353f
 ---
 
 # Installation Driver Package Loading Flow
@@ -79,7 +79,9 @@ ends that condition branch. The selected target is resolved as a URL inside the
 package and percent-decoded; it must name an existing file exactly, with no
 extension, directory index or `main` lookup, and an encoded separator or
 directory is refused. Package containment, the compiled ESM check, and import
-must then succeed before Driver construction. Containment rejects only a parent
+must then succeed before Driver construction. Import uses the checked realpath
+with the selected URL's query and fragment preserved, so URL-qualified package
+profiles retain Node's module identity. Containment rejects only a parent
 directory path; an in-package filename that begins with two dots remains valid,
 matching Node's export resolution. The entry must be `.mjs`, or `.js`
 whose nearest `package.json` (searched from the entry's directory up to the
@@ -176,6 +178,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 13:47: Preserve selected export URL query and fragment after realpath validation. (authoring-run/6e734247-4639-4e34-8432-e2d0f546353f - 591feb34bdbaaf7f316607347a02f7335ee816c0)
 
 - 2026-10-13 21:02: Keep valid in-package Driver entry filenames that begin with two dots while still refusing parent-directory escapes. (issue-2323 - 5fad4d023a8896ac6bc05a201e6733ee256845b9)
 

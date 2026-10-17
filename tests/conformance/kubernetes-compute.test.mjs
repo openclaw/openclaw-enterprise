@@ -1,16 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +23,6 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import {
   createKubernetesComputeDriver,
-  harnessStateRemovalScript,
   harnessWorkspacePreparationScript,
   KubernetesComputeDriver,
   kubernetesNamespaceName,
@@ -46,7 +35,6 @@ import {
   ActivationFailedError,
   ActivationPendingError,
   ComputeGatewaySettingError,
-  ComputePreparationFailedError,
   ConfigurationHarnessError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
@@ -710,6 +698,8 @@ test("preparation records a device redeemed on an expired setup before renewing 
     );
     assert.equal(data.setupId, "setup-b");
     assert.equal(data.deviceId, redeemed ? deviceId : undefined);
+    // The readiness check credits the revision whose node connects, not an observed setup.
+    assert.equal(data.enrolledRevisionId, undefined);
   }
 });
 
@@ -889,10 +879,18 @@ test("activation refuses a missing or foreign workspace node before changing the
 // With `clock` ({ now }), enrollment waits are simulated on that fake clock: an
 // observation advances it by its whole wait, or to `state.pairAtMs` if the node
 // pairs within the wait, and never sleeps.
-function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint } = {}) {
+function dedicatedFirstDeployFixture({
+  statusProxy = true,
+  clock,
+  modelEndpoint,
+  sandboxDriver,
+  revision: revisionOverrides = {},
+} = {}) {
   const state = {
     setupCalls: 0,
     connected: false,
+    // What a redeemed setup reports about the node's connection (enrolled, not connected yet).
+    observedConnected: true,
     enrollmentAvailable: true,
     // The node OpenClaw reports applied through the wrapper's runtime status,
     // or the reason it has not.
@@ -922,6 +920,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       ...(statusProxy ? { network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] } } : {}),
     }),
     {
+      sandboxDriver,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -946,7 +945,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
                 clock.now + 250 > deadline ||
                 (options?.stopWaiting !== undefined && (await options.stopWaiting()))
               ) {
-                return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+                return state.connected
+                  ? { deviceId: "node-1", connected: state.observedConnected }
+                  : undefined;
               }
               clock.now += 250;
             }
@@ -963,7 +964,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
             } else if (!state.connected) {
               clock.now = deadline;
             }
-            return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+            return state.connected
+              ? { deviceId: "node-1", connected: state.observedConnected }
+              : undefined;
           }
           const deadline = Date.now() + (options?.waitMs ?? 0);
           while (!state.connected && Date.now() < deadline) {
@@ -973,7 +976,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
             signal.throwIfAborted();
             await new Promise((resolve) => setTimeout(resolve, 2));
           }
-          return state.connected ? { deviceId: "node-1", connected: true } : undefined;
+          return state.connected
+            ? { deviceId: "node-1", connected: state.observedConnected }
+            : undefined;
         },
         async isConnected() {
           return state.connected;
@@ -994,6 +999,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
         "codex-plugin:example": { enabled: true, toolDefaults: { approval: "provider_default" } },
       },
     },
+    ...revisionOverrides,
   });
   const operatorSuppliedConfiguration = {
     ...revision.configuration,
@@ -1076,15 +1082,42 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
   // the real driver; successful writes do not make a Deployment ready.
   const clients = { core: {}, apps: {}, networking: {}, objects: {}, discovery: {} };
   for (const [api, kinds] of [
-    [clients.core, ["ConfigMap", "Secret", "Service", "ServiceAccount", "PersistentVolumeClaim"]],
+    [
+      clients.core,
+      [
+        "ConfigMap",
+        "Secret",
+        "Service",
+        "ServiceAccount",
+        "PersistentVolumeClaim",
+        "ResourceQuota",
+      ],
+    ],
     [clients.apps, ["Deployment"]],
     [clients.networking, ["NetworkPolicy"]],
   ]) {
     for (const kind of kinds) {
-      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) =>
-        read(kind, name, target);
-      const write = async ({ body }) => {
+      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) => {
+        if (state.unreadableKind === kind) {
+          throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+        }
+        return read(kind, name, target);
+      };
+      const write = async ({ body }, { replace = false } = {}) => {
         const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
+        // Like the API server: every write bumps resourceVersion, and a replace that names a
+        // stale one is a 409 Conflict (finding 1678). Two writes with the metadata of one read,
+        // as workspaceNodeReady once did (#2750 review), fail here as they do live.
+        const current = previous?.metadata.resourceVersion;
+        const named = body.metadata.resourceVersion;
+        if (replace && previous !== undefined && named !== undefined && named !== current) {
+          throw Object.assign(
+            new Error(
+              `Operation cannot be fulfilled on ${kind} ${body.metadata.name}: the object has been modified`,
+            ),
+            { statusCode: 409 },
+          );
+        }
         const changed =
           kind === "Deployment" && JSON.stringify(previous?.spec) !== JSON.stringify(body.spec);
         const value = {
@@ -1094,7 +1127,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
             ...previous?.metadata,
             ...body.metadata,
             uid: `${body.metadata.name}-uid`,
-            resourceVersion: "1",
+            resourceVersion: String(Number(current ?? "0") + 1),
           },
         };
         if (kind === "Deployment") {
@@ -1124,7 +1157,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
       };
       api[`patchNamespaced${kind}`] = write;
       api[`createNamespaced${kind}`] = write;
-      api[`replaceNamespaced${kind}`] = write;
+      api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
     }
   }
   clients.core.listNamespace = async () => ({ items: [] });
@@ -1149,6 +1182,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
     const labels = Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("=")));
     const role = labels["openclaw.dev/workload-role"];
+    if (role === "agent" && sandboxDriver !== undefined) {
+      return { items: state.providerPod === undefined ? [] : [structuredClone(state.providerPod)] };
+    }
     return {
       items: [
         {
@@ -1217,6 +1253,9 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock, modelEndpoint 
           : {}),
         ...(role === "gateway" && state.gatewayWorkspaceNodeFailure !== undefined
           ? { workspaceNodeFailure: state.gatewayWorkspaceNodeFailure }
+          : {}),
+        ...(role === "gateway" && state.gatewayRuntimeFailure !== undefined
+          ? { runtimeFailure: state.gatewayRuntimeFailure }
           : {}),
       };
     }
@@ -1400,6 +1439,640 @@ test("custom Codex endpoints compile explicit providers without changing the adm
       modelProvider: "openai-compatible",
     });
   }
+});
+
+test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+    },
+  };
+  const withdrawals = [];
+  let withdrawalFailure;
+  const fixture = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  const {
+    driver,
+    revision,
+    state,
+    namespace,
+    gatewayName,
+    markReady,
+    prepare,
+    read,
+    objects,
+    key,
+    save,
+    clients,
+  } = fixture;
+  const suffix = digest(revision.agentId);
+  const predecessor = new KubernetesComputeDriver(
+    {
+      ...driver.options,
+      network: {
+        ...driver.options.network,
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    },
+    { sandboxDriver },
+  );
+  // A switch from Codex inherits its provider grant until native activation
+  // pins enrollment to its own supervisor and removes that obsolete grant.
+  const stale = predecessor
+    .agentNetworkPolicies(
+      { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+      { name: namespace, plane: "execution" },
+    )
+    .find(({ resource }) => resource.metadata.name === `allow-gateway-agent-${suffix}`).resource;
+  stale.metadata.uid = "predecessor-harness-egress-uid";
+  save(stale);
+  const deleted = [];
+  clients.networking.deleteNamespacedNetworkPolicy = async ({ name, namespace: target, body }) => {
+    assert.equal(target, namespace);
+    assert.equal(body.preconditions.uid, read("NetworkPolicy", name, target).metadata.uid);
+    deleted.push(name);
+    objects.delete(key("NetworkPolicy", name, target));
+  };
+  assert.equal(driver.options.network.providerHarness, undefined);
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  const nativeConfig = JSON.parse(
+    provisions[0].requirements.environment.find(
+      ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
+    ).value,
+  );
+  assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
+    source: "env",
+    provider: "model",
+    id: "OPENAI_API_KEY",
+  });
+  assert.deepEqual(
+    nativeConfig.models.providers.openai.models.map(({ id }) => id),
+    ["gpt-5"],
+  );
+  // The provider's observed Pod readiness and enrolled node are independent of provisioning.
+  // Until the provider's Pod is Ready, the wait has no named reason.
+  const podPending = await prepare();
+  assert.equal(podPending.ready, false);
+  assert.equal(podPending.pendingReason, undefined);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  // A Ready Pod whose node has not connected names that wait (finding 1629): the
+  // deployment reads WORKSPACE_NODE_PENDING instead of a bare REVISION_INCOMPLETE,
+  // but only while the Gateway is ready too ("Workloads are ready").
+  const gatewayDeployment = read("Deployment", gatewayName);
+  const gatewayStatus = gatewayDeployment.status;
+  delete gatewayDeployment.status;
+  save(gatewayDeployment);
+  const gatewayPending = await prepare();
+  assert.equal(gatewayPending.ready, false);
+  assert.equal(gatewayPending.pendingReason, undefined);
+  gatewayDeployment.status = gatewayStatus;
+  save(gatewayDeployment);
+  const nodePending = await prepare();
+  assert.equal(nodePending.ready, false);
+  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  // Finding 1657: the provider is told the node has not enrolled, and no exposure is withdrawn
+  // before it has.
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
+  assert.deepEqual(withdrawals, []);
+  // A node that has enrolled but is not connected yet already loses the exposure: the pass
+  // that records its device withdraws. A deletion the provider does not confirm keeps its
+  // class and the pass fails; the provider completes the withdrawal on its next adoption.
+  state.connected = true;
+  state.observedConnected = false;
+  withdrawalFailure = new Error("OpenShell DeleteService did not confirm deletion.");
+  await assert.rejects(prepare(), /did not confirm deletion/);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].revision, revision);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.deepEqual(withdrawals[0].requirements.labels, provisions[0].requirements.labels);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, false);
+  // With the device recorded, later passes provision with the node enrolled and withdraw
+  // nothing more; the connected node makes the revision ready.
+  withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.equal(withdrawals.length, 1);
+  assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
+  assert.deepEqual(deleted, []);
+  await assert.rejects(
+    driver.activateRevision(revision, authContext(revision)),
+    /gateway is not ready/,
+  );
+  markReady(gatewayName);
+  await driver.activateRevision(revision, authContext(revision));
+
+  assert.deepEqual(deleted, [stale.metadata.name]);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-agent-runtime-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-agent-auth-${suffix}`)), false);
+  assert.equal(objects.has(key("NetworkPolicy", `allow-workspace-node-gateway-${suffix}`)), false);
+  const inbound = read("NetworkPolicy", `allow-gateway-workspace-node-${suffix}`);
+  assert.deepEqual(inbound.spec.ingress, [
+    {
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": namespace },
+          },
+          podSelector: { matchLabels: supervisorPeerLabels(revision.id) },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
+    },
+  ]);
+  const gateway = read("Deployment", gatewayName).spec.template.spec.containers[0];
+  assert.equal(
+    gateway.env.some(({ name }) =>
+      ["APP_SERVER_URL", "APP_SERVER_TOKEN", "OPENAI_API_KEY"].includes(name),
+    ),
+    false,
+  );
+  const harness = read("Service", `agent-${suffix}`);
+  assert.equal(harness.spec.selector["app.kubernetes.io/name"], `agent-${suffix}-inactive`);
+});
+
+// Finding 1642: a native worker under a Sandbox provider holds a failed model check and never
+// connects its node. Compute hands the provider the bearer-passthrough exposure (APP_SERVER_PORT
+// with the APP_TOKEN_SHA verifier, never the token) and, while the node is pending, reads the
+// held failure through the provider to fail the revision with its code.
+test("Kubernetes native Sandbox provisioning fails a revision on the worker's held model-check failure", async () => {
+  const heldFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-17T08:30:00.000Z",
+    code: "AUTHENTICATION_FAILED",
+  };
+  const provisions = [];
+  const observations = [];
+  const withdrawals = [];
+  let answer = { state: "starting" };
+  let withdrawalFailure;
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus(context) {
+      observations.push(context);
+      if (answer instanceof Error) {
+        throw answer;
+      }
+      return answer;
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+    },
+  };
+  const { revision, state, namespace, gatewayName, markReady, prepare } =
+    dedicatedFirstDeployFixture({
+      sandboxDriver,
+      revision: {
+        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        sandboxDriverId: sandboxDriver.id,
+        configuration: admitLoggingConfiguration(
+          createHarnessConfiguration("openclaw", "gpt-5"),
+          "info",
+        ),
+        plugins: undefined,
+      },
+    });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  const environment = provisions[0].requirements.environment;
+  const named = (name) => environment.filter((entry) => entry.name === name);
+  assert.deepEqual(named("APP_SERVER_PORT"), [{ name: "APP_SERVER_PORT", value: "18790" }]);
+  assert.equal(named("APP_TOKEN_SHA").length, 1);
+  assert.match(named("APP_TOKEN_SHA")[0].value, /^[a-f0-9]{64}$/);
+  assert.deepEqual(named("APP_SERVER_TOKEN"), [], "the provider never receives the raw token");
+  // Nothing is observed before the provider's Pod is Ready.
+  assert.equal((await prepare()).pendingReason, undefined);
+  assert.deepEqual(observations, []);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  // A worker that is still starting keeps the named wait; the read carries the transport
+  // token the worker's verifier hashes.
+  const nodePending = await prepare();
+  assert.equal(nodePending.ready, false);
+  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(nodePending.runtimeFailure, undefined);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].revision, revision);
+  assert.equal(
+    createHash("sha256").update(observations[0].transportToken, "utf8").digest("hex"),
+    named("APP_TOKEN_SHA")[0].value,
+  );
+  assert.deepEqual(observations[0].requirements.labels, provisions[0].requirements.labels);
+  // The held failure fails the revision with its code; a provider cause is dropped, since
+  // only MODEL_PROBE_FAILED keeps one.
+  answer = {
+    state: "failed",
+    runtimeFailure: { ...heldFailure, cause: { kind: "PROVIDER_TEXT", detail: "key sk-123" } },
+  };
+  const held = await prepare();
+  assert.equal(held.ready, false);
+  assert.equal(held.pendingReason, undefined);
+  assert.deepEqual(held.runtimeFailure, heldFailure);
+  assert.equal(observations.length, 2);
+  // Malformed or missing evidence is as invalid as for a Compute-owned status port.
+  for (const runtimeFailure of [
+    undefined,
+    "AUTHENTICATION_FAILED",
+    { ...heldFailure, code: "not a code" },
+    { ...heldFailure, checkedAt: "yesterday" },
+  ]) {
+    answer = { state: "failed", runtimeFailure };
+    await assert.rejects(prepare(), /Runtime failure status returned invalid data/);
+  }
+  // Finding 1658: a provider that does not answer is no evidence. The read's failure is a
+  // transient dependency failure the worker rechecks until the deadline without spending
+  // attempts: a Driver's own classification passes through, a plain dependency failure is
+  // classified here, and a refusal keeps its class.
+  const unanswered = new DependencyUnavailableError(
+    "OpenShell GetService failed with gRPC status 14.",
+  );
+  answer = unanswered;
+  await assert.rejects(prepare(), (error) => {
+    assert.ok(error instanceof TransientDependencyError, String(error));
+    assert.equal(error.dependency, "sandbox_gateway");
+    assert.equal(error.reason, "unavailable");
+    assert.equal(error.code, "SANDBOX_GATEWAY_UNAVAILABLE");
+    assert.equal(error.cause, unanswered);
+    return true;
+  });
+  const classified = new TransientDependencyError("sandbox_gateway", "timeout", "timed out");
+  answer = classified;
+  await assert.rejects(prepare(), (error) => error === classified);
+  const refusal = new Error("OpenShell refused the observation: PERMISSION_DENIED");
+  answer = refusal;
+  await assert.rejects(prepare(), (error) => error === refusal);
+  // Every read so far told the provider the node had not enrolled.
+  assert.ok(observations.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
+  assert.deepEqual(withdrawals, []);
+  // Once the node has connected the worker is past its checks: nothing more is read, and the
+  // exposure the reads used is withdrawn before the revision is ready (finding 1657). A
+  // withdrawal the provider cannot confirm keeps the revision unready.
+  answer = { state: "starting" };
+  state.connected = true;
+  observations.length = 0;
+  // A provider that does not answer the withdrawal is as transient as one that does not
+  // answer the read, and keeps the revision unready.
+  const unansweredWithdrawal = new DependencyUnavailableError(
+    "OpenShell DeleteService failed with gRPC status 14.",
+  );
+  withdrawalFailure = unansweredWithdrawal;
+  await assert.rejects(prepare(), (error) => {
+    assert.ok(error instanceof TransientDependencyError, String(error));
+    assert.equal(error.code, "SANDBOX_GATEWAY_UNAVAILABLE");
+    assert.equal(error.cause, unansweredWithdrawal);
+    return true;
+  });
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.deepEqual(observations, []);
+  // The device is recorded: the provider now provisions with the node enrolled, which has
+  // it complete the withdrawal itself, and Compute asks for no second withdrawal.
+  withdrawalFailure = undefined;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.equal(withdrawals.length, 1);
+  assert.deepEqual(observations, []);
+  // An enrolled node that is reconnecting is waited for, not read: the exposure is gone, and
+  // the worker is past the checks the read was for.
+  state.connected = false;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.deepEqual(observations, []);
+  assert.equal(withdrawals.length, 1);
+});
+
+// Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its
+// first pass, counted as enrolled, never read the provider's held failure, and created its
+// exposure only to delete it at once; a redeploy holding a failed model check waited for the
+// deadline. Enrollment is per revision: the Secret names the revision whose node readiness saw
+// paired or connected, and a replacement counts as enrolled only once its own node connects.
+test("Kubernetes native Sandbox redeploy reads the held failure before its own node enrolls", async () => {
+  const heldFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-17T12:30:00.000Z",
+    code: "AUTHENTICATION_FAILED",
+  };
+  const provisions = [];
+  const observations = [];
+  const withdrawals = [];
+  let answer = { state: "starting" };
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus(context) {
+      observations.push(context);
+      return answer;
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+    },
+  };
+  const nativeRevision = {
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: sandboxDriver.id,
+    configuration: admitLoggingConfiguration(
+      createHarnessConfiguration("openclaw", "gpt-5"),
+      "info",
+    ),
+    plugins: undefined,
+  };
+  const encode = (value) => Buffer.from(value, "utf8").toString("base64");
+  const decode = (value) => Buffer.from(value ?? "", "base64").toString("utf8");
+  // The predecessor enrolled the Agent's device under its own revision.
+  const seedNodeSecret = (fixture, data) => {
+    const nodeName = fixture.driver.workspaceNodeName(fixture.revision);
+    const manifest = fixture.driver.manifest(
+      "v1",
+      "Secret",
+      nodeName,
+      fixture.driver.workspaceNodeOwnership(fixture.revision),
+      { name: fixture.namespace, plane: "execution" },
+    );
+    fixture.save({
+      ...manifest,
+      type: "Opaque",
+      metadata: { ...manifest.metadata, uid: "node-uid", resourceVersion: "1" },
+      data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
+    });
+    return fixture.key("Secret", nodeName);
+  };
+  const redeploy = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+  const nodeSecretKey = seedNodeSecret(redeploy, {
+    deviceId: "node-1",
+    enrolledRevisionId: "rev_predecessor",
+    setupId: "setup-0",
+    expiresAtMs: String(Date.now() + 60_000),
+  });
+  const { revision, state, namespace, gatewayName, markReady, prepare, objects } = redeploy;
+  // The Agent's node setup is in place, so the provider is provisioned from the first pass.
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 2);
+  // The predecessor's enrollment is not this revision's: the provider is told so, so the
+  // Sandbox carries the exposure Compute's read needs, and nothing is withdrawn yet.
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
+  assert.deepEqual(withdrawals, []);
+  assert.equal(state.setupCalls, 0, "the Agent's device needs no new setup");
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  const nodePending = await prepare();
+  assert.equal(nodePending.ready, false);
+  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].workspaceNodeEnrolled, false);
+  // The redeploy's held failure fails it with its code instead of waiting for the deadline.
+  answer = { state: "failed", runtimeFailure: heldFailure };
+  const held = await prepare();
+  assert.equal(held.ready, false);
+  assert.deepEqual(held.runtimeFailure, heldFailure);
+  assert.equal(observations.length, 2);
+  assert.deepEqual(withdrawals, []);
+  assert.equal(decode(objects.get(nodeSecretKey).data.enrolledRevisionId), "rev_predecessor");
+  // Its own node connects: the Secret now names this revision, the exposure goes before the
+  // revision is ready, and later passes provision with the node enrolled.
+  answer = { state: "starting" };
+  state.connected = true;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(decode(objects.get(nodeSecretKey).data.enrolledRevisionId), revision.id);
+  assert.equal(decode(objects.get(nodeSecretKey).data.deviceId), "node-1");
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal(observations.length, 2);
+  assert.equal((await prepare()).ready, true);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(observations.length, 2);
+
+  // A Secret written before this check named no revision: the device it records enrolled
+  // under the revision that wrote it, so that revision still counts as enrolled, and the
+  // exposure its provider creates again goes at once (as before this change).
+  provisions.length = 0;
+  observations.length = 0;
+  withdrawals.length = 0;
+  const upgraded = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+  const upgradedSecretKey = seedNodeSecret(upgraded, {
+    deviceId: "node-1",
+    setupId: "setup-0",
+    expiresAtMs: String(Date.now() + 60_000),
+  });
+  assert.equal((await upgraded.prepare()).ready, false);
+  upgraded.markReady(upgraded.gatewayName);
+  assert.equal((await upgraded.prepare()).ready, false);
+  assert.equal(provisions.length, 2);
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === true));
+  upgraded.state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "native-harness",
+      namespace: upgraded.namespace,
+      labels: provisions[0].requirements.labels,
+    },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await upgraded.prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.deepEqual(observations, []);
+  upgraded.state.connected = true;
+  assert.equal((await upgraded.prepare()).ready, true);
+  assert.equal(
+    decode(upgraded.objects.get(upgradedSecretKey).data.enrolledRevisionId),
+    upgraded.revision.id,
+  );
+  assert.deepEqual(withdrawals, []);
+});
+
+// Findings 1669 and 1672: a revision that gets no preparation pass (already active at an
+// upgrade from a controller that kept the exposure, or failed for good with its Sandbox kept
+// for diagnosis) has its exposure withdrawn through Compute's own hook, outside a pass, with the
+// revision and its provider Workspace only; no Harness requirements are rendered for it.
+test("Kubernetes Compute withdraws a native Harness exposure outside a preparation pass", async () => {
+  const withdrawals = [];
+  let withdrawalFailure;
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("no preparation pass runs here");
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+      if (withdrawalFailure !== undefined) {
+        throw withdrawalFailure;
+      }
+    },
+  };
+  const { driver, revision, namespace, clients } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  const signal = new AbortController().signal;
+  await driver.withdrawHarnessExposure(revision, signal);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].revision, revision);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal(withdrawals[0].namespace.id, tenant.id);
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.equal(withdrawals[0].requirements, undefined);
+  assert.notEqual(withdrawals[0].kubernetes, undefined);
+  assert.equal(withdrawals[0].signal.aborted, false);
+  // The worker's signal reaches the provider: a stopping worker ends the call.
+  const stopping = new AbortController();
+  stopping.abort(new Error("stopping"));
+  await driver.withdrawHarnessExposure(revision, stopping.signal);
+  assert.equal(withdrawals.length, 2);
+  assert.equal(withdrawals[1].signal.aborted, true);
+  // An unconfirmed withdrawal keeps its class: the worker logs it by code and retries.
+  withdrawalFailure = new Error("OpenShell DeleteService did not confirm deletion.");
+  await assert.rejects(
+    driver.withdrawHarnessExposure(revision, signal),
+    (error) => error === withdrawalFailure,
+  );
+  withdrawalFailure = undefined;
+  assert.equal(withdrawals.length, 3);
+  // Nothing is asked of the provider for a Codex Harness (its exposure is the Gateway's
+  // transport), for a revision without a Sandbox Driver, or for one pinned to another Compute.
+  await driver.withdrawHarnessExposure(
+    { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+    signal,
+  );
+  await driver.withdrawHarnessExposure({ ...revision, sandboxDriverId: undefined }, signal);
+  await assert.rejects(
+    driver.withdrawHarnessExposure(
+      { ...revision, compute: { ...revision.compute, id: "other-compute" } },
+      signal,
+    ),
+    /pinned to another Compute Driver/,
+  );
+  assert.equal(withdrawals.length, 3);
+  // A missing Namespace proves nothing about the exposure (finding 1693): the provider's
+  // Workspace outlives it, so the provider is still asked, in the derived placement.
+  const readNamespace = clients.core.readNamespace;
+  clients.core.readNamespace = async () => {
+    throw Object.assign(new Error("Not found"), { statusCode: 404 });
+  };
+  await driver.withdrawHarnessExposure(revision, signal);
+  assert.equal(withdrawals.length, 4);
+  assert.equal(withdrawals[3].revision, revision);
+  assert.equal(withdrawals[3].namespace.name, namespace);
+  assert.equal(withdrawals[3].workspaceNodeEnrolled, true);
+  clients.core.readNamespace = readNamespace;
 });
 
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
@@ -1684,11 +2357,17 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   assert.equal(state.setupCalls, 1);
   // Once the device is recorded the node reconnects with its saved device
   // token. The setup code, readable by Codex in the same container, is removed.
+  // The Secret names this revision as the one whose node enrolled (finding 1671).
   assert.deepEqual(Object.keys(objects.get(nodeSecretKey).data).sort(), [
     "deviceId",
+    "enrolledRevisionId",
     "expiresAtMs",
     "setupId",
   ]);
+  assert.equal(
+    Buffer.from(objects.get(nodeSecretKey).data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
   // The removal nudges the running Harness Pod again, with a new value, so the
   // kubelet removes the file now instead of on its periodic resync.
   assert.equal(podPatches.length, 3);
@@ -1809,7 +2488,10 @@ test("an upgraded file-delivered node drops its leftover setup code and tolerate
   }
   assert.equal(ready, true);
   assert.equal(state.setupCalls, 0, "a recorded device needs no new setup");
-  assert.deepEqual(nodeSecretReplaces, [["deviceId", "expiresAtMs", "setupId"]]);
+  // One write drops the code and records the connected node's revision as enrolled.
+  assert.deepEqual(nodeSecretReplaces, [
+    ["deviceId", "enrolledRevisionId", "expiresAtMs", "setupId"],
+  ]);
   assert.equal(objects.get(key("Secret", nodeName)).data.setupCode, undefined);
   assert.deepEqual(
     podPatches.map(({ name }) => name).filter((name) => name === "agent-pod"),
@@ -2044,6 +2726,305 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   const ready = await prepare();
   assert.equal(ready.ready, true);
   assert.equal(ready.pendingReason, undefined);
+});
+
+// A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
+// bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
+// ReplicaFailure condition onto the Deployment, which the driver reads, and the refused
+// quota's status confirms that its Pods are still all used (finding 1623).
+test("a pending dedicated deploy names a full Namespace Pod quota", async () => {
+  const {
+    state,
+    driver,
+    revision,
+    namespace,
+    gatewayName,
+    agentName,
+    objects,
+    clients,
+    read,
+    save,
+    prepare,
+    markReady,
+  } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  assert.equal((await prepare()).pendingReason, undefined);
+  const setConditions = (name, conditions) => {
+    const object = read("Deployment", name);
+    object.status = { ...object.status, conditions };
+    save(object);
+  };
+  // The quota's status as the quota controller last recorded it.
+  const setQuota = (used, hard = used, name = "openclaw-quota") =>
+    save({
+      apiVersion: "v1",
+      kind: "ResourceQuota",
+      metadata: { name, namespace },
+      status: { hard, used },
+    });
+  setQuota({ pods: "10", "count/pods": "10", "requests.cpu": "4" });
+  const refusal = (
+    requested,
+    used = "pods=10",
+    limited = "pods=10",
+    quotaName = "openclaw-quota",
+  ) =>
+    `pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: exceeded quota: ${quotaName}, requested: ${requested}, used: ${used}, limited: ${limited}`;
+  const failure = (message, overrides = {}) => ({
+    type: "ReplicaFailure",
+    status: "True",
+    reason: "FailedCreate",
+    message,
+    ...overrides,
+  });
+  const pendingReasonWith = async (name, conditions) => {
+    setConditions(name, conditions);
+    const observed = await prepare();
+    setConditions(name, []);
+    assert.equal(observed.ready, false);
+    return observed.pendingReason;
+  };
+  const quota = "NAMESPACE_POD_QUOTA_EXCEEDED";
+  for (const name of [agentName, gatewayName]) {
+    assert.equal(await pendingReasonWith(name, [failure(refusal("pods=1"))]), quota, name);
+  }
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      { type: "Available", status: "False", reason: "MinimumReplicasUnavailable" },
+      failure(
+        refusal("pods=1,requests.cpu=500m", "pods=10,requests.cpu=4", "pods=10,requests.cpu=4"),
+      ),
+    ]),
+    quota,
+  );
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("count/pods=1", "count/pods=10", "count/pods=10")),
+    ]),
+    quota,
+  );
+  // Only a refusal for want of Pods is a full Pod quota.
+  for (const conditions of [
+    [failure(refusal("requests.cpu=500m", "pods=4,requests.cpu=4", "pods=10,requests.cpu=4"))],
+    [failure(refusal("pods=1"), { status: "False" })],
+    [failure(refusal("pods=1"), { reason: "FailedDelete" })],
+    [failure(refusal("pods=1"), { type: "Progressing" })],
+    [failure(`pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: error looking up service account`)],
+    [failure(undefined)],
+  ]) {
+    assert.equal(await pendingReasonWith(agentName, conditions), undefined, inspect(conditions));
+  }
+  // The condition keeps the first refusal through up to 1000 s of create backoff. Once the
+  // quota has a Pod free, or a CPU quota refuses instead, the Pod quota is not the wait.
+  const podRefusal = [failure(refusal("pods=1"))];
+  for (const [label, used, hard] of [
+    ["a Pod freed", { pods: "9" }, { pods: "10" }],
+    ["the limit raised", { pods: "10" }, { pods: "11" }],
+    ["only CPU used up", { pods: "4", "requests.cpu": "4" }, { pods: "10", "requests.cpu": "4" }],
+    ["no Pod limit left", { pods: "4", "requests.cpu": "4" }, { "requests.cpu": "4" }],
+    ["an unparsable count", { pods: "ten" }, { pods: "10" }],
+  ]) {
+    setQuota(used, hard);
+    assert.equal(await pendingReasonWith(agentName, podRefusal), undefined, label);
+  }
+  // count/pods counts too, and a Pod quota over its limit is full.
+  setQuota({ "count/pods": "10" }, { "count/pods": "10" });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  setQuota({ pods: "11" }, { pods: "1e1" });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  // Both Deployments refused by one quota read it once per pass.
+  const readQuota = clients.core.readNamespacedResourceQuota;
+  let quotaReads = 0;
+  clients.core.readNamespacedResourceQuota = (request) => {
+    quotaReads++;
+    return readQuota(request);
+  };
+  setQuota({ pods: "9" }, { pods: "10" });
+  setConditions(gatewayName, podRefusal);
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  assert.equal(quotaReads, 1);
+  setConditions(gatewayName, []);
+  clients.core.readNamespacedResourceQuota = readQuota;
+  // The quota the refusal names is read, an administrator's included.
+  setQuota({ pods: "3" }, { pods: "10" });
+  setQuota({ pods: "2" }, { pods: "2" }, "team-pods");
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "team-pods")),
+    ]),
+    quota,
+  );
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  // A deleted or unreadable quota confirms nothing.
+  objects.delete(`ResourceQuota:${namespace}:team-pods`);
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "team-pods")),
+    ]),
+    undefined,
+  );
+  setQuota({ pods: "10" }, { pods: "10" });
+  state.unreadableKind = "ResourceQuota";
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  state.unreadableKind = undefined;
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  // One unreadable quota does not hide another quota's full Pods: the Harness Deployment,
+  // read first, names a quota that cannot be read, and the Gateway's quota is full.
+  clients.core.readNamespacedResourceQuota = (request) =>
+    request.name === "broken-quota"
+      ? Promise.reject(Object.assign(new Error("forbidden"), { statusCode: 403 }))
+      : readQuota(request);
+  setConditions(gatewayName, podRefusal);
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "broken-quota")),
+    ]),
+    quota,
+  );
+  setConditions(gatewayName, []);
+  clients.core.readNamespacedResourceQuota = readQuota;
+  // A held runtime failure leads instead of any pending reason.
+  state.gatewayRuntimeFailure = {
+    component: "gateway",
+    check: "peer-bridge-record",
+    checkedAt: "2026-09-19T11:59:00.000Z",
+    code: "UNAVAILABLE",
+  };
+  setConditions(agentName, [failure(refusal("pods=1"))]);
+  const failed = await prepare();
+  assert.equal(failed.pendingReason, undefined);
+  assert.equal(failed.runtimeFailure?.code, "UNAVAILABLE");
+  setConditions(agentName, []);
+  state.gatewayRuntimeFailure = undefined;
+  // One unreadable Deployment does not hide the other's refusal.
+  setConditions(gatewayName, [failure(refusal("pods=1"))]);
+  const target = { name: namespace, plane: "execution" };
+  const gateway = {
+    name: gatewayName,
+    namespace: target,
+    ownership: { namespaceId: tenant.id, agentId: revision.agentId },
+  };
+  const foreign = { name: agentName, namespace: target, ownership: { namespaceId: "other" } };
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), true);
+  assert.equal(await driver.safePodQuotaObservation([foreign]), false);
+  setConditions(gatewayName, []);
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), false);
+  // The owner's cancellation during the Deployment or quota read ends the pass instead of
+  // reading as no quota.
+  const readDeployment = clients.apps.readNamespacedDeployment;
+  const cancellation = new Error("revision pass cancelled");
+  setConditions(gatewayName, podRefusal);
+  for (const [api, method] of [
+    [clients.apps, "readNamespacedDeployment"],
+    [clients.core, "readNamespacedResourceQuota"],
+  ]) {
+    const owner = new AbortController();
+    api[method] = async () => {
+      owner.abort(cancellation);
+      throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+    };
+    await assert.rejects(
+      withComputeAbortSignal(owner.signal, () => driver.safePodQuotaObservation([gateway])),
+      (error) => error === cancellation,
+      method,
+    );
+    clients.apps.readNamespacedDeployment = readDeployment;
+    clients.core.readNamespacedResourceQuota = readQuota;
+  }
+  setConditions(gatewayName, []);
+  // A quota of the same name in another Namespace (a split-plane Gateway's) is its own quota.
+  const otherNamespace = `${namespace}-gateways`;
+  const elsewhere = read("Deployment", gatewayName);
+  elsewhere.metadata.namespace = otherNamespace;
+  elsewhere.status = { conditions: [failure(refusal("pods=1"))] };
+  save(elsewhere);
+  setQuota({ pods: "9" }, { pods: "10" });
+  save({
+    apiVersion: "v1",
+    kind: "ResourceQuota",
+    metadata: { name: "openclaw-quota", namespace: otherNamespace },
+    status: { hard: { pods: "10" }, used: { pods: "10" } },
+  });
+  const relocated = { ...gateway, namespace: { name: otherNamespace, plane: "execution" } };
+  assert.equal(await driver.safePodQuotaObservation([relocated]), true);
+  assert.equal(await driver.safePodQuotaObservation([gateway]), false);
+  setConditions(gatewayName, [failure(refusal("pods=1"))]);
+  assert.equal(await driver.safePodQuotaObservation([gateway, relocated]), true);
+  setConditions(gatewayName, []);
+  setQuota({ pods: "10" }, { pods: "10" });
+  // A full quota names the wait before a Pod the scheduler cannot place.
+  state.unschedulableRole = "gateway";
+  assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  state.unschedulableRole = undefined;
+  markReady(agentName);
+  markReady(gatewayName);
+  // A known pending reason leads: ready workloads waiting for their node keep that reason
+  // beside a stale quota refusal (a made-up shape).
+  setConditions(agentName, [failure(refusal("pods=1"))]);
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  setConditions(agentName, []);
+  state.connected = true;
+  const ready = await prepare();
+  assert.equal(ready.ready, true);
+  assert.equal(ready.pendingReason, undefined);
+});
+
+// The Pod quota check reads the workload Deployments a revision runs: an Embedded
+// revision has only its Gateway, and a Harness that a SandboxDriver provisions has no
+// Harness Deployment.
+test("the Pod quota check reads only the revision's own workload Deployments", async () => {
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const openclaw = (mode) => ({
+    harness: { id: "openclaw", version: "1.0.0", mode },
+    configuration: admitLoggingConfiguration(
+      createHarnessConfiguration("openclaw", "gpt-5"),
+      "info",
+    ),
+    plugins: undefined,
+  });
+  for (const [label, options, roles] of [
+    ["dedicated Codex", {}, ["agent", "gateway"]],
+    ["Embedded OpenClaw", { revision: openclaw("embedded") }, ["gateway"]],
+    [
+      "SandboxDriver-provisioned OpenClaw",
+      {
+        sandboxDriver,
+        revision: { ...openclaw("dedicated"), sandboxDriverId: sandboxDriver.id },
+      },
+      ["gateway"],
+    ],
+  ]) {
+    const { driver, gatewayName, agentName, prepare } = dedicatedFirstDeployFixture(options);
+    const observed = [];
+    const observe = driver.safePodQuotaObservation.bind(driver);
+    driver.safePodQuotaObservation = (deployments) => {
+      observed.push(deployments.map(({ name }) => name));
+      return observe(deployments);
+    };
+    const pending = await prepare();
+    assert.equal(pending.ready, false, label);
+    assert.deepEqual(
+      observed.at(-1),
+      roles.map((role) => (role === "gateway" ? gatewayName : agentName)),
+      label,
+    );
+  }
 });
 
 // The worker is serial: every pass one Agent spends waiting for its node holds
@@ -6399,14 +7380,17 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   );
   assert.equal(withdrawals.length, 0);
 
-  // Without the Namespace there is no Sandbox left to revoke, and the gateway is not called.
+  // A missing Namespace proves nothing about the Sandbox (finding 1693): the gateway's record
+  // outlives it, so the gateway still withdraws, in the derived placement, and its answer stands.
   namespaceExists = false;
   withdrawals.length = 0;
   assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
     sourceId: source.id,
-    state: "absent",
+    state: "revoked",
   });
-  assert.equal(withdrawals.length, 0);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.equal(withdrawals[0].sandbox.resourceName, "os-rev-withdraw");
   await assert.rejects(
     driver.withdrawCredentialSource(
       { ...revision, compute: { id: "other-compute", implementation: driver.implementation } },
@@ -6417,44 +7401,21 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   );
 });
 
-test("OAuth Harness authentication requires Compute-owned dedicated Codex", () => {
-  const oauth = { ...apiKeyAuth, method: "oauth" };
-  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
-  const configuration = { agents: { defaults: { model: "codex/gpt-5" } } };
+test("retired OAuth Harness authentication fails closed before workload preparation", () => {
   const driver = new KubernetesComputeDriver(options());
-  assert.equal(typeof driver.startHarnessDeviceAuthorization, "function");
-  assert.equal(typeof driver.pollHarnessDeviceAuthorization, "function");
-  driver.validateHarnessAuth(codex, oauth, configuration);
-  // Unsupported topologies fail at admission, before a deployment stops predecessors.
-  const sandboxDriver = {
-    id: "sandbox-openshell",
-    capability: "sandbox",
-    facets: ["networking", "filesystem", "process"],
-    provisionHarness() {},
-  };
-  const sandboxed = new KubernetesComputeDriver(options(), { sandboxDriver });
-  // A Sandbox Driver is an Installation dependency: fixed text.
   assert.throws(
-    () => sandboxed.validateHarnessAuth(codex, oauth, configuration),
-    /OAuth requires the Compute-owned dedicated Codex Harness/,
+    () =>
+      driver.validateHarnessAuth(
+        { id: "codex", version: "1.0.0", mode: "dedicated" },
+        { ...apiKeyAuth, method: "oauth" },
+        { agents: { defaults: { model: "codex/gpt-5" } } },
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Agent setting harnessAuth.method must be api_key, codex_pat or credential_source for Dedicated Codex on Kubernetes Compute: change harnessAuth.",
+    },
   );
-  // Dedicated OpenClaw never takes OAuth: the Agent's setting is named, with or without one.
-  for (const compute of [driver, sandboxed]) {
-    assert.throws(
-      () =>
-        compute.validateHarnessAuth(
-          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-          oauth,
-          createHarnessConfiguration("openclaw", "gpt-4o-mini"),
-          // Agent save: without a Sandbox Driver, deployment refuses dedicated OpenClaw first.
-          null,
-        ),
-      (error) =>
-        error instanceof ConfigurationHarnessError &&
-        error.message ===
-          "Agent setting harnessAuth.method must be api_key or credential_source for Dedicated OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
-    );
-  }
 });
 
 test("Harness authentication method admission names the Agent setting for its topology", () => {
@@ -6484,8 +7445,8 @@ test("Harness authentication method admission names the Agent setting for its to
     [
       codex,
       codexConfiguration,
-      "api_key, codex_pat, oauth or credential_source for Dedicated Codex",
-      ["runtime"],
+      "api_key, codex_pat or credential_source for Dedicated Codex",
+      ["runtime", "oauth"],
     ],
   ]) {
     for (const method of refused) {
@@ -6513,7 +7474,7 @@ test("Harness authentication method admission names the Agent setting for its to
 test("dedicated Codex admission rejects settings its Gateway entrypoint cannot rewrite", () => {
   // The Gateway entrypoint refuses to start on these shapes; admitting them let
   // a deployment replace a working Gateway with one that crash-looped (D201).
-  const oauth = { ...apiKeyAuth, method: "oauth" };
+  const auth = { ...apiKeyAuth, method: "codex_pat" };
   const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
   const base = { agents: { defaults: { model: "codex/gpt-5" } } };
   const withCodexConfig = (config) => ({ ...base, plugins: { entries: { codex: { config } } } });
@@ -6544,7 +7505,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
       },
     },
   ]) {
-    driver.validateHarnessAuth(codex, oauth, accepted);
+    driver.validateHarnessAuth(codex, auth, accepted);
   }
   for (const [rejected, message] of [
     [
@@ -6589,7 +7550,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   ]) {
     // Admission returns this message to the Configuration owner (D321).
     assert.throws(
-      () => driver.validateHarnessAuth(codex, oauth, rejected),
+      () => driver.validateHarnessAuth(codex, auth, rejected),
       (error) =>
         error instanceof ConfigurationHarnessError &&
         error.message ===
@@ -6609,7 +7570,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
     ],
   ]) {
     assert.throws(
-      () => driver.validateHarnessAuth(codex, oauth, { ...base, models: { providers } }),
+      () => driver.validateHarnessAuth(codex, auth, { ...base, models: { providers } }),
       (error) => {
         assert.ok(error instanceof ConfigurationHarnessError);
         assert.equal(Array.from(error.message).length, 256, error.message);
@@ -6624,7 +7585,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   const padded = `${" ".repeat(room - 6)}OpenAI`;
   assert.throws(
     () =>
-      driver.validateHarnessAuth(codex, oauth, {
+      driver.validateHarnessAuth(codex, auth, {
         ...base,
         models: { providers: { [padded]: "stub" } },
       }),
@@ -6632,7 +7593,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   );
   assert.throws(
     () =>
-      driver.validateHarnessAuth(codex, oauth, {
+      driver.validateHarnessAuth(codex, auth, {
         ...base,
         models: { providers: { [` ${padded}`]: "stub" } },
       }),
@@ -6923,6 +7884,7 @@ test("credential-source authentication renders no model Secret and requires the 
     );
   }
 
+  const incompatible = /paired Drivers and a matching supported OpenAI login mode/;
   // A PAT source selects native Codex auth storage without projecting its credential.
   const patSnapshot = { ...snapshot, sourceType: "codex-pat", loginMode: "codex_pat" };
   const patType = {
@@ -6952,10 +7914,36 @@ test("credential-source authentication renders no model Secret and requires the 
         {},
         patType,
       ),
-    /compatible OpenAI source/,
+    incompatible,
   );
 
-  const incompatible = /paired Sandbox and a compatible OpenAI source/;
+  const externalSnapshot = { ...snapshot, loginMode: "chatgptAuthTokens" };
+  // External auth must match the catalog and can only reach a native Codex receiver.
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        revision.harness,
+        externalSnapshot,
+        revision.configuration,
+        {},
+        sourceType,
+      ),
+    incompatible,
+  );
+  assert.throws(
+    () =>
+      driver.validateHarnessAuth(
+        nativeRevision.harness,
+        externalSnapshot,
+        nativeRevision.configuration,
+        {},
+        {
+          ...sourceType,
+          harnessAuth: { modelProvider: "openai", loginMode: "chatgptAuthTokens" },
+        },
+      ),
+    incompatible,
+  );
   assert.throws(
     () =>
       new KubernetesComputeDriver(options(), { sandboxDriver }).validateHarnessAuth(
@@ -7486,7 +8474,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     undefined,
     { configuration: JSON.stringify(nativeInference) },
   );
-  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, revision);
+  driver.addNativeWorker(workerDeployment, "workspace-node-native-worker", undefined, undefined);
   assertExecStringsWithinBudget([gatewayDeployment, workerDeployment]);
   const gateway = gatewayDeployment.spec.template.spec.containers[0];
   const worker = workerDeployment.spec.template.spec.containers[0];
@@ -7517,7 +8505,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   assert.equal(workerProgram.includes('"--pair-if-needed"'), false);
   assert.equal(workerProgram.includes('"--session-host"'), false);
   assert.equal(
-    workerProgram.includes("writeFileSync(connectTargetPath, setupCode, { mode: 0o600 })"),
+    workerProgram.includes("writeFileSync(connectTargetPath, target, { mode: 0o600 })"),
     true,
   );
   assert.equal(
@@ -10354,8 +11342,14 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     timeout: options.timeout,
                   });
                   if (args[0] === "-e") {
-                    // The upfront request's child exits 3 only on the provider's 401.
-                    return { status: upfront ? 3 : 0 };
+                    // The upfront request's child exits 3-6 (plus 10 or 20 for the
+                    // responder) only on the provider's 401: 13 is an unclassified
+                    // 401 that carried OpenAI's response headers. Its stdout names
+                    // the body's shape and closed-set error code and type.
+                    return {
+                      status: upfront ? 13 : 0,
+                      stdout: upfront ? '["json-error-code","other","invalid_request_error"]' : "",
+                    };
                   }
                   if (variant.startsWith("cap exceeded")) {
                     return {
@@ -10421,16 +11415,21 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(calls.length, upfront ? 1 : 2);
         assert.equal(probeTemplate, "/approved-temporary/openclaw-auth-probe-");
         // The upfront request carries the credential as OpenClaw sends it to
-        // the provider's default endpoint, and nothing else from the environment.
+        // the provider's default endpoint, the closed sets of error codes (C) and
+        // types (T) it may name, and nothing else from the environment.
         const [upfrontCall, probeCall] = calls;
         assert.equal(upfrontCall.command, "/usr/local/bin/node");
         assert.equal(upfrontCall.timeout, 10_000);
         assert.deepEqual(Object.keys(upfrontCall.environment).sort(), [
+          "C",
           "H",
           "NODE_EXTRA_CA_CERTS",
           "SSL_CERT_FILE",
+          "T",
           "U",
         ]);
+        assert.ok(JSON.parse(upfrontCall.environment.C).includes("invalid_api_key"));
+        assert.ok(JSON.parse(upfrontCall.environment.T).includes("invalid_request_error"));
         assert.equal(upfrontCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
         assert.deepEqual(
           [upfrontCall.environment.U, JSON.parse(upfrontCall.environment.H)],
@@ -10551,8 +11550,18 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
-        // The log line keeps the provider's HTTP status from its error, never the text.
-        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
+        // The log line keeps the provider's HTTP status from its error, never the text;
+        // the upfront rejection names its 401, who answered it and only a
+        // closed-vocabulary code.
+        assert.equal(
+          probeLog.providerStatus,
+          upfront ? 401 : cause?.kind === "PROBE_STATUS" ? 404 : undefined,
+        );
+        assert.equal(probeLog.providerCode, undefined);
+        assert.equal(probeLog.responseHeaderMarker, upfront ? "provider-like" : undefined);
+        assert.equal(probeLog.bodyShape, upfront ? "json-error-code" : undefined);
+        assert.equal(probeLog.providerErrorCode, upfront ? "other" : undefined);
+        assert.equal(probeLog.providerErrorType, upfront ? "invalid_request_error" : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
@@ -11112,7 +12121,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(driver, kubernetesNamespaceName(tenant.id), false),
   );
 
-  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key");
+  const requirements = driver.harnessRequirementsFromDeployment(workload, "api_key", false);
   assert.equal(requirements.loginMode, "api_key");
   // Backend requirements must carry readable identities unchanged into Pod labels and selectors.
   for (const [key, value] of Object.entries({
@@ -11171,7 +12180,7 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     const altered = structuredClone(workload);
     mutate(altered.spec.template.spec);
     assert.throws(
-      () => driver.harnessRequirementsFromDeployment(altered, "api_key"),
+      () => driver.harnessRequirementsFromDeployment(altered, "api_key", false),
       /ServicePrincipal/i,
     );
   }
@@ -11192,7 +12201,8 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     preparedAuth(withoutProjection, kubernetesNamespaceName(tenant.id), false),
   );
   assert.equal(
-    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key").workloadIdentity,
+    withoutProjection.harnessRequirementsFromDeployment(unprojected, "api_key", false)
+      .workloadIdentity,
     undefined,
   );
 
@@ -11202,7 +12212,8 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
     projected: { sources: [] },
   });
   assert.throws(
-    () => withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key"),
+    () =>
+      withoutProjection.harnessRequirementsFromDeployment(unexpectedProjection, "api_key", false),
     /credentials disabled must not project/i,
   );
 });
@@ -11441,7 +12452,7 @@ test("provider Harness requires its assigned network profile before readiness an
       labels["openclaw.dev/network-profile"] = profile;
     }
     assert.throws(
-      () => fixture.driver.harnessRequirementsFromDeployment(unapproved, "api_key"),
+      () => fixture.driver.harnessRequirementsFromDeployment(unapproved, "api_key", false),
       /Dedicated Harness requires the ordinary network profile/,
     );
   }
@@ -11846,7 +12857,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     ],
     [
       "dedicated",
-      "api_key, codex_pat, oauth or credential_source for Dedicated Codex on Kubernetes Compute: change harnessAuth",
+      "api_key, codex_pat or credential_source for Dedicated Codex on Kubernetes Compute: change harnessAuth",
     ],
   ]) {
     await assert.rejects(
@@ -12278,6 +13289,18 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
           subPath: "media",
           readOnly: false,
         },
+        {
+          name: privateVolume.name,
+          mountPath: "/home/node/.openclaw/worktrees",
+          subPath: "worktrees",
+          readOnly: false,
+        },
+        {
+          name: privateVolume.name,
+          mountPath: "/home/node/.openclaw/worktree-sources",
+          subPath: "worktree-sources",
+          readOnly: false,
+        },
         ...(!embedded
           ? [
               {
@@ -12456,7 +13479,7 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
     const pod = workload.spec.template.spec;
     // The node-state claim keeps the Harness policy: ownership is fixed only on a root mismatch.
     assert.deepEqual(pod.securityContext, harness.spec.template.spec.securityContext);
-    return driver.sandboxWorkspaceMounts(pod.volumes, pod.containers[0].volumeMounts);
+    return driver.sandboxWorkspaceMounts(pod.volumes, pod.containers[0].volumeMounts, true);
   };
   const mounts = withNode(revision);
   const initializedHarness = structuredClone(harness);
@@ -12574,15 +13597,26 @@ test("Harness workspace preparation creates private directories and resumes an i
 });
 
 test(
-  "Harness workspace preparation moves read-only directories and removes read-only state",
+  "Harness workspace preparation moves read-only directories and reports blocked ownership",
   // Root ignores directory modes, so only a non-root run exercises these paths.
   { skip: process.getuid?.() === 0 && "root ignores directory permissions" },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "oce-harness-read-only-"));
     const run = (script) => spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
-    t.after(() => {
-      run(harnessStateRemovalScript(root));
-      return rm(root, { recursive: true, force: true });
+    t.after(async () => {
+      // Restore this fixture's deliberately restricted directories before cleanup.
+      const restore = async (path) => {
+        const info = await lstat(path);
+        if (!info.isDirectory()) {
+          return;
+        }
+        await chmod(path, 0o700);
+        for (const entry of await readdir(path)) {
+          await restore(join(path, entry));
+        }
+      };
+      await restore(root);
+      await rm(root, { recursive: true, force: true });
     });
     const prepare = () => {
       const result = run(
@@ -12637,28 +13671,6 @@ test(
     );
     assert.equal(await mode(`${root}/.workspace.kubelet-created/held`), 0o555);
     await rm(`${root}/.workspace.kubelet-created`, { recursive: true });
-
-    // State removal empties read-only directories at any depth and never follows a link.
-    const outside = `${root}/outside`;
-    await mkdir(outside);
-    await writeFile(`${outside}/kept.md`, "kept");
-    await chmod(outside, 0o555);
-    await mkdir(`${root}/codex-home/sessions/2026/10`, { recursive: true });
-    await writeFile(`${root}/codex-home/sessions/2026/10/rollout.jsonl`, "{}");
-    await mkdir(`${root}/codex-home/empty`);
-    await symlink(outside, `${root}/codex-home/link`);
-    await chmod(`${root}/codex-home/sessions/2026/10`, 0o555);
-    await chmod(`${root}/codex-home/sessions`, 0o500);
-    await chmod(`${root}/codex-home/empty`, 0o000);
-    await chmod(`${root}/codex-home`, 0o555);
-    const removal = run(harnessStateRemovalScript(`${root}/codex-home`));
-    assert.equal(removal.status, 0, removal.stderr);
-    assert.deepEqual((await readdir(root)).sort(), ["generated-images", "outside", "workspace"]);
-    assert.equal(await mode(outside), 0o555);
-    assert.equal(await readFile(`${outside}/kept.md`, "utf8"), "kept");
-    await chmod(outside, 0o700);
-    // A missing directory is not an error.
-    assert.equal(run(harnessStateRemovalScript(`${root}/codex-home`)).status, 0);
   },
 );
 
@@ -13385,6 +14397,7 @@ function stopOrderFixture(id) {
     deploymentPresent: true,
     gatewayPodsLeft: 0,
     agentPodsLeft: 0,
+    otherRevisionPod: false,
     gatewayReads: 0,
   };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
@@ -13425,7 +14438,11 @@ function stopOrderFixture(id) {
         }
         if (role === "agent" && fixture.agentPodsLeft > 0) {
           fixture.agentPodsLeft -= 1;
-          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(agentPod)] };
+          const pod = structuredClone(agentPod);
+          if (fixture.otherRevisionPod) {
+            pod.metadata.labels["openclaw.dev/revision"] = "another-revision";
+          }
+          return { apiVersion: "v1", kind: "PodList", items: [pod] };
         }
         return { apiVersion: "v1", kind: "PodList", items: [] };
       },
@@ -13451,6 +14468,25 @@ function stopOrderFixture(id) {
 
   return Object.assign(fixture, { driver, revision });
 }
+
+// The termination wait refuses a listed Pod outside its selector at once instead of waiting
+// for it to end (finding 1581). The Pod would be gone after two polls, so a wait that accepts
+// it finishes the stop instead.
+test("a workload termination wait refuses a Pod of another revision", async () => {
+  const fixture = stopOrderFixture("revision-other-revision-pod");
+  const { driver, revision } = fixture;
+  fixture.agentPodsLeft = 2;
+  fixture.otherRevisionPod = true;
+  await assert.rejects(
+    driver.stopRevision(revision),
+    /Refusing an ambiguous AgentRevision workload Pod\./u,
+  );
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+});
 
 test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
   // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
@@ -15058,9 +16094,14 @@ function workspaceSetupFixture(
   runtime = true,
   network = undefined,
   computeOptions = {},
+  driverDependencies = {},
   { adopted = false } = {},
 ) {
-  const state = { ready: false, secretFailure: false, failedInitializer: false };
+  const state = {
+    ready: false,
+    secretFailure: false,
+    failedInitializer: false,
+  };
   const driver = new KubernetesComputeDriver(
     routedOptions({
       ...(network === undefined ? {} : { network }),
@@ -15081,6 +16122,7 @@ function workspaceSetupFixture(
       ...computeOptions,
     }),
     {
+      ...driverDependencies,
       nodeEnrollment: {
         async createSetup() {
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
@@ -15275,37 +16317,35 @@ function workspaceSetupFixture(
         return { items: structuredClone(state.jobPods) };
       }
       return {
-        items: state.failedInitializer
-          ? [
-              {
-                apiVersion: "v1",
-                kind: "Pod",
-                metadata: {
-                  name: "failed-initializer",
-                  namespace,
-                  labels: {
-                    "openclaw.dev/agent": revision.agentId,
-                    "openclaw.dev/revision": revision.id,
-                    "openclaw.dev/workload-role": embedded ? "gateway" : "agent",
+        items:
+          state.failedInitializer &&
+          labels["openclaw.dev/workload-role"] === (embedded ? "gateway" : "agent")
+            ? [
+                {
+                  apiVersion: "v1",
+                  kind: "Pod",
+                  metadata: {
+                    name: "failed-initializer",
+                    namespace,
+                    labels,
                   },
-                },
-                status: {
-                  initContainerStatuses: [
-                    {
-                      name: "initialize-workspace",
-                      state: {
-                        terminated: {
-                          exitCode: 1,
-                          finishedAt: "2026-09-22T00:00:00Z",
-                          message: "private-content-must-not-escape",
+                  status: {
+                    initContainerStatuses: [
+                      {
+                        name: "initialize-workspace",
+                        state: {
+                          terminated: {
+                            exitCode: state.initializerExitCode ?? 1,
+                            finishedAt: "2026-09-22T00:00:00Z",
+                            message: "private-content-must-not-escape",
+                          },
                         },
                       },
-                    },
-                  ],
+                    ],
+                  },
                 },
-              },
-            ]
-          : [],
+              ]
+            : [],
       };
     },
     async deleteNamespacedSecret({ name, body }) {
@@ -15398,763 +16438,184 @@ function workspaceSetupFixture(
   return { driver, revision, namespace, objects, records, state, setup, context };
 }
 
-for (const dualCluster of [false, true]) {
-  test(`Kubernetes ${dualCluster ? "two-cluster" : "single-cluster"} OAuth handoff consumes the source before native startup and reuses private storage`, async () => {
-    const { driver, revision, namespace, objects, records, state, context } = workspaceSetupFixture(
-      false,
-      true,
-      undefined,
-      dualCluster
-        ? {
-            executionCluster: {
-              authentication: { mode: "kubeconfig", kubeconfigPath, context: "execution-cluster" },
-              harnessRouting: {
-                ...gatewayRouting,
-                gatewayName: "harnesses",
-                hostname: "harness.example.test",
-              },
-              network: {
-                dns: options().network.dns,
-                harnessEndpointCidrs: ["192.0.2.2/32"],
-                gatewayEndpointCidrs: ["192.0.2.1/32"],
-                pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
-              },
-            },
-          }
-        : {},
-    );
-    if (dualCluster) {
-      // Distinct transports reject requests sent to the wrong cluster. The production Driver
-      // must mutate the source on control while seeding and removing workloads on execution.
-      const transport = await driver.apiClients;
-      const scoped = (namespaceName) =>
-        Object.fromEntries(
-          Object.entries(transport).map(([group, methods]) => [
-            group,
-            Object.fromEntries(
-              Object.entries(methods).map(([method, invoke]) => [
-                method,
-                (...args) => {
-                  const request = args[0];
-                  const target =
-                    request?.namespace ??
-                    request?.metadata?.namespace ??
-                    request?.body?.metadata?.namespace;
-                  if (target !== undefined) {
-                    assert.equal(
-                      target,
-                      namespaceName,
-                      `${group}.${method} used the wrong cluster`,
-                    );
-                  }
-                  return invoke(...args);
-                },
-              ]),
-            ),
-          ]),
-        );
-      driver.apiClients = Promise.resolve(scoped(kubernetesGatewayNamespaceName(tenant.id)));
-      driver.executionApiClients = Promise.resolve(scoped(namespace));
-    }
-    const sourceKey = stageReadyOAuthSource(objects, revision, context);
-
-    // Only the trusted seed writer may run while OCE still holds a usable bundle.
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-    const bootstrap = [...objects.values()].find(
-      ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
-    );
-    assert.ok(bootstrap);
-    const seedPod = bootstrap.spec.template.spec;
-    assert.equal(bootstrap.spec.backoffLimit, 2);
-    assert.equal(bootstrap.spec.activeDeadlineSeconds, 300);
-    assert.equal(bootstrap.spec.parallelism, 1);
-    assert.equal(bootstrap.spec.completions, 1);
-    assert.equal(bootstrap.spec.podReplacementPolicy, "Failed");
-    assert.equal(seedPod.restartPolicy, "Never");
-    assert.equal(seedPod.containers[0].readinessProbe, undefined);
-    assert.equal(seedPod.automountServiceAccountToken, false);
-    // Containment rests on the missing profile label: namespace default-deny then applies.
-    assert.equal(
-      bootstrap.spec.template.metadata.labels["openclaw.dev/network-profile"],
-      undefined,
-    );
-    assert.equal(seedPod.containers[0].securityContext.readOnlyRootFilesystem, true);
-    assert.deepEqual(seedPod.containers[0].securityContext.capabilities.drop, ["ALL"]);
-    // Tini preserves an interrupted writer's nonzero exit; only completed
-    // credential verification can satisfy the Job.
-    assert.deepEqual(seedPod.containers[0].command, [...SETUP_WRAPPER_COMMAND]);
-    // The process holding the seed sees only codex-home, never the rest of the Harness claim.
-    const seedClaim = seedPod.volumes.find(({ persistentVolumeClaim }) => persistentVolumeClaim);
-    const claimMounts = seedPod.containers[0].volumeMounts.filter(
-      ({ name }) => name === seedClaim.name,
-    );
-    assert.deepEqual(claimMounts, [
-      { name: seedClaim.name, mountPath: "/auth", subPath: "codex-home" },
-    ]);
-    assert.equal(
-      seedPod.containers[0].env.find(({ name }) => name === "CODEX_HOME").value,
-      "/auth",
-    );
-
-    // Only a credential-free init step sees the claim root, to create codex-home as uid 1000
-    // (a kubelet-created subPath is root-owned and world-writable).
-    assert.deepEqual(
-      seedPod.initContainers.map(({ name }) => name),
-      ["prepare-oauth-home"],
-    );
-    const [prepare] = seedPod.initContainers;
-    assert.deepEqual(prepare.volumeMounts, [
-      { name: seedClaim.name, mountPath: "/harness-workspace-state" },
-    ]);
-    assert.equal(prepare.env, undefined);
-    assert.deepEqual(prepare.command, [...SETUP_WRAPPER_COMMAND]);
-    assert.match(prepare.args[0], /chmodSync\(path, 0o700\)/);
-    assert.match(prepare.args[0], /isDirectory\(\) === false/);
-    assert.equal(prepare.securityContext.readOnlyRootFilesystem, true);
-    assert.deepEqual(prepare.securityContext.capabilities.drop, ["ALL"]);
-    assert.equal(
-      records.some(
-        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-      ),
-      false,
-    );
-
-    await assert.rejects(
-      driver.prepareRevision(
-        { ...revision, agentId: `${revision.agentId}-other` },
-        { harnessAuth: context.harnessAuth },
-      ),
-      /OAuth credentials belong to another Agent/,
-    );
-
-    // Stopping an unfinished handoff removes both seed objects but retains the claimed
-    // source, so the same login can resume without another authorization exchange.
-    await driver.stopRevision(revision);
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-    assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-    for (const kind of ["Job", "Secret"]) {
-      assert.ok(
-        [...objects.values()].some(
-          (object) => object.kind === kind && object.metadata.name.startsWith("oauth-bootstrap-"),
-        ),
-      );
-    }
-
-    // Transport reports Job completion; preparation must clear the source first.
-    state.ready = true;
-    assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-    const consumed = objects.get(sourceKey);
-    const envelope = JSON.parse(Buffer.from(consumed.data.value, "base64"));
-    assert.equal(envelope.phase, "consumed");
-    assert.equal(envelope.agentId, revision.agentId);
-    assert.equal(envelope.credential, undefined);
-    assert.equal(envelope.privateState, undefined);
-    const consumeIndex = records.findIndex(
-      ({ kind, metadata }) =>
-        kind === "Secret" && metadata.annotations?.["openclaw.dev/oauth-phase"] === "consumed",
-    );
-    const launchIndex = records.findIndex(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-    );
-    assert.ok(consumeIndex >= 0 && consumeIndex < launchIndex);
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    const harness = records[launchIndex];
-    assert.equal(
-      harness.spec.template.metadata.labels["openclaw.dev/network-profile"],
-      "broad-egress-v1",
-    );
-    const pod = harness.spec.template.spec;
-    assert.equal(
-      pod.initContainers
-        .find(({ name }) => name === "prepare-private-state")
-        .args[0].includes("codex-home"),
-      false,
-    );
-    const native = pod.containers[0];
-    assert.equal(native.env.find(({ name }) => name === "CODEX_LOGIN_MODE").value, "oauth");
-    assert.equal(
-      native.env.some(({ name }) => ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"].includes(name)),
-      false,
-    );
-    const authMount = native.volumeMounts.find(
-      ({ mountPath }) => mountPath === "/home/node/.codex",
-    );
-    assert.equal(authMount.subPath, "codex-home");
-    // OAuth keeps thread rollouts inside codex-home, which a new OAuth source empties;
-    // a separate rollout directory would outlive that reset, so it is neither mounted nor kept.
-    assert.equal(
-      native.volumeMounts.some(({ subPath }) => subPath === "codex-sessions"),
-      false,
-    );
-    assert.equal(
-      pod.initContainers
-        .find(({ name }) => name === "prepare-private-state")
-        .args[0].includes(harnessStateRemovalScript("/harness-workspace-state/codex-sessions")),
-      true,
-    );
-    const claimName = pod.volumes.find(({ name }) => name === authMount.name).persistentVolumeClaim
-      .claimName;
-    assert.equal(
-      envelope.volumeUid,
-      objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid,
-    );
-    const gateway = records.find(
-      ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
-    );
-    assert.equal(
-      gateway.spec.template.spec.volumes.some(({ name }) => name === authMount.name),
-      false,
-    );
-
-    // A later revision has no usable OCE bundle: it selects the same durable native generation.
-    const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
-    const previousWrites = records.length;
-    assert.equal((await driver.prepareRevision(later, context)).ready, true);
-    assert.equal(
-      records
-        .slice(previousWrites)
-        .some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    const laterHarness = records
-      .slice(previousWrites)
-      .find(({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"));
-    assert.equal(
-      laterHarness.spec.template.spec.volumes.find(({ name }) => name === authMount.name)
-        .persistentVolumeClaim.claimName,
-      claimName,
-    );
-
-    // Losing/replacing the volume must fail closed; the consumed source cannot restore stale tokens.
-    objects.get(`PersistentVolumeClaim:${namespace}:${claimName}`).metadata.uid =
-      "replacement-volume";
-    await assert.rejects(
-      driver.prepareRevision(later, context),
-      /require reconnect after storage loss/,
-    );
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-  });
-}
-
-for (const [reason, code] of [
-  ["BackoffLimitExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"],
-  ["DeadlineExceeded", "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT"],
-]) {
-  test(`Kubernetes OAuth ${reason} fails preparation without consuming or recreating the bootstrap`, async () => {
-    const { driver, revision, namespace, objects, records, state, context } =
-      workspaceSetupFixture(false);
-    const sourceKey = stageReadyOAuthSource(objects, revision, context);
-    // A running Job is named, so the worker can retire it if the deadline passes now.
-    const running = await driver.prepareRevision(revision, context);
-    assert.equal(running.ready, false);
-    assert.equal(running.pendingReason, "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING");
-    const job = [...objects.values()].find(({ kind }) => kind === "Job");
-    const creations = records.filter(({ kind }) => kind === "Job").length;
-    state.jobFailure = reason;
-
-    // Reobserving a terminal Job must not reset its retry/deadline budget or
-    // surrender the only usable credential source to a runtime that never starts.
-    for (let pass = 0; pass < 2; pass += 1) {
-      await assert.rejects(
-        driver.prepareRevision(revision, context),
-        (error) => error instanceof ComputePreparationFailedError && error.code === code,
-      );
-    }
-    assert.equal(records.filter(({ kind }) => kind === "Job").length, creations);
-    assert.equal(
-      objects.get(`Job:${namespace}:${job.metadata.name}`).metadata.uid,
-      job.metadata.uid,
-    );
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-    assert.equal(
-      records.some(
-        ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("agent-"),
-      ),
-      false,
-    );
-
-    // The worker's durable retirement calls the same supported stop path.
-    await driver.stopRevision(revision);
-    assert.equal(
-      [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-      false,
-    );
-    assert.equal(
-      objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
-      "claimed",
-    );
-  });
-}
-
-// Stages a ready OAuth source and runs the first pass, which creates the bootstrap Job
-// and seed Secret and stays pending. Tests then fail chosen requests on `transport`.
-async function startOAuthHandoff() {
-  const fixture = workspaceSetupFixture(false);
-  const { driver, revision, namespace, objects, context } = fixture;
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(
-    ({ kind, metadata }) => kind === "Job" && metadata.name.startsWith("oauth-bootstrap-"),
-  );
-  const name = job.metadata.name;
-  return {
-    ...fixture,
-    job,
-    name,
-    jobKey: `Job:${namespace}:${name}`,
-    seedKey: `Secret:${namespace}:${name}`,
-    deploymentKey: `Deployment:${namespace}:${name}`,
-    transport: await driver.apiClients,
-    pass: () => driver.prepareRevision(revision, context),
-    phase: () => objects.get(sourceKey).metadata.annotations["openclaw.dev/oauth-phase"],
+test("external ChatGPT source preparation delivers the exact placeholder and account only to its Harness", async (t) => {
+  const account = {
+    accountId: "workspace-external",
+    planType: "enterprise",
+    userId: "user-external",
+    email: "agent@example.test",
+    isFedramp: false,
   };
-}
-
-function apiError(statusCode, message = `HTTP ${statusCode}`) {
-  return Object.assign(new Error(message), { statusCode });
-}
-
-// A bootstrap Deployment left by an earlier release, owned by the same revision.
-function legacyBootstrapDeployment(job, metadata = {}) {
-  return {
-    apiVersion: "apps/v1",
-    kind: "Deployment",
-    metadata: { ...structuredClone(job.metadata), uid: "legacy-bootstrap-uid", ...metadata },
-    spec: {},
+  const placeholder = "openshell-placeholder:source/account-1";
+  const snapshot = {
+    method: "credential_source",
+    sourceId: "cs_00000000-0000-4000-8000-000000000001",
+    credentialGatewayId: "external-credential-gateway",
+    sourceType: "external-chatgpt",
+    loginMode: "chatgptAuthTokens",
   };
-}
-
-function assertNoOAuthBootstrap(objects) {
-  assert.equal(
-    [...objects.values()].some(({ metadata }) => metadata.name.startsWith("oauth-bootstrap-")),
-    false,
-  );
-}
-
-// The pass that consumes the source deletes the bootstrap Job (or a legacy Deployment) from
-// a fresh read. A write between that read and the delete (409), or an object already gone
-// (404), is read again, at most three times: after consumption a failed last attempt has
-// no later pass.
-for (const { title, kind, gone = false, writes = 0, completes = true } of [
-  {
-    title: "still removes the seed Job and Secret after a Job write conflicts with the delete",
-    kind: "Job",
-    writes: 1,
-  },
-  {
-    // A writer that changes the Job before every delete is not outwaited: the pass fails as
-    // before, and the next pass repeats the cleanup.
-    title: "fails its pass after three conflicting Job deletes and a later pass cleans up",
-    kind: "Job",
-    writes: 3,
-    completes: false,
-  },
-  {
-    title: "re-reads a legacy bootstrap Deployment when its delete conflicts",
-    kind: "Deployment",
-    writes: 1,
-  },
-  {
-    // Another actor (a TTL controller, say) removes the Job between the read and the delete.
-    title: "reads a bootstrap Job again when it is gone at its delete",
-    kind: "Job",
-    gone: true,
-  },
-]) {
-  test(`Kubernetes OAuth handoff ${title}`, async () => {
-    const { objects, state, job, jobKey, deploymentKey, transport, pass, phase } =
-      await startOAuthHandoff();
-    const key = kind === "Job" ? jobKey : deploymentKey;
-    if (kind === "Deployment") {
-      objects.set(key, legacyBootstrapDeployment(job, { resourceVersion: "1" }));
-    }
-    // Like the API server, the delete honors its preconditions. Another writer (for example
-    // a mutating policy controller) updates the object after the Driver read it, or another
-    // actor removes it (404).
-    const client = kind === "Job" ? transport.batch : transport.apps;
-    const method = `deleteNamespaced${kind}`;
-    const remove = client[method];
-    let failures = 0;
-    let written = 0;
-    client[method] = async (request) => {
-      if (gone) {
-        failures += 1;
-        objects.delete(key);
-        throw apiError(404, "Not Found");
-      }
-      const stored = objects.get(key);
-      if (written < writes) {
-        written += 1;
-        stored.metadata.resourceVersion = String(Number(stored.metadata.resourceVersion) + 1);
-      }
-      if (request.body.preconditions.resourceVersion !== stored.metadata.resourceVersion) {
-        failures += 1;
-        throw apiError(409, "Conflict");
-      }
-      assert.equal(request.body.preconditions.uid, stored.metadata.uid);
-      return remove(request);
-    };
-    state.ready = true;
-    if (completes) {
-      assert.equal((await pass()).ready, true);
-    } else {
-      await assert.rejects(pass(), /Conflict/);
-    }
-    assert.equal(failures, gone ? 1 : writes);
-    assert.equal(phase(), "consumed");
-    if (!completes) {
-      assert.equal((await pass()).ready, true);
-    }
-    assertNoOAuthBootstrap(objects);
-  });
-}
-
-// The pass that consumes the source, or a later one that finds it consumed, removes the
-// seed Secret before the bootstrap Job. If the Job delete then fails with a non-conflict
-// error on the deployment's last attempt (or after its convergence deadline), no later
-// pass runs, so the seed Secret holding the token bundle must already be gone.
-for (const { title, alreadyConsumed } of [
-  {
-    title:
-      "removes the seed Secret first, so a failed Job delete after consumption cannot leave it",
-    alreadyConsumed: false,
-  },
-  {
-    title: "on an already consumed source still removes the seed Secret first",
-    alreadyConsumed: true,
-  },
-]) {
-  test(`Kubernetes OAuth handoff ${title}`, async () => {
-    const { objects, state, job, name, jobKey, seedKey, deploymentKey, transport, pass, phase } =
-      await startOAuthHandoff();
-    assert.ok(objects.has(seedKey));
-    state.ready = true;
-    if (alreadyConsumed) {
-      // The seed Secret delete fails on all three attempts, so the pass that consumed the
-      // source fails with the token bundle still stored.
-      const deleteSecret = transport.core.deleteNamespacedSecret;
-      let seedDeletes = 0;
-      transport.core.deleteNamespacedSecret = async (request) => {
-        if (request.name !== name) {
-          return deleteSecret(request);
-        }
-        seedDeletes += 1;
-        throw apiError(503, "Service Unavailable");
-      };
-      await assert.rejects(pass(), /HTTP 503/);
-      assert.equal(seedDeletes, 3);
-      assert.equal(phase(), "consumed");
-      assert.ok(objects.has(seedKey));
-      transport.core.deleteNamespacedSecret = deleteSecret;
-      objects.set(deploymentKey, legacyBootstrapDeployment(job));
-    }
-    const deleteJob = transport.batch.deleteNamespacedJob;
-    let jobDeletes = 0;
-    transport.batch.deleteNamespacedJob = async () => {
-      jobDeletes += 1;
-      throw apiError(503, "Service Unavailable");
-    };
-    await assert.rejects(pass(), /HTTP 503/);
-    assert.equal(jobDeletes, 1, "only a conflict or a Job already gone is read again");
-    assert.equal(phase(), "consumed");
-    assert.equal(objects.has(seedKey), false);
-    if (alreadyConsumed) {
-      assert.equal(objects.has(deploymentKey), false);
-    }
-    assert.ok(objects.has(jobKey));
-
-    // A later pass, when one runs, still removes the completed Job.
-    transport.batch.deleteNamespacedJob = deleteJob;
-    assert.equal((await pass()).ready, true);
-    assertNoOAuthBootstrap(objects);
-  });
-}
-
-test("Kubernetes OAuth handoff retries a consumed seed Secret delete on timeouts, conflicts, gone, throttling and server errors, never on a refusal", async (t) => {
-  // request() makes its deadline right before each call, so the latest one is the delete's.
-  let deadline;
-  t.mock.method(AbortSignal, "timeout", () => {
-    deadline = new AbortController();
-    return deadline.signal;
-  });
-  const timeout = "timeout";
-  for (const [failures, retried] of [
-    [[timeout], true],
-    [[404], true],
-    [[409], true],
-    [[429], true],
-    [[500, 503], true],
-    [[403], false],
-  ]) {
-    const { objects, state, name, seedKey, transport, pass, phase } = await startOAuthHandoff();
-    const deleteSecret = transport.core.deleteNamespacedSecret;
-    let attempts = 0;
-    transport.core.deleteNamespacedSecret = async (request) => {
-      if (request.name !== name) {
-        return deleteSecret(request);
-      }
-      const failure = failures[attempts++];
-      if (failure === timeout) {
-        deadline.abort(new DOMException("The operation timed out.", "TimeoutError"));
-        throw deadline.signal.reason;
-      }
-      if (failure !== undefined) {
-        throw apiError(failure);
-      }
-      return deleteSecret(request);
-    };
-    state.ready = true;
-    if (retried) {
-      assert.equal((await pass()).ready, true, String(failures));
-      assert.equal(attempts, failures.length + 1, String(failures));
-    } else {
-      // A refusal is not retried; the token bundle stays for a later pass to remove.
-      await assert.rejects(pass(), /HTTP 403/);
-      assert.equal(attempts, 1, String(failures));
-    }
-    assert.equal(phase(), "consumed");
-    assert.equal(objects.has(seedKey), !retried, String(failures));
-  }
-});
-
-test("Kubernetes OAuth handoff refuses, and keeps, a bootstrap Deployment it does not own", async () => {
-  const { objects, job, deploymentKey, pass, phase } = await startOAuthHandoff();
-  const deployment = legacyBootstrapDeployment(job);
-  deployment.metadata.labels["openclaw.dev/agent"] = "another-agent";
-  objects.set(deploymentKey, deployment);
-  await assert.rejects(pass(), /Refusing unowned Kubernetes Deployment/);
-  assert.ok(objects.has(deploymentKey));
-  assert.notEqual(phase(), "consumed");
-});
-
-test("Kubernetes OAuth handoff starts its Job only after a legacy bootstrap Deployment's Pods stop", async (t) => {
-  // The Driver deletes the Deployment, or finds it already deleted by someone else.
-  for (const goneAtDelete of [false, true]) {
-    await t.test(goneAtDelete ? "already deleted" : "deleted", async () => {
-      const { namespace, objects, job, name, jobKey, seedKey, deploymentKey, transport, pass } =
-        await startOAuthHandoff();
-      // An earlier release ran the bootstrap as a Deployment; its writer Pod still runs.
-      objects.delete(jobKey);
-      objects.delete(seedKey);
-      objects.set(deploymentKey, legacyBootstrapDeployment(job));
-      const listPods = transport.core.listNamespacedPod;
-      let podRunning = true;
-      let deploymentDeleted = false;
-      let reportedAfterDelete = false;
-      transport.core.listNamespacedPod = async (request) => {
-        const labels = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        );
-        if (!podRunning || labels["app.kubernetes.io/name"] !== name) {
-          return listPods(request);
-        }
-        // The Pod reports once more after its Deployment is deleted, then it is gone.
-        if (reportedAfterDelete) {
-          podRunning = false;
-          return listPods(request);
-        }
-        reportedAfterDelete = deploymentDeleted;
-        return {
-          items: [
-            {
-              apiVersion: "v1",
-              kind: "Pod",
-              metadata: { name: `${name}-pod`, namespace, labels },
-              status: { phase: "Running" },
-            },
-          ],
-        };
-      };
-      const deleteDeployment = transport.apps.deleteNamespacedDeployment;
-      transport.apps.deleteNamespacedDeployment = async (request) => {
-        deploymentDeleted = true;
-        if (goneAtDelete) {
-          objects.delete(deploymentKey);
-          throw apiError(404, "Not Found");
-        }
-        return deleteDeployment(request);
-      };
-      const createJob = transport.batch.createNamespacedJob;
-      transport.batch.createNamespacedJob = async (request) => {
-        assert.equal(podRunning, false, "the earlier writer must leave the volume first");
-        return createJob(request);
-      };
-      assert.equal((await pass()).ready, false);
-      assert.equal(deploymentDeleted, true);
-      assert.equal(objects.has(deploymentKey), false);
-      assert.ok(objects.has(jobKey));
-    });
-  }
-});
-
-test("Kubernetes OAuth failure evidence lists Job pods newest first by creation time", async () => {
-  const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(false);
-  stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  // The client returns Date timestamps. String(Date) starts with the weekday, so
-  // text order puts Sunday 23:59 before Monday 00:01, and September before October.
-  const created = {
-    "pod-week-before": new Date("2026-09-27T23:59:00Z"),
-    "pod-sunday": new Date("2026-10-04T23:59:00Z"),
-    "pod-monday": new Date("2026-10-05T00:01:00Z"),
+  const source = {
+    id: snapshot.sourceId,
+    namespaceId: tenant.id,
+    name: "ChatGPT connection",
+    type: snapshot.sourceType,
+    config: {},
+    secrets: {},
+    driverId: snapshot.credentialGatewayId,
+    state: "ready",
+    createdAt: tenant.createdAt,
   };
-  state.jobPods = Object.entries(created).map(([name, creationTimestamp]) => ({
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
-      name,
-      namespace,
-      uid: `${name}-uid`,
-      creationTimestamp,
-      labels: {
-        "openclaw.dev/agent": revision.agentId,
-        "openclaw.dev/revision": revision.id,
-        "openclaw.dev/workload-role": "agent",
-      },
-      ownerReferences: [{ kind: "Job", name: job.metadata.name, uid: job.metadata.uid }],
+  const attachment = {
+    sourceId: source.id,
+    ref: "external-grant-reference",
+    externalChatgptAuth: { accessTokenPlaceholder: placeholder, ...account },
+  };
+  let attachments = [attachment];
+  const provisions = [];
+  const credentialGatewayDriver = {
+    id: snapshot.credentialGatewayId,
+    capability: "credential_gateway",
+    async listSourceTypes() {
+      return [
+        {
+          type: source.type,
+          config: [],
+          secrets: [],
+          rotation: "external",
+          harnessAuth: { modelProvider: "openai", loginMode: snapshot.loginMode },
+        },
+      ];
     },
-    spec: { containers: [{ name: "oauth-bootstrap" }] },
-    status: { phase: "Failed" },
-  }));
-  state.jobFailure = "BackoffLimitExceeded";
-  await assert.rejects(driver.prepareRevision(revision, context), (error) => {
-    assert.ok(error instanceof ComputePreparationFailedError);
-    assert.deepEqual(
-      error.evidence.pods.map(({ name }) => name),
-      ["pod-monday", "pod-sunday", "pod-week-before"],
-    );
-    return true;
-  });
-});
-
-test("Kubernetes OAuth reobserves an API-defaulted Job without changing its generation", async () => {
-  const { driver, revision, objects, records, context } = workspaceSetupFixture(
+    async attachForRevision(context) {
+      assert.deepEqual(context.sources, [source]);
+      return structuredClone(attachments);
+    },
+  };
+  const sandboxDriver = {
+    id: "external-sandbox",
+    implementation: "openshell",
+    // This provider fixture owns private initialization; the Sandbox startup suite
+    // proves execution. This case verifies Compute passes only its delivery identity.
+    validateWorkspaceSetup(harness) {
+      assert.equal(harness.id, "codex");
+      assert.equal(harness.mode, "dedicated");
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "external-codex",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const { driver, revision, namespace, objects, records, state, context } = workspaceSetupFixture(
     false,
     true,
     undefined,
-    {
-      resources: {
-        ...options().resources,
-        agent: { requests: { cpu: "0.1", memory: "1.5Gi" }, limits: { cpu: "0.5", memory: "2Gi" } },
-      },
-    },
+    {},
+    { credentialGatewayDriver, sandboxDriver },
   );
-  stageReadyOAuthSource(objects, revision, context);
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  const job = [...objects.values()].find(({ kind }) => kind === "Job");
-  const uid = job.metadata.uid;
-  // The API serializes supported quantities by value, without changing this Job.
-  for (const container of [
-    ...job.spec.template.spec.containers,
-    ...job.spec.template.spec.initContainers,
-  ]) {
-    container.resources.requests = { cpu: "100m", memory: "1536Mi" };
-    container.resources.limits = { cpu: "500m", memory: "2048Mi" };
-  }
-  job.spec.template.spec.dnsPolicy = "ClusterFirst";
-  job.spec.template.spec.containers[0].terminationMessagePath = "/dev/termination-log";
-  assert.equal((await driver.prepareRevision(revision, context)).ready, false);
-  assert.equal(records.filter(({ kind }) => kind === "Job").length, 1);
-  assert.equal(job.metadata.uid, uid);
-
-  job.spec.template.spec.containers[0].resources.requests.memory = "1537Mi";
-  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
-  job.spec.template.spec.containers[0].resources.requests.memory = "1536Mi";
-
-  // An owned name alone cannot admit a writer with different storage or network grants.
-  job.spec.template.metadata.labels["openclaw.dev/network-profile"] = "broad-egress-v1";
-  await assert.rejects(driver.prepareRevision(revision, context), /Job changed during handoff/);
-});
-
-function stageReadyOAuthSource(objects, revision, context) {
-  revision.harnessAuth = { ...apiKeyAuth, method: "oauth" };
-  context.harnessAuth = authContext(
-    revision,
-    context.harnessAuth.backendRef.namespaceName,
-  ).harnessAuth;
-  const sourceKey = `Secret:${context.harnessAuth.backendRef.namespaceName}:occ-model-key`;
-  const source = objects.get(sourceKey);
-  source.metadata.annotations = {
-    "openclaw.dev/namespace-id": tenant.id,
-    "openclaw.dev/secret-id": apiKeyAuth.source.id,
-    "openclaw.dev/secret-driver-id": apiKeyAuth.secretDriverId,
-  };
-  source.data.value = Buffer.from(
-    JSON.stringify({
-      kind: "harness_device_authorization",
-      version: 1,
-      actorId: "admin",
-      namespaceId: tenant.id,
-      harnessId: "codex",
-      phase: "ready",
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      credential: JSON.stringify({
-        version: 1,
-        provider: "codex",
-        state: "ready",
-        auth: {
-          auth_mode: "chatgpt",
-          tokens: {
-            id_token: "test-id",
-            access_token: "test-access",
-            refresh_token: "test-refresh",
-          },
-        },
-      }),
-    }),
-  ).toString("base64");
-  return sourceKey;
-}
-
-test("Kubernetes OAuth source consumed by one Agent cannot start a second Agent", async () => {
-  const { driver, revision, objects, records, state, context } = workspaceSetupFixture(false, true);
-  const sourceKey = stageReadyOAuthSource(objects, revision, context);
+  revision.sandboxDriverId = sandboxDriver.id;
+  revision.harnessAuth = snapshot;
+  context.harnessAuth = { ...snapshot, source };
+  // Keep the Console's normal workspace initialization in this source-backed path.
+  // This admitted source has no model Secret available to Compute. The only
+  // credential material supplied by the selected gateway is an opaque placeholder.
+  objects.delete(`Secret:${namespace}:occ-model-key`);
   state.ready = true;
-  assert.equal((await driver.prepareRevision(revision, context)).ready, true);
-  const consumed = structuredClone(objects.get(sourceKey));
-  assert.equal(consumed.metadata.annotations["openclaw.dev/oauth-phase"], "consumed");
+  await driver.prepareRevision(revision, context);
+  await driver.prepareRevision(revision, context);
+  assert.ok(provisions.length > 0, "preparation must reach the selected Sandbox");
+  const requirements = provisions.at(-1).requirements;
+  const environment = Object.fromEntries(
+    requirements.environment.map(({ name, value }) => [name, value]),
+  );
+  assert.equal(requirements.loginMode, "chatgptAuthTokens");
+  assert.equal(environment.CODEX_ACCESS_TOKEN, placeholder);
+  assert.deepEqual(JSON.parse(environment.OCE_CODEX_CHATGPT_ACCOUNT), account);
+  assert.deepEqual(requirements.credentialAttachments, [attachment]);
+  assert.deepEqual(requirements.workspaceSetup, {
+    id: context.workspaceSetup.id,
+    secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
+  });
+  assert.equal(
+    JSON.stringify(requirements).includes(context.workspaceSetup.files["AGENTS.md"]),
+    false,
+    "Sandbox requirements carry only private delivery identity, never the workspace documents",
+  );
+  assert.equal(
+    requirements.environment.some(({ name }) => name === "OPENAI_API_KEY"),
+    false,
+  );
+  assert.equal(
+    requirements.environment.some(({ valueFrom }) =>
+      valueFrom?.secretKeyRef?.name.includes("harness-secrets"),
+    ),
+    false,
+  );
+  const gateways = records.filter(
+    (entry) => entry.kind === "Deployment" && entry.metadata.name.startsWith("gateway-"),
+  );
+  assert.ok(gateways.length > 0, "preparation must render the separate Agent Gateway");
+  assert.equal(JSON.stringify(gateways).includes(placeholder), false);
+  assert.equal(JSON.stringify(gateways).includes(account.accountId), false);
+  assert.equal(
+    records.some(
+      (entry) => entry.kind === "Secret" && entry.metadata.name.startsWith("harness-secrets-"),
+    ),
+    false,
+  );
 
-  // Admission does not enforce one Agent per login; preparation is the fence.
-  const otherAgentId = `${revision.agentId}-other`;
-  const other = { ...revision, agentId: otherAgentId, id: `${revision.id}-other` };
-  const writes = records.length;
-  await assert.rejects(
-    driver.prepareRevision(other, { harnessAuth: context.harnessAuth }),
-    /OAuth credentials belong to another Agent/,
-  );
-  // No Harness, seed writer, or seed Secret is created for the second Agent.
-  assert.deepEqual(
-    records
-      .slice(writes)
-      .filter(({ kind }) => kind === "Deployment" || kind === "Secret")
-      .map(({ kind, metadata }) => `${kind}/${metadata.name}`),
-    [],
-  );
-  assert.deepEqual(objects.get(sourceKey), consumed);
-  // The owning Agent keeps its generation.
-  const later = { ...revision, id: `${revision.id}-next`, revision: revision.revision + 1 };
-  assert.equal((await driver.prepareRevision(later, context)).ready, true);
+  await t.test("selects Harness authentication by source ID among multiple attachments", () => {
+    const toolAttachment = {
+      sourceId: "cs_00000000-0000-4000-8000-000000000002",
+      ref: "tool-grant-reference",
+    };
+    // Tool attachments may precede the model attachment. Only the selected
+    // Harness source supplies Codex's local authentication state.
+    const environment = driver.credentialSourceEnvironment(revision, [toolAttachment, attachment]);
+    assert.deepEqual(environment, [
+      { name: "CODEX_ACCESS_TOKEN", value: placeholder },
+      { name: "OCE_CODEX_CHATGPT_ACCOUNT", value: JSON.stringify(account) },
+    ]);
+  });
+
+  // A trusted Driver response still has to match the admitted source and
+  // receiver contract before any new Sandbox provisioning occurs.
+  for (const [name, invalid, expected] of [
+    ["missing attachment", [], /each bound source exactly once/],
+    ["duplicate attachment", [attachment, attachment], /each bound source exactly once/],
+    [
+      "foreign source",
+      [{ ...attachment, sourceId: "cs_00000000-0000-4000-8000-000000000002" }],
+      /each bound source exactly once/,
+    ],
+    [
+      "unexpected extra source",
+      [attachment, { sourceId: "cs_00000000-0000-4000-8000-000000000002", ref: "foreign-grant" }],
+      /each bound source exactly once/,
+    ],
+    ["missing account", [{ sourceId: source.id, ref: attachment.ref }], /invalid external ChatGPT/],
+    [
+      "empty account",
+      [
+        {
+          ...attachment,
+          externalChatgptAuth: { ...attachment.externalChatgptAuth, accountId: "" },
+        },
+      ],
+      /invalid external ChatGPT/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      attachments = invalid;
+      const before = provisions.length;
+      await assert.rejects(driver.prepareRevision(revision, context), expected);
+      assert.equal(provisions.length, before);
+    });
+  }
 });
 
 for (const embedded of [true, false]) {
@@ -16187,17 +16648,23 @@ for (const embedded of [true, false]) {
       assert.equal(containerProgram(gatewayPod.containers[0]).includes(setup.id), false);
     }
     if (!embedded) {
-      assert.throws(
-        () => driver.harnessRequirementsFromDeployment(harness, "api_key"),
-        /cannot deliver workspace initialization/,
+      const requirements = driver.harnessRequirementsFromDeployment(
+        harness,
+        "api_key",
+        false,
+        [],
+        [],
+        setup,
       );
-      // Leaving OAuth removes the persisted personal login before the non-OAuth Harness starts.
-      const privateState = pod.initContainers.find(({ name }) => name === "prepare-private-state");
-      assert.equal(
-        privateState.args[0].includes(
-          harnessStateRemovalScript("/harness-workspace-state/codex-home"),
-        ),
-        true,
+      assert.deepEqual(requirements.workspaceSetup, {
+        id: setup.id,
+        secretKeyRef: { name: secret.metadata.name, key: "setup.json" },
+      });
+      assert.equal(JSON.stringify(requirements).includes(setup.files["AGENTS.md"]), false);
+      assert.throws(
+        () => driver.harnessRequirementsFromDeployment(harness, "api_key", false),
+        /requires its exact private setup delivery/,
+        "an initializing workload cannot silently lose its setup identity at the Sandbox boundary",
       );
     }
     const initializer = pod.initContainers.find(({ name }) => name === "initialize-workspace");
@@ -16268,6 +16735,7 @@ for (const embedded of [true, false]) {
       embedded,
       true,
       undefined,
+      {},
       {},
       { adopted: true },
     );
@@ -16848,6 +17316,17 @@ for (const embedded of [true, false]) {
       code: "WORKSPACE_SETUP_FAILED",
       checkedAt: "2026-09-22T00:00:00Z",
     });
+    // The kubelet restarts the init container, which may pass: the wait is named (finding 1677).
+    assert.equal(result.pendingReason, "WORKSPACE_SETUP_RETRYING");
+    // The setup runner refused the workspace, which every restart repeats: no wait to name.
+    fixture.state.initializerExitCode = 2;
+    const refused = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+    assert.equal(refused.ready, false);
+    assert.deepEqual(refused.runtimeFailure, {
+      ...result.runtimeFailure,
+      code: "WORKSPACE_SETUP_REFUSED",
+    });
+    assert.equal(Object.hasOwn(refused, "pendingReason"), false);
     const secret = [...fixture.objects.values()].find(
       ({ kind, metadata }) => kind === "Secret" && metadata.name.startsWith("workspace-setup-"),
     );
@@ -16860,6 +17339,8 @@ for (const embedded of [true, false]) {
     for (const scenario of [
       { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: false },
       { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: true },
+      // A refusal in back-off is read from the last failed instance too (finding 1677).
+      { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: true, exitCode: 2 },
       { finishedAt: new Date(Number.NaN) },
       { finishedAt: null },
       { finishedAt: undefined },
@@ -16872,6 +17353,7 @@ for (const embedded of [true, false]) {
     ]) {
       const fixture = workspaceSetupFixture(embedded);
       fixture.state.failedInitializer = true;
+      fixture.state.initializerExitCode = scenario.exitCode;
       const clients = await fixture.driver.apiClients;
       const list = clients.core.listNamespacedPod;
       // The shipped SDK decodes the API's finishedAt into Date. A waiting
@@ -16895,7 +17377,10 @@ for (const embedded of [true, false]) {
       const result = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
       const after = Date.now();
       assert.equal(result.ready, false);
-      assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
+      assert.equal(
+        result.runtimeFailure.code,
+        scenario.exitCode === 2 ? "WORKSPACE_SETUP_REFUSED" : "WORKSPACE_SETUP_FAILED",
+      );
       const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
       if (scenario.expected !== undefined) {
         assert.equal(result.runtimeFailure.checkedAt, scenario.expected);
@@ -18211,7 +18696,11 @@ test("SandboxDriver Harness Pods get transport ingress and only workspace-node e
   const execution = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const control = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
   const ordinaryAgent = profileNetworkWorkload(driver, revision, "agent");
-  const { labels: harness } = driver.harnessRequirementsFromDeployment(ordinaryAgent, "api_key");
+  const { labels: harness } = driver.harnessRequirementsFromDeployment(
+    ordinaryAgent,
+    "api_key",
+    false,
+  );
   assert.equal(harness[ORDINARY_PROFILE_LABEL], "provider-fenced-v1");
   const gatewayLabels = profileNetworkWorkload(driver, revision, "gateway").spec.template.metadata
     .labels;
@@ -18743,6 +19232,13 @@ function runtimeLogDriverFixture({ twoCluster = false } = {}) {
           foreign.metadata.labels["openclaw.dev/agent"] = "another-agent";
           items.push(foreign);
         }
+        if (state.foreignNamespacePod) {
+          // Nor a Pod whose metadata names another namespace, even with this Agent's labels.
+          const foreign = pod(role);
+          foreign.metadata.name = "foreign-namespace-pod";
+          foreign.metadata.namespace = "another-namespace";
+          items.push(foreign);
+        }
         return { apiVersion: "v1", kind: "PodList", items };
       },
       async listNamespacedEvent({ namespace, fieldSelector, limit, _continue }) {
@@ -18923,11 +19419,18 @@ test("Kubernetes runtime description reads each plane's Pods and only their own 
     fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
     /invalid Pod/,
   );
+  // So does a listed Pod that names another namespace (finding 1581).
+  fixture.state.foreignPod = false;
+  fixture.state.foreignNamespacePod = true;
+  await assert.rejects(
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal),
+    /invalid Pod/,
+  );
 });
 
 test("Kubernetes runtime description reports declared main and init containers independently", async () => {
   const fixture = runtimeLogDriverFixture();
-  fixture.state.containerName = "oauth-bootstrap";
+  fixture.state.containerName = "agent";
   fixture.state.initContainers = [{ name: "prepare-private-state" }];
   fixture.state.initContainerStatuses = [
     {
@@ -18948,7 +19451,7 @@ test("Kubernetes runtime description reports declared main and init containers i
       exitCode: lastTermination?.exitCode ?? null,
     })),
     [
-      { name: "oauth-bootstrap", state: "unknown", exitCode: null },
+      { name: "agent", state: "unknown", exitCode: null },
       { name: "prepare-private-state", state: "terminated", exitCode: 0 },
     ],
   );
@@ -18962,7 +19465,7 @@ test("Kubernetes runtime description reports declared main and init containers i
   assert.equal(failed.pods[0].containers[1].lastTermination.exitCode, 0);
   assert.deepEqual(
     failed.sources[0].pods.map(({ container }) => container),
-    ["oauth-bootstrap", "prepare-private-state"],
+    ["agent", "prepare-private-state"],
   );
 });
 
@@ -19605,10 +20108,9 @@ test("embedded redeploy repairs a never-served unready Gateway while workspace s
   );
 });
 
-// Finding 1144: a Sandbox Harness carries no workspace initializer, so admission and
-// preparation refuse initial workspace files for it before the workspace-path rule, which
-// would otherwise name the Sandbox-forced path the caller never wrote.
-test("Kubernetes refuses initial workspace files for a Sandbox Harness before the path rule", () => {
+// A provider without a workspace initializer is refused before the native workspace-path
+// rule, which would otherwise name a path that provider never uses.
+test("Kubernetes refuses initial workspace files for a Sandbox without an initializer before the path rule", () => {
   const { driver, revision, context } = workspaceSetupFixture(false);
   const forced = {
     ...revision.configuration,
@@ -19636,6 +20138,30 @@ test("Kubernetes refuses initial workspace files for a Sandbox Harness before th
     sandboxed,
   );
   assert.equal(driver.workspaceSetupForRevision(revision, context), context.workspaceSetup);
+  const refusal = new ConfigurationHarnessError("Provider workspace configuration is invalid.");
+  driver.sandboxDriver = {
+    id: "sandbox-provider",
+    provisionHarness() {},
+    validateWorkspaceSetup() {
+      throw refusal;
+    },
+  };
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced, "another-provider"),
+    sandboxed,
+  );
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced, "sandbox-provider"),
+    (error) => error === refusal,
+  );
+  assert.throws(
+    () =>
+      driver.workspaceSetupForRevision(
+        { ...revision, configuration: forced, sandboxDriverId: "sandbox-provider" },
+        context,
+      ),
+    (error) => error === refusal,
+  );
 });
 
 // Finding 1144: a `Main` roster entry is OpenClaw's main Agent, so embedded setup writes to

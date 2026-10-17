@@ -23,8 +23,8 @@ RFC #898 owns the broader scope-cut and dedicated execution-boundary decisions.
 This proposal makes #2259's optional Compute contract explicit without changing
 that RFC or claiming its decisions are accepted. The candidate implementation
 predates the submission-before-code rule; this clarification is submitted before
-refreshing that implementation. Neither this RFC nor an upstream merge grants
-approval of the native-admin-owner hold.
+refreshing that implementation. Submitting this RFC does not resolve
+the native-admin-owner hold.
 
 ## Problem and owner
 

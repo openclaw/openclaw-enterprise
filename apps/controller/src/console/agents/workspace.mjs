@@ -5,7 +5,10 @@ const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 function fileError(error, writing) {
   let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
   if (error.status === 403) {
-    text = "Access denied. You do not have permission for this file operation.";
+    // Saving a file is an Agent operate action (finding 1540).
+    text = writing
+      ? "You do not have permission to save this file. Ask an administrator for Agent operate access."
+      : "Access denied. You do not have permission for this file operation.";
   }
   if (error.status === 404) {
     text = "File unavailable or missing. Check Agent access before creating it.";

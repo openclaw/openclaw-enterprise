@@ -97,8 +97,11 @@ async function waitFor(description, read) {
     }
     await delay(100);
   }
+  const models = requests
+    .filter(({ method }) => method === "thread/start")
+    .map(({ params }) => params?.model);
   throw new Error(
-    `Timed out waiting for ${description}; methods=${requests.map(({ method }) => method).join(",")}`,
+    `Timed out waiting for ${description}; methods=${requests.map(({ method }) => method).join(",")}; thread/start models=${JSON.stringify(models)}`,
   );
 }
 
@@ -110,8 +113,14 @@ try {
       return false;
     }
   });
+  const configuration = JSON.parse(await readFile("/home/node/.openclaw/openclaw.json", "utf8"));
   const observed = [];
   for (const scenario of cases) {
+    assert.equal(
+      configuration.agents.entries[scenario.agentId].workspace,
+      `/home/node/workspace/${scenario.agentId}`,
+      "The Gateway keeps its Agent workspace on its own writable filesystem.",
+    );
     const parentKey = `agent:${scenario.agentId}:routing-parent`;
     await callGatewayFromCli(
       "sessions.create",
@@ -146,23 +155,56 @@ try {
     assert.equal(result.ok, true, JSON.stringify(result));
     const receipt = result.result.details;
     assert.equal(receipt.status, "accepted", JSON.stringify(result));
-    const native = await waitFor("native child thread/start", () =>
+    // Every Agent maps to the same remote root, so cwd cannot tell this child from
+    // other native turns on the parent route. The upstream subagent prompt names
+    // the child's own session; a missing marker times out naming the child.
+    const childMarker = `- Your session: ${receipt.childSessionKey}.`;
+    const ownedByChild = ({ params }) =>
+      typeof params?.developerInstructions === "string" &&
+      params.developerInstructions.includes(childMarker);
+    const nativeStarts = () =>
       requests
         .slice(offset)
-        .find(
-          ({ method, params }) =>
-            method === "thread/start" && params.cwd === `/home/node/workspace/${scenario.agentId}`,
-        ),
+        .filter(({ method }) => method === "thread/start")
+        .map((request) => ({
+          model: request.params?.model,
+          cwd: request.params?.cwd,
+          child: ownedByChild(request),
+        }));
+    const native = await waitFor(
+      `native thread/start whose prompt names ${receipt.childSessionKey}`,
+      () =>
+        requests
+          .slice(offset)
+          .find((request) => request.method === "thread/start" && ownedByChild(request)),
     );
+    assert.equal(native.params.cwd, scenario.cwd, "Native execution uses the Harness workspace.");
     assert.deepEqual(
       { modelProvider: native.params.modelProvider, model: native.params.model },
       { modelProvider: "openai-compatible", model: scenario.model },
+      `${scenario.agentId} thread/starts since its spawn: ${JSON.stringify(nativeStarts())}`,
     );
+    // Settle this run, including its configured fallbacks, before the next case.
+    const completed = await callGatewayFromCli(
+      "agent.wait",
+      {
+        url: "ws://127.0.0.1:8080",
+        password: process.env.OPENCLAW_GATEWAY_PASSWORD,
+        timeout: "45000",
+      },
+      { runId: receipt.runId, timeoutMs: 30000 },
+    );
+    assert.equal(completed.runId, receipt.runId);
+    assert.equal(completed.status, "error", JSON.stringify(completed));
+    assert.notEqual(completed.pendingError, true);
+    assert.equal(typeof completed.endedAt, "number");
     observed.push({
       agentId: scenario.agentId,
       childSessionKey: receipt.childSessionKey,
       modelProvider: native.params.modelProvider,
       model: native.params.model,
+      cwd: native.params.cwd,
+      terminalStatus: completed.status,
     });
   }
   console.log(JSON.stringify({ commit: provenance.commit, observed }));

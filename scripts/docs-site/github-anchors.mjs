@@ -44,8 +44,9 @@ export function createGithubAnchorReader(md) {
       for (const token of tokens) {
         if (token.type === "html_block" || token.type === "html_inline") {
           const parser = new Parser({
-            onopentag(_name, attributes) {
-              for (const attribute of ["id", "name"]) {
+            onopentag(name, attributes) {
+              // Only anchor elements give name attributes fragment-navigation meaning.
+              for (const attribute of name === "a" ? ["id", "name"] : ["id"]) {
                 if (attributes[attribute]) {
                   ids.add(attributes[attribute]);
                 }

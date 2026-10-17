@@ -26,20 +26,16 @@ SecretRefs without source mutation or infrastructure effects. See
 [Compute policy and conflicts](../agent-native-admin.md#first-deployment-configuration)
 and [admission order](compute-admission.md#deployment-configuration).
 
-Optional `getRuntimeImages(revision)` returns
-`{workload, container, image, imageId, commit, openclawCommit}` entries for
-containers owned by that admitted revision. OCC requires exact Agent read
-authority and calls the Driver pinned by the active revision. The
-`runtime-images` API reports `undeployed` without an active revision and
-`unsupported` when the Driver omits this method.
+Optional `getRuntimeImages(revision)` reports
+`{workload, container, image, imageId, commit, openclawCommit}` for revision-owned
+containers. OCC requires exact Agent read authority and selects the active
+revision's pinned Driver. The API reports `undeployed` without an active revision
+or `unsupported` without this method.
 
-Commits must be full lowercase Git SHAs; missing IDs or provenance remain `null`.
-Results exclude separate Sandbox Driver workloads. Neither Docker nor Kubernetes
-[derives commits](../console/debug-fields.md#where-the-source-commit-comes-from)
-from a moved tag. Kubernetes
-[inspects](../console/debug-fields.md#inspection-scope) revision-owned Pods and
-binds its private metadata read to the Pod UID and running container ID; both
-commits apply only to containers with that image ID.
+Commits are full lowercase Git SHAs; unavailable IDs or provenance remain `null`.
+Exclude separate Sandbox workloads and [moved-tag inference](../console/debug-fields.md#where-the-source-commit-comes-from).
+Kubernetes [binds Pod metadata](../console/debug-fields.md#inspection-scope) to the
+Pod UID and running container ID; both commits describe that image ID.
 
 Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs
 and names without persisting credentials. OCC checks Agent creation authority
@@ -84,6 +80,7 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 | `setLifecycleDrivers(drivers)`                                                                      | Startup requires it when another selected Driver provides [Compute hooks](#optional-selected-driver-hooks).                                                                         |
 | `describePrepareRevisionFailure(error)`                                                             | Returns bounded safe fields for rejected preparation. OCC attributes them to the revision without serializing the raw error. Omission preserves generic retries.                    |
 | `resolveSandboxNamespace`, `withdrawCredentialSource`                                               | [Credential Gateway](credential-gateway.md#optional-additions) hooks for registration and withdrawal.                                                                               |
+| `withdrawHarnessExposure(revision, signal)`                                                         | Withdraws a native worker's provider exposure outside a pass. The worker calls it at start for revisions already active and for failed candidates, with bounded logged retries.     |
 | `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                          |
 | `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                            |
 
@@ -141,8 +138,8 @@ permanently on its first worker attempt; one with neither method is unaffected.
 
 ### Startup failure evidence
 
-`ComputeReadiness.runtimeFailure` optionally reports a bounded startup failure,
-collected and classified by Compute, for the exact observed revision: safe
+`ComputeReadiness.runtimeFailure` optionally reports a bounded startup failure
+for the exact observed revision: safe
 `component`, `check`, `checkedAt`, `code`, and optional
 [`cause`](../agents/deployment.md#model-check-failure-cause) fields, never
 credentials or provider errors. An unavailable or untrusted observation omits it.
@@ -151,7 +148,8 @@ Runtimes hold published evidence until restart, so the worker
 [fails at once](../controller/reconciliation.md#deferred-namespace-and-agent-convergence)
 with `RUNTIME_` plus the code (`RUNTIME_CPU_STARVED` for
 `MODEL_PROBE_CPU_STARVED`; `RUNTIME_STARTUP_FAILED` for `UNAVAILABLE` and
-`INCOMPATIBLE_RESPONSE`); other codes persist at the convergence deadline. The
+`INCOMPATIBLE_RESPONSE`), or `WORKSPACE_SETUP_REFUSED` for a refused
+setup; other codes persist at the convergence deadline. The
 [deployment status API](../agents.md#deployment-status) returns saved evidence
 without invoking Compute.
 
@@ -159,22 +157,22 @@ without invoking Compute.
 
 After [OCC authorization](../agents.md#current-runtime-diagnostics),
 `diagnoseAgentDeployment(binding)` returns current checks for an exact revision
-using its approved Namespace and Agent. The Driver maps native evidence to generic `component`, `check`, `state`,
-nullable `checkedAt` and optional safe `code` fields. It verifies runtime
-identity, bounds size and time, and omits credentials, provider output and logs.
-OCC rejects mismatched revisions, invalid timestamps, more than 32 checks and
-unsupported states.
+using its approved Namespace and Agent. The Driver maps native evidence to `component`, `check`, `state`,
+nullable `checkedAt` and optional `code` fields. It verifies runtime
+identity, bounds size and time, and omits credentials, provider output, logs.
+OCC rejects mismatched revisions, invalid timestamps, over 32 checks and
+unsupported states; values outside `packages/contracts/src/runtime-failure.mjs` read `UNRECOGNIZED`.
 
 The call does not update deployment work, rerun the startup probe, send
 messages, or prove a model response. Missing support returns dependency
-unavailable; Drivers unable to collect safe evidence should omit the method.
+unavailable; Drivers unable to collect safe evidence omit the method.
 
 ### Optional runtime status and logs
 
 `describeAgentRuntime(binding, signal, options)` returns Pod status, restarts,
 the newest 100 Events per Pod and log sources of a revision, or one source without Events.
 A terminated container reports its current exit as `lastTermination`; otherwise
-that field reports the prior exit.
+it reports the prior exit.
 `readAgentRuntimeLogs(binding, request)` returns bounded **raw** lines from a
 listed Pod. Drivers re-check ownership and raise
 `RuntimeLogsForbiddenByClusterError` for a cluster `403`; OCC [redacts and bounds](../../guides/topics/agent-logs.md) output. Without them,

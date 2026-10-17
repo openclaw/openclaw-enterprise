@@ -8,6 +8,7 @@ import type {
   DeployAgentAuthorization,
   OpenClawController,
   RemovedAccessBinding,
+  PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
@@ -27,6 +28,7 @@ export type ResourceHandler = (input: {
   readonly params: Record<string, string>;
   readonly body: Record<string, unknown> | undefined;
   readonly namespaceId: string;
+  readonly transactIAM: <T>(work: (unit: PlatformUnitOfWork) => Promise<T>) => Promise<T>;
   // Build the event inside the handler's transaction, alongside the mutation.
   // `details` records what changed (identifiers only, never secret values).
   readonly mutationEvent: (

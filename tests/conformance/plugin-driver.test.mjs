@@ -696,6 +696,112 @@ setInterval(() => {}, 1_000);
   assert.equal(alive, false, "the aborted Codex app-server must not outlive the request");
 });
 
+test("Codex native catalog rejects a non-object response without escaping discovery", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-codex-catalog-shape-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, "codex-fixture.mjs");
+  // The configured peer writes valid JSON with an invalid JSON-RPC envelope.
+  // Exercise the public Driver and real OS pipes, not a substituted reader.
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+process.stdin.once("data", () => process.stdout.write("null\\n"));
+`,
+  );
+  await chmod(executable, 0o755);
+  const driver = new CodexPluginDriver({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 1_000,
+  });
+  await assert.rejects(driver.listCatalog(context("dedicated")), (error) => {
+    assert.ok(error instanceof NotImplementedError);
+    assert.match(error.message, /returned an invalid JSON-RPC response/);
+    return true;
+  });
+});
+
+test("Codex native catalog rejects a malformed plugin/list result as discovery failure", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-codex-catalog-result-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const executable = join(directory, "codex-fixture.mjs");
+  const resultFile = join(directory, "plugin-list-result.json");
+  // Valid envelopes from a logged-in account; only the plugin/list result varies.
+  await writeFile(
+    executable,
+    `#!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialized") return;
+  const result =
+    message.method === "account/read"
+      ? { account: { type: "chatgpt" } }
+      : message.method === "plugin/list"
+        ? JSON.parse(readFileSync(${JSON.stringify(resultFile)}, "utf8"))
+        : {};
+  console.log(JSON.stringify({ id: message.id, result }));
+});
+`,
+  );
+  await chmod(executable, 0o755);
+  const driver = new CodexPluginDriver({
+    codexExecutable: executable,
+    codexHome: directory,
+    requestTimeoutMs: 5_000,
+  });
+  const listWith = async (result) => {
+    await writeFile(resultFile, JSON.stringify(result));
+    return await driver.listCatalog(context("dedicated"));
+  };
+  const curated = (plugins) => ({ marketplaces: [{ name: "openai-curated-remote", plugins }] });
+
+  // Control: the same fixture serves a well-formed catalog.
+  assert.deepEqual(
+    (await listWith(codexCatalogFixture())).map((entry) => entry.id),
+    [linearPluginId, calendarPluginId, thirdPluginId],
+  );
+  for (const empty of [
+    { marketplaces: [] },
+    { marketplaces: [{ name: "another-marketplace", plugins: [] }] },
+    curated([]),
+  ]) {
+    assert.deepEqual(await listWith(empty), []);
+  }
+  const malformed = {
+    "null result": null,
+    "array result": [],
+    "string result": "catalog",
+    "result without marketplaces": {},
+    "null marketplaces": { marketplaces: null },
+    "curated marketplace without plugins": curated(undefined),
+    "null curated plugin list": curated(null),
+    "non-array curated plugin list": curated({}),
+    "null plugin summary": curated([null]),
+    "plugin without an ID": curated([{ remotePluginId: "linear" }]),
+    "plugin from another marketplace": curated([
+      { id: "linear@openai-internal-testing", remotePluginId: "linear" },
+    ]),
+  };
+  for (const [name, result] of Object.entries(malformed)) {
+    await assert.rejects(
+      listWith(result),
+      (error) => {
+        assert.ok(error instanceof NotImplementedError, `${name}: ${error}`);
+        assert.equal(
+          error.message,
+          "Codex plugin catalog discovery returned an invalid plugin catalog.",
+          name,
+        );
+        return true;
+      },
+      name,
+    );
+  }
+});
+
 test("Codex startup default-denies plugins", () => {
   const empty = codexRuntimeArtifact({}, []);
   assert.equal(empty.kind, "codex");

@@ -3,8 +3,10 @@ import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { delimiter, join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   k3sImage,
   kubectlVersion,
@@ -12,8 +14,10 @@ import {
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
 } from "../../scripts/ci/openshell.mjs";
+import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createOpenShellInstallationConfiguration,
+  createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
@@ -40,7 +44,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.3-pre.2 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the v0.1.4 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -107,6 +111,361 @@ test("OpenShell host probes retain the exposed hostname while connecting to loop
   assert.equal(observedHost, `${serviceHostname}:${address.port}`);
 });
 
+test("OpenShell probe observes its command after the turn ends, or preserves the unknown outcome", async (t) => {
+  // Run the actual in-Pod client and probe decision. Only kubectl transport and the
+  // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const server = createServer();
+  const peer = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (request, stream, head) => {
+    peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
+  });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+
+  const directory = await fixture(t);
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
+      "shift",
+      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      'exec "$@"',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
+
+  for (const event of [
+    "late result",
+    "foreign completion before turn ends",
+    "completion without turn ID",
+    "start without thread ID",
+    "another start",
+    "untracked completion",
+    "duplicate start",
+    "duplicate completion",
+    "conflicting command",
+    "incomplete result",
+    "expiry",
+    "close",
+  ]) {
+    const threadId = "probe-thread";
+    const turnId = "probe-turn";
+    const nonce = "probe-command";
+    const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
+    peer.once("connection", (socket, stream) => {
+      socket.on("message", (data) => {
+        const { method, id } = JSON.parse(data);
+        const send = (message) => socket.send(JSON.stringify(message));
+        // The approval response is checked below.
+        if (method === undefined || method === "initialized") {
+          return;
+        }
+        if (method === "initialize") {
+          return send({ id, result: {} });
+        }
+        if (method === "thread/start") {
+          return send({
+            id,
+            result: { thread: { id: threadId }, sandbox: { type: "dangerFullAccess" } },
+          });
+        }
+        assert.equal(method, "turn/start");
+        const turn = { id: turnId, status: "inProgress" };
+        // Deliver the response and notifications in one write. The client can receive
+        // them in one socket read, before its turn/start await continuation runs.
+        stream.cork();
+        send({ id, result: { turn } });
+        const item = {
+          id: "original",
+          type: "commandExecution",
+          command: unexpected ? "setup" : nonce,
+          status: "inProgress",
+        };
+        send({ method: "item/started", params: { threadId, turnId, item } });
+        const extra = { ...item, id: "extra" };
+        const unbound = {
+          "foreign completion before turn ends": { turnId: "other-turn" },
+          "completion without turn ID": { turnId: undefined },
+          "start without thread ID": { threadId: undefined },
+        }[event];
+        if (unbound) {
+          // Even with the probe nonce, this event cannot establish what our command did.
+          const started = event === "start without thread ID";
+          const status = started ? {} : { status: "failed", exitCode: 77 };
+          send({
+            method: started ? "item/started" : "item/completed",
+            params: {
+              threadId,
+              turnId,
+              ...unbound,
+              item: { ...extra, ...status, command: nonce },
+            },
+          });
+        }
+        if (event === "duplicate completion") {
+          send({ method: "item/started", params: { threadId, turnId, item: extra } });
+        }
+        send({
+          method: "turn/completed",
+          params: { threadId, turn: { ...turn, status: "completed" } },
+        });
+        stream.uncork();
+        const setupSucceeded = unexpected && !unbound;
+        const terminal = {
+          ...item,
+          status: setupSucceeded ? "completed" : "failed",
+          exitCode: setupSucceeded ? 0 : 23,
+        };
+        const params = { threadId, turnId, item: terminal };
+        const completed = (params) => send({ method: "item/completed", params });
+        if (event === "late result") {
+          // Neither an unrelated completion nor output from the command is its terminal.
+          completed({ ...params, turnId: "other-turn" });
+          completed({ ...params, threadId: "other-thread" });
+          send({
+            method: "item/commandExecution/outputDelta",
+            params: { threadId, turnId, itemId: item.id, delta: "output" },
+          });
+          send({ id: "approval", method: "item/commandExecution/requestApproval", params });
+          socket.once("message", (data) => {
+            const { id, result } = JSON.parse(data);
+            assert.equal(id, "approval");
+            assert.deepEqual(result, { decision: "decline" });
+            completed(params);
+          });
+        } else if (event === "close") {
+          socket.close();
+        } else if (unbound) {
+          completed(params);
+        } else if (unexpected) {
+          // If the client loses evidence of the probe, the later successful setup
+          // completion would make observeSandboxProbe eligible to request turn two.
+          const other = { ...terminal, command: nonce, id: "second" };
+          if (event === "another start" || event === "duplicate start") {
+            const started =
+              event === "duplicate start" ? item : { ...item, command: nonce, id: other.id };
+            send({ method: "item/started", params: { ...params, item: started } });
+          } else {
+            const changed = {
+              "conflicting command": { command: nonce },
+              "incomplete result": { exitCode: null },
+              "untracked completion": other,
+              "duplicate completion": { id: extra.id },
+            }[event];
+            if (event === "duplicate completion") {
+              completed({ ...params, item: { ...terminal, id: extra.id } });
+            }
+            completed({ ...params, item: { ...terminal, ...changed } });
+          }
+          completed(params);
+        }
+        // In the expiry case no more messages arrive; the client owns the deadline.
+      });
+    });
+
+    const attempts = [];
+    const probe = observeSandboxProbe({
+      nonce,
+      traceSecrets: [],
+      requestTurn(attempt) {
+        attempts.push(attempt);
+        assert.equal(attempt, 1, event);
+        return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+      },
+    });
+    if (event === "late result") {
+      assert.equal((await probe).run.exitCode, 23, "retain the command's actual nonzero result");
+    } else {
+      await assert.rejects(probe, /Codex command outcome is unknown/, event);
+    }
+    assert.deepEqual(attempts, [1], event);
+  }
+});
+
+test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {
+  // Finding 1630: Codex hands a long command back to the model, which can reply and end the
+  // turn while the command still runs. The in-Pod client waits for that command's completion
+  // event up to the fixture's bound, and reports the command's timing when the bound expires.
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const server = createServer();
+  const peer = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+  const directory = await fixture(t);
+  // Finding 1665: wakes the client's first command-deadline timer after 1 ms instead of its
+  // delay, as an early libuv wake would, and records that it did.
+  const earlyWake = join(directory, "early-wake.mjs");
+  const earlyWakeMarker = join(directory, "early-wake");
+  await writeFile(
+    earlyWake,
+    [
+      'import { writeFileSync } from "node:fs";',
+      "const grace = Number(process.env.EARLY_WAKE_GRACE_MS);",
+      "const setTimeoutOriginal = globalThis.setTimeout;",
+      "let woken = false;",
+      "globalThis.setTimeout = (callback, delay, ...rest) => {",
+      "  if (!woken && delay > grace - 50 && delay <= grace) {",
+      "    woken = true;",
+      `    writeFileSync(${JSON.stringify(earlyWakeMarker)}, String(delay));`,
+      "    delay = 1;",
+      "  }",
+      "  return setTimeoutOriginal(callback, delay, ...rest);",
+      "};",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
+      "shift",
+      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `if [ -n "$EARLY_WAKE_GRACE_MS" ]; then export NODE_OPTIONS="\${NODE_OPTIONS:+$NODE_OPTIONS }--import=${pathToFileURL(earlyWake)}"; fi`,
+      'exec "$@"',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const threadId = "probe-thread";
+  const turnId = "probe-turn";
+  const nonce = "probe-command";
+  // The command completes this long after the turn: past the former fixed 5 s wait would make
+  // the test slow, so the bounds below scale it down. The client sees only message order and time.
+  const lateMs = 800;
+  let turnCompletedAt;
+  peer.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const { method, id } = JSON.parse(data);
+      const send = (message) => socket.send(JSON.stringify(message));
+      if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (method === "initialize") {
+        return send({ id, result: {} });
+      }
+      if (method === "thread/start") {
+        return send({
+          id,
+          result: { thread: { id: threadId }, sandbox: { type: "dangerFullAccess" } },
+        });
+      }
+      const turn = { id: turnId, status: "inProgress" };
+      send({ id, result: { turn } });
+      const item = { id: "probe", type: "commandExecution", command: nonce, status: "inProgress" };
+      send({ method: "item/started", params: { threadId, turnId, item } });
+      send({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId, turnId, itemId: item.id, delta: "TOOL_EXIT=" },
+      });
+      turnCompletedAt = performance.now();
+      send({
+        method: "turn/completed",
+        params: { threadId, turn: { ...turn, status: "completed" } },
+      });
+      setTimeout(() => {
+        const terminal = {
+          ...item,
+          status: "failed",
+          exitCode: 28,
+          aggregatedOutput: "TOOL_EXIT=28",
+        };
+        if (socket.readyState === socket.OPEN) {
+          send({ method: "item/completed", params: { threadId, turnId, item: terminal } });
+        }
+      }, lateMs);
+    });
+  });
+  const probe = (codexCommandGraceMs) => {
+    const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+      codexCommandGraceMs,
+    });
+    return observeSandboxProbe({
+      nonce,
+      traceSecrets: [],
+      requestTurn: () =>
+        requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" }),
+    });
+  };
+
+  // Within the bound, the late completion settles the probe with the command's own result.
+  const { run } = await probe(lateMs * 4);
+  assert.equal(run.exitCode, 28, "keep the late command's actual result");
+  // The grace starts when the turn ends; launching the client isn't part of that wait.
+  assert.ok(performance.now() - turnCompletedAt < lateMs * 4, "settle on the completion event");
+
+  // Past the bound, the outcome stays unknown and the failure says how long the command ran.
+  const error = await probe(lateMs / 4).then(
+    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
+    (failure) => failure,
+  );
+  assert.match(error.message, /Codex command outcome is unknown/);
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const summary = JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.message)[1]);
+  assert.equal(summary.commandGraceMs, lateMs / 4);
+  assert.ok(summary.sinceTurnEndMs >= lateMs / 4);
+  assert.equal(summary.pendingCommands.length, 1);
+  assert.equal(summary.pendingCommands[0].outputDeltas, 1);
+  assert.equal(summary.pendingCommands[0].outputBytes, "TOOL_EXIT=".length);
+  assert.ok(summary.pendingCommands[0].startedBeforeTurnEndMs >= 0);
+  assert.ok(summary.pendingCommands[0].runningMs >= lateMs / 4);
+
+  // An early timer wake must not end the grace before turn completion plus the bound: the
+  // client re-arms for the remainder. A one-shot timer would report an unknown outcome here.
+  const probeWithEarlyWake = async (codexCommandGraceMs) => {
+    await rm(earlyWakeMarker, { force: true });
+    process.env.EARLY_WAKE_GRACE_MS = String(codexCommandGraceMs);
+    const outcome = await probe(codexCommandGraceMs).then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    delete process.env.EARLY_WAKE_GRACE_MS;
+    // The deadline was armed for the grace less the moment since the turn ended.
+    const woke = Number(await readFile(earlyWakeMarker, "utf8").catch(() => NaN));
+    assert.ok(
+      woke > codexCommandGraceMs - 50 && woke <= codexCommandGraceMs,
+      "the command-deadline timer must wake early",
+    );
+    if (outcome.error) {
+      throw outcome.error;
+    }
+    return outcome.result;
+  };
+  const early = await probeWithEarlyWake(lateMs * 4);
+  assert.equal(early.run.exitCode, 28, "an early wake keeps waiting for the late command");
+  const expired = await probeWithEarlyWake(lateMs / 4).then(
+    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
+    (failure) => failure,
+  );
+  assert.match(expired.message, /Codex command outcome is unknown/);
+  const expiredSummary = JSON.parse(
+    /Native execution summary: (\{.*?\]\})/s.exec(expired.message)[1],
+  );
+  assert.ok(expiredSummary.sinceTurnEndMs >= lateMs / 4, "never end the grace before its bound");
+
+  for (const codexCommandGraceMs of [0, 1.5, 60_001, "5000"]) {
+    assert.throws(
+      () => createOpenShellKubernetesFixture({ codexCommandGraceMs }),
+      /codexCommandGraceMs must be a positive number/,
+    );
+  }
+});
+
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {
   const configuration = createOpenShellInstallationConfiguration({
     authentication: {},
@@ -130,7 +489,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const matches = (selector, labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
-  // OpenShell v0.1.3-pre.2 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
+  // OpenShell v0.1.4 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
   const supervisor = {
     "openshell.ai/managed-by": "openshell",
     "openshell.ai/boundary-role": "supervisor",

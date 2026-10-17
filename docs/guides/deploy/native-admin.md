@@ -139,8 +139,8 @@ ignores the shared cookie-domain value and keeps the legacy host-only
 Create an Agent from Standard OpenClaw or Standard Codex in the console and
 complete its ordinary deployment. With the Installation feature configured above,
 Kubernetes Compute prepares native admin policy in the first admitted revision.
-Open the Agent's **Native admin UI** tab after deployment reports running, then
-choose **Open native admin UI**. Expect the isolated Agent host, including any
+Open **Gateway administration** on the Agent detail page after deployment reports
+running, then choose **Open admin console**. Expect the isolated Agent host, including any
 port configured on the public OCC origin.
 
 For a custom Configuration, select `gateway.controlUi.enabled: true`. Leave
@@ -168,6 +168,11 @@ GET /namespaces/<namespaceId>/agents/<agentId>/native-admin
 Expect `data.status: "available"` once the compatible revision is active.
 For `stopped`, `unavailable` or `unsupported`, follow the
 [troubleshooting checks](#troubleshooting).
+
+The Configuration editor preserves Secret bindings and refuses stale saves.
+If another save lands first, choose **Reload draft**, check your changes against
+the current values and save only the edits you still intend. See
+[Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete).
 
 Keep durable configuration changes in OCE. For compatible Kubernetes gateways,
 native edits affect a Pod-local copy and are discarded when the Pod is replaced

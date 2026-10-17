@@ -359,9 +359,12 @@ export async function loadDriverPackage(
     }
   }
 
+  const entryUrl = pathToFileURL(entryPath);
+  entryUrl.search = exported.search;
+  entryUrl.hash = exported.hash;
   let imported: unknown;
   try {
-    imported = await import(pathToFileURL(entryPath).href);
+    imported = await import(entryUrl.href);
   } catch {
     throw new Error(`${path}.package failed to load its compiled Driver module.`);
   }

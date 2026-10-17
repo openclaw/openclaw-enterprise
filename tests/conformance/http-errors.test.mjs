@@ -10,7 +10,11 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { PresetValidationError } from "../../packages/contracts/src/index.ts";
+import {
+  PROVISIONING_REFUSAL_CODES,
+  preAdmissionRefusal,
+} from "../../apps/controller/src/console/agents/list.mjs";
+import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -22,6 +26,7 @@ import {
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialWithdrawalInProgressError,
+  DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -320,6 +325,18 @@ const cases = [
     "a runtime image without native worker support",
     new NativeWorkerSupportError(),
     { status: 400, code: "INVALID_REQUEST", message: new NativeWorkerSupportError().message },
+  ],
+  [
+    // A fixed Installation shape: a permanent conflict naming the missing Driver, not an
+    // outage with generic text (finding 1609).
+    "an Installation without a Sandbox Driver that provisions dedicated OpenClaw",
+    new DedicatedOpenClawSandboxError(),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+    },
   ],
   [
     "a plugin selection the selected Plugin Driver does not offer",
@@ -855,13 +872,13 @@ const cases = [
     },
   ],
   [
-    "a device login when the API Pods cannot reach the sign-in service",
+    "a device login when OCC cannot reach the issuer",
     new DeviceAuthorizationStartError("unreachable", "ECONNREFUSED"),
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
       message:
-        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again.",
+        "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again.",
     },
   ],
   [
@@ -870,7 +887,7 @@ const cases = [
     {
       status: 503,
       code: "DEPENDENCY_UNAVAILABLE",
-      message: "The sign-in service could not start device login. Try again.",
+      message: "Device login could not start. Try again.",
     },
   ],
   [
@@ -933,6 +950,78 @@ for (const [name, error, expected] of cases) {
     assert.equal(sent.error.message, failure.message);
   });
 }
+
+// Create Agent shows the reason of a 503 from POST /agents/provision only for the codes that
+// request sends before its own admission (finding 1635), and Deploy on the Agent page does the
+// same for POST /agents/{id}/deploy, which sends them only before its revision commits (finding
+// 1638). Every other 503 code, and every code this table does not map (it may answer 503), is
+// listed here with where it comes from, so a new one fails this test until someone decides which
+// it is.
+const NOT_PROVISIONING_REFUSALS = [
+  // Discovery and runtime log reads, never a provisioning request.
+  "CHANNEL_DIRECTORY_INVALID_RESPONSE",
+  "CHANNEL_DIRECTORY_UNAVAILABLE",
+  "MODEL_DISCOVERY_INVALID_RESPONSE",
+  "MODEL_DISCOVERY_UNAVAILABLE",
+  "PLUGIN_DISCOVERY_INVALID_RESPONSE",
+  "PLUGIN_DISCOVERY_UNAVAILABLE",
+  "RUNTIME_LOGS_AUDIT_UNAVAILABLE",
+  "RUNTIME_LOGS_CLUSTER_RBAC",
+  "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
+  "RUNTIME_LOGS_UNAVAILABLE",
+  // The runtime credential routes, deploy and the provisioning worker, after admission. Deploy
+  // meets it before its revision commits and names it with its own text.
+  "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+  // Raised by other routes themselves, outside this mapping.
+  "INSTALLATION_EXISTS",
+  "METHOD_NOT_ALLOWED",
+  "NATIVE_ADMIN_RETURN_RATE_LIMITED",
+  "REPOSITORY_OPTIONS_UNAVAILABLE",
+  "UNKNOWN_OUTCOME",
+];
+
+test("every API error code that may answer 503 is classified for Create Agent's and Deploy's pre-admission refusals", () => {
+  const statuses = new Map(cases.map(([, , expected]) => [expected.code, expected.status]));
+  const unclassified = ERROR_CODES.filter((code) => (statuses.get(code) ?? 503) === 503);
+  assert.deepEqual(
+    [...PROVISIONING_REFUSAL_CODES, ...NOT_PROVISIONING_REFUSALS].sort(),
+    unclassified.sort(),
+  );
+});
+
+// Both answer 503 DEPENDENCY_UNAVAILABLE, so Create Agent and Deploy tell a refusal from a commit
+// the API could not confirm only by the API's sentence (finding 1650). Each mapping above that
+// answers a refusal code is classified here through the console's own function, so rewording the
+// API's sentence or the console's copy alone fails: Deploy would show an unconfirmed commit as a
+// refusal and offer Deploy again.
+const UNNAMED_503_CASES = [
+  "an unknown commit outcome says not to retry automatically",
+  "an unavailable dependency is not a denial",
+  "a Configuration ConfigMap OCC does not own",
+  "an unavailable dependency from another module copy, matched by name",
+  "a Kubernetes API 404",
+];
+
+test("Create Agent and Deploy show the API's reason only for a named 503 refusal", () => {
+  const refusals = cases.filter(
+    ([, , expected]) =>
+      expected.status === 503 && PROVISIONING_REFUSAL_CODES.includes(expected.code),
+  );
+  const refusalNames = refusals.map(([name]) => name);
+  for (const name of UNNAMED_503_CASES) {
+    assert.ok(refusalNames.includes(name), `no 503 refusal-code case: ${name}`);
+  }
+  assert.ok(refusals.length > UNNAMED_503_CASES.length);
+  for (const [name, error] of refusals) {
+    const failure = requestFailure(error);
+    const shown = preAdmissionRefusal({
+      status: failure.status,
+      code: failure.code,
+      serverMessage: failure.message,
+    });
+    assert.equal(shown, UNNAMED_503_CASES.includes(name) ? undefined : failure.message, name);
+  }
+});
 
 test("a submitted Secret binding destination names its rule and key, never the Secret", () => {
   const source = { kind: "secret", namespaceId: "ns_1", id: "sec_private_id" };
