@@ -42,7 +42,7 @@ async function scenario(
     DOCKER_HOST: "unix:///owned.sock",
   };
   const events = [{ event: "listening", at: 1 }];
-  const faults = { inspect: false };
+  const faults = { inspectError: undefined };
   let failedCreate = false;
   let failedRemove = false;
   const run = async (command, args, options) => {
@@ -60,9 +60,9 @@ async function scenario(
     }
     assert.equal(command, "docker", "no actual cluster command may escape the fixture test");
     if (args[1] === "inspect") {
-      if (faults.inspect) {
+      if (faults.inspectError) {
         throw Object.assign(new Error("engine unavailable"), {
-          stderr: "permission denied while connecting to the Docker API",
+          stderr: faults.inspectError(args[0], args[2]),
         });
       }
       const name = args[2];
@@ -371,11 +371,18 @@ test("provider retains ownership obligations when the engine cannot be inspected
   const { fixture, readJournal, objects, faults } = await scenario(t);
   await fixture.prepare();
   const before = await readJournal();
-  faults.inspect = true;
-  await assert.rejects(fixture.cleanup(), /recovery journal retained/);
-  assert.deepEqual(await readJournal(), before);
-  assert.equal(objects.size, before.resources.length);
-  faults.inspect = false;
+  for (const diagnostic of [
+    () => "permission denied while connecting to the Docker API",
+    (kind, name) => `Error response from daemon: No such ${kind}: ${name}-other`,
+    (kind, name) =>
+      `Error response from daemon: permission denied; last error: No such ${kind}: ${name}`,
+  ]) {
+    faults.inspectError = diagnostic;
+    await assert.rejects(fixture.cleanup(), /recovery journal retained/);
+    assert.deepEqual(await readJournal(), before);
+    assert.equal(objects.size, before.resources.length);
+  }
+  faults.inspectError = undefined;
   await fixture.cleanup();
   assert.equal(objects.size, 0);
 });
