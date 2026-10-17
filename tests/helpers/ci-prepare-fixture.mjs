@@ -676,13 +676,15 @@ if (command === "kubectl") {
       // The node IPAM controller can assign a Ready worker's Pod CIDR late (finding 1666).
       state.podCidrReads = (state.podCidrReads ?? 0) + 1;
       if (scenario === "hung-pod-cidr-read") await hang();
-      if (scenario === "late-pod-cidr" && state.podCidrReads === 1) {
-        // First refused, then Ready without a Pod CIDR, then assigned.
+      const refusedFirst = scenario === "late-pod-cidr" || scenario === "refused-then-no-pod-cidr";
+      if (refusedFirst && state.podCidrReads === 1) {
+        // First refused, then Ready without a Pod CIDR, then (late-pod-cidr only) assigned.
         commitState();
         process.stderr.write("synthetic node read refusal\n");
         process.exit(1);
       }
-      if (scenario === "no-pod-cidr" || (scenario === "late-pod-cidr" && state.podCidrReads <= 2)) {
+      if (scenario === "no-pod-cidr" || scenario === "refused-then-no-pod-cidr" ||
+        (scenario === "late-pod-cidr" && state.podCidrReads <= 2)) {
         finish(JSON.stringify({ spec: { providerID: "k3s://k3d-" + state.cluster + "-agent-0" } }));
       }
       finish(JSON.stringify({ spec: { podCIDR: "10.42.7.0/24" } }));

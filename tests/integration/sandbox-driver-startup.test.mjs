@@ -1045,10 +1045,13 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   // grpc-js ServiceError shape, as unary() passes PERMISSION_DENIED (7) and UNAUTHENTICATED (16).
   const refusal = (code, details) =>
     Object.assign(new Error(`${code} refused: ${details}`), { code, details });
-  const unauthorized = (operation) =>
+  // UNAUTHENTICATED is transient (the worker retries it within its budget), PERMISSION_DENIED
+  // is not (finding 1694); both carry the code.
+  const unauthorized = (operation, transient = false) =>
     assert.rejects(operation(), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, transient);
       assert.match(error.message, /cannot be confirmed removed/);
       return true;
     });
@@ -1094,14 +1097,14 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
     gatewayClient.getWorkspace = async () => {
       throw refusal(code, "workspace");
     };
-    await unauthorized(cleanup);
+    await unauthorized(cleanup, code === 16);
   }
   // The identity is refused on the Sandbox read itself (an expired token fails every call).
   gatewayClient.getWorkspace = getWorkspace;
   gatewayClient.getSandbox = async () => {
     throw refusal(16, "token expired");
   };
-  await unauthorized(cleanup);
+  await unauthorized(cleanup, true);
   assert.deepEqual(workspaceReads, [workspace, workspace, workspace]);
   // OpenShell reports no Workspace: nothing proves the Sandbox gone, so cleanup fails closed.
   gatewayClient.getSandbox = async () => undefined;
@@ -1148,6 +1151,7 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   };
   await assert.rejects(driver.provisionHarness({ ...context, revision, requirements }), (error) => {
     assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
+    assert.equal(error.transient, false);
     assert.match(error.message, /cannot be created or adopted/);
     return true;
   });
@@ -1195,10 +1199,11 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
       ...(recheck ? { recheck: true } : {}),
     });
   const refusal = (code) => Object.assign(new Error(`${code} refused`), { code, details: "ws" });
-  const unauthorized = (recheck) =>
+  const unauthorized = (recheck, transient = false) =>
     assert.rejects(withdraw(recheck), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, transient);
       assert.match(error.message, /credential of Sandbox .* cannot be confirmed withdrawn/);
       return true;
     });
@@ -1240,7 +1245,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   client.getSandbox = async () => {
     throw refusal(16);
   };
-  await unauthorized(false);
+  await unauthorized(false, true);
   client.getSandbox = sandboxRead;
   // A refusal on the receipt's status read carries the code too.
   const statusRead = client.getSandboxProviderStatus;
@@ -1255,7 +1260,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     client.getWorkspace = async () => {
       throw refusal(code);
     };
-    await unauthorized(false);
+    await unauthorized(false, code === 16);
   }
   client.getWorkspace = async () => undefined;
   await assert.rejects(withdraw(false), /reports no Workspace .* cannot be confirmed withdrawn/);
@@ -1308,7 +1313,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   client.getWorkspace = async () => {
     throw refusal(16);
   };
-  await unauthorized(true);
+  await unauthorized(true, true);
   client.getSandbox = async () => {
     throw refusal(7);
   };
@@ -1552,6 +1557,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
       await assert.rejects(withdraw(), (error) => {
         assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
         assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+        assert.equal(error.transient, code === 16);
         assert.match(error.message, /cannot be confirmed withdrawn/);
         return true;
       });
@@ -1591,6 +1597,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     await assert.rejects(withdraw(), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, true);
       return true;
     });
   }

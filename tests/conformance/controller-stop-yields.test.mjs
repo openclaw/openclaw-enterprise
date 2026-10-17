@@ -360,19 +360,12 @@ const deferredWork = {
   createdAt: handedOff.createdAt,
   updatedAt,
 };
-const deploymentWork = {
-  kind: "lifecycle",
-  idempotencyKey: "agent_revision:rev_1:reconcile",
-  namespaceId: "ns_1",
-  agentId: "agt_1",
-  revisionId: "rev_1",
-  actorId: "principal_1",
-  state: "queued",
-  availableAt: new Date("2026-10-17T12:00:10.000Z"),
-  attemptCount: 0,
-  createdAt: handedOff.createdAt,
-  updatedAt,
-};
+// The deployment's queued work; its progress reads only the state and the next attempt time.
+const deploymentWork = { state: "queued", availableAt: new Date("2026-10-17T12:00:10.000Z") };
+const nodePending = deploymentProgressForWork(deploymentWork, {
+  at: new Date("2026-10-17T12:00:04.000Z"),
+  code: "WORKSPACE_NODE_PENDING",
+});
 const ownDeferral = {
   phase: "deployment",
   lastAttempt: {
@@ -383,10 +376,6 @@ const ownDeferral = {
 };
 
 test("a job past handoff names the deployment's wait, or its own deferral", () => {
-  const nodePending = deploymentProgressForWork(deploymentWork, {
-    at: new Date("2026-10-17T12:00:04.000Z"),
-    code: "WORKSPACE_NODE_PENDING",
-  });
   const named = provisioningProgress(handedOff, deferredWork, now, nodePending);
   assert.equal(named.status, "queued");
   assert.equal(named.attemptCount, 0);
@@ -422,10 +411,6 @@ test("a job past handoff names the deployment's wait, or its own deferral", () =
 });
 
 test("a job before handoff or finished reports no deployment wait", () => {
-  const nodePending = deploymentProgressForWork(deploymentWork, {
-    at: new Date("2026-10-17T12:00:04.000Z"),
-    code: "WORKSPACE_NODE_PENDING",
-  });
   const { revisionId: _revisionId, ...beforeHandoff } = handedOff;
   for (const [record, work] of [
     [{ ...beforeHandoff, completedPhase: "transport", progress: {} }, deferredWork],
