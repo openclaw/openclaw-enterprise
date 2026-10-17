@@ -1,4 +1,7 @@
-import { SandboxGatewayUnauthorizedError, TransientDependencyError } from "@openclaw-enterprise/occ";
+import {
+  SandboxGatewayUnauthorizedError,
+  TransientDependencyError,
+} from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 export class OpenShellGatewayFailure extends Error {}

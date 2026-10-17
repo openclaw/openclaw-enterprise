@@ -587,7 +587,10 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
     assert.ok(Date.now() - started < 5_000);
     await assert.rejects(remove("sandbox-missing"), (error) => {
       assert.ok(error instanceof OpenShellGatewayFailure, String(error));
-      assert.match(error.message, /DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed/);
+      assert.match(
+        error.message,
+        /DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed/,
+      );
       assert.equal(error.cause?.code, grpc.status.NOT_FOUND);
       return true;
     });
@@ -1822,7 +1825,12 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
     // A missing Sandbox is absent only once the Workspace read passes (finding 1676).
     GetWorkspace(call, callback) {
       calls.push(["GetWorkspace", call.request.name]);
-      callback(null, { workspace: { name: call.request.name, phase: "WORKSPACE_PHASE_ACTIVE" } });
+      callback(null, {
+        workspace: {
+          metadata: { name: call.request.name },
+          status: { phase: "WORKSPACE_PHASE_ACTIVE" },
+        },
+      });
     },
   });
   const port = await bindWireServer(server);

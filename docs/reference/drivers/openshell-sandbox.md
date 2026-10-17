@@ -282,10 +282,10 @@ A native worker's node opens the Gateway connection itself. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation then has none. A missing
-service counts as withdrawn only while `GetWorkspace` answers (OpenShell hides
-unauthorized Sandboxes as missing); a refusal fails the revision with
-`SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's sweep covers revisions that get no
-pass and candidates that fail for good.
+service, Sandbox or credential attachment counts as gone only while
+`GetWorkspace` answers (OpenShell hides unauthorized Sandboxes as missing); a
+refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's sweep covers
+revisions without a pass and failed candidates.
 
 ## Kubernetes and admission requirements
 

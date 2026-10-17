@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: 2026-10-17
+last_updated_session: fix-1676
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -309,9 +309,9 @@ strand the Sandbox. Shutdown stops the loop.
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
 fails preparation; every attachment must be `ready`. Shutdown calls revision
-`cleanup`: `DeleteSandbox` keeps `workspace_scope`, accepts absence, then deletes
-the owned runtime provider. `cleanupNativeWorkspace` retires interrupted preparers
-even without a Sandbox, refusing foreign/replaced resources. Namespace cleanup
+`cleanup`: `GetSandbox`, then `DeleteSandbox` (absence needs `GetWorkspace`), then
+deletes the runtime provider. `cleanupNativeWorkspace` retires
+interrupted preparers without a Sandbox, refusing foreign/replaced resources. Namespace cleanup
 removes unused runtime profiles.
 
 After revisions retire, Namespace `cleanup` verifies Workspace ownership, removes

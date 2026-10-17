@@ -243,10 +243,11 @@ the Sandbox's placeholders then stop resolving, even in running processes.
 OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
 process with the provider removed. A Sandbox with no running process, for
 example one still provisioning or crash-looping, reports `WaitingForProcess`,
-which stays `pending`. A `recheck` first calls `GetSandbox`: a missing Sandbox
-reports `absent`, one that no longer lists the provider in
-`SandboxSpec.providers` reports `revoked` without a mutation, and only a listed
-provider is detached again.
+which stays `pending`. A `recheck` first calls `GetSandbox`: one that no longer
+lists the provider in `SandboxSpec.providers` reports `revoked` without a
+mutation, and only a listed provider is detached again. A missing Sandbox reports
+`absent` only once `GetWorkspace` answers (OpenShell hides unauthorized
+Sandboxes as missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`.
 
 For API-key Codex, Compute selects a named provider with the source endpoint and
 HTTPS Responses transport. Native OpenClaw requires the default OpenAI endpoint.

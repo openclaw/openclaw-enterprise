@@ -19,6 +19,7 @@ service OpenShell {
   rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
   rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
+  rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
@@ -213,6 +214,29 @@ message ObjectMeta {
   uint64 resource_version = 5;
   map<string, string> annotations = 6;
   string workspace = 7;
+}
+
+message GetWorkspaceRequest {
+  string name = 1;
+}
+
+message GetWorkspaceResponse {
+  Workspace workspace = 1;
+}
+
+message Workspace {
+  ObjectMeta metadata = 1;
+  WorkspaceStatus status = 2;
+}
+
+message WorkspaceStatus {
+  WorkspacePhase phase = 1;
+}
+
+enum WorkspacePhase {
+  WORKSPACE_PHASE_UNSPECIFIED = 0;
+  WORKSPACE_PHASE_ACTIVE = 1;
+  WORKSPACE_PHASE_TERMINATING = 2;
 }
 
 message DeleteSandboxResponse {

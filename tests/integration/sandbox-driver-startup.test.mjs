@@ -295,7 +295,10 @@ function storedSandbox(request, fields = {}) {
 
 /** A live Sandbox record by name, as GetSandbox reports one without its Harness service. */
 function sandboxRecord(name, workspace) {
-  return storedSandbox({ name, workspace, labels: {}, annotations: {}, spec: {} }, { serviceUrls: {} });
+  return storedSandbox(
+    { name, workspace, labels: {}, annotations: {}, spec: {} },
+    { serviceUrls: {} },
+  );
 }
 
 /** The Codex Harness's bearer-passthrough service at `url`, or none. */
@@ -1080,7 +1083,9 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   gatewayClient.getWorkspace = async () => undefined;
   await assert.rejects(cleanup(), /reports no Workspace .* cannot be confirmed removed/);
   // A gateway that does not answer keeps its class, so the worker retries the idempotent stop.
-  const unanswered = new DependencyUnavailableError("OpenShell GetWorkspace failed with gRPC status 14.");
+  const unanswered = new DependencyUnavailableError(
+    "OpenShell GetWorkspace failed with gRPC status 14.",
+  );
   gatewayClient.getWorkspace = async () => {
     throw unanswered;
   };
@@ -1094,14 +1099,19 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   await unauthorized(cleanup);
   // A Sandbox removed between the read and the delete answers NOT_FOUND, which the client
   // reports unconfirmed; that failure keeps its class, and the next pass's read confirms it.
-  const unconfirmed = new Error("OpenShell DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed.");
+  const unconfirmed = new Error(
+    "OpenShell DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed.",
+  );
   gatewayClient.deleteSandbox = async () => {
     throw unconfirmed;
   };
   await assert.rejects(cleanup(), (error) => error === unconfirmed);
   assert.deepEqual(deletions, reads.slice(0, 1));
   // The runtime provider is removed only after the Sandbox's state is confirmed.
-  assert.equal(gatewayClient.calls.some(([method]) => method === "deleteProvider"), false);
+  assert.equal(
+    gatewayClient.calls.some(([method]) => method === "deleteProvider"),
+    false,
+  );
 
   // The same refusal on CreateSandbox: OpenShell keeps PERMISSION_DENIED there, so a Sandbox
   // hidden from the identity is neither adopted nor created over, and the deployment fails with
@@ -1111,14 +1121,11 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   gatewayClient.createSandbox = async () => {
     throw refusal(7, "sandbox:create");
   };
-  await assert.rejects(
-    driver.provisionHarness({ ...context, revision, requirements }),
-    (error) => {
-      assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
-      assert.match(error.message, /cannot be created or adopted/);
-      return true;
-    },
-  );
+  await assert.rejects(driver.provisionHarness({ ...context, revision, requirements }), (error) => {
+    assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
+    assert.match(error.message, /cannot be created or adopted/);
+    return true;
+  });
 });
 
 // Finding 1676, credential path: a credential withdrawal that reports `absent` settles as
