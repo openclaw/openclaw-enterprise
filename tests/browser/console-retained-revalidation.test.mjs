@@ -882,7 +882,9 @@ for (const shown of ["is loading", "has loaded"]) {
       let next = 0;
       const trail = [];
       globalThis.focusTrail = trail;
+      globalThis.focusFrames = 0;
       const sample = () => {
+        globalThis.focusFrames += 1;
         const node = globalThis.document.activeElement;
         if (node && node !== globalThis.document.body && !ids.has(node)) {
           ids.set(node, ++next);
@@ -904,7 +906,9 @@ for (const shown of ["is loading", "has loaded"]) {
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await page.goBack();
     await recheck.requested;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Hold the list for a dozen sampled frames.
+    const held = await page.evaluate(() => globalThis.focusFrames);
+    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
     recheck.release();
     const link = page.locator(settledView).getByRole("link", { name: agent.name });
     await link.waitFor();

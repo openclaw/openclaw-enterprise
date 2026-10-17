@@ -181,7 +181,8 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
     });
   });
   // A named outage of Deploy's own check reads before the request is a failed read, not a
-  // refusal of the deploy.
+  // refusal of the deploy. (The Agent read answers outages with the catch-all text; a named one
+  // here only checks that Deploy never treats a read's answer as a refusal.)
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
     (route) =>
@@ -215,12 +216,14 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
       available: true,
     },
     {
-      // A named outage rolled the deploy's transaction back.
+      // A Secret driver-ownership refusal, the API's named DEPENDENCY_UNAVAILABLE, rolled the
+      // deploy's transaction back.
       error: {
         code: "DEPENDENCY_UNAVAILABLE",
-        message: "The selected Compute Driver did not confirm Agent runtime credentials.",
+        message:
+          "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
       },
-      text: "The selected Compute Driver did not confirm Agent runtime credentials.",
+      text: "The selected Secret Driver does not own a Secret the Configuration binds.",
       available: true,
     },
     {

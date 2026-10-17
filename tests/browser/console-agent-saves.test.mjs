@@ -1527,14 +1527,18 @@ test("a late Configuration save leaves focus on the Agents link when the reader 
     const shown = new Map();
     globalThis.shownStatusTexts = shown;
     const sample = () => {
+      let saved = false;
       for (const status of globalThis.document.querySelectorAll('[role="status"]')) {
         const texts = shown.get(status) ?? [];
         if (texts.at(-1) !== status.textContent) {
           texts.push(status.textContent);
         }
         shown.set(status, texts);
+        saved ||= status.textContent === "Configuration saved.";
       }
-      globalThis.requestAnimationFrame(() => setTimeout(sample));
+      if (!saved) {
+        globalThis.requestAnimationFrame(() => setTimeout(sample));
+      }
     };
     sample();
   });

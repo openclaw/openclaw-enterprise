@@ -132,8 +132,9 @@ const UNNAMED_DEPENDENCY_FAILURES = new Set([
 // The server's own sentence for a 503 that refused the request before admission: one of
 // PROVISIONING_REFUSAL_CODES with a named reason. POST /agents/{id}/deploy sends these codes
 // only before its revision commits too: channel credential validation runs before its
-// transaction, and a named dependency outage rolls it back (finding 1638). Any other 503,
-// including an unnamed one, leaves the outcome unknown and returns undefined.
+// transaction, and the only named DEPENDENCY_UNAVAILABLE answers, the Secret and credential
+// source driver-ownership refusals, roll it back (finding 1638). Any other 503, including an
+// unnamed one, leaves the outcome unknown and returns undefined.
 export function preAdmissionRefusal(error) {
   return error.status === 503 &&
     PROVISIONING_REFUSAL_CODES.includes(error.code) &&

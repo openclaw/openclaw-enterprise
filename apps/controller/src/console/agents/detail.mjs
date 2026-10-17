@@ -52,15 +52,13 @@ async function readRevisionPage(request, path, cursor = null) {
   return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
 }
 
-// Empties a status just inserted with `text` and writes it again once the empty status has been
-// rendered, so screen readers announce it as a change.
+// Empties a status just inserted with `text` and writes it again once screen readers have seen
+// it empty, so they announce it as a change. A timer, unlike a frame, also runs in a hidden tab.
 function announceAfterShown(status, text) {
   status.textContent = "";
-  requestAnimationFrame(() =>
-    requestAnimationFrame(() => {
-      status.textContent = text;
-    }),
-  );
+  setTimeout(() => {
+    status.textContent = text;
+  }, 100);
 }
 
 // A 503 the deploy request answered before admission: no version was created, so Deploy stays
