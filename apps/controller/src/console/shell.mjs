@@ -575,6 +575,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The shown shell's control that matches one from an earlier render: the same sidebar link
+    // or button, Namespace selector, Refresh or heading. Null when the shell has none.
+    matchingControl(node) {
+      const root = app.querySelector(node.closest(".sidebar") ? ".sidebar" : ".page-header");
+      return root && sameControl(node, root);
+    },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;

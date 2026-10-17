@@ -254,18 +254,20 @@ export function renderAgentList(context) {
   );
   // Each row's latest deployment, read after the list paints. A return to a retained list
   // revalidates only the list's own reads, so these never hold its reveal (finding 1644); the
-  // retained rows read them again in place instead.
+  // retained rows read them again in place instead. So one still running doesn't keep the list
+  // from being retained either (finding 1663), and its answer is dropped once a reread starts.
   const cells = new Map(); // The shown rows' deployment cells, each with its Agent.
+  const rowRead = { revalidate: false, rereadOnResume: true };
   function readDeployment(item) {
     const agentPath = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}`;
-    return latestReadableRevision(context, `${agentPath}/revisions`, { revalidate: false }).then(
+    return latestReadableRevision(context, `${agentPath}/revisions`, rowRead).then(
       async (latest) => {
         if (!latest) {
           return null;
         }
         const status = await context.request(
           `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-          { revalidate: false },
+          rowRead,
         );
         return { revision: latest, status };
       },
@@ -286,10 +288,12 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
-    void deployments
-      .get(item.id)
+    const read = deployments.get(item.id);
+    // An answer read before the view resumed is never shown as current (#2717).
+    const latest = () => context.isCurrent() && deployments.get(item.id) === read;
+    void read
       .then((result) => {
-        if (!context.isCurrent()) {
+        if (!latest()) {
           return;
         }
         if (result === null) {
@@ -321,6 +325,9 @@ export function renderAgentList(context) {
         );
       })
       .catch((error) => {
+        if (!latest()) {
+          return;
+        }
         fillDeployment(
           deployment,
           error.status === 403 ? "Deployment access denied" : "Deployment unavailable",
@@ -417,12 +424,15 @@ export function renderAgentList(context) {
   context.onResume?.(() => {
     deployments.clear();
     for (const [deployment, item] of cells) {
-      const shown = deployment.querySelector("a");
+      // A cell still reading from an earlier resume keeps the address it was given.
+      const shown =
+        deployment.querySelector("a")?.href ??
+        deployment.querySelector("[data-return-focus-href]")?.dataset.returnFocusHref;
       deployment.replaceChildren(
         shown
           ? element(
               "span",
-              { tabindex: "-1", "data-return-focus-href": shown.href },
+              { tabindex: "-1", "data-return-focus-href": shown },
               readingDeployment("delayed-text"),
             )
           : readingDeployment(),

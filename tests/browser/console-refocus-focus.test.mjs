@@ -55,3 +55,125 @@ test("refocusing the Agents list restores its focused link unless the reader mov
     assert.equal(await isFocused(expectedFocus), true, "keep the reader's place after the check");
   }
 });
+
+// Holds the recheck's session read so the held list can be observed, then lets it finish.
+async function refocusHeld(t, page, during = async () => {}) {
+  const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
+  await refocus(page);
+  await read.requested;
+  await page.locator(heldView).waitFor();
+  await during();
+  read.release();
+  await page.locator(settledView).waitFor();
+}
+
+const isFocused = (control) =>
+  control.evaluate((node) => node === globalThis.document.activeElement);
+const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
+const deploymentRecord = (namespace, status) => ({
+  json: {
+    data: { namespaceId: namespace.id, status, error: null, warnings: [], progress: null },
+    meta: { requestId: "req_test_refocus_focus" },
+  },
+});
+const holdDeploymentRead = (t, page, namespace) =>
+  holdRequests(t, page, deploymentsRead(namespace), {
+    once: true,
+    fulfill: deploymentRecord(namespace, "succeeded"),
+  });
+// Marks the shown list, so a reused list can be told from a rebuilt one.
+const tagList = (page) =>
+  page.evaluate(() => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.kept = "true";
+  });
+const listKept = async (page) => (await page.locator(`${settledView}[data-kept]`).count()) === 1;
+
+async function openDeployedList(t, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  return { fixture, namespace, page };
+}
+
+// A row's deployment read is reread whenever the list resumes, so one still running, or one the
+// recheck aborted, doesn't make a refocus rebuild the list, which dropped focus to the body
+// (finding 1663).
+test("refocusing the Agents list while a row reads its deployment keeps the reader's place", async (t) => {
+  const { fixture, namespace, page } = await openDeployedList(t, "Refocus row read");
+  const row = await holdDeploymentRead(t, page, namespace);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const link = page.locator(settledView).getByRole("link", { name: "Refocus Agent" });
+  await link.waitFor();
+  await row.requested;
+  await link.focus();
+  await tagList(page);
+  const cell = page.locator(".content .agent-deployment");
+  await refocusHeld(t, page, async () => {
+    // The recheck aborted the row's read; the held list doesn't show that as its answer.
+    assert.equal(await cell.textContent(), "Reading deployment…");
+  });
+  assert.equal(await isFocused(link), true, "keep focus on the Agent link");
+  assert.equal(await listKept(page), true, "reuse the list");
+  row.release();
+  const deployment = page.locator(settledView).locator(".agent-deployment a");
+  await deployment.waitFor();
+  assert.match(await deployment.textContent(), /^v1 · succeeded/);
+  assert.equal(await isFocused(link), true);
+  // The aborted read did not make the list one a later refocus rebuilds.
+  await refocusHeld(t, page);
+  assert.equal(await isFocused(link), true, "keep focus on a later refocus");
+  assert.equal(await listKept(page), true, "reuse the list on a later refocus");
+});
+
+// Refocusing again while a refocus's reread runs keeps focus on the pending deployment, which
+// carries the deployment's address until a reread settles.
+test("refocusing during a deployment reread keeps focus on that deployment", async (t) => {
+  const { fixture, namespace, page } = await openDeployedList(t, "Refocus reread");
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const cell = page.locator(settledView).locator(".agent-deployment");
+  const deployment = cell.getByRole("link", { name: "v1 · succeeded", exact: true });
+  await deployment.waitFor();
+  await deployment.focus();
+  await tagList(page);
+  const pending = cell.locator("[data-return-focus-href]");
+  let reread;
+  for (const refocusing of ["first", "second", "third"]) {
+    reread = await holdDeploymentRead(t, page, namespace);
+    await refocusHeld(t, page);
+    await reread.requested;
+    assert.equal(
+      await isFocused(pending),
+      true,
+      `the ${refocusing} refocus focuses the pending cell`,
+    );
+    assert.equal(await listKept(page), true, `the ${refocusing} refocus reuses the list`);
+  }
+  reread.release();
+  await deployment.waitFor();
+  assert.equal(await isFocused(deployment), true, "the fresh link takes focus");
+});
+
+// Sidebar and page-header controls are replaced by the recheck's shells; focus returns to the
+// same control once the list is reused (finding 1662).
+test("refocusing the Agents list restores focus on sidebar and header controls", async (t) => {
+  const { fixture, namespace, page } = await openDeployedList(t, "Refocus shell");
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).locator(".agent-deployment a").waitFor();
+  for (const control of [
+    page.locator(".sidebar").getByRole("link", { name: "Namespaces", exact: true }),
+    page.locator(".account-toggle"),
+    page.locator("#namespace-selector"),
+    page.getByRole("button", { name: "Refresh", exact: true }),
+  ]) {
+    await control.focus();
+    assert.equal(await isFocused(control), true);
+    await refocusHeld(t, page);
+    assert.equal(await isFocused(control), true, "focus returns to the same control");
+  }
+});
