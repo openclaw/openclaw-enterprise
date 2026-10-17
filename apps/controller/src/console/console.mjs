@@ -61,6 +61,16 @@ function readSignature(result, includeMeta = false) {
   );
 }
 
+// A read the view shows as refused or missing (a member's native administration status, say) is
+// that read's settled answer. A return compares it like data, so a view a member can read only in
+// part is still reused, and a read refused since replaces its section (finding 1553).
+function refusedRead(status) {
+  // Never a JSON body's signature.
+  return `\u0000refused ${status}`;
+}
+
+const settledRefusal = (error) => error.status === 403 || error.status === 404;
+
 function providerIcon(provider) {
   if (provider !== "github" && provider !== "google") {
     return null;
@@ -543,24 +553,6 @@ function clearPasswordInputs() {
       }
     }
   });
-}
-
-function readSuccess(value, includeMeta = false) {
-  return { kind: "success", value: readSignature(value, includeMeta) };
-}
-
-function readFailure(error) {
-  if (
-    error.name === "AbortError" ||
-    !Number.isInteger(error.status) ||
-    error.status < 400 ||
-    error.status > 599 ||
-    error.status === 401
-  ) {
-    return null;
-  }
-  // Request IDs change on every attempt; status and code identify the failed read.
-  return { kind: "failure", status: error.status, code: error.code };
 }
 
 function retainMountedView(returnLink) {
@@ -1466,48 +1458,46 @@ async function loadPage({
     const retainedState = retainedView?.state;
     let unchanged = false;
     if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
-      const fresh = new Map([["/namespaces", readSuccess(namespaces)]]);
+      const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
         fresh.set(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-          readSuccess(firstAgent),
+          firstAgent,
         );
       } else if (firstItems && current.feature !== "namespaces") {
         fresh.set(
           current.feature === "backends"
             ? "/backends"
             : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          readSuccess(firstItems),
+          firstItems,
         );
       }
       if (firstPermissions !== null) {
-        fresh.set(permissionsPath, readSuccess(firstPermissions));
+        fresh.set(permissionsPath, firstPermissions);
       }
+      const refused = new Map();
       const deniedReads = deniedReadsFor(owner);
       const validations = await Promise.allSettled([
-        ...[...retainedState.reads].map(async ([path, previous]) => {
+        ...[...retainedState.reads].map(async ([path, answer]) => {
           if (fresh.has(path)) {
             return;
           }
-          // A remembered denial has already been audited; explicit Retry clears it.
-          if (previous.kind === "failure" && previous.status === 403 && deniedReads.has(path)) {
-            fresh.set(path, previous);
+          // A denial this tab remembers is audited, so it is not asked again; a rebuild would
+          // show the same refusal without asking.
+          if (answer === refusedRead(403) && deniedReads.has(path)) {
+            refused.set(path, 403);
             return;
           }
           try {
             fresh.set(
               path,
-              readSuccess(
-                await request(path, { includeMeta: retainedState.metaReads.has(path) }),
-                retainedState.metaReads.has(path),
-              ),
+              await request(path, { includeMeta: retainedState.metaReads.has(path) }),
             );
           } catch (error) {
-            const failure = readFailure(error);
-            if (failure === null) {
+            if (!settledRefusal(error)) {
               throw error;
             }
-            fresh.set(path, failure);
+            refused.set(path, error.status);
           }
         }),
         // Live sections check that what they show is still readable (finding 1553).
@@ -1523,7 +1513,10 @@ async function loadPage({
         validations.every((result) => result.status === "fulfilled") &&
         JSON.stringify(retainedState.user) === JSON.stringify(session.user) &&
         [...retainedState.reads].every(
-          ([path, value]) => JSON.stringify(fresh.get(path)) === JSON.stringify(value),
+          ([path, value]) =>
+            (refused.has(path)
+              ? refusedRead(refused.get(path))
+              : readSignature(fresh.get(path), retainedState.metaReads.has(path))) === value,
         );
     }
     // Resolve the old link in the admitted list, even if its row reads were unfinished and we
@@ -1632,24 +1625,27 @@ async function loadPage({
         // Live reads (runtime status, log pages) differ on every call; replaying them to
         // revalidate a cached view would only spend the reader's rate limit.
         if ((options.method ?? "GET") === "GET" && options.revalidate !== false) {
-          viewState.reads.set(path, readSuccess(result, options.includeMeta));
+          viewState.reads.set(path, readSignature(result, options.includeMeta));
           if (options.includeMeta) {
             viewState.metaReads.add(path);
           }
         }
         return result;
       } catch (error) {
-        const failure = (options.method ?? "GET") === "GET" ? readFailure(error) : null;
-        if (failure !== null) {
-          // A later refusal must not leave previously rendered content in a reusable view.
-          const previous = viewState.reads.get(path);
-          if (previous !== undefined && JSON.stringify(previous) !== JSON.stringify(failure)) {
+        // A refused or missing read the view shows as its answer keeps the view reusable; live
+        // reads leave theirs to their section's own return check (finding 1553).
+        if ((options.method ?? "GET") === "GET" && settledRefusal(error)) {
+          // Content a later poll was refused may still be on screen: a return rebuilds it.
+          const prior = viewState.reads.get(path);
+          if (prior !== undefined && prior !== refusedRead(error.status)) {
             viewState.reusable = false;
           }
           if (options.revalidate !== false) {
-            viewState.reads.set(path, failure);
+            viewState.reads.set(path, refusedRead(error.status));
           }
         } else if (counted) {
+          // A reread on resume replaces what an unfinished or failed one showed, including a
+          // read the next view's reset aborts.
           viewState.reusable = false;
         }
         throw error;
@@ -1759,7 +1755,7 @@ async function loadPage({
       },
     };
     if (firstPermissions !== null) {
-      viewState.reads.set(permissionsPath, readSuccess(firstPermissions));
+      viewState.reads.set(permissionsPath, readSignature(firstPermissions));
     } else if (permissionsRead) {
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
@@ -1869,7 +1865,7 @@ async function loadPage({
       }
       viewState.reads.set(
         `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
-        readSuccess(firstAgent),
+        JSON.stringify(firstAgent),
       );
       const agent = await renderAgentDetail(
         { ...agentContext, agentId: current.agentId },
@@ -1898,7 +1894,7 @@ async function loadPage({
         : current.feature === "backends"
           ? "/backends"
           : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      readSuccess(items),
+      JSON.stringify(items),
     );
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });

@@ -2244,14 +2244,13 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   const reload = card.getByRole("button", { name: "Refresh access" });
   assert.equal(await reload.isEnabled(), true);
 
-  // An unchanged failed read is still a completed view. Back checks it again without
-  // replacing the card just because the server issued a different request ID.
-  const retained = await card.elementHandle();
+  // Back rebuilds failed views and rechecks the outage once, preserving its recovery controls.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
-  assert.equal(await retained.evaluate((node) => node.isConnected), true);
+  assert.equal(await card.isVisible(), true);
+  assert.equal(await reload.isEnabled(), true);
   await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
   assert.equal(failures, 2, "Back revalidates the failed read once");
 

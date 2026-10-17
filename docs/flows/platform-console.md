@@ -136,7 +136,12 @@ interrupted Refresh discards them.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its abort signal through JSON/text body reads. Cancellation preserves its reason; socket failures reach interrupted-read recovery. Only JSON syntax failures become invalid-response errors. Failed bodies are never replayed.
 
-Views retain DOM, handlers and drafts. Return revalidates GET outcomes and user identity. `readSuccess` stores data/pagination signatures; `readFailure` stores HTTP status/code; both omit request IDs. Matching outcomes reactivate; recovery, changed failures or a newly readable Namespace rebuild. Cached tab-local `403` avoids repeated audits until Retry. Admission precedes reuse. Pending/transport/malformed reads, expiry, passwords and mutations prevent reuse. `revalidate: false` skips replay; read-only catalog/diagnostic POSTs preserve views. Refresh rebuilds. Debug disclosures stay expanded.
+Returns revalidate GET data/pagination without request IDs and compare settled
+`403`/`404` refusals as outcomes. Matching answers restore DOM, handlers, drafts
+and disclosures; changed answers, a newly readable Namespace or Refresh rebuild.
+Other failed or pending reads, passwords and mutations prevent reuse. Live sections
+own their return checks rather than replaying polls. Tab-local `403` caching avoids
+repeated audits until Retry. Read-only catalog/diagnostic POSTs preserve views.
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
@@ -355,7 +360,7 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-17 19:17: Preserve current page navigation and completed read-outcome revalidation after merging main. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - f87c00ca0ae71d6cd7f263761cc9be3aa6624852)
+- 2026-10-17 19:17: Use main's retained-view handling and preserve role-catalog recovery. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - f87c00ca0ae71d6cd7f263761cc9be3aa6624852)
 
 - 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
 - 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
