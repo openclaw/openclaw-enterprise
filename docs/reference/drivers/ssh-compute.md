@@ -125,9 +125,23 @@ Each Agent uses a distinct system user and private group. The account name is
 the first 19 characters of `runtime.user`, a hyphen, and the first 12 hex
 characters of SHA-256 of `<namespaceId>:<agentId>`. The Driver creates accounts
 with a non-login shell and records their exact ownership and UID/GID under
-`accounts/`. An existing account or group without its matching ownership marker
-is refused. Accounts persist across revision retirement and are removed with
-the Namespace.
+`accounts/`. It writes that marker with `pending: true` before `groupadd`.
+`groupadd` must create the group; an existing name is not adopted, and `id` or
+merged `getent` not-found statuses are not proof the name is free. The claim
+then records the local gid of the group this helper created. An interrupted
+`useradd` is resumed only when the local user's gid is that gid. The marker
+then stores the uid and gid. If the helper is killed after `groupadd` returns
+and before that gid is recorded, the group exists and the claim does not record
+`groupCreated`. The next preparation refuses the group and does not adopt it.
+Deleting the Namespace or Agent removes the claim and leaves the group. The
+operator must use independent host evidence to establish that this preparation
+created the group and that removing it is safe. If either is uncertain, leave
+the group in place and reconcile with the host owner. Once the name is safely
+released, retry preparation; the helper creates a new group rather than adopting
+the leftover one. Namespace deletion removes a pending claim and the
+account that claim records creating. An account that exists without this marker
+is refused and is not adopted. Accounts persist across revision retirement and
+are removed with the Namespace.
 
 Markers record exact Driver, Namespace, Agent, and ServicePrincipal ownership.
 Revision markers also record revision ID/number, configuration hash, and

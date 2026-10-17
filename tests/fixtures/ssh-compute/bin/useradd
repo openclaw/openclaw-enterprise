@@ -14,13 +14,29 @@ while [ "$#" -gt 0 ]; do
   shift || :
 done
 [ -n "$group" ] || exit 1
+if [ -f "$OCC_SSH_FIXTURE_STATE/useradd.fail" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/useradd.fail"
+  exit 1
+fi
 group_file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$group"
 [ -f "$group_file" ] || exit 1
 users="$OCC_SSH_FIXTURE_STATE/accounts/users"
 mkdir -p "$users"
-[ ! -e "$users/$name" ] || exit 1
+[ ! -e "$users/$name" ] || exit 9
 {
   node -p 'process.getuid()'
   cat "$group_file"
 } > "$users/$name"
 printf 'useradd %s %s\n' "$name" "$group" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"
+# The account exists, but the command has not returned success.
+if [ -f "$OCC_SSH_FIXTURE_STATE/useradd.fail-after" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/useradd.fail-after"
+  exit 1
+fi
+# Hold only this fixture after the account exists, so a test can kill the helper.
+if [ -f "$OCC_SSH_FIXTURE_STATE/useradd.hold" ]; then
+  target=$(cat "$OCC_SSH_FIXTURE_STATE/useradd.hold")
+  rm -f "$OCC_SSH_FIXTURE_STATE/useradd.hold"
+  printf '%s\n' "$$" > "$target"
+  exec sleep 60
+fi

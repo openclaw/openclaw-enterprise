@@ -1163,6 +1163,301 @@ test("SSH immutable snapshots, supersession, cutover, retirement and deletion pr
   assert.match(commands, /disable openclaw-enterprise-gateway-/);
 });
 
+test("SSH preparation resumes an account whose helper was killed after useradd", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-interrupt");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  const hold = join(f.state, "useradd-hold");
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.hold"), hold);
+  const interrupted = f.driver.prepareRevision(rev);
+  const useraddPid = await waitFor("useradd to create the account and wait", () =>
+    readFile(hold, "utf8")
+      .then((contents) => {
+        const pid = Number(contents.trim());
+        return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+      })
+      .catch(() => undefined),
+  );
+  t.after(() => {
+    try {
+      process.kill(useraddPid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  });
+  f.children.at(-1).kill("SIGKILL");
+  try {
+    process.kill(useraddPid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+  }
+  await assert.rejects(interrupted, /failed or timed out/);
+  assert.equal((await stat(join(f.state, "accounts", "users", account))).isFile(), true);
+  await rm(hold, { force: true });
+  assert.equal((await f.driver.prepareRevision(rev)).ready, true);
+  const marker = await json(join(f.root, "accounts", `${account}.json`));
+  assert.equal(marker.pending, undefined);
+  assert.equal(marker.uid, process.getuid());
+  assert.equal(marker.gid, process.getgid());
+  assert.equal(marker.runtimeUser, account);
+});
+
+test("SSH Namespace deletion removes an account left by a killed helper", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-interrupt-delete");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  const hold = join(f.state, "useradd-hold");
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.hold"), hold);
+  const interrupted = f.driver.prepareRevision(rev);
+  const useraddPid = await waitFor("useradd to create the account and wait", () =>
+    readFile(hold, "utf8")
+      .then((contents) => {
+        const pid = Number(contents.trim());
+        return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+      })
+      .catch(() => undefined),
+  );
+  t.after(() => {
+    try {
+      process.kill(useraddPid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  });
+  f.children.at(-1).kill("SIGKILL");
+  try {
+    process.kill(useraddPid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+  }
+  await assert.rejects(interrupted, /failed or timed out/);
+  await rm(hold, { force: true });
+  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  await missing(join(f.root, "accounts", `${account}.json`));
+  await missing(join(f.state, "accounts", "users", account));
+  await missing(join(f.state, "accounts", "groups", account));
+});
+
+test("SSH account creation rolls back a failed useradd without adopting a later foreign account", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-useradd-fail");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.fail"), "once");
+  await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+  await missing(join(f.root, "accounts", `${account}.json`));
+  await missing(join(f.state, "accounts", "groups", account));
+  await Promise.all([
+    mkdir(join(f.state, "accounts", "users"), { recursive: true }),
+    mkdir(join(f.state, "accounts", "groups"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      join(f.state, "accounts", "users", account),
+      `${process.getuid()}\n${process.getgid()}\n`,
+    ),
+    writeFile(join(f.state, "accounts", "groups", account), `${process.getgid()}\n`),
+  ]);
+  await assert.rejects(f.driver.prepareRevision(rev), /foreign ownership|snapshot/);
+});
+
+test("SSH resume keeps a pending claim when account lookups fail", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-lookup-fail");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  const hold = join(f.state, "useradd-hold");
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.hold"), hold);
+  const interrupted = f.driver.prepareRevision(rev);
+  const useraddPid = await waitFor("useradd to create the account and wait", () =>
+    readFile(hold, "utf8")
+      .then((contents) => {
+        const pid = Number(contents.trim());
+        return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+      })
+      .catch(() => undefined),
+  );
+  t.after(() => {
+    try {
+      process.kill(useraddPid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  });
+  f.children.at(-1).kill("SIGKILL");
+  try {
+    process.kill(useraddPid, "SIGKILL");
+  } catch (error) {
+    if (error.code !== "ESRCH") {
+      throw error;
+    }
+  }
+  await assert.rejects(interrupted, /failed or timed out/);
+  await rm(hold, { force: true });
+  await Promise.all([
+    writeFile(join(f.state, "id.fail"), "lookup"),
+    writeFile(join(f.state, "getent.fail"), "lookup"),
+  ]);
+  await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+  const marker = await json(join(f.root, "accounts", `${account}.json`));
+  assert.equal(marker.pending, true);
+  assert.equal((await stat(join(f.state, "accounts", "users", account))).isFile(), true);
+  await rm(join(f.state, "id.fail"), { force: true });
+  await rm(join(f.state, "getent.fail"), { force: true });
+  assert.equal((await f.driver.prepareRevision(rev)).ready, true);
+  const resumed = await json(join(f.root, "accounts", `${account}.json`));
+  assert.equal(resumed.pending, undefined);
+  assert.equal(resumed.uid, process.getuid());
+});
+
+test("SSH refuses an existing user even when its primary gid matches a newly created group", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-user-before-group");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  const users = join(f.state, "accounts", "users");
+  await mkdir(users, { recursive: true });
+  const foreign = `${process.getuid()}\n${process.getgid()}\n`;
+  await writeFile(join(users, account), foreign);
+  // A group name can be absent while an existing user's numeric primary gid
+  // matches the gid subsequently assigned to the new group.
+  await assert.rejects(f.driver.prepareRevision(rev), /foreign ownership|snapshot/);
+  assert.equal(await readFile(join(users, account), "utf8"), foreign);
+  await missing(join(f.root, "accounts", `${account}.json`));
+  await assert.rejects(f.driver.prepareRevision(rev), /foreign ownership|snapshot/);
+  await missing(join(f.root, "accounts", `${account}.json`));
+  await f.driver.deleteAgentRuntimeCredentials({
+    namespace: tenant,
+    agent: { id: rev.agentId, namespaceId: tenant.id, servicePrincipalId: rev.servicePrincipalId },
+  });
+  assert.equal(await readFile(join(users, account), "utf8"), foreign);
+  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  assert.equal(await readFile(join(users, account), "utf8"), foreign);
+  await missing(join(f.state, "accounts", "groups", account));
+});
+
+test("SSH refuses a user the local files database did not show", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-user-hidden-from-files");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  const users = join(f.state, "accounts", "users");
+  await mkdir(users, { recursive: true });
+  const foreign = `${process.getuid()}\n${process.getgid()}\n`;
+  await writeFile(join(users, account), foreign);
+  await writeFile(join(f.state, "getent.absent"), "once");
+  await assert.rejects(f.driver.prepareRevision(rev), /foreign ownership|snapshot/);
+  assert.equal(await readFile(join(users, account), "utf8"), foreign);
+  await missing(join(f.root, "accounts", `${account}.json`));
+});
+
+test("SSH resume refuses a pending account with a different primary gid", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-resume-gid");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.fail-after"), "once");
+  await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+  const markerPath = join(f.root, "accounts", `${account}.json`);
+  const marker = await readFile(markerPath, "utf8");
+  const userPath = join(f.state, "accounts", "users", account);
+  const changedUser = `${process.getuid()}\n${process.getgid() + 1}\n`;
+  await writeFile(userPath, changedUser);
+  await assert.rejects(f.driver.prepareRevision(rev), /foreign ownership|snapshot/);
+  assert.equal(await readFile(markerPath, "utf8"), marker);
+  assert.equal(await readFile(userPath, "utf8"), changedUser);
+});
+
+for (const fault of ["user gid", "group gid", "lookup failure"]) {
+  test(`SSH pending deletion preserves its claim on ${fault}`, async (t) => {
+    const f = await fixture(t);
+    const rev = revision(f.driver, 1, `agent-ssh-delete-${fault.replaceAll(" ", "-")}`);
+    const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+    assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+    bind(f.driver, rev);
+    await writeFile(join(f.state, "useradd.fail-after"), "once");
+    await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+    const markerPath = join(f.root, "accounts", `${account}.json`);
+    const userPath = join(f.state, "accounts", "users", account);
+    const groupPath = join(f.state, "accounts", "groups", account);
+    if (fault === "user gid") {
+      await writeFile(userPath, `${process.getuid()}\n${process.getgid() + 1}\n`);
+    } else if (fault === "group gid") {
+      // Isolate the group guard after the user has already been removed.
+      await rm(userPath);
+      await writeFile(groupPath, `${process.getgid() + 1}\n`);
+    } else {
+      // A lookup error must not be accepted as an absent user on a cleanup retry.
+      await rm(userPath);
+      await writeFile(join(f.state, "getent.fail"), "once");
+    }
+    const marker = await readFile(markerPath, "utf8");
+    const group = await readFile(groupPath, "utf8");
+    const user = fault === "user gid" ? await readFile(userPath, "utf8") : undefined;
+    assert.deepEqual(await f.driver.deleteNamespace(tenant), {
+      namespaceId: tenant.id,
+      namespaceDeleted: false,
+      failure: fault === "lookup failure" ? "retryable" : "permanent",
+    });
+    assert.equal(await readFile(markerPath, "utf8"), marker);
+    assert.equal(await readFile(groupPath, "utf8"), group);
+    if (user !== undefined) {
+      assert.equal(await readFile(userPath, "utf8"), user);
+    }
+  });
+}
+
+test("SSH keeps a pending claim when useradd leaves the account and then fails", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-useradd-fail-after");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.fail-after"), "once");
+  await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+  const marker = await json(join(f.root, "accounts", `${account}.json`));
+  assert.equal(marker.pending, true);
+  assert.equal(marker.groupCreated, true);
+  assert.equal((await stat(join(f.state, "accounts", "users", account))).isFile(), true);
+  assert.equal((await f.driver.prepareRevision(rev)).ready, true);
+  const resumed = await json(join(f.root, "accounts", `${account}.json`));
+  assert.equal(resumed.pending, undefined);
+  assert.equal(resumed.uid, process.getuid());
+});
+
+test("SSH Namespace deletion finishes when the pending group is already gone", async (t) => {
+  const f = await fixture(t);
+  const rev = revision(f.driver, 1, "agent-ssh-group-already-gone");
+  const account = runtimeAccountName(tenant, rev.agentId, f.configured.runtime.user);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  bind(f.driver, rev);
+  await writeFile(join(f.state, "useradd.fail-after"), "once");
+  await assert.rejects(f.driver.prepareRevision(rev), /failed or timed out/);
+  await rm(join(f.state, "accounts", "users", account));
+  await rm(join(f.state, "accounts", "groups", account));
+  assert.equal((await f.driver.deleteNamespace(tenant)).namespaceDeleted, true);
+  await missing(join(f.root, "accounts", `${account}.json`));
+});
+
 test("SSH local executor cancellation terminates the real helper waiting for the host lock", async (t) => {
   const f = await fixture(t);
   // Simulate a live concurrent host operation; this tests manual cancellation, not lease loss.
