@@ -666,8 +666,8 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 
 // The control focused in the shown page, which a refocus recheck blurs when it holds the page
 // inert (finding 1654). restore() gives focus back once the page remounts (an input keeps its
-// caret), unless the reader has moved focus since. A deployment link the remount replaced gives
-// it to the cell's pending deployment instead, as Back does.
+// caret), unless the reader has moved focus since. A deployment link that the list's reread
+// replaced gives it to the cell's pending deployment instead, as Back does.
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = view?.contains(document.activeElement) ? document.activeElement : null;
@@ -1080,7 +1080,8 @@ async function loadPage({
   // On a navigation, focus that was in the held page waits on its heading until the destination
   // takes it: the Agent's heading for an Agent page loading behind it (the new version an
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
-  // list (finding 1636). So does focus on the sidebar link that started it (finding 1653). A
+  // list (finding 1636). So does focus anywhere in the sidebar, whose pressed link the pending
+  // shell replaces (finding 1653). A
   // refocus recheck never moves focus to the heading: the control it blurs takes focus back if
   // the page remounts unchanged, as on an Agent page (finding 1654).
   const refocused = resumingView ? focusInShownView() : null;

@@ -215,9 +215,10 @@ export function assertReadableConfiguration(resource) {
 }
 
 // A row's deployment while it is read. The text follows the 250 ms rule, so a read that lands
-// sooner, as most do on a return to a retained list, never paints it (finding 1656).
-const readingDeployment = () =>
-  element("span", { className: "delayed-status" }, "Reading deployment…");
+// sooner, as most do on a return to a retained list, never paints it (finding 1656). Text that a
+// focusable holder wraps stays readable to a screen reader meanwhile.
+const readingDeployment = (className = "delayed-status") =>
+  element("span", { className }, "Reading deployment…");
 
 export function renderAgentList(context) {
   const { view, items } = context;
@@ -422,7 +423,7 @@ export function renderAgentList(context) {
           ? element(
               "span",
               { tabindex: "-1", "data-return-focus-href": shown.href },
-              readingDeployment(),
+              readingDeployment("delayed-text"),
             )
           : readingDeployment(),
       );

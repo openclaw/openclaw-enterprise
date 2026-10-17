@@ -320,6 +320,8 @@ for (const outcome of ["fills", "is refused"]) {
     const loading = row.locator(".agent-deployment [data-return-focus-href]");
     assert.equal(await loading.textContent(), READING);
     assert.equal(await isFocused(loading), true, "Back focused the pending deployment");
+    // Blank on screen, the focused holder's text still reaches a screen reader.
+    assert.match(await loading.ariaSnapshot(), /Reading deployment…/);
     const listUrl = page.url();
     await page.keyboard.press("Enter");
     assert.equal(page.url(), listUrl, "Enter must not open the previous deployment");
@@ -347,7 +349,7 @@ for (const outcome of ["fills", "is refused"]) {
 }
 
 // Records, in every frame from now on, how many rows of the shown Agents table paint their
-// "Reading deployment…" text, by the computed visibility of each text node in the cell.
+// "Reading deployment…" text (a text node neither hidden nor transparent), and when.
 function recordPaintedReading(reading) {
   const document = globalThis.document;
   const frames = [];
@@ -355,8 +357,16 @@ function recordPaintedReading(reading) {
   const painted = (cell) => {
     const walker = document.createTreeWalker(cell, globalThis.NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
-      const style = globalThis.getComputedStyle(walker.currentNode.parentElement);
-      if (walker.currentNode.textContent.trim() && style.visibility === "visible") {
+      const text = walker.currentNode;
+      if (!text.textContent.trim()) {
+        continue;
+      }
+      let shown = globalThis.getComputedStyle(text.parentElement).visibility === "visible";
+      for (let node = text.parentElement; shown && node !== cell.parentElement;) {
+        shown = globalThis.getComputedStyle(node).opacity !== "0";
+        node = node.parentElement;
+      }
+      if (shown) {
         return true;
       }
     }
@@ -368,7 +378,11 @@ function recordPaintedReading(reading) {
       const cells = [...table.querySelectorAll(".agent-deployment")].filter(
         (cell) => cell.textContent === reading,
       );
-      frames.push({ reading: cells.length, painted: cells.filter(painted).length });
+      frames.push({
+        at: globalThis.performance.now(),
+        reading: cells.length,
+        painted: cells.filter(painted).length,
+      });
     }
     globalThis.requestAnimationFrame(sample);
   };
@@ -417,8 +431,12 @@ for (const visit of ["a first visit", "a return"]) {
       timeout: 5_000,
     });
     const frames = await page.evaluate(() => globalThis.__readingFrames.slice());
-    // The first frame that shows the table: every row is being read, and none paints its text.
-    assert.deepEqual(frames[0], { reading: 3, painted: 0 }, JSON.stringify(frames));
+    // From the first frame that shows the table, every row is being read, and no row paints its
+    // text until the read has been pending for (nearly) 250 ms.
+    const trail = JSON.stringify(frames);
+    assert.deepEqual({ ...frames[0], at: 0 }, { at: 0, reading: 3, painted: 0 }, trail);
+    const firstPainted = frames.find((frame) => frame.painted > 0);
+    assert.ok(firstPainted.at - frames[0].at >= 200, trail);
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     for (const text of Object.values(await deploymentCells(page))) {

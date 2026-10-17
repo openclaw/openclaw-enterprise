@@ -191,6 +191,17 @@ p {
     visibility: hidden;
   }
 }
+/* The same delay for the text of a node that can take focus: transparent, not hidden, so a
+   screen reader still reads it (finding 1656). */
+.delayed-text {
+  animation: loading-delay-text 250ms;
+}
+@keyframes loading-delay-text {
+  from,
+  to {
+    opacity: 0;
+  }
+}
 .auth {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -820,7 +831,9 @@ select:not([multiple])[size="1"] {
 }
 /* One primary action: a failed version's recovery outranks native administration, wherever the
    recovery card sits. */
-:has(> .deployment-recovery:not([hidden])) > .native-admin-access .overview-primary {
+[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+  > .native-admin-access
+  .overview-primary {
   color: var(--text-strong);
   background: var(--surface);
   border-color: var(--input-border);
