@@ -51,11 +51,15 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(result.status, 0, result.stderr);
     const calls = await commands.commands();
     const reads = calls.filter(
-      ({ args }) =>
-        args.at(-4) === "node" && args.at(-3).endsWith("-agent-0") && args.at(-1) === "json",
+      ({ command, args }) =>
+        command === "kubectl" &&
+        args.slice(4, 6).join(" ") === "get node" &&
+        args[6].endsWith("-agent-0") &&
+        args.slice(7).join(" ") === "-o json",
     );
     // Two reads without a Pod CIDR, then the assigned one.
     assert.equal(reads.length, 3);
+    assertStderrMatch(result.stderr, /waiting for k3d-\S+-agent-0 to get its Pod CIDR/);
     const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
