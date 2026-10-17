@@ -22,6 +22,7 @@ import {
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialWithdrawalInProgressError,
+  DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -320,6 +321,18 @@ const cases = [
     "a runtime image without native worker support",
     new NativeWorkerSupportError(),
     { status: 400, code: "INVALID_REQUEST", message: new NativeWorkerSupportError().message },
+  ],
+  [
+    // A fixed Installation shape: a permanent conflict naming the missing Driver, not an
+    // outage with generic text (finding 1609).
+    "an Installation without a Sandbox Driver that provisions dedicated OpenClaw",
+    new DedicatedOpenClawSandboxError(),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+    },
   ],
   [
     "a plugin selection the selected Plugin Driver does not offer",

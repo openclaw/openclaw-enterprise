@@ -28,6 +28,7 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
@@ -6184,8 +6185,10 @@ test(
           `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
         );
       }
+      // Retry only endpoint availability above. Preserve the first protocol failure on this route.
+      await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
+        "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
       );
       await requestGatewayTurns(context, topology, "codex");
       process.stderr.write(

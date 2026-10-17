@@ -10,6 +10,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DedicatedOpenClawSandboxError,
   DependencyUnavailableError,
   DriverSelectionError,
   InMemoryPlatformState,
@@ -1143,11 +1144,11 @@ for (const facets of [["networking"], ["filesystem"], ["process"], ["networking"
 test("dedicated native OpenClaw with the pinned runtime requires a full-facet provisioning Sandbox", async () => {
   for (const [name, sandbox, refusal] of [
     ["complete", createSandboxDriver(), undefined],
-    ["missing", undefined, DependencyUnavailableError],
+    ["missing", undefined, DedicatedOpenClawSandboxError],
     [
       "partial",
       createSandboxDriver({ facets: ["networking", "filesystem"] }),
-      DependencyUnavailableError,
+      DedicatedOpenClawSandboxError,
     ],
   ]) {
     const { controller } = createController();
@@ -1675,9 +1676,10 @@ test("IAM decision reasons must be strings before returning Installation data", 
   for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
     await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
       transform = (decision) => ({ ...decision, reason });
+      // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
       assert.deepEqual(await controller.getInstallation("principal-admin"), {
         ...installation,
-        capabilities: { nativeWorkers: { support: "pinned-runtime" } },
+        capabilities: {},
       });
     });
   }

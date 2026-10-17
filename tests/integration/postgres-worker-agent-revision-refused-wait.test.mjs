@@ -9,6 +9,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -165,11 +166,8 @@ for (const mode of ["transient", "generic"]) {
       assert.deepEqual([...driver.running], []);
       assert.equal(driver.preparations(replacement), 2);
       // Every pass waited with the refusal; none ended with the IAM failure's code.
-      const ended = events.filter(
-        ({ event, workId, outcome }) =>
-          event === "worker.completed" &&
-          workId === replacement.idempotencyKey &&
-          outcome !== "pending",
+      const ended = (await completedPasses(events, replacement, "permanent")).filter(
+        ({ outcome }) => outcome !== "pending",
       );
       assert.deepEqual(
         ended.map(({ code }) => code),

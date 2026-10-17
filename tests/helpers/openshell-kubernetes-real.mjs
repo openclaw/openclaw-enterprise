@@ -2,6 +2,7 @@ import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { rootCertificates } from "node:tls";
 import { join } from "node:path";
@@ -74,6 +75,82 @@ export function createOpenShellServiceLoopbackLookup(serviceHostname) {
     }
     callback(null, address.address, address.family);
   };
+}
+
+/** Initialize Codex once through its exposed service, without starting a thread or turn. */
+export async function assertExposedCodexInitializes(serviceUrl, appServerToken) {
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const socketRequire = createRequire(controllerRequire.resolve("@kubernetes/client-node"));
+  const WebSocket = socketRequire("ws");
+  const url = new URL(serviceUrl);
+  const socket = new WebSocket(url, {
+    lookup: createOpenShellServiceLoopbackLookup(url.hostname),
+    headers: { authorization: `Bearer ${appServerToken}` },
+    perMessageDeflate: false,
+    closeTimeout: 1_000,
+  });
+
+  let stage = "WebSocket upgrade";
+  try {
+    await new Promise((resolve, reject) => {
+      // Report only the stage and status; peer payloads and close reasons can contain credentials.
+      const fail = (detail) => reject(new Error(`OpenShell exposed Codex ${stage}: ${detail}.`));
+      const deadline = setTimeout(() => fail("timed out after 5 s"), 5_000);
+      socket.once("close", (code) => {
+        clearTimeout(deadline);
+        fail(`socket closed (code ${code})`);
+      });
+      socket.once("error", () => fail("WebSocket error"));
+      socket.once("unexpected-response", (_request, response) => {
+        fail(`HTTP ${response.statusCode}`);
+        response.destroy();
+      });
+      const id = 1;
+      socket.once("open", () => {
+        stage = "initialize response after HTTP 101";
+        const params = {
+          clientInfo: { name: "openclaw-enterprise-openshell-integration", version: "1.0.0" },
+          capabilities: { experimentalApi: true },
+        };
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method: "initialize", params }));
+      });
+      socket.on("message", function receiveInitialize(data) {
+        let message;
+        try {
+          message = JSON.parse(data);
+        } catch {
+          return fail("invalid JSON");
+        }
+        if (message?.id !== id || "method" in message) {
+          return;
+        }
+        if (message.error !== undefined) {
+          const code = message.error?.code;
+          return fail(Number.isSafeInteger(code) ? `RPC error (code ${code})` : "RPC error");
+        }
+        if (message.result === undefined || message.result === null) {
+          return fail("missing initialize result");
+        }
+        socket.off("message", receiveInitialize);
+        stage = "initialized notification write";
+        const notification = { jsonrpc: "2.0", method: "initialized", params: {} };
+        socket.send(JSON.stringify(notification), (error) => {
+          if (error) {
+            return fail("WebSocket write failed");
+          }
+          clearTimeout(deadline);
+          resolve();
+        });
+      });
+    });
+  } catch (error) {
+    socket.terminate();
+    throw error;
+  }
+  // Codex does not acknowledge initialized. Send a normal close; this route may not echo it.
+  socket.close(1000);
 }
 
 // Model egress comes only from the credential source's profile, bound to native Codex.

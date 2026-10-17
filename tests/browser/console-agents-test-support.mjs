@@ -125,6 +125,21 @@ export async function routeInstallationProvisioning(page, fixture, executionMode
   });
 }
 
+// A Sandbox Driver that can provision dedicated OpenClaw. Without one, the Installation does not
+// report native worker support and the Console withholds Dedicated OpenClaw (finding 1608).
+export function nativeSandboxDriver(facets = ["networking", "filesystem", "process"]) {
+  return {
+    id: "console-native-sandbox",
+    capability: "sandbox",
+    implementation: "console-native",
+    facets,
+    async provisionHarness() {
+      assert.fail("provisioning admission must leave effects to the worker");
+    },
+    async cleanup() {},
+  };
+}
+
 export async function routeInstallationWithoutProvisioning(page, fixture, capabilities) {
   await page.route(`${fixture.origin}/installation`, async (route) => {
     await route.fulfill({

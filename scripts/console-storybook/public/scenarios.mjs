@@ -1871,9 +1871,9 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
+      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
     steps: [
-      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing runtime support.",
+      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
       "Select Codex and confirm Dedicated remains available.",
     ],
   },
@@ -2671,12 +2671,38 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
         method: "POST",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        // The API's catch-all conflict names nothing to act on, so the Console keeps its own text.
+        message: "The requested platform resource already exists.",
         once: true,
       },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
       "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
+  },
+  createRefusalReason: {
+    group: "Pages/Create Agent",
+    name: "Provisioning refusal with a reason",
+    path: create,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+        once: true,
+      },
+    ],
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
+    steps: [
+      "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
+      "Choose Embedded execution, then create the Agent again.",
+    ],
   },
   createUnknown: {
     group: "Pages/Create Agent",

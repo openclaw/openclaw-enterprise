@@ -2909,6 +2909,54 @@ test(
 );
 
 test(
+  "a new dedicated OpenClaw request without a provisioning Sandbox Driver is refused with a 409 naming it",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, {
+      computeDriver: createRuntimeComputeDriver(),
+      configurationDriver: createProvisioningConfigurationDriver({
+        id: "configuration-provisioning-no-sandbox",
+      }),
+      secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    // The Installation cannot admit dedicated OpenClaw, so it does not report native workers.
+    const installation = await fixture.request("GET", "/installation");
+    assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    body.configuration.values.agents.defaults = {
+      model: "openai/gpt-5",
+      models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+    };
+    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason,
+    // not a 503 the Console reads as an unknown outcome (finding 1609).
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const refused = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body },
+      );
+      assert.equal(refused.status, 409, JSON.stringify(refused.body));
+      assert.deepEqual(refused.body.error, {
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+      });
+    }
+    // The refusal stored nothing: no provisioning job or Agent.
+    const stored = await fixture.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
+      [namespace.id],
+    );
+    assert.deepEqual(stored.rows[0], { jobs: 0, agents: 0 });
+  },
+);
+
+test(
   "losing native Sandbox containment before the worker runs leaves provisioning retryable without effects",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {

@@ -17,6 +17,7 @@ import {
 import {
   agentProvisionPostRequests,
   createModelCredentialSecret,
+  nativeSandboxDriver,
   openAdvancedSettings,
 } from "./console-agents-test-support.mjs";
 
@@ -46,7 +47,11 @@ function provisioningDrivers() {
 async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
   const drivers = provisioningDrivers();
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  const fixture = await createConsoleAppFixture(t, { ...drivers, ...options });
+  const fixture = await createConsoleAppFixture(t, {
+    ...drivers,
+    sandboxDriver: nativeSandboxDriver(),
+    ...options,
+  });
   await fixture.bootstrap();
   const calls = [];
   const removals = [];
@@ -166,16 +171,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     ...provisioningDrivers(),
-    sandboxDriver: {
-      id: "console-native-sandbox",
-      capability: "sandbox",
-      implementation: "console-native",
-      facets: ["networking", "filesystem", "process"],
-      async provisionHarness() {
-        assert.fail("provisioning admission must leave effects to the worker");
-      },
-      async cleanup() {},
-    },
+    sandboxDriver: nativeSandboxDriver(),
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pinned native deployment", { ready: true });
@@ -614,6 +610,135 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
     await feedback.textContent(),
     "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings). Request ID: req_00000000-0000-4000-8000-000000000409",
   );
+});
+
+const DEDICATED_SANDBOX_REFUSAL =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+
+test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated OpenClaw", async (t) => {
+  const fixture = await createConsoleAppFixture(t, provisioningDrivers());
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No provisioning Sandbox", { ready: true });
+  // The real Installation: the pinned runtime supports native workers, but no Sandbox Driver can
+  // provision them, so it does not report native worker support (finding 1608).
+  const installation = await fixture.request("GET", "/installation");
+  assert.equal(installation.status, 200);
+  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  assert.deepEqual(installation.data.capabilities?.agentProvisioning, {
+    executionModes: ["dedicated"],
+  });
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  assert.equal(await mode.inputValue(), "embedded");
+  assert.match(
+    await page.locator("#execution-mode-hint").textContent(),
+    /Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it/,
+  );
+  // Codex does not need the Sandbox Driver and keeps Dedicated.
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+});
+
+test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {
+  const fixture = await createConsoleAppFixture(t, provisioningDrivers());
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision refusal reasons", { ready: true });
+  const cases = [
+    {
+      name: "named outage",
+      status: 503,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic named outage." },
+      // An outage keeps Retry, which resubmits the same request ID, but leads with the reason.
+      text: "Synthetic named outage. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      name: "catch-all outage",
+      status: 503,
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // The API could not confirm its own commit: the reason is that the outcome is unknown.
+      name: "unconfirmed commit",
+      status: 503,
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Any other 5xx may have committed, so it names no refusal.
+      name: "internal error",
+      status: 500,
+      error: { code: "INTERNAL_ERROR", message: "The platform request could not be completed." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // The API's answer to dedicated OpenClaw without a provisioning Sandbox Driver.
+      name: "named conflict",
+      status: 409,
+      error: { code: "RESOURCE_CONFLICT", message: DEDICATED_SANDBOX_REFUSAL },
+      text: DEDICATED_SANDBOX_REFUSAL,
+      retry: false,
+    },
+    {
+      name: "catch-all conflict",
+      status: 409,
+      error: {
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+      },
+      text: "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
+      retry: false,
+    },
+  ];
+  for (const [index, answer] of cases.entries()) {
+    await t.test(answer.name, async (t) => {
+      const { page } = await newPage(t, fixture, { browser });
+      await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.getByLabel("Agent name").fill(`Provision refusal ${index}`);
+      await page.getByLabel("Authentication method").selectOption("codex_pat");
+      await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
+      await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+      const requestId = `req_00000000-0000-4000-8000-00000000000${index}`;
+      const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
+      await page.route(provisionUrl, (route) =>
+        route.request().method() === "POST"
+          ? route.fulfill({
+              status: answer.status,
+              contentType: "application/json",
+              body: JSON.stringify({ error: answer.error, meta: { requestId } }),
+            })
+          : route.fallback(),
+      );
+      await page.getByRole("button", { name: "Create Agent" }).click();
+      const feedback = page.getByRole("alert").filter({ hasText: requestId });
+      await feedback.waitFor();
+      assert.equal(await feedback.textContent(), `${answer.text} Request ID: ${requestId}`);
+      // An outage keeps the form locked for Retry; a refusal unlocks it for a fix.
+      assert.equal(
+        await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+        answer.retry,
+      );
+      assert.equal(await page.getByLabel("Agent name").isDisabled(), answer.retry);
+    });
+  }
 });
 
 test("Agent name counts characters, as the API does, not UTF-16 code units", async (t) => {

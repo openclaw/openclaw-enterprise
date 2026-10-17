@@ -179,6 +179,10 @@ export const CreateSecretDenied = {
 export const CreateGrantDenied = { ...story("createGrantDenied"), name: "Credential access retry" };
 export const CreateInvalid = { ...story("createInvalid"), name: "Invalid JSON" };
 export const CreateConflict = { ...story("createConflict"), name: "Provisioning conflict" };
+export const CreateRefusalReason = {
+  ...story("createRefusalReason"),
+  name: "Provisioning refusal with a reason",
+};
 export const CreateUnknown = { ...story("createUnknown"), name: "Provisioning outcome unknown" };
 
 export const CreatePasswordPreset = {

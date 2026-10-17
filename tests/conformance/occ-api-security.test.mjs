@@ -540,10 +540,8 @@ test("bootstrap owns one Installation without a plural installation collection",
 
   const read = await request(fixture.app, "/installation");
   assert.equal(read.response.status, 200);
-  assert.deepEqual(read.payload.data, {
-    ...installation,
-    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
-  });
+  // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
+  assert.deepEqual(read.payload.data, installation);
 
   const again = await request(fixture.app, "/installation/bootstrap", {
     body: { name: "Second installation" },
@@ -704,10 +702,8 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
 
   const confirmed = await request(fixture.app, "/installation");
   assert.equal(confirmed.response.status, 200);
-  assert.deepEqual(confirmed.payload.data, {
-    ...installation,
-    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
-  });
+  // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
+  assert.deepEqual(confirmed.payload.data, installation);
 
   const bootstrapEvents = fixture.auditSink.events.filter(
     (event) => event.kind === "bootstrap" && event.resource.kind === "installation",
@@ -744,10 +740,8 @@ test("an existing controller cannot be configured for a different Installation",
 
   const unchanged = await request(fixture.app, "/installation");
   assert.equal(unchanged.response.status, 200);
-  assert.deepEqual(unchanged.payload.data, {
-    ...installation,
-    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
-  });
+  // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
+  assert.deepEqual(unchanged.payload.data, installation);
   assert.deepEqual(fixture.controller.installation, installation);
 });
 
