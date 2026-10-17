@@ -18,7 +18,11 @@ test("A reader who leaves the held heading during an admitted deployment is not 
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
   await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
   const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
     method: "POST",
