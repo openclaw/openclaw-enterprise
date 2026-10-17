@@ -389,30 +389,36 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
   assert.match(await timestamp("after the clocks went back"), /1:30:00\s+AM\s+GMT-5$/u);
 });
 
-// The UTC offset made the longest timestamps wrap onto a second line in the fixed time column
-// above 760 px, so every log row took two lines (finding 1681). From 1000 px down the message
-// moves below the time instead of shrinking to a sliver.
-test("log timestamps with the longest UTC offset stay on one line", async (t) => {
+// The UTC offset made timestamps wrap onto a second line in the fixed 170 px (150 px at 1100 px
+// and below) time column above 760 px, so every log row took two lines (findings 1681, 1697).
+// From 1000 px down the message moves below the time instead of shrinking to a sliver.
+test("log timestamps with their UTC offset stay on one line", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  // 12:59:59 PM on 12/31 in Adelaide (GMT+10:30): two-digit month, day, hour and offset.
+  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
   computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
-  const { page } = await newPage(t, fixture, {
-    context: { locale: "en-US", timezoneId: "Australia/Adelaide" },
-  });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
-  const time = page
-    .getByRole("log", { name: "Runtime log output" })
-    .locator(".log-row", { hasText: "longest timestamp" })
-    .locator(".log-time");
-  assert.match(await time.innerText(), /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u);
-  for (const width of [1440, 1100, 1001, 1000, 761]) {
-    await page.setViewportSize({ width, height: 900 });
-    const lines = await time.evaluate((cell) => {
-      const range = cell.ownerDocument.createRange();
-      range.selectNodeContents(cell);
-      return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
-    });
-    assert.equal(lines, 1, `one timestamp line at ${width}px`);
+  for (const [locale, timezoneId, shown] of [
+    ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
+    ["en-US", "Asia/Kolkata", /^12\/31\/2026, 7:59:59\sAM\sGMT\+5:30$/u],
+    ["en-US", "America/New_York", /^12\/30\/2026, 9:29:59\sPM\sGMT-5$/u],
+    ["fr-FR", "Europe/Paris", /^31\/12\/2026\s03:29:59\sUTC\+1$/u],
+    ["de-DE", "Europe/Berlin", /^31\.12\.2026,\s03:29:59\sGMT\+1$/u],
+  ]) {
+    const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+    const time = page
+      .getByRole("log", { name: "Runtime log output" })
+      .locator(".log-row", { hasText: "longest timestamp" })
+      .locator(".log-time");
+    assert.match(await time.innerText(), shown);
+    for (const width of [1440, 1100, 1001, 1000, 761]) {
+      await page.setViewportSize({ width, height: 900 });
+      const lines = await time.evaluate((cell) => {
+        const range = cell.ownerDocument.createRange();
+        range.selectNodeContents(cell);
+        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      });
+      assert.equal(lines, 1, `one ${locale} ${timezoneId} timestamp line at ${width}px`);
+    }
   }
 });
 
