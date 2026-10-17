@@ -1,3 +1,4 @@
+import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -6992,8 +6993,7 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
         defaults: { ...base.agents.defaults, compaction: { memoryFlush: { enabled: true } } },
       },
     },
-    // Without the plugin entry the entrypoint leaves cron alone.
-    { ...base, cron: "off" },
+
     {
       ...base,
       models: {
@@ -7058,6 +7058,11 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
           `Configuration setting ${message}: a dedicated Codex Gateway cannot apply it otherwise.`,
     );
   }
+  assert.throws(
+    () => driver.validateHarnessAuth(codex, auth, { ...base, cron: "off" }),
+    /Configuration setting cron must be an object/,
+    "the dedicated baseline now disables triggers even without a Codex plugin entry",
+  );
   // A long submitted provider key (matched trimmed, so padded with whitespace) is cut, with
   // "…", so the message fits the 256-character error cap and keeps the rule wording
   // (finding 664).
@@ -8051,77 +8056,21 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   );
   assert.equal(worker.readinessProbe.timeoutSeconds, 3);
 
-  const nodeRequire = createRequire(import.meta.url);
-  const files = new Map([["/etc/openclaw/openclaw.json", JSON.stringify(configuration)]]);
-  let started = false;
-  // Execute the generated Gateway startup program: every session must use the
-  // enrolled worker without requiring a user-selected Cloud Worker destination.
-  runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, {
-    Buffer,
-    JSON,
-    URL,
-    console,
-    process: {
-      env: {
-        HOME: "/home/node",
-        OPENCLAW_CONFIG_PATH: "/etc/openclaw/openclaw.json",
-        OPENCLAW_GATEWAY_PORT: "8080",
-        OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
-        OPENCLAW_STATE_DIR: "/home/node/.openclaw",
-        OPENCLAW_WORKSPACE_NODE_ID: deviceId,
-      },
-      on() {},
-      exit() {},
-    },
-    setTimeout() {
-      return { unref() {} };
-    },
-    setInterval() {
-      return { unref() {} };
-    },
-    require(specifier) {
-      if (specifier === "node:fs") {
-        return {
-          cpSync() {},
-          existsSync() {
-            return false;
-          },
-          lstatSync() {
-            throw new Error("Unexpected lstat");
-          },
-          mkdirSync() {},
-          readFileSync(path) {
-            const value = files.get(path);
-            if (value === undefined) {
-              throw new Error(`Unexpected read: ${path}`);
-            }
-            return value;
-          },
-          readdirSync() {
-            return [];
-          },
-          rmSync() {},
-          writeFileSync(path, value) {
-            files.set(path, value);
-          },
-        };
-      }
-      if (specifier === "node:child_process") {
-        return {
-          spawn() {
-            started = true;
-            return { kill() {}, on() {} };
-          },
-          spawnSync() {
-            throw new Error("Unexpected child process");
-          },
-        };
-      }
-      return nodeRequire(specifier);
+  // Execute the production launcher with the admitted worker identity and the
+  // candidate image's source identity; native image tests qualify its binary.
+  const { files, calls } = await runOpenClawRuntimeHelper(undefined, [], {
+    baseConfig: configuration,
+    env: {
+      OPENCLAW_GATEWAY_PORT: "8080",
+      OPENCLAW_NATIVE_WORKER_PROFILE: "dedicated-native",
+      OPENCLAW_STATE_DIR: "/home/node/.openclaw",
+      OPENCLAW_WORKSPACE_NODE_ID: deviceId,
     },
   });
-  await Promise.resolve();
-  assert.equal(started, true);
+  assert.equal(
+    calls.some(({ args }) => args?.[1] === "gateway"),
+    true,
+  );
   const effectiveConfiguration = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.equal(effectiveConfiguration.cloudWorkers.requiredProfile, "dedicated-native");
   assert.deepEqual(effectiveConfiguration.cloudWorkers.profiles["dedicated-native"], {
@@ -19655,5 +19604,67 @@ test("Kubernetes embedded setup uses a Main roster entry's workspace", async () 
   assert.equal(
     containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
     false,
+  );
+});
+
+test("dedicated Gateway tool policy is checked at Agent admission for both Harnesses", () => {
+  const driver = new KubernetesComputeDriver(options());
+  const rejectedPolicies = [
+    [{ allow: ["plugins"] }, /must not grant Gateway administrative tools/],
+    [{ allow: ["gateway_exec"] }, /must not grant Gateway administrative tools/],
+    [{ allow: ["group:runtime"] }, /concrete tool/],
+    [{ allow: ["message"], actions: { message: ["set-profile"] } }, /reviewed task actions/],
+    [{ allow: ["sessions"] }, /actions.sessions must list/],
+    [null, /must be an object/],
+  ];
+  for (const id of ["openclaw", "codex"]) {
+    const harness = { id, version: "1.0.0", mode: "dedicated" };
+    const config = createHarnessConfiguration(id, "gpt-4o-mini");
+    for (const [gatewayPolicy, expected] of rejectedPolicies) {
+      assert.throws(
+        () =>
+          driver.validateHarnessAuth(
+            harness,
+            apiKeyAuth,
+            {
+              ...config,
+              tools: { gatewayPolicy },
+            },
+            null,
+          ),
+        expected,
+      );
+    }
+    for (const gatewayPolicy of [
+      undefined,
+      { allow: [] },
+      { allow: ["sessions", "diffs"], actions: { sessions: ["patch"] } },
+    ]) {
+      assert.doesNotThrow(() =>
+        driver.validateHarnessAuth(
+          harness,
+          apiKeyAuth,
+          {
+            ...config,
+            tools: gatewayPolicy === undefined ? {} : { gatewayPolicy },
+          },
+          null,
+        ),
+      );
+    }
+  }
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  assert.doesNotThrow(
+    () =>
+      driver.validateHarnessAuth(
+        embedded,
+        apiKeyAuth,
+        {
+          ...createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+          tools: { gatewayPolicy: { allow: ["gateway"] } },
+        },
+        null,
+      ),
+    "dedicated baseline does not alter embedded configuration",
   );
 });

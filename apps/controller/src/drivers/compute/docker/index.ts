@@ -49,6 +49,7 @@ import {
   validatePlaintextNativeGateway,
   validateRoutableNativeListener,
 } from "../native-gateway-transport.ts";
+import { managedGatewayConfiguration } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
@@ -254,12 +255,16 @@ mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
 mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
 chmodSync("/home/node/.openclaw", 0o700);
 chmodSync("/home/node/workspace", 0o700);
+const gatewayToolPolicyInput = process.env.APP_SERVER_URL
+  ? JSON.parse(process.env.OPENCLAW_CONFIG_JSON) : undefined;
 writeFileSync(process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600 });
 delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
+if (gatewayToolPolicyInput !== undefined) requireGatewayToolPolicyRuntime();
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
+if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayToolPolicyInput);
 // State on the Agent's state volume outlives runtime image upgrades. Doctor
 // reads the configuration written above; current state adds no await before
 // the spawn. A failure exits: the Driver reports the container that stopped
@@ -280,7 +285,7 @@ if (outdatedDatabases.length === 0) {
   );
 }
 } catch (error) {
-  if (!holdPluginApproverConfigurationFailure(error)) throw error;
+  if (!holdGatewayToolPolicyFailure(error) && !holdPluginApproverConfigurationFailure(error)) throw error;
 }
 `;
 
@@ -531,10 +536,13 @@ export class DockerComputeDriver implements ComputeDriver {
   // Agent create and update apply preparation's workspace rule, with its message. (OCC
   // provisioning and deployment refuse Docker's Harness authentication first.)
   validateWorkspaceSetup(
-    _harness: RevisionHarnessDescriptor,
+    harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
     dockerSetupWorkspace(configuration, callerSettingError);
+    if (harness.id === "codex" && harness.mode === "dedicated") {
+      managedGatewayConfiguration(configuration, configuration, true, callerSettingError);
+    }
   }
 
   validateHarnessAuth(): never {
@@ -575,6 +583,16 @@ export class DockerComputeDriver implements ComputeDriver {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
     dockerGatewayConfigurationDocument(revision.configuration);
+    if (context?.workspaceSetup !== undefined) {
+      this.validateWorkspaceSetup(revision.harness, revision.configuration);
+    } else if (revision.harness.mode === "dedicated") {
+      managedGatewayConfiguration(
+        revision.configuration,
+        revision.configuration,
+        true,
+        callerSettingError,
+      );
+    }
 
     const network = this.networkName(revision.namespaceId);
     const observed = await this.network(network);

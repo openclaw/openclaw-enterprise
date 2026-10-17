@@ -4,6 +4,27 @@ These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.tes
 Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
 Unless a section says otherwise, the checks run in the default Codex scenario.
 
+## Gateway tool policy
+
+The dedicated Agent policy scenario uses the existing production deployment owner
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
+requires `CODEX_ACCESS_TOKEN` for its other owners.
+
+A live model turn enters through the authenticated Envoy route as a Control UI
+administrator. The test checks a shell task on the Harness Pod, creation and
+execution of an ordinary caller-owned schedule, and an actual refused automation
+call against each of a foreign job and a command job. It correlates the model's
+call and error with the requested job ID and checks that the job is unchanged.
+The command denial comes from caller scope; the command-only guard has separate
+OpenClaw tests. Direct human updates and a canary command remain positive controls.
+
+Separate `tools.invoke` probes check an excluded administrative tool and a denied
+message action. They are direct invocation checks, not model-origin execution.
+The scenario records revision and container identities. These checks do not qualify
+Harness-local policy, child execution, or policy refresh; retained callbacks and
+inheritance also have focused OpenClaw owner tests.
+
 ## Credential source and Harness
 
 Both modes compose the `openshell` Backend with the Sandbox and Credential

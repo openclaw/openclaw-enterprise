@@ -1041,3 +1041,43 @@ test("Docker workspace setup refusals match Kubernetes Compute's and name the se
     );
   }
 });
+
+test("Docker rejects an invalid dedicated Gateway tool policy before engine access", async () => {
+  const driver = new DockerComputeDriver({
+    images: { gateway: "gateway:local", agent: "agent:local" },
+  });
+  let requests = 0;
+  driver.network = async () => {
+    requests += 1;
+    return undefined;
+  };
+  for (const [gatewayPolicy, expected] of [
+    [{ allow: ["plugins"] }, /Gateway administrative tools/],
+    [{ allow: ["message"], actions: { message: ["set-profile"] } }, /reviewed task actions/],
+    [{ allow: ["automations"] }, /actions.automations must list/],
+  ]) {
+    assert.throws(
+      () =>
+        driver.validateWorkspaceSetup(
+          { id: "codex", version: "1.0.0", mode: "dedicated" },
+          { tools: { gatewayPolicy } },
+        ),
+      expected,
+      "Agent admission checks policy when initial workspace files are supplied",
+    );
+    await assert.rejects(
+      () =>
+        driver.prepareRevision({
+          ...dockerGatewayRevision(driver, { tools: { gatewayPolicy } }),
+          harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+        }),
+      expected,
+    );
+  }
+  assert.equal(requests, 0);
+  await driver.prepareRevision({
+    ...dockerGatewayRevision(driver, { tools: { gatewayPolicy: { allow: [] } } }),
+    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+  });
+  assert.equal(requests, 1, "an explicit empty policy is a supported ceiling");
+});

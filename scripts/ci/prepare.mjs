@@ -762,7 +762,7 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, env = {}, file) {
   const name = laneName(lane);
   // TODO: Remove this refusal once installed repository qualification can remove its
   // remote branch and pull request only while they still match what the run created.
@@ -778,7 +778,20 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  requireEnv(prepare.requireEnv ?? [], effectiveEnv);
+  // This selected owner supports native OC and explicit-endpoint Codex with an
+  // API key. Full-lane preparation and other files keep the manifest's complete
+  // credential requirements.
+  const openShellApiKey =
+    name === "openshell" &&
+    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" &&
+    (effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" ||
+      effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim());
+  requireEnv(
+    (prepare.requireEnv ?? []).map((input) =>
+      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
+    ),
+    effectiveEnv,
+  );
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
@@ -2502,9 +2515,10 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath }) {
+async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
-  await validateLaneInputsBeforeSideEffects(name);
+  const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, {}, relativeFile);
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -3094,8 +3108,8 @@ async function prepareFile({ lane, file, statePath, template }) {
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
-  await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, {}, relativeFile);
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.

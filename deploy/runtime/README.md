@@ -14,7 +14,7 @@ network requests still use the configured network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
-The selected upstream source pins Codex `0.160.0`. A temporary
+The selected upstream source pins Codex `0.162.0`. A temporary
 `stock-codex-0.163.0-alpha.2-dependency-pin.patch` updates its managed version,
 package manifest, and frozen lockfile to the stock `0.163.0-alpha.2` npm release,
 which supports plugin default enablement. Both Codex entrypoints use that same
@@ -24,16 +24,15 @@ Codex and Slack come from that same source. The selected commit contains
 the restricted workspace-node commands and saved-token-first pairing required by
 split storage; published `2026.9.5` packages do not contain that complete contract.
 
-The source pin identifies an OpenClaw source build, not a published release.
+The source pin includes the reviewed Gateway tool policy changes; it is not a
+published OpenClaw release.
 Until [OpenClaw #158724](https://github.com/openclaw/openclaw/pull/158724) or
 an equivalent implementation is available upstream, the build applies its
 `readOnlyPaths` compatibility change as
 `openclaw-codex-read-only-paths.patch`. This preserves the restricted Codex
 filesystem profile required by the repository broker and selected plugins.
-The build applies `openclaw-codex-preserve-on-request.patch` because the pinned
-OpenClaw converts `on-request` to a granular policy when a plugin uses MCP
-elicitation. Codex rejects the turn if managed requirements allow only
-`on-request`. Remove the patch when OpenClaw preserves that named policy.
+The selected source preserves `on-request` when plugins use MCP elicitation,
+so managed requirements can continue matching that named approval policy.
 The build also applies `openclaw-connect-ephemeral-expired-setup.patch`. Upstream
 `connect --ephemeral` rejects an expired setup code before it checks saved node
 credentials, so a dedicated native worker that restarts more than ten minutes
@@ -41,16 +40,20 @@ after enrollment cannot reconnect. The patch lets that path decode an expired
 code and hands the expiry to the node host. The node host then reconnects with
 the saved device token for the same Gateway, or still refuses the code, as
 upstream `node run --pair-if-needed` already does.
-The build also applies `openclaw-required-worker-authority.patch`. A required
-worker placement may acknowledge session creation before background setup
-finishes. The patch retains the original request and operator authority through
-that setup, while preserving revocation and exact session checks. The personal
-model selection remains connection-bound until its durable session commit.
-The OpenClaw build stage applies a separate, checksum-verified regression patch
+The pinned source retains the original caller's authority while required-worker
+placement continues after session creation is acknowledged. Scope, role and
+profile revocation still stop dispatch. The OpenClaw build stage applies
+`openclaw-required-worker-authority-regression.patch`, verifies its checksum,
 and runs the real Gateway public-RPC cases without network access. The cases
 cover placement before and after acknowledgement, disconnect, and committed
 role, scope, and profile revocation. Test changes stay in the build stage.
 The source archive and patch hashes identify the resulting custom build.
+
+Dedicated Gateways require the supporting source recorded in this recipe and
+validate their effective native configuration before starting. The required
+Gateway tool policy covers core dispatch, automation authority and Codex
+dynamic tools. Older or unknown source images remain unready; source checks
+and configuration validation do not replace runtime qualification.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references
@@ -79,12 +82,12 @@ enrollment, containment, workspace access, or model execution.
 | Input                                        | Selection                                                                                                    |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Build base                                   | `docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0` |
-| OpenClaw source commit                       | `f8386bc7df0a6c9eda7a28ae81943c5c06a414ff`                                                                   |
-| Source archive SHA-256                       | `ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d`                                           |
+| OpenClaw source commit                       | `c2976c807b70f3d47db84493f1d00e68eb44e914`                                                                   |
+| Source archive SHA-256                       | `83a1691f9bf223807ce62109ce96cdc563856dbf8980fae800cf16061807627f`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                            |
 | Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
 
-The source's package version is `2026.9.9`; it does not identify this custom
+The source's package version is `2026.10.4`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, bridge and dependency patch hashes, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
@@ -99,8 +102,9 @@ The repository credential client stage needs only Node and pnpm, so it builds on
 slim base too. It compiles only the client's own sources without a type check, so
 other controller changes keep it cached; the service stage builds the full,
 type-checked workspace.
-The build selects upstream required bundled plugins plus Codex and Slack before
-installing dependencies for the target architecture with lifecycle
+Asset preparation installs all plugin build dependencies in a disposable stage.
+The production install selects upstream required bundled plugins plus Codex and Slack,
+installs dependencies for the target architecture with lifecycle
 scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
 and native filesystem-addon checks. Extension tests, QA source, and documentation
 media are excluded; help text, skills, and runtime templates remain. A dependency
@@ -138,7 +142,7 @@ checksum-verifying download helper, and both installs read it from a loopback se
 instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
-Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/f8386bc7df0a6c9eda7a28ae81943c5c06a414ff/Dockerfile)
+Follow the [pinned upstream Docker assembly](https://github.com/openclaw/openclaw/blob/c2976c807b70f3d47db84493f1d00e68eb44e914/Dockerfile)
 to keep plugin dependencies and runtime assets consistent. Its plugin-local
 dependency layout preserves dependencies that differ from core versions.
 Plugin chunks emitted directly under `dist` also need package-root resolution.

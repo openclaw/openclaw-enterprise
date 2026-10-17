@@ -1,9 +1,8 @@
 diff --git a/src/cli/connect-cli.test.ts b/src/cli/connect-cli.test.ts
-index a55b665f..83a04188 100644
 --- a/src/cli/connect-cli.test.ts
 +++ b/src/cli/connect-cli.test.ts
-@@ -254,6 +254,44 @@ describe("connect cli", () => {
-     await expect(fs.stat(targetFile)).rejects.toMatchObject({ code: "ENOENT" });
+@@ -239,6 +239,45 @@
+     await expect(fs.readFile(targetFile)).resolves.toEqual(contents);
    });
  
 +  it("defers an expired environment-managed setup code to the saved device token", async () => {
@@ -44,15 +43,15 @@ index a55b665f..83a04188 100644
 +    expect(mocks.runNodeHost.mock.calls[0]?.[0]).not.toHaveProperty("gatewayBootstrapExpiresAtMs");
 +  });
 +
-   it.skipIf(process.platform === "win32").each([" setup-code", "setup-code "])(
-     "consumes only the literal target file %j",
-     async (fileName) => {
++
+   it.each([
+     {
+       args: ["--ephemeral", "--service"],
 diff --git a/src/cli/connect-cli.ts b/src/cli/connect-cli.ts
-index 11cf5373..b388a411 100644
 --- a/src/cli/connect-cli.ts
 +++ b/src/cli/connect-cli.ts
-@@ -256,9 +256,12 @@ async function runConnectCommand(
-     config: getRuntimeConfig(),
+@@ -256,9 +256,12 @@
+     config: await captureRuntimeConfigAsyncReader()(),
      env: process.env,
    });
 +  // Environment-managed nodes replay the same provider setup code on every restart.
@@ -65,7 +64,7 @@ index 11cf5373..b388a411 100644
    const pair = resolveNodePairGatewayPayload(payload);
    const cloudflareAccess =
      initialCloudflareAccess ??
-@@ -284,6 +287,9 @@ async function runConnectCommand(
+@@ -284,6 +287,9 @@
        : {}),
      gatewayCandidates,
      gatewayBootstrapToken: pair.bootstrapToken,

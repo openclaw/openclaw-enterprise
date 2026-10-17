@@ -271,6 +271,44 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   tenant placement is ready, exact namespaced ConfigMap access exists, and the
   tenant-owned ConfigMap contains one valid `openclaw.json` document.
 
+## Gateway tool policy
+
+For dedicated OpenClaw on Kubernetes and dedicated Codex on Kubernetes or Docker,
+Compute automatically applies a reviewed Gateway tool baseline. Plugin approval
+controls installation and enablement. Model access separately requires the
+concrete tool to appear in `tools.gatewayPolicy.allow`; selecting a plugin or
+adding ordinary `tools.alsoAllow` grants does not approve it for model use.
+
+Trusted OCE Configuration authors can supply a complete, narrower list or add
+reviewed task tools. For example, this policy allows session patching, reads and
+an independently selected Diffs plugin:
+
+```json
+{
+  "tools": {
+    "gatewayPolicy": {
+      "allow": ["sessions", "read", "diffs"],
+      "actions": { "sessions": ["patch"] }
+    }
+  }
+}
+```
+
+Omitting the policy uses the [reviewed baseline](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts).
+An explicit empty `allow` withholds the underlying Gateway tool catalog. Action-bearing tools require
+explicit action lists; lists for baseline tools may narrow their reviewed actions.
+Known Gateway administrative tools and additional baseline actions are rejected.
+New plugin task tools require their concrete names and, where supported, actions.
+Ordinary profiles, denies and Codex dynamic-tool exclusions still apply.
+
+Compute always sets `tools.gatewayPolicy.automations.scope: "caller"`,
+`tools.gatewayPolicy.automations.allowCommandJobs: false`,
+`agents.defaults.modelSelectionScope: "session"` and `cron.triggers.enabled: false`.
+Direct human Gateway administration retains its existing authorization. The
+[deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
+explains startup compatibility checks and policy restoration on peer respawn.
+Codex native tools and apps remain governed by their own policies.
+
 ## Related
 
 - [Quickstart](../guides/quickstart.md)

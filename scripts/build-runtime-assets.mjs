@@ -29,11 +29,15 @@ const runtimePaths = [
   "node-runtime-update.mjs",
   "node-runtime-recovery.mjs",
   "node-runtime-env.mjs",
+  "cli-invocation.mjs",
+  "cli-parent-lifetime.mjs",
   "cli-root-options.mjs",
+  "gateway-prewarm.mjs",
   "gateway-run-argv.mjs",
   "gateway-shutdown-budget.mjs",
   "node-host-launcher.mjs",
   "node-compile-cache.mjs",
+  "worker-heap-flag.mjs",
   "openclaw.mjs",
   "extensions",
   "skills",
@@ -183,10 +187,13 @@ if (command === "inputs") {
   )
     .trim()
     .split("\n");
+  await writeFile(join(output, "openclaw-workspace-plugin-dirs"), `${selected.join("\n")}\n`);
+  // Upstream asset preparation builds external plugin assets before pruning.
+  // Keep their build dependencies here; the production install stays selected.
   for (const dir of [
     "ui",
     ...(await readdir(join(root, "packages"))).map((name) => `packages/${name}`),
-    ...selected.map((name) => `extensions/${name}`),
+    ...(await readdir(join(root, "extensions"))).map((name) => `extensions/${name}`),
   ]) {
     try {
       const manifest = await readFile(join(root, dir, "package.json"));
@@ -291,15 +298,15 @@ if (command === "inputs") {
       {
         source: "https://github.com/openclaw/openclaw",
         commit: process.env.GIT_COMMIT,
-        sourceArchiveSha256: "ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d",
+        sourceArchiveSha256: "83a1691f9bf223807ce62109ce96cdc563856dbf8980fae800cf16061807627f",
         openclawBridgePatchSha256:
           "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca",
         openclawConnectPatchSha256:
-          "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2",
+          "c3cdd724b4084cdbc1acdc2b62c7ad0ec36f400e56b21d1db9790bb1e4adb8b5",
         codexDependencyPinPatchSha256:
-          "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9",
-        openclawRequiredWorkerAuthorityPatchSha256:
-          "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8",
+          "b125312f310d1dac3b3cf98c029dfaaadbf996229fd26660f73f1d51eb00dec3",
+        openclawRequiredWorkerAuthorityRegressionPatchSha256:
+          "6da1bf12358f39d7c65bd345453a41495e50b1ab46c4958d41378da105ca6e0d",
         artifactKind: "assembled-runtime-root",
         runtimeContentsSha256: hash(contents),
         lockfileSha256: hash(await readFile(join(root, "pnpm-lock.yaml"))),

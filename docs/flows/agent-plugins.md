@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-10-17
-last_updated_session: authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5
+last_updated_session: 01a13683-3916-7880-b1a6-27175b853600
 ---
 
 # Agent Plugin Deployment Flow
@@ -58,7 +58,10 @@ graph TD
   F -->|invalid or unsafe| X["Keep runtime unready"]
   F -->|verified| G["Publish current startup status"]
   G --> H["Apply matching gateway configuration"]
-  H -->|ready| I["Compute returns readiness and warnings"]
+  H -->|dedicated| P["Apply OCE tool ceiling; validate supporting runtime"]
+  P -->|incompatible| X
+  P -->|valid| I
+  H -->|embedded and ready| I["Compute returns readiness and warnings"]
   I --> J["Worker completes deployment under live claim"]
   G -->|runtime restart| C
 ```
@@ -170,11 +173,19 @@ override precedes `toolDefaults.enabled`; disabled tools emit native denies.
 Master disable and operator denies prevail; `provider_default` and `none` add no
 Diffs review step. Revision-private configuration uses `--pin --force --no-enable`,
 preserving enablement and allow/deny lists. Preparation refreshes the registry
-and verifies admitted configuration; the pinned runtime release lacks this flag.
+and verifies admitted configuration; unsupported runtimes fail preparation.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
 Failure prevents gateway readiness. Confirmed install rejection disables the
 optional selection and removes its managed tool allowance before startup.
+
+Dedicated Gateways then call
+`apps/controller/src/drivers/compute/gateway-tool-policy.ts:managedGatewayConfiguration`.
+The revision's read-only [Gateway tool policy](../reference/configuration.md#gateway-tool-policy)
+bounds plugin grants and mutable native configuration. Both launchers verify source support and native configuration before startup
+and Kubernetes peer respawn. Refusal holds the Gateway unready with
+`gateway-tool-policy` diagnostics. Human administration keeps its existing
+authorization; embedded deployments retain their behavior.
 
 Dedicated Codex bootstraps isolated `CODEX_HOME` with
 `apps._default.enabled:false` and `plugins._default.enabled:false`.
@@ -351,6 +362,9 @@ deadline.
 - 2026-10-17 06:05: Preserve OAuth discovery changes while integrating the native reader fix. (authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5 - 23965d64cc2824f0c5a2b5d704f767fead13f11b)
 
 - 2026-10-17 00:10: Contain non-object native catalog envelopes in the discovery error path. (authoring-run/3d8efdc8-6da6-4cf9-99f7-adebd5e5649d - 42fb0a90337209e28318765c1b537bc4f3623506)
+
+- 2026-10-16 19:14: Apply the dedicated Gateway tool ceiling after plugin grants and recheck it before native startup or peer respawn. (01a13683-3916-7880-b1a6-27175b853600 - b768af1b24c6d9130e46eb0bb470fa761ade2bfb)
+
 - 2026-10-15 22:26: Reconcile main and OpenShell OAuth in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 
 - 2026-10-15 04:39: Grant read-only access to bundled Codex system skills. (authoring-run/97a67c3a-0aaa-4d59-bccf-19183079b169 - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
@@ -370,16 +384,5 @@ deadline.
 - 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
 
 - 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
-
-- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
-
-- 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
-
-- 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
-
-- 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
-- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
-
-- 2026-09-30 13:32: Clarify readiness and routing propagation. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - a0ca6376)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

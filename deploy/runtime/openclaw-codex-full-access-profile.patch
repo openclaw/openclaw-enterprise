@@ -1,10 +1,11 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
-index 2fe7ff9..7da4951 100644
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -424,4 +424,26 @@ export class CodexAppServerClient {
+@@ -346,7 +346,29 @@
+         ),
        );
      }
+-    return this.requestWithOverloadRetry<T>(method, params, options);
 +    const verifyProviderPermission = (result: T): T => {
 +      // Codex can accept an explicit permission profile but return a more restrictive
 +      // sandbox. Honor that decision; do not expose the thread to code that starts a turn.
@@ -27,34 +28,27 @@ index 2fe7ff9..7da4951 100644
 +      }
 +      return result;
 +    };
-     const guard =
-       method === "thread/start" || method === "thread/resume" || method === "thread/fork"
-@@ -529,7 +551,7 @@ export class CodexAppServerClient {
-           }
-         }
--      })();
-+      })().then(verifyProviderPermission);
-     }
--    return this.requestWithOverloadRetry<T>(method, params, options);
 +    return this.requestWithOverloadRetry<T>(method, params, options).then(verifyProviderPermission);
    }
 
+   private async requestWithOverloadRetry<T>(
 diff --git a/extensions/codex/src/app-server/config-contracts.ts b/extensions/codex/src/app-server/config-contracts.ts
-index d508157..6f96b22 100644
 --- a/extensions/codex/src/app-server/config-contracts.ts
 +++ b/extensions/codex/src/app-server/config-contracts.ts
-@@ -94,4 +94,6 @@ export type CodexAppServerRuntimeOptions = {
+@@ -93,6 +93,8 @@
+   approvalPolicy: CodexAppServerEffectiveApprovalPolicy;
    sandbox: CodexSandboxMode;
    approvalsReviewer: CodexApprovalsReviewer;
 +  /** Selected only by a provider that supplies the outer sandbox boundary. */
 +  providerPermissionProfile?: ":danger-full-access";
    /** Prepared boundary for an explicit session permission mode. */
    sessionRoot?: string;
+   serviceTier?: CodexServiceTier | null;
 diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
-index 6fd626b..1996c16 100644
 --- a/extensions/codex/src/app-server/config-options.ts
 +++ b/extensions/codex/src/app-server/config-options.ts
-@@ -314,4 +314,7 @@ export function createCodexAppServerConfig({
+@@ -320,6 +320,9 @@
+       requestTimeoutMs: resolveCodexAppServerRequestTimeoutMs(pluginConfig),
        approvalPolicy: forcedPolicy?.approvalPolicy ?? approvalPolicy,
        sandbox: resolvedSandbox,
 +      ...(env.OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE === ":danger-full-access"
@@ -62,11 +56,12 @@ index 6fd626b..1996c16 100644
 +        : {}),
        approvalsReviewer:
          forcedPolicy?.approvalsReviewer ??
+         explicitApprovalsReviewer ??
 diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/codex/src/app-server/thread-requests.ts
-index 7d80f60..0c966dc 100644
 --- a/extensions/codex/src/app-server/thread-requests.ts
 +++ b/extensions/codex/src/app-server/thread-requests.ts
-@@ -683,9 +683,20 @@ export function resolveCodexThreadApprovalsReviewer(
+@@ -690,10 +690,21 @@
+ }
 
  export function codexThreadSandboxOrPermissions(
 -  appServer: Pick<CodexAppServerRuntimeOptions, "networkProxy" | "sandbox">,
@@ -90,10 +85,10 @@ index 7d80f60..0c966dc 100644
    return { sandbox: appServer.sandbox };
  }
 diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
-index 264c1ff..57f154e 100644
 --- a/extensions/codex/src/app-server/turn-params.ts
 +++ b/extensions/codex/src/app-server/turn-params.ts
-@@ -114,5 +114,12 @@ export function buildTurnStartParams(
+@@ -113,7 +113,14 @@
+     // Catalog collaboration stays native; parent-local context exists only at inference egress.
      collaborationMode.settings.developer_instructions = null;
    }
 -  const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
@@ -107,7 +102,9 @@ index 264c1ff..57f154e 100644
 +      : undefined;
    const currentSender = params.trigger === "user" ? readCodexCurrentSender(params) : undefined;
    // Codex emits only changed values and cannot retract omitted fragments from model history.
-@@ -179,15 +186,17 @@ export function buildTurnStartParams(
+   // Always send configured-or-host context so warm threads see rollover and removed overrides.
+@@ -178,17 +185,19 @@
+       : {}),
      approvalPolicy: options.appServer.approvalPolicy,
      approvalsReviewer: options.appServer.approvalsReviewer,
 -    ...(useThreadPermissionProfile
@@ -136,3 +133,4 @@ index 264c1ff..57f154e 100644
 +          }),
      ...(modelSelection
        ? { model: modelSelection.model, personality: CODEX_NATIVE_PERSONALITY_NONE }
+       : {}),
