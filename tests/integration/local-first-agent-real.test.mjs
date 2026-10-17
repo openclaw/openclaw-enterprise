@@ -450,13 +450,14 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       return responses[calls.length - 1];
     };
     let message;
+    const signal = AbortSignal.timeout(30_000);
     await assert.rejects(
       assertNativeWorkNotFailed(response, expectation, {
         request,
         namespaceId,
         provisioningPath,
         provisioned,
-        signal: AbortSignal.timeout(30_000),
+        signal,
       }),
       (error) => {
         assert.equal(error.name, "AssertionError");
@@ -470,6 +471,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       expectedPaths,
     );
     for (const call of calls) {
+      assert.ok(call.signal instanceof AbortSignal && call.signal !== signal);
       assert.equal(call.signal, calls[0].signal, "all reads must share one diagnostic budget");
       assert.equal(call.method, "GET");
       assert.equal(call.body, undefined);
@@ -545,6 +547,16 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: "other",
       providerCode: "other",
     });
+    for (const providerStatus of [399, 401.5, 600]) {
+      const statusPage = page(probeLog({ providerStatus }));
+      const { modelProbe } = await observe(
+        failed,
+        handoff,
+        [failed, statusPage],
+        [deploymentPath, logPath],
+      );
+      assert.equal(modelProbe.providerStatus, "other");
+    }
   });
 
   await t.test("read no provider response without a held model-check failure", async () => {
@@ -565,10 +577,13 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     });
     assert.equal(observed.modelProbe, undefined);
     const starved = { ...deployment, error: failure("RUNTIME_CPU_STARVED") };
-    assert.equal(
-      (await observe(handoff, handoff, [starved], [deploymentPath])).modelProbe,
-      undefined,
-    );
+    const running = { ...deployment, status: "running" };
+    for (const current of [starved, running]) {
+      assert.equal(
+        (await observe(handoff, handoff, [current], [deploymentPath])).modelProbe,
+        undefined,
+      );
+    }
   });
 
   await t.test("bind every read to the exact revision", async () => {
@@ -578,11 +593,36 @@ test("native terminal failures report only fixed failure codes", async (t) => {
         .modelProbe,
       "unavailable",
     );
-    const other = { ...deployment, deploymentId: "another-revision" };
+    const gatewayPage = { ...page(probeLog({ providerStatus: 401 })), source: "gateway" };
     assert.equal(
-      (await observe(handoff, handoff, [other], [deploymentPath])).deployment,
+      (await observe(handoff, handoff, [deployment, gatewayPage], [deploymentPath, logPath]))
+        .modelProbe,
       "unavailable",
     );
+    // Runtime output that merely names the event is not the wrapper's model check.
+    const echoed = { type: "line", kind: "openclaw", message: "openclaw.model_probe" };
+    const unechoed = await observe(
+      handoff,
+      handoff,
+      [deployment, page([{ ...echoed, fields: { providerStatus: 401 } }])],
+      [deploymentPath, logPath],
+    );
+    assert.deepEqual(unechoed.modelProbe, {
+      probes: 0,
+      code: "none",
+      providerStatus: "none",
+      providerCode: "none",
+    });
+    for (const other of [
+      { ...deployment, deploymentId: "another-revision" },
+      { ...deployment, agentId: `agt_${randomUUID()}` },
+      { ...deployment, namespaceId: `ns_${randomUUID()}` },
+    ]) {
+      assert.equal(
+        (await observe(handoff, handoff, [other], [deploymentPath])).deployment,
+        "unavailable",
+      );
+    }
     const early = { ...handoff, phase: "configuration", agentId: undefined, revisionId: undefined };
     const observed = await observe(early, early, [], []);
     assert.equal(observed.deployment, undefined);
@@ -593,8 +633,12 @@ test("native terminal failures report only fixed failure codes", async (t) => {
 
   await t.test("pass work that has not failed", async () => {
     for (const status of ["queued", "running", "succeeded"]) {
-      await assertNativeWorkNotFailed({ status }, expectation, {});
+      await assertNativeWorkNotFailed({ status }, expectation);
     }
+    await assert.rejects(assertNativeWorkNotFailed({ status: "failed" }, expectation), {
+      name: "AssertionError",
+      message: /^Guided native provisioning must succeed: unrecognized \{"provisioning":/,
+    });
   });
 });
 

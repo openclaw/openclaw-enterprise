@@ -25,6 +25,10 @@ const runtimeFailureCodes = new Set([
   "RUNTIME_CPU_STARVED",
   "RUNTIME_MODEL_PROBE_TIMEOUT",
   "RUNTIME_MODEL_PROBE_FAILED",
+  "RUNTIME_LOGIN_FAILED",
+  "RUNTIME_STARTUP_FAILED",
+  "CONVERGENCE_DEADLINE_EXCEEDED",
+  "PROVISIONING_DEPLOYMENT_FAILED",
 ]);
 // Held failures whose model check can name the provider's response.
 const providerFailureCodes = new Set([
@@ -134,7 +138,7 @@ async function observeNativeFailure({
   return observation;
 }
 
-export async function assertNativeWorkNotFailed(response, expectation, diagnostics) {
+export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
   if (response.status === "failed") {
     const observation = await observeNativeFailure(diagnostics);
     assert.fail(
