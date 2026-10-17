@@ -412,6 +412,7 @@ async function createFixture(context, options = {}) {
   let workerCompletion;
   const revokedBindings = [];
   const teardownCancellations = [];
+  const teardownWorkCancellations = [];
   const drivers = installationDrivers({
     computeDriver,
     configurationDriver,
@@ -455,6 +456,17 @@ async function createFixture(context, options = {}) {
       await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`);
     }
     await stopWorker();
+    // Queued work stays in the database the file's later tests share; cancel it so no later
+    // worker picks it up (finding 1616), even when the test failed before its end.
+    for (const { workId, message } of teardownWorkCancellations) {
+      const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
+      if (claim !== undefined) {
+        const cancelled = await state.transact((unit) =>
+          unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
+        );
+        assert.equal(cancelled.status, "cancelled", workId);
+      }
+    }
     await app.close?.();
     await pool.end();
   });
@@ -580,11 +592,17 @@ async function createFixture(context, options = {}) {
     teardownCancellations.push({ namespaceId, agentId });
   }
 
+  // Cancel this provisioning work at teardown if it is still queued then.
+  function cancelQueuedWorkAtTeardown(workId, message) {
+    teardownWorkCancellations.push({ workId, message });
+  }
+
   return {
     administratorPrincipalId,
     app,
     bootstrapNamespace,
     cancelProvisioningAtTeardown,
+    cancelQueuedWorkAtTeardown,
     computeDriver,
     pool,
     configurationDriver,
@@ -660,7 +678,8 @@ async function provisioningRow(pool, namespaceId, requestId) {
   return result.rows[0];
 }
 
-async function claimProvisioningWork(pool, workId) {
+// With ifQueued, work that is no longer queued is left alone and returns undefined.
+async function claimProvisioningWork(pool, workId, { ifQueued = false } = {}) {
   const claimToken = randomUUID();
   const claimed = await pool.query(
     `UPDATE occ.controller_work
@@ -675,6 +694,9 @@ async function claimProvisioningWork(pool, workId) {
      RETURNING idempotency_key`,
     [workId, claimToken],
   );
+  if (ifQueued && claimed.rowCount === 0) {
+    return undefined;
+  }
   assert.equal(claimed.rowCount, 1, "test must claim the exact queued provisioning work");
   return { idempotencyKey: workId, claimToken };
 }
@@ -3210,6 +3232,10 @@ test(
     // generic message and retries the work.
     breakSecretDriver = true;
     workId = admitted.data.provisioning.workId;
+    fixture.cancelQueuedWorkAtTeardown(
+      workId,
+      "Secret Driver outage test completed after its first attempt",
+    );
     await fixture.startWorker();
     await waitFor("the worker to finish its first provisioning attempt", async () =>
       completed.find((event) => event.workId === workId),
@@ -3231,17 +3257,6 @@ test(
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
       message: "Agent provisioning could not complete.",
     });
-
-    // The retry stays queued in the database the file's later tests share; cancel it so no
-    // later worker picks it up (finding 1616).
-    const cleanupClaim = await claimProvisioningWork(fixture.pool, workId);
-    const cancelled = await fixture.state.transact((unit) =>
-      unit.provisioning.cancel(cleanupClaim, {
-        code: "PROVISIONING_CANCELLED",
-        message: "Secret Driver outage test completed after its first attempt",
-      }),
-    );
-    assert.equal(cancelled.status, "cancelled");
   },
 );
 

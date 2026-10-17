@@ -177,8 +177,14 @@ export interface InstallationCapabilities {
   readonly pluginDiscovery?: { readonly credential: "required" | "none" };
   /** Present only when dedicated native OpenClaw can be admitted. */
   readonly nativeWorkers?: { readonly support: "pinned-runtime" | "custom-image" };
-  /** The OpenClaw execution modes Agent admission accepts; empty when it accepts none. */
-  readonly openclaw?: { readonly executionModes: readonly HarnessExecutionMode[] };
+  /**
+   * The OpenClaw execution modes an Agent can deploy in; empty when none. sandboxDriverUnavailable
+   * marks an empty list caused by a selected Sandbox Driver outage, not the Installation's shape.
+   */
+  readonly openclaw?: {
+    readonly executionModes: readonly HarnessExecutionMode[];
+    readonly sandboxDriverUnavailable?: true;
+  };
 }
 
 /** Experimental authenticated client shared by related Installation Drivers. */

@@ -163,8 +163,8 @@ While a revision is not ready, deployment `progress.lastAttempt.code` says why
 when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
 revision Pod has `PodScheduled` `False` with reason `Unschedulable`,
 `NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
-names a full Pod quota, and `WORKSPACE_NODE_PENDING` when the
-Harness and gateway are ready and only the workspace node's gateway connection
+names a Pod quota still full, and `WORKSPACE_NODE_PENDING` when the
+Harness and gateway are ready and only the workspace node's connection
 is outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has

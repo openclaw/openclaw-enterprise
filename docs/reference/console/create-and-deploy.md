@@ -32,9 +32,9 @@ block direct Secret-backed model and environment projection.
    skips Presets.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
-   Anthropic offers only **OpenClaw**. Codex uses Dedicated **Execution mode**; OpenClaw starts Embedded. Supported
-   Installations offer OpenAI OpenClaw **Dedicated** under **Runtime details**. Anthropic
-   OpenClaw stays Embedded.
+   Anthropic offers only **OpenClaw**. Codex uses Dedicated **Execution mode**. OpenClaw
+   starts Embedded without a Sandbox Driver, or Dedicated (OpenAI only; **Runtime details**)
+   with one that provisions it. Anthropic OpenClaw stays Embedded.
    For Codex, choose **OpenAI API key**, **Service Accounts**, or **ChatGPT
    OAuth** ([experimental](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)).
    OpenClaw uses the provider's API key.
@@ -52,9 +52,8 @@ block direct Secret-backed model and environment projection.
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
    **Reset template** replaces them.
 5. Under **Repository access**, optionally select up to 16 approved repositories
-   and set their access levels. Kubernetes supports Codex (Dedicated) or OpenClaw
-   (Embedded), without a Sandbox Driver. Dedicated OpenClaw requires a Sandbox
-   Driver, so repository credentials remain unsupported. Use Codex for repositories
+   and set their access levels. Kubernetes supports Codex (Dedicated) and Embedded
+   OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
    with Slack.
 
 6. If you need Slack, select **Dedicated** execution and use its channel card.

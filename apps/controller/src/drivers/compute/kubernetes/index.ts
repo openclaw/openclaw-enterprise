@@ -1857,17 +1857,34 @@ function validateCodexSeccompProfile(value: unknown): string {
 
 // The API server's quota refusal, `exceeded quota: <name>, requested: <resource>=<quantity>[,...],
 // used: ..., limited: ...`, lists only the resources over their limit.
-const QUOTA_REFUSAL = /\bexceeded quota: [^\s,]+, requested: ([^\s,]+(?:,[^\s,]+)*), used: /u;
+const QUOTA_REFUSAL = /\bexceeded quota: ([^\s,]+), requested: ([^\s,]+(?:,[^\s,]+)*), used: /u;
+const POD_QUOTA_RESOURCES = ["pods", "count/pods"] as const;
 
-// True when a Pod creation refusal says a ResourceQuota has no Pods left.
-function podQuotaRefusal(message: unknown): boolean {
-  const requested = typeof message === "string" ? QUOTA_REFUSAL.exec(message)?.[1] : undefined;
-  return (
-    requested?.split(",").some((entry) => {
-      const resource = entry.split("=", 1)[0];
-      return resource === "pods" || resource === "count/pods";
-    }) ?? false
-  );
+// The ResourceQuota a Pod creation refusal names when that quota had no Pods left.
+function podQuotaRefusal(message: unknown): string | undefined {
+  const refusal = typeof message === "string" ? QUOTA_REFUSAL.exec(message) : null;
+  return refusal?.[2]?.split(",").some((entry) => {
+    const resource = entry.split("=", 1)[0];
+    return POD_QUOTA_RESOURCES.some((name) => name === resource);
+  })
+    ? refusal[1]
+    : undefined;
+}
+
+// True when a ResourceQuota's status shows its Pods all used: a Pod needs one more.
+function podQuotaFull(quota: unknown): boolean {
+  const status = asRecord(asRecord(quota)?.status);
+  const hard = asRecord(status?.hard);
+  const used = asRecord(status?.used);
+  return POD_QUOTA_RESOURCES.some((resource) => {
+    const limit = hard?.[resource];
+    const count = used?.[resource];
+    return (
+      typeof limit === "string" &&
+      typeof count === "string" &&
+      (compareResourceQuantities(count, limit) ?? -1) >= 0
+    );
+  });
 }
 
 function observedPodMatchingSelector(
@@ -9432,10 +9449,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // True when one of this revision's Deployments cannot create a Pod because a
   // ResourceQuota on its Namespace has no Pods left. The Deployment controller copies
   // the ReplicaSet's ReplicaFailure condition (reason FailedCreate, the quota refusal as
-  // its message) onto the Deployment, so this reads only Deployments, never ReplicaSets.
-  // The message is the first refusal since the last successful create, so a Pod quota
-  // refusal followed by another quota's refusal still reads as a full Pod quota. Like
-  // failure evidence, an unavailable observation reports nothing.
+  // its message) onto the Deployment, so this reads Deployments, never ReplicaSets.
+  // The message is the first refusal since the last successful create, and the next
+  // create can wait up to 1000 s of backoff, so it can outlive the full quota or hide a
+  // later refusal for CPU or memory (finding 1623). The named quota's status must still
+  // show every Pod used. Like failure evidence, an unavailable observation reports nothing.
   private async safePodQuotaObservation(
     deployments: readonly {
       readonly name: string;
@@ -9456,19 +9474,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // One unreadable Deployment does not hide the other's refusal.
         continue;
       }
-      if (
-        Array.isArray(conditions) &&
-        conditions.some((item) => {
-          const condition = asRecord(item);
-          return (
-            condition?.type === "ReplicaFailure" &&
-            condition.status === "True" &&
-            condition.reason === "FailedCreate" &&
-            podQuotaRefusal(condition.message)
-          );
-        })
-      ) {
-        return true;
+      const quotaNames = new Set<string>();
+      for (const item of Array.isArray(conditions) ? conditions : []) {
+        const condition = asRecord(item);
+        const quotaName =
+          condition?.type === "ReplicaFailure" &&
+          condition.status === "True" &&
+          condition.reason === "FailedCreate"
+            ? podQuotaRefusal(condition.message)
+            : undefined;
+        if (quotaName !== undefined) {
+          quotaNames.add(quotaName);
+        }
+      }
+      for (const quotaName of quotaNames) {
+        try {
+          // The quota may be an administrator's, so its ownership is not checked.
+          if (podQuotaFull(await this.get("ResourceQuota", quotaName, namespace))) {
+            return true;
+          }
+        } catch {
+          if (ownerSignal?.aborted) {
+            throw ownerSignal.reason;
+          }
+        }
       }
     }
     return false;

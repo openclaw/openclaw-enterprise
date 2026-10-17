@@ -734,7 +734,12 @@ export function installFixture(scenario, evidence) {
             : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
           ...(scenario.openclawExecutionModes === undefined
             ? {}
-            : { openclaw: { executionModes: scenario.openclawExecutionModes } }),
+            : {
+                openclaw: {
+                  executionModes: scenario.openclawExecutionModes,
+                  ...(scenario.sandboxDriverUnavailable ? { sandboxDriverUnavailable: true } : {}),
+                },
+              }),
           ...(scenario.credentialSourceTypes !== undefined
             ? { credentialSources: { types: scenario.credentialSourceTypes } }
             : {}),

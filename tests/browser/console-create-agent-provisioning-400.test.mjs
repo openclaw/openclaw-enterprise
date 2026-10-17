@@ -837,6 +837,45 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   assert.equal(await alert.isHidden(), true);
 });
 
+const SANDBOX_DRIVER_OUTAGE =
+  "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+
+test("During a Sandbox Driver outage, Create Agent says OpenClaw is unavailable for now, not that the driver cannot run it", async (t) => {
+  // Admission answers a retryable 503 in this state, so the copy must not ask an administrator to
+  // select another Sandbox Driver (finding 1624).
+  const sandboxDriver = nativeSandboxDriver();
+  const fixture = await createConsoleAppFixture(t, {
+    filesystemConfiguration: true,
+    sandboxDriver,
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sandbox outage", { ready: true });
+  // The registry no longer matches the selection, as after a Driver swap at runtime.
+  sandboxDriver.implementation = `${sandboxDriver.implementation}-unavailable`;
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, {
+    executionModes: [],
+    sandboxDriverUnavailable: true,
+  });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Outage");
+  const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await alert.waitFor();
+  assert.equal(await alert.textContent(), SANDBOX_DRIVER_OUTAGE);
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable.",
+  );
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. OpenClaw is unavailable while this installation's Sandbox Driver is unavailable. Slack requires Codex.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  assert.deepEqual(writesSinceFill(), []);
+});
+
 test("Without a Sandbox Driver, the same Create Agent steps save an Embedded OpenClaw Agent", async (t) => {
   const fixture = await createConsoleAppFixture(t, { filesystemConfiguration: true });
   await fixture.bootstrap();
@@ -970,8 +1009,17 @@ test("OpenClaw chosen before the Installation answers switches to the mode it ad
   await installation.requested;
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   const mode = page.getByLabel("Execution mode");
-  // Before the answer the form keeps its Embedded default.
+  // Before the answer the form keeps its Embedded default, and the hints promise no mode: no
+  // Installation admits both (finding 1625).
   assert.equal(await mode.inputValue(), "embedded");
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.",
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.",
+  );
   installation.release();
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   assert.equal(await mode.inputValue(), "dedicated");
@@ -1004,24 +1052,28 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
     },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  for (const [executionModes, text] of [
+  for (const [openclaw, text] of [
     [
-      [],
+      { executionModes: [] },
       "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
     ],
     [
-      ["dedicated"],
+      { executionModes: ["dedicated"] },
       "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
     ],
+    // An outage needs time, not a different Preset (finding 1624).
+    [{ executionModes: [], sandboxDriverUnavailable: true }, SANDBOX_DRIVER_OUTAGE],
   ]) {
     const { page } = await newPage(t, fixture, { browser });
-    await routeInstallationWithoutProvisioning(page, fixture, { openclaw: { executionModes } });
+    await routeInstallationWithoutProvisioning(page, fixture, { openclaw });
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByLabel("Preset template").selectOption(preset.data.id);
     await page.getByRole("button", { name: "Use Preset" }).click();
-    const alert = page.getByRole("alert").filter({ hasText: /operator-managed credentials/ });
+    const alert = page
+      .getByRole("alert")
+      .filter({ hasText: /operator-managed credentials|^OpenClaw is unavailable / });
     await alert.waitFor();
-    assert.equal(await alert.textContent(), text, JSON.stringify(executionModes));
+    assert.equal(await alert.textContent(), text, JSON.stringify(openclaw));
     assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
     assert.equal(
       await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),

@@ -1913,6 +1913,24 @@ export const scenarios = {
       "Select Codex and confirm the alert clears and Dedicated remains available.",
     ],
   },
+  createOpenclawSandboxDriverOutage: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw during a Sandbox Driver outage",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    sandboxDriverUnavailable: true,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation's selected Sandbox Driver is unavailable right now, so it admits no OpenClaw execution mode until the driver returns. The alert says OpenClaw is unavailable for now and to reload, not that an administrator must select another Sandbox Driver. Create Agent stays disabled.",
+    steps: [
+      "Confirm the alert says the Sandbox Driver is unavailable right now and Create Agent is disabled.",
+    ],
+  },
   createOpenclawSandboxDedicated: {
     group: "Pages/Create Agent",
     name: "OpenClaw on a Sandbox Driver installation",

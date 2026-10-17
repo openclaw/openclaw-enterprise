@@ -279,9 +279,10 @@ all three [facets](drivers/sandbox.md#containment-facets) (`networking`,
 `filesystem`, `process`). Without a qualifying SandboxDriver, `GET /installation`
 omits `capabilities.nativeWorkers`, and deploy and new provisioning requests answer
 `409 RESOURCE_CONFLICT` naming the missing Driver. `GET /installation` always
-reports `capabilities.openclaw.executionModes`, the OpenClaw modes admission
-accepts; the Console refuses OpenClaw before any write when the selected mode is
-not listed. Queued provisioning work waits for the Driver as for an outage.
+reports `capabilities.openclaw.executionModes`, the OpenClaw modes an Agent can
+deploy in, plus `sandboxDriverUnavailable: true` during a Driver outage. The Console
+refuses an unlisted mode before any write. Queued provisioning work waits for the
+Driver as for an outage.
 There is no command-level `exec` facet or per-tool sandbox admission.
 
 The bundled [OpenShell implementation](drivers/openshell-sandbox.md) supports

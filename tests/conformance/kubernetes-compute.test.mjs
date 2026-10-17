@@ -1072,13 +1072,27 @@ function dedicatedFirstDeployFixture({
   // the real driver; successful writes do not make a Deployment ready.
   const clients = { core: {}, apps: {}, networking: {}, objects: {}, discovery: {} };
   for (const [api, kinds] of [
-    [clients.core, ["ConfigMap", "Secret", "Service", "ServiceAccount", "PersistentVolumeClaim"]],
+    [
+      clients.core,
+      [
+        "ConfigMap",
+        "Secret",
+        "Service",
+        "ServiceAccount",
+        "PersistentVolumeClaim",
+        "ResourceQuota",
+      ],
+    ],
     [clients.apps, ["Deployment"]],
     [clients.networking, ["NetworkPolicy"]],
   ]) {
     for (const kind of kinds) {
-      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) =>
-        read(kind, name, target);
+      api[`readNamespaced${kind}`] = async ({ name, namespace: target }) => {
+        if (state.unreadableKind === kind) {
+          throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+        }
+        return read(kind, name, target);
+      };
       const write = async ({ body }) => {
         const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
         const changed =
@@ -2201,7 +2215,8 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
 
 // A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
 // bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
-// ReplicaFailure condition onto the Deployment, which the driver reads.
+// ReplicaFailure condition onto the Deployment, which the driver reads, and the refused
+// quota's status confirms that its Pods are still all used (finding 1623).
 test("a pending dedicated deploy names a full Namespace Pod quota", async () => {
   const {
     state,
@@ -2210,6 +2225,7 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     namespace,
     gatewayName,
     agentName,
+    objects,
     read,
     save,
     prepare,
@@ -2221,8 +2237,22 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     object.status = { ...object.status, conditions };
     save(object);
   };
-  const refusal = (requested, used = "pods=10", limited = "pods=10") =>
-    `pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: exceeded quota: openclaw-quota, requested: ${requested}, used: ${used}, limited: ${limited}`;
+  // The quota's status as the quota controller last recorded it.
+  const setQuota = (used, hard = used, name = "openclaw-quota") =>
+    save({
+      apiVersion: "v1",
+      kind: "ResourceQuota",
+      metadata: { name, namespace },
+      status: { hard, used },
+    });
+  setQuota({ pods: "10", "count/pods": "10", "requests.cpu": "4" });
+  const refusal = (
+    requested,
+    used = "pods=10",
+    limited = "pods=10",
+    quotaName = "openclaw-quota",
+  ) =>
+    `pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: exceeded quota: ${quotaName}, requested: ${requested}, used: ${used}, limited: ${limited}`;
   const failure = (message, overrides = {}) => ({
     type: "ReplicaFailure",
     status: "True",
@@ -2267,6 +2297,47 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   ]) {
     assert.equal(await pendingReasonWith(agentName, conditions), undefined, inspect(conditions));
   }
+  // The condition keeps the first refusal through up to 1000 s of create backoff. Once the
+  // quota has a Pod free, or a CPU quota refuses instead, the Pod quota is not the wait.
+  const podRefusal = [failure(refusal("pods=1"))];
+  for (const [label, used, hard] of [
+    ["a Pod freed", { pods: "9" }, { pods: "10" }],
+    ["the limit raised", { pods: "10" }, { pods: "11" }],
+    ["only CPU used up", { pods: "4", "requests.cpu": "4" }, { pods: "10", "requests.cpu": "4" }],
+    ["no Pod limit left", { pods: "4", "requests.cpu": "4" }, { "requests.cpu": "4" }],
+    ["an unparsable count", { pods: "ten" }, { pods: "10" }],
+  ]) {
+    setQuota(used, hard);
+    assert.equal(await pendingReasonWith(agentName, podRefusal), undefined, label);
+  }
+  // count/pods counts too, and a Pod quota over its limit is full.
+  setQuota({ "count/pods": "10" }, { "count/pods": "10" });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  setQuota({ pods: "11" }, { pods: "1e1" });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  // The quota the refusal names is read, an administrator's included.
+  setQuota({ pods: "3" }, { pods: "10" });
+  setQuota({ pods: "2" }, { pods: "2" }, "team-pods");
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "team-pods")),
+    ]),
+    quota,
+  );
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  // A deleted or unreadable quota confirms nothing.
+  objects.delete(`ResourceQuota:${namespace}:team-pods`);
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "team-pods")),
+    ]),
+    undefined,
+  );
+  setQuota({ pods: "10" }, { pods: "10" });
+  state.unreadableKind = "ResourceQuota";
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  state.unreadableKind = undefined;
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
   // A held runtime failure leads instead of any pending reason.
   state.gatewayRuntimeFailure = {
     component: "gateway",
@@ -2304,6 +2375,64 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   const ready = await prepare();
   assert.equal(ready.ready, true);
   assert.equal(ready.pendingReason, undefined);
+});
+
+// The Pod quota check reads the workload Deployments a revision runs: an Embedded
+// revision has only its Gateway, and a Harness that a SandboxDriver provisions has no
+// Harness Deployment.
+test("the Pod quota check reads only the revision's own workload Deployments", async () => {
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const openclaw = (mode) => ({
+    harness: { id: "openclaw", version: "1.0.0", mode },
+    configuration: admitLoggingConfiguration(
+      createHarnessConfiguration("openclaw", "gpt-5"),
+      "info",
+    ),
+    plugins: undefined,
+  });
+  for (const [label, options, roles] of [
+    ["dedicated Codex", {}, ["agent", "gateway"]],
+    ["Embedded OpenClaw", { revision: openclaw("embedded") }, ["gateway"]],
+    [
+      "SandboxDriver-provisioned OpenClaw",
+      {
+        sandboxDriver,
+        revision: { ...openclaw("dedicated"), sandboxDriverId: sandboxDriver.id },
+      },
+      ["gateway"],
+    ],
+  ]) {
+    const { driver, gatewayName, agentName, prepare } = dedicatedFirstDeployFixture(options);
+    const observed = [];
+    const observe = driver.safePodQuotaObservation.bind(driver);
+    driver.safePodQuotaObservation = (deployments) => {
+      observed.push(deployments.map(({ name }) => name));
+      return observe(deployments);
+    };
+    const pending = await prepare();
+    assert.equal(pending.ready, false, label);
+    assert.deepEqual(
+      observed.at(-1),
+      roles.map((role) => (role === "gateway" ? gatewayName : agentName)),
+      label,
+    );
+  }
 });
 
 // The worker is serial: every pass one Agent spends waiting for its node holds

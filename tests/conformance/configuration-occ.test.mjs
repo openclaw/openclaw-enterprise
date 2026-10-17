@@ -2048,7 +2048,16 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       shape.sandbox.implementation = "replaced-sandbox";
     }
     const { capabilities } = await controller.getInstallation(administrator);
-    assert.deepEqual(capabilities.openclaw, { executionModes: shape.modes }, shape.name);
+    // Only an outage says so: an empty list from the Installation's shape needs an
+    // administrator, an outage only time (finding 1624).
+    assert.deepEqual(
+      capabilities.openclaw,
+      {
+        executionModes: shape.modes,
+        ...(shape.unavailable ? { sandboxDriverUnavailable: true } : {}),
+      },
+      shape.name,
+    );
     // nativeWorkers promises dedicated admission, so it appears exactly with that mode.
     assert.equal(
       capabilities.nativeWorkers === undefined,

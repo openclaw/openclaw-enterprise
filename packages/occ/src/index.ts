@@ -1322,7 +1322,7 @@ function requireDedicatedNativeSupport(
 }
 
 /**
- * Whether Agent save and deploy admission accept OpenClaw in this execution mode on this
+ * Whether an OpenClaw Agent in this execution mode passes both save and deploy admission on this
  * Installation shape. It runs admission's own checks, so the Installation capability built from
  * it cannot disagree with them (#2670).
  */
@@ -1668,19 +1668,22 @@ export class OpenClawController {
       id: this.installation.id,
     });
     // openclaw lists the execution modes admission accepts for OpenClaw; an empty list means
-    // none (#2670). nativeWorkers promises that dedicated native OpenClaw can be admitted, so it
-    // is reported only when that mode is listed (finding 1608).
+    // none (#2670), and sandboxDriverUnavailable says that is an outage, not the Installation's
+    // shape (finding 1624). nativeWorkers promises that dedicated native OpenClaw can be
+    // admitted, so it is reported only when that mode is listed (finding 1608).
     const {
       nativeWorkers: _unchecked,
       openclaw: _derived,
       ...declared
     } = this.installation.capabilities ?? {};
-    const openclawModes = this.openClawExecutionModes();
-    const nativeWorkers = openclawModes.includes("dedicated") ? this.nativeWorkers : undefined;
+    const openclaw = this.openClawExecutionModes();
+    const nativeWorkers = openclaw.executionModes.includes("dedicated")
+      ? this.nativeWorkers
+      : undefined;
     const capabilities = {
       ...declared,
       ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
-      openclaw: { executionModes: openclawModes },
+      openclaw,
       ...(this.selections.has("credential_gateway")
         ? {
             credentialSources: {
@@ -1713,22 +1716,27 @@ export class OpenClawController {
   }
 
   /**
-   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime admit at Agent
-   * save and deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
+   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent
+   * deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
    */
-  private openClawExecutionModes(): HarnessExecutionMode[] {
+  private openClawExecutionModes(): {
+    executionModes: HarnessExecutionMode[];
+    sandboxDriverUnavailable?: true;
+  } {
     let sandbox: SandboxDriver | undefined;
     try {
       sandbox = this.sandboxDriver();
     } catch (error) {
       if (error instanceof DependencyUnavailableError) {
-        return [];
+        return { executionModes: [], sandboxDriverUnavailable: true };
       }
       throw error;
     }
-    return HARNESS_EXECUTION_MODES.filter((mode) =>
-      admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers),
-    );
+    return {
+      executionModes: HARNESS_EXECUTION_MODES.filter((mode) =>
+        admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers),
+      ),
+    };
   }
 
   async getInstallationDeploymentInventory(

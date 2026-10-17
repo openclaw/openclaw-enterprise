@@ -83,6 +83,10 @@ export const CreateOpenclawNoExecutionMode = {
   ...story("createOpenclawNoExecutionMode"),
   name: "OpenClaw with no usable execution mode",
 };
+export const CreateOpenclawSandboxDriverOutage = {
+  ...story("createOpenclawSandboxDriverOutage"),
+  name: "OpenClaw during a Sandbox Driver outage",
+};
 export const CreateOpenclawSandboxDedicated = {
   ...story("createOpenclawSandboxDedicated"),
   name: "OpenClaw on a Sandbox Driver installation",

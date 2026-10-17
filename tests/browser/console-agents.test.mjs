@@ -2086,7 +2086,10 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
-  assert.match(await modeHint.textContent(), /OpenClaw supports Dedicated or Embedded/);
+  assert.match(
+    await modeHint.textContent(),
+    /OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver/,
+  );
   assert.match(await modeHint.textContent(), /Slack requires Dedicated execution/);
   assert.equal(
     await page.locator(".launch-runtime > summary").textContent(),
