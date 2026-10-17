@@ -11267,7 +11267,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
           upfront ? 401 : cause?.kind === "PROBE_STATUS" ? 404 : undefined,
         );
         assert.equal(probeLog.providerCode, undefined);
-        assert.equal(probeLog.providerSource, upfront ? "provider" : undefined);
+        assert.equal(probeLog.responseHeaderMarker, upfront ? "provider-like" : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();

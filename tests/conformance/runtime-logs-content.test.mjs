@@ -410,15 +410,15 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         },
       ),
       probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }),
-      // The upfront 401 names who answered it (header names only); the Codex probe
-      // has no such field, and provider text never passes.
+      // The upfront 401 reports which header names it saw; the Codex probe has no
+      // such field, and provider text never passes.
       probe("openclaw.model_probe", undefined, {
         providerStatus: 401,
         providerCode: "missing_api_key",
-        providerSource: "provider",
+        responseHeaderMarker: "provider-like",
         providerMessage: "Missing bearer or basic authentication in header",
       }),
-      probe("codex.model_probe", undefined, { providerSource: "provider" }),
+      probe("codex.model_probe", undefined, { responseHeaderMarker: "provider-like" }),
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
       probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
       probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }),
@@ -456,7 +456,7 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
     fields("openclaw.model_probe", {
       providerStatus: 401,
       providerCode: "missing_api_key",
-      providerSource: "provider",
+      responseHeaderMarker: "provider-like",
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),

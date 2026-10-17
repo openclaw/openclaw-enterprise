@@ -316,7 +316,7 @@ test("the upfront credential check runs only where OpenClaw would send the same 
   // A rejection names the provider's 401, who answered it (from response header
   // names only) and, when the child classified it, a closed-vocabulary code; the
   // response body and header values never leave the child.
-  assert.deepEqual(openai.rejected, { providerStatus: 401, providerSource: "unknown" });
+  assert.deepEqual(openai.rejected, { providerStatus: 401, responseHeaderMarker: "none" });
   assert.deepEqual(openai.stages, ["preflight"]);
   assert.equal(openai.calls.length, 1);
   assert.equal(openai.calls[0].options.env.U, "https://api.openai.com/v1/responses");
@@ -345,26 +345,28 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     upfrontCheck("anthropic", undefined, "sk-ant-api03-fixture").calls[0].options.env.U,
     "https://api.anthropic.com/v1/messages",
   );
-  // Only the provider's 401 (exit 3-6 plus a known source 0, 10 or 20) is a rejection.
-  for (const status of [0, 1, 2, 7, 9, 10, 12, 17, 27, 30, 33, 43, -3, 3.5, "13", null]) {
+  // Only a 401 (exit 3-6 plus a known header marker 0, 10, 20 or 30) is a rejection.
+  for (const status of [0, 1, 2, 7, 9, 10, 12, 17, 27, 30, 37, 40, 43, -3, 3.5, "13", null]) {
     assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false, status);
   }
-  for (const [status, providerCode, providerSource] of [
-    [4, "invalid_api_key", "unknown"],
-    [5, "missing_api_key", "unknown"],
-    [6, "insufficient_permissions", "unknown"],
-    [13, undefined, "provider"],
-    [14, "invalid_api_key", "provider"],
-    [15, "missing_api_key", "provider"],
-    [16, "insufficient_permissions", "provider"],
-    [23, undefined, "relay"],
-    [25, "missing_api_key", "relay"],
+  for (const [status, providerCode, responseHeaderMarker] of [
+    [4, "invalid_api_key", "none"],
+    [5, "missing_api_key", "none"],
+    [6, "insufficient_permissions", "none"],
+    [13, undefined, "provider-like"],
+    [14, "invalid_api_key", "provider-like"],
+    [15, "missing_api_key", "provider-like"],
+    [16, "insufficient_permissions", "provider-like"],
+    [23, undefined, "openshell-policy"],
+    [25, "missing_api_key", "openshell-policy"],
+    [33, undefined, "mixed"],
+    [34, "invalid_api_key", "mixed"],
   ]) {
     assert.deepEqual(
       upfrontCheck("openai", undefined, "fixture-key", status).rejected,
       {
         providerStatus: 401,
-        providerSource,
+        responseHeaderMarker,
         ...(providerCode === undefined ? {} : { providerCode }),
       },
       String(status),
@@ -460,10 +462,10 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
     answerBody = body;
     assert.equal(await run(url), code, body);
   }
-  // Who answered is read from response header names alone and added as 10
-  // (the provider: OpenAI's x-request-id plus an openai-* or x-openai-* header,
-  // or Anthropic's request-id plus x-should-retry) or 20 (the OpenShell relay:
-  // an x-openshell-* header); header values never matter.
+  // The response header names seen are added as 10 (provider-like: OpenAI's
+  // x-request-id plus an openai-* or x-openai-* header, or Anthropic's request-id
+  // plus x-should-retry), 20 (X-OpenShell-Policy) or 30 (both: an upstream 401
+  // forwarded with the relay's stamp); header values never matter.
   for (const [headers, source] of [
     [{ "x-request-id": "req_fixture", "openai-version": "2020-10-01" }, 10],
     [{ "x-request-id": "req_fixture", "x-openai-authorization-error": "1" }, 10],
@@ -475,8 +477,11 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
     [{ "openai-version": "2020-10-01" }, 0],
     [{ "x-request-id": "req_fixture", "x-not-openai-marker": "1" }, 0],
     [{ "x-openshell-policy": "fixture-policy" }, 20],
-    [{ "X-OpenShell-Policy": "fixture-policy", "x-request-id": "r", "openai-version": "1" }, 20],
+    [{ "X-OpenShell-Policy": "fixture-policy", "x-request-id": "r", "openai-version": "1" }, 30],
+    [{ "x-openshell-policy": "fixture-policy", "request-id": "r", "x-should-retry": "false" }, 30],
+    [{ "x-openshell-policy": "fixture-policy", "x-request-id": "r" }, 20],
     [{ "x-openshell": "no-dash-suffix" }, 0],
+    [{ "x-openshell-other": "1" }, 0],
   ]) {
     answerHeaders = headers;
     answerBody =
@@ -495,6 +500,12 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   answer = 403;
   answerHeaders = { "x-openshell-policy": "fixture-policy" };
   assert.equal(await run(url), 0, "a relay denial");
+  answerHeaders = {
+    "x-openshell-policy": "fixture-policy",
+    "x-request-id": "r",
+    "openai-version": "1",
+  };
+  assert.equal(await run(url), 0, "a forwarded 403");
   answerHeaders = {};
   assert.equal(await run("http://127.0.0.1:1/v1/responses"), 0, "an unreachable endpoint");
 });
