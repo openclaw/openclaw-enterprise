@@ -767,16 +767,22 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     t.diagnostic(`permissions ${permissionsDelay} ms: shift ${shift}: ${JSON.stringify(shifts)}`);
     assert.ok(shift < 0.01, `permissions ${permissionsDelay} ms: shift ${shift}`);
     // A failure known before the page shows leads it, above the overview (finding 1655 moves
-    // only a card that lands later).
-    assert.equal(
-      await recovery.evaluate((card) =>
+    // only a card that lands later), and a later render of the shown card, as a tab change
+    // makes, leaves it there.
+    const leadsOverview = () =>
+      recovery.evaluate((card) =>
         Boolean(
           card.compareDocumentPosition(card.ownerDocument.querySelector(".agent-overview-status")) &
           globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
         ),
-      ),
-      true,
-    );
+      );
+    assert.equal(await leadsOverview(), true);
+    const plugins = page
+      .locator(".agent-tabs")
+      .getByRole("button", { name: "Plugins", exact: true });
+    await plugins.click();
+    await page.locator('.agent-tabs [aria-current="page"]', { hasText: "Plugins" }).waitFor();
+    assert.equal(await leadsOverview(), true, "a tab change keeps the card above the overview");
   }
 });
 
@@ -1137,6 +1143,10 @@ for (const viewport of [
         ),
       );
     const before = await tops();
+    const background = (locator) =>
+      locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
+    const admin = page.getByRole("link", { name: "Open admin console" });
+    const adminBefore = await background(admin);
 
     // The deploy fails its startup model check; the next poll reads it.
     record = deploymentRecord(
@@ -1160,12 +1170,11 @@ for (const viewport of [
       ),
       true,
     );
-    const background = (locator) =>
-      locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
     const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
-    const admin = page.getByRole("link", { name: "Open admin console" });
     assert.equal(await admin.isVisible(), true);
     assert.notEqual(await background(admin), await background(logs));
+    // Until the card showed, native administration's link was the primary action.
+    assert.notEqual(adminBefore, await background(admin), "the admin link stepped back");
   });
 }
 

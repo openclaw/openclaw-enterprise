@@ -406,6 +406,18 @@ for (const visit of ["a first visit", "a return"]) {
       route.fulfill(deploymentRecord(namespace, "succeeded")),
     );
     const first = visit === "a first visit";
+    if (!first) {
+      // A row whose read failed has no link to keep: its reread on return is delayed too.
+      await page.route(
+        `**/namespaces/${namespace.id}/agents/${agents[2].id}/deployments/*`,
+        (route) =>
+          route.fulfill({
+            status: 500,
+            json: { error: { code: "INTERNAL", message: "Unavailable." } },
+          }),
+        { times: 1 },
+      );
+    }
     let rows = first ? await holdRowReads(t, page, namespace) : null;
     if (first) {
       await page.addInitScript(`(${measureReadingDelay})(${JSON.stringify(READING)})`);
@@ -414,6 +426,7 @@ for (const visit of ["a first visit", "a return"]) {
     await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
     if (!first) {
       await page.getByText(READING).first().waitFor({ state: "detached" });
+      await page.getByText("Deployment unavailable").waitFor();
       await tagView(page);
       await openAgent(page, agents[0]);
       rows = await holdRowReads(t, page, namespace);
