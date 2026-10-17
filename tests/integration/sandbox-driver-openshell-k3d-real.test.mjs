@@ -105,6 +105,7 @@ const modelPort = Number(modelEndpoint.port || 443);
 // a fixed 5 s wait). The grace is sized for that probe only; longer commands elsewhere in this
 // suite can still outlive it and report an unknown outcome.
 const toolProbeCurlMaxSeconds = 8;
+const toolAEchoPath = "/echo-a";
 const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
@@ -2457,7 +2458,7 @@ async function prepareProductionInstallation(
     tokenEcho === undefined
       ? undefined
       : [
-          await registerToolSource(request, namespaceId, tokenEcho, "TOOL_A_TOKEN", "/echo-a"),
+          await registerToolSource(request, namespaceId, tokenEcho, "TOOL_A_TOKEN", toolAEchoPath),
           await registerToolSource(request, namespaceId, tokenEcho, "TOOL_B_TOKEN", "/echo-b"),
         ];
   const untrustedTlsSource =
@@ -2805,8 +2806,13 @@ async function startTokenEcho(context, issuerJwks) {
   context.after(() =>
     kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),
   );
+  // Read the receiver's count through Pod loopback, even when its Service has no ready endpoint.
+  const receiptPort = 8081;
   const program = [
-    'const { createHash, createPublicKey, verify } = require("node:crypto");',
+    'const { createHash, createPublicKey, randomUUID, verify } = require("node:crypto");',
+    'const http = require("node:http");',
+    "const receipt = { instance: randomUUID(), requests: 0 };",
+    `http.createServer((_, res) => res.end(JSON.stringify(receipt))).listen(${receiptPort}, "127.0.0.1");`,
     "const keys = JSON.parse(process.env.OCE_ISSUER_JWKS ?? '{\"keys\":[]}').keys;",
     "const jwt = (authorization) => {",
     "  const match = /^Bearer ([\\w-]+)\\.([\\w-]+)\\.([\\w-]+)$/.exec(authorization);",
@@ -2825,7 +2831,8 @@ async function startTokenEcho(context, issuerJwks) {
     "    return { valid: false };",
     "  }",
     "};",
-    'require("node:http").createServer((request, response) => {',
+    "http.createServer((request, response) => {",
+    `  if (request.url === ${JSON.stringify(toolAEchoPath)}) receipt.requests++;`,
     '  const authorization = request.headers.authorization ?? "";',
     '  response.setHeader("content-type", "application/json");',
     "  response.end(JSON.stringify({",
@@ -2872,7 +2879,29 @@ async function startTokenEcho(context, issuerJwks) {
     "pod/token-echo",
     "--timeout=180s",
   );
-  return { namespace, host: `token-echo.${namespace}.svc.cluster.local`, port: 8080 };
+  async function readToolAReceipt() {
+    const output = await kubectl(
+      "exec",
+      "pod/token-echo",
+      "--namespace",
+      namespace,
+      "--",
+      "node",
+      "-e",
+      `fetch("http://127.0.0.1:${receiptPort}", { signal: AbortSignal.timeout(5000) })` +
+        ".then((response) => response.text()).then((text) => process.stdout.write(text))",
+    );
+    const { instance, requests } = JSON.parse(output);
+    assert.ok(typeof instance === "string" && instance.length > 0);
+    assert.ok(Number.isSafeInteger(requests) && requests >= 0);
+    return { instance, requests };
+  }
+  return {
+    namespace,
+    host: `token-echo.${namespace}.svc.cluster.local`,
+    port: 8080,
+    readToolAReceipt,
+  };
 }
 
 const untrustedCaName = "OCE untrusted upstream CA";
@@ -4739,7 +4768,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
         [approvedCommand, "openclaw"],
         [deniedCommand, "acme"],
       ].find(([item]) => item === command)?.[1] ??
-      (/chatgpt_base_url|features list|backend-api/.test(String(command))
+      (/chatgpt_base_url|features list|backend-api/.test(String(command.command))
         ? "codex-rewritten"
         : "other");
     const commandSummary = {
@@ -5552,8 +5581,8 @@ async function assertModelProviderOutageFailsClosed(topology) {
 
 /**
  * Takes a tool source's upstream away: its Service selects no Pod, so OpenShell's connection is
- * refused. The tool request must fail at the proxy, and the same running Harness must receive
- * the substituted token again once the upstream returns.
+ * refused or stalls. The echo must see no request during the outage, then see the recovered
+ * request with the substituted token from the same running Harness.
  */
 async function assertToolUpstreamOutageFailsClosed(topology) {
   const { request, namespaceId, toolSources, tokenEcho } = topology;
@@ -5589,7 +5618,7 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
       curlSeconds: curlSeconds === null ? null : Number(curlSeconds),
       commandMs: Number.isSafeInteger(run.durationMs) ? run.durationMs : null,
       placeholder: value("TOOL_PLACEHOLDER") || null,
-      tokenDelivered: value("TOOL_DIGEST") === toolA.digest,
+      responseMatchedToken: value("TOOL_DIGEST") === toolA.digest,
     };
   };
   const selectPods = (app) =>
@@ -5613,18 +5642,21 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
       );
       return serving === ready ? true : undefined;
     });
+  const receiptBefore = await tokenEcho.readToolAReceipt();
   let outage;
+  let receiptWhileDown;
   let failure;
   try {
     await selectPods("token-echo-outage");
     await waitForEndpoints(false);
     outage = await probe("outage");
+    receiptWhileDown = await tokenEcho.readToolAReceipt();
     // Print it now: if the recovery fails, this is the only record of the outage probe.
     process.stderr.write(`OpenShell integration: tool upstream down ${JSON.stringify(outage)}.\n`);
   } catch (error) {
     failure = error;
   }
-  // Restore the upstream before any assertion; keep the first error if both steps fail.
+  // Restore the upstream even if the probe or receipt read failed; keep the first error.
   try {
     await selectPods("token-echo");
     await waitForEndpoints(true);
@@ -5635,6 +5667,7 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
     throw failure;
   }
   const recovered = await probe("recovered");
+  const receiptAfter = await tokenEcho.readToolAReceipt();
   const observed = { outage, recovered };
   process.stderr.write(
     `OpenShell integration: tool upstream outage ${JSON.stringify(observed)}.\n`,
@@ -5651,20 +5684,28 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
     "OpenShell must end or hold a request to an unreachable upstream, not answer it " +
       `(curl exit ${outage.exitCode} after ${outage.curlSeconds} s).`,
   );
+  // Curl reports the response, not whether the request arrived. Compare the receiver's count
+  // before restoration, then require the same process to count exactly one request by recovery.
+  assert.deepEqual(
+    receiptWhileDown,
+    receiptBefore,
+    "the echo must see no request during the outage",
+  );
+  assert.equal(outage.responseMatchedToken, false);
   if (held) {
     process.stderr.write(
       "OpenShell integration: OpenShell held the request to the unreachable upstream until " +
         "curl's bound instead of closing it.\n",
     );
   }
-  assert.equal(outage.tokenDelivered, false, "no token may arrive while the upstream is down.");
   // Once the upstream is back, the same running Harness gets tool A's own token again.
   assert.deepEqual(
     { httpStatus: recovered.httpStatus, exitCode: recovered.exitCode },
     { httpStatus: "200", exitCode: 0 },
   );
   assert.equal(recovered.placeholder, "false", "the upstream must not receive the placeholder.");
-  assert.equal(recovered.tokenDelivered, true, "the upstream must receive tool A's token.");
+  assert.equal(recovered.responseMatchedToken, true, "the upstream must receive tool A's token.");
+  assert.deepEqual(receiptAfter, { ...receiptBefore, requests: receiptBefore.requests + 1 });
 }
 
 /**
