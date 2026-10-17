@@ -209,6 +209,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 - 2026-10-03 15:30: Provisioning rejects reserved binding destinations and cross-Namespace Secret references as invalid requests instead of not-found. (f239/provisioning-binding-validation)
 
+- 2026-10-03 12:05: SSH skips unbound channel credentials. (fix/829)
+
 - 2026-10-03 05:30: Namespace deletion no longer waits on failed provisioning whose effect is already settled. (fix-d354/namespace-settled-provisioning)
 
 - 2026-10-01 17:20: Point provisioning admission at the extracted Agent HTTP handlers. (authoring-run/bef09bf6-deaa-4189-9568-5f13beb451e7 - 7a6cc931d)
