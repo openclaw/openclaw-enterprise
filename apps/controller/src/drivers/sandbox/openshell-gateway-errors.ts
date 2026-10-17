@@ -42,8 +42,6 @@ export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): 
   };
 }
 
-/** The code `OpenShellDeletionUnconfirmedError` carries; the worker's sweep logs it apart. */
-
 /**
  * DeleteSandbox or DeleteService answered NOT_FOUND for a target a read had just found: the
  * target went away in between (a failed candidate retired by the next activation while the

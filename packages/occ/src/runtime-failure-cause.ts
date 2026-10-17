@@ -33,12 +33,12 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
 
 // A PROCESS_EXIT token of the right shape names a status, signal or system error code
 // from the contract's lists; any other is recorded without its detail (finding 1673).
-// UNRECOGNIZED is read back only from rows recorded before that (#2763 wrote it).
+// So is UNRECOGNIZED, which #2763 wrote: rows holding it still read, without the detail,
+// and a runtime that serves it cannot record what a pre-#2763 controller refuses (finding 1706).
 const PROCESS_EXIT_DETAILS: ReadonlySet<string> = new Set([
   ...Array.from({ length: PROCESS_EXIT_MAX_STATUS }, (_, index) => `exit-${index + 1}`),
   ...PROCESS_EXIT_SIGNALS.map((signal) => `signal-${signal}`),
   ...PROCESS_EXIT_ERROR_CODES.map((code) => `error-${code}`),
-  UNRECOGNIZED_RUNTIME_VALUE,
 ]);
 
 // The startup probe retries a transient failure once; when the second attempt

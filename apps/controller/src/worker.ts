@@ -518,7 +518,6 @@ const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
  * in a row regardless, so a queue that is never empty cannot starve it (finding 1695).
  */
 const HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES = 5;
-/** The code a Sandbox Driver's delete reports when its target vanished between read and delete. */
 
 interface PendingHarnessExposureWithdrawal {
   readonly revision: Readonly<AgentRevision>;
