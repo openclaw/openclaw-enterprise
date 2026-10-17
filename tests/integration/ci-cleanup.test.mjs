@@ -501,8 +501,7 @@ for (const scenario of [
       // 1652). The driver starts the drop's deadline once the heartbeat exists, when
       // every process in the tree has its TERM handler, and records that start.
       const budgetStartPath = join(root, "budget-start");
-      const drop = `import { existsSync, watch, writeFileSync } from "node:fs";
-        import { dirname } from "node:path";
+      const drop = `import { existsSync, writeFileSync } from "node:fs";
         import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
         const [statePath, readyPath, budgetStartPath] = process.argv.slice(1);
         const budgetMs = Number(process.env.OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS);
@@ -512,12 +511,12 @@ for (const scenario of [
         globalThis.setTimeout = (callback, ms, ...args) => {
           if (deadline || ms !== budgetMs) return setTimer(callback, ms, ...args);
           deadline = setTimer(() => ready && callback(...args), ms);
-          const watcher = watch(dirname(readyPath), check);
-          watcher.unref();
+          const poll = setInterval(check, 10);
+          poll.unref();
           function check() {
             if (ready || !existsSync(readyPath)) return;
             ready = true;
-            watcher.close();
+            clearInterval(poll);
             writeFileSync(budgetStartPath, String(Date.now()));
             deadline.refresh();
           }
@@ -531,6 +530,7 @@ for (const scenario of [
           }
         });
         await cleanupResourceIds(statePath, ["database-1"]);`;
+      const started = Date.now();
       const result = spawnSync(
         process.execPath,
         ["--input-type=module", "-e", drop, statePath, heartbeat, budgetStartPath],
@@ -549,7 +549,9 @@ for (const scenario of [
       );
       assert.equal(result.error, undefined, "cleanup waited for the inherited pipes");
       assert.equal(result.status, 1, result.stderr);
-      const elapsed = Date.now() - Number(await readFile(budgetStartPath, "utf8"));
+      const budgetStart = Number(await readFile(budgetStartPath, "utf8"));
+      const elapsed = Date.now() - budgetStart;
+      t.diagnostic(`command tree ready after ${budgetStart - started} ms`);
       t.diagnostic(`cleanup command completed ${elapsed} ms after its deadline started`);
       assert.ok(elapsed < 2500, "cleanup exceeded the command and pipe deadlines");
       assert.match(
@@ -557,17 +559,22 @@ for (const scenario of [
         /Cleanup failed for postgres-database:openclaw_ci_failed_drop:.* psql .* timed out after 500 ms/,
       );
       assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+      // PID state, not heartbeat timing, is the evidence: a heartbeat can stall under
+      // CPU pressure, and the descendant's own four-second expiry runs from its boot.
       if (scenario === "escaped-group") {
-        // A separate group is outside the executor's signalling authority. Closing
-        // its inherited pipes must bound cleanup without killing that process.
-        const ticks = await readFile(heartbeat, "utf8");
-        const deadline = Date.now() + 2000;
-        while ((await readFile(heartbeat, "utf8")) === ticks) {
-          assert.ok(Date.now() < deadline, "escaped descendant stopped during cleanup");
-          await delay(25);
-        }
+        // A separate group is outside the executor's signalling authority. Cleanup
+        // must end without killing that process.
+        const pid = await readFile(descendantPidPath, "utf8");
+        const observation = spawnSync("ps", ["-p", pid, "-o", "stat="], {
+          encoding: "utf8",
+          timeout: 5000,
+        });
+        assert.equal(observation.error, undefined, "could not observe escaped descendant");
+        assert.equal(observation.status, 0, "escaped descendant stopped during cleanup");
+        assert.doesNotMatch(observation.stdout, /^Z/, "escaped descendant stopped during cleanup");
       } else {
-        // The PID, not a quiet heartbeat, proves the owned descendant ended.
+        // Every owned kill path fires before the driver exits; the limit only covers
+        // observing the reaped or zombie process.
         await waitForTermination(1000);
       }
     },
