@@ -38,6 +38,7 @@ import {
   openshellHash as hash,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
+  boundedTeardown,
   diagnosticDeadlineMs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -353,6 +354,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     clusterRoleBinding: binding,
     context: `openshell-production-${suffix}`,
   });
+  const tokenMintedAt = new Date().toISOString();
   await kubectl(
     "create",
     "clusterrole",
@@ -376,7 +378,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     clusterRoleBinding: apiBinding,
     context: `openshell-secret-api-${suffix}`,
   });
-  return { ...identity, tenantRole, apiSecretRole, apiIdentity };
+  return { ...identity, tokenMintedAt, tenantRole, apiSecretRole, apiIdentity };
 }
 
 function nativeCodexConfiguration(gatewayAuth) {
@@ -2012,8 +2014,16 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
+// The Kubernetes client's rejection of a request the API server refused to authenticate.
+function isKubernetesUnauthorized(error) {
+  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
+}
+
+// Finding 1711: a 401 on prepareRevision names no credential. `tokenSources()` names the ones
+// the Compute call may have used, by name and kind, never a value.
+function withFirstPrepareRevisionFailureDiagnostic(computeDriver, tokenSources) {
   let reported = false;
+  let unauthorizedReported = false;
   return new Proxy(computeDriver, {
     get(target, property) {
       if (property === "prepareRevision") {
@@ -2030,6 +2040,12 @@ function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
                   : `OpenShell integration: initial Compute prepareRevision retry: ${error.message}`;
               process.stderr.write(`${message}\n`);
             }
+            if (!unauthorizedReported && isKubernetesUnauthorized(error)) {
+              unauthorizedReported = true;
+              process.stderr.write(
+                `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
+              );
+            }
             throw error;
           }
         };
@@ -2042,7 +2058,7 @@ function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
 
 async function prepareProductionInstallation(
   context,
-  { harnessId = "codex", controllerPort } = {},
+  { harnessId = "codex", controllerPort, teardownStarted = () => false } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
   const identifier = randomUUID();
@@ -2112,6 +2128,28 @@ async function prepareProductionInstallation(
   operatorConfiguration.loadFromFile(kubeconfigPath);
   operatorConfiguration.setCurrentContext(kubernetesContext);
   const operatorKubernetes = KubernetesObjectApi.makeApiClient(operatorConfiguration);
+  const operatorUser = operatorConfiguration.getCurrentUser();
+  const operatorCredentialKind =
+    operatorUser?.exec !== undefined
+      ? "exec plugin"
+      : operatorUser?.authProvider !== undefined
+        ? "auth provider"
+        : operatorUser?.token !== undefined
+          ? "bearer token"
+          : operatorUser?.certData !== undefined || operatorUser?.certFile !== undefined
+            ? "client certificate"
+            : "none";
+  // Names and kinds only: no credential value reaches the log.
+  const tokenSources = () => ({
+    compute: {
+      kubeconfigContext: controller.authentication.context,
+      user: `system:serviceaccount:${platformNamespace}:${controller.account}`,
+      kind: "ServiceAccount token (kubectl create token, default lifetime)",
+      mintedAt: controller.tokenMintedAt,
+    },
+    sandboxOperator: { kubeconfigContext: kubernetesContext, kind: operatorCredentialKind },
+    teardownStarted: teardownStarted(),
+  });
 
   const directory = await mkdtemp(join(tmpdir(), "oce-openshell-sandboxdriver-"));
   const startupPath = join(directory, "installation.json");
@@ -2235,7 +2273,10 @@ async function prepareProductionInstallation(
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
-        computeDriver: withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
+        computeDriver: withFirstPrepareRevisionFailureDiagnostic(
+          loaded.computeDriver,
+          tokenSources,
+        ),
       },
     };
   };
@@ -6255,7 +6296,10 @@ test(
     ...requiresOpenShellK3d,
     ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
   },
-  async (context) => {
+  async (testContext) => {
+    // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
+    const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
+    const { context } = teardown;
     if (demoStatePath !== undefined) {
       context.after(() => {
         process.removeListener("SIGINT", resolveDemoStop);
@@ -6266,6 +6310,7 @@ test(
       process.stderr.write("OpenShell integration: selected real provider-delivery proof.\n");
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
+        teardownStarted: () => teardown.started,
         ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
       });
       assert.equal(

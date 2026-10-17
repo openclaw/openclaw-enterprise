@@ -118,6 +118,97 @@ export async function withinDiagnosticDeadline(
   }
 }
 
+// node:test runs a test's after hooks in registration order and skips the rest once one throws
+// (finding 1711). A test that registers a Namespace delete first and its worker stop last deletes
+// the worker's ServiceAccount under a running worker, and an early hook that fails skips the stop:
+// the worker, its pools and port-forwards then hold the file until the runner's file timeout.
+// A bounded teardown runs the cleanups registered through its `context.after` last-registered
+// first, each within `stepLimitMs`, and runs every one after a failure. It logs each cleanup by
+// the line that registered it. A cleanup past its limit is left running and fails the teardown,
+// and the process exits `exitGraceMs` after the teardown so what it holds cannot keep the file
+// alive (the revision fixture's rule, finding 1223). The limit covers the 120 s Namespace deletes.
+export const teardownStepLimitMs = 180_000;
+export const abandonedTeardownExitGraceMs = 2_000;
+
+function registrationSite(stack) {
+  // Frame 0 is the message, 1 is `after` here, 2 is its caller.
+  const frame = String(stack).split("\n")[2] ?? "";
+  const location = /\(?([^\s()]+):(\d+):\d+\)?$/.exec(frame.trim());
+  return location === null ? "an unknown line" : `${location[1].split("/").at(-1)}:${location[2]}`;
+}
+
+export function boundedTeardown(
+  testContext,
+  {
+    label = "teardown",
+    stepLimitMs = teardownStepLimitMs,
+    exitGraceMs = abandonedTeardownExitGraceMs,
+    log = (message) => process.stderr.write(`${message}\n`),
+    exit = () => process.exit(),
+  } = {},
+) {
+  const cleanups = [];
+  let started = false;
+  const after = (cleanup) => {
+    cleanups.push({ cleanup, site: registrationSite(new Error().stack) });
+  };
+  testContext.after(async () => {
+    started = true;
+    const failures = [];
+    const abandoned = [];
+    // A cleanup may register another; it runs next.
+    while (cleanups.length > 0) {
+      const { cleanup, site } = cleanups.pop();
+      log(`${label}: cleanup registered at ${site}`);
+      let timer;
+      try {
+        await Promise.race([
+          Promise.resolve().then(cleanup),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              abandoned.push(site);
+              reject(new Error(`did not finish within ${stepLimitMs} ms`));
+            }, stepLimitMs);
+          }),
+        ]);
+      } catch (error) {
+        log(`${label}: cleanup registered at ${site} failed: ${error?.message ?? error}`);
+        failures.push(
+          new Error(`cleanup registered at ${site}: ${error?.message}`, { cause: error }),
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    if (abandoned.length > 0) {
+      log(`${label}: exiting in ${exitGraceMs} ms; abandoned cleanups: ${abandoned.join(", ")}`);
+      // node:test reports the test once this hook returns; process.exit() keeps the exit code.
+      setTimeout(exit, exitGraceMs).unref();
+    }
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `${label}: ${failures.length} cleanups failed`);
+    }
+  });
+  return {
+    context: new Proxy(testContext, {
+      get(target, property) {
+        if (property === "after") {
+          return after;
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }),
+    // Whether teardown has begun, for failure diagnostics.
+    get started() {
+      return started;
+    },
+  };
+}
+
 const alreadyCreated = /^Error from server \(AlreadyExists\): /m;
 
 // A second delete of a Namespace that the dropped attempt already started removing.
