@@ -4,6 +4,9 @@ import test from "node:test";
 
 import {
   checkGrafanaDatasource,
+  containerLogTail,
+  distinctPorts,
+  portClash,
   queryPrometheus,
   waitForMonitoring,
 } from "../helpers/metrics-monitoring-readiness.mjs";
@@ -174,4 +177,31 @@ test("null or malformed Prometheus responses retain their stage and status", asy
       expected,
     );
   }
+});
+
+test("monitoring ports are distinct and picked within a bound", async () => {
+  const picks = [9100, 9100, 9200];
+  assert.deepEqual(await distinctPorts(2, async () => picks.shift()), [9100, 9200]);
+  await assert.rejects(
+    distinctPorts(2, async () => 9100, 4),
+    {
+      message: "Unable to pick 2 distinct free ports in 4 attempts.",
+    },
+  );
+});
+
+test("only a listener bind failure counts as a port clash", () => {
+  assert.equal(
+    portClash(
+      'time=2026-10-17T05:20:03.290Z level=ERROR source=main.go:1180 msg="Unable to start web listener" err="listen tcp 127.0.0.1:41234: bind: address already in use"',
+    ),
+    true,
+  );
+  assert.equal(portClash('level=ERROR msg="Error loading config" err="parsing YAML file"'), false);
+});
+
+test("a container log diagnostic keeps the last lines one per entry", () => {
+  const log = `${Array.from({ length: 30 }, (_, index) => `line ${index}`).join("\n")}\n\n`;
+  assert.deepEqual(containerLogTail(log, 3), ["line 27", "line 28", "line 29"]);
+  assert.deepEqual(containerLogTail("only\r\n"), ["only"]);
 });
