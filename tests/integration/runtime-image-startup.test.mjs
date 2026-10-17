@@ -2274,3 +2274,153 @@ test(
     );
   },
 );
+
+// PROOF ONLY (temporary, finding 1645): stress the routing sequence with the default
+// completion handoff and report where any stray first thread/start came from.
+test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, async (t) => {
+  const nativeIds = {
+    parent: "vendor/organization/parent",
+    main: "vendor/organization/default-child",
+    string: "vendor/organization/string-child",
+    object: "vendor/organization/object-child",
+    fallback: "codex/child-fallback",
+  };
+  const ref = (name) => `codex/${nativeIds[name]}`;
+  const source = createHarnessConfiguration("codex", nativeIds.parent);
+  source.agents.ownership = "explicit";
+  source.agents.defaults.systemAgent = { agentId: "main" };
+  source.agents.defaults.models = Object.fromEntries(
+    Object.keys(nativeIds).map((name) => [
+      ref(name),
+      {
+        agentRuntime: { id: "codex" },
+        ...(name === "parent" ? { alias: "codex" } : {}),
+      },
+    ]),
+  );
+  source.agents.defaults.subagents = { model: ref("main") };
+  source.agents.entries = {
+    main: {},
+    string: { subagents: { model: ref("string") } },
+    object: { subagents: { model: { primary: ref("object"), fallbacks: [ref("fallback")] } } },
+    alias: { subagents: { model: "codex" } },
+  };
+  for (const [id, entry] of Object.entries(source.agents.entries)) {
+    entry.workspace = `/home/node/workspace/${id}`;
+  }
+  source.gateway.tools = { allow: ["sessions_spawn"] };
+  source.tools = {
+    codeMode: false,
+    toolSearch: false,
+    allow: ["sessions_spawn"],
+  };
+  const admitted = admitLoggingConfiguration(source, "info");
+  assert.equal(resolveConfiguredHarnessId(admitted), "codex");
+  const before = structuredClone(admitted);
+  const configuration = codexGatewayModelConfiguration(admitted, {
+    baseUrl: "https://models.example.test/v1",
+    modelProvider: "openai-compatible",
+  });
+  assert.deepEqual(admitted, before);
+  // The Gateway prepares each Agent's writable local workspace, then the
+  // plugin maps its native cwd to the provider-owned Harness filesystem.
+  const remoteWorkspaceRoot = "/sandbox/enterprise";
+  configuration.plugins.entries.codex.config.appServer.remoteWorkspaceRoot = remoteWorkspaceRoot;
+
+  // Keep the real packaged Gateway and Codex plugin; replace only the native peer
+  // at its authenticated WebSocket boundary. The network-none container cannot
+  // call a provider, and the peer deliberately refuses before any model turn.
+  const fixture = await readFile(
+    new URL("../fixtures/runtime-codex-subagent-model-stress.mjs", import.meta.url),
+    "utf8",
+  );
+  const dockerfile = await readFile(
+    new URL("../../deploy/runtime/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  const commit = dockerfile.match(/^ARG OPENCLAW_COMMIT=([0-9a-f]{40})$/m)?.[1];
+  const cases = ["main", "string", "object", "alias"].map((agentId) => ({
+    agentId,
+    model: nativeIds[agentId === "alias" ? "parent" : agentId],
+    cwd: remoteWorkspaceRoot,
+  }));
+  const runOne = async (index) => {
+    const { containerName } = await runGatewaySmoke(t, "codex", {
+      configuration,
+      collectPlugins: false,
+      waitUntilReady: false,
+      extraEnvironment: ["APP_SERVER_URL=ws://127.0.0.1:4500", "OPENCLAW_DEBUG=1"],
+    });
+    let stdout;
+    try {
+      ({ stdout } = await runDocker(
+        [
+          "exec",
+          "-e",
+          `OCC_TEST_SUBAGENT_CASES=${JSON.stringify(cases)}`,
+          "-e",
+          `OCC_TEST_SUBAGENT_MODELS=${JSON.stringify(Object.values(nativeIds))}`,
+          "-e",
+          `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
+          "-e",
+          "OCC_TEST_SUBAGENT_HANDOFF=default",
+          "-e",
+          "OCC_TEST_SUBAGENT_ITERATIONS=" + (index === 0 ? 1 : 10),
+          containerName,
+          "node",
+          "--input-type=module",
+          "-e",
+          fixture,
+        ],
+        { timeout: 480_000 * imageSmokeTimeoutMultiplier },
+      ));
+    } catch (error) {
+      return { index, error: String(error?.message ?? error).slice(-3000) };
+    }
+    const result = JSON.parse(stdout.trim().split("\n").at(-1));
+    let logs = [];
+    if (result.anomalies.length > 0) {
+      const first = result.anomalies[0];
+      const raw = await runDocker([
+        "logs",
+        "--since",
+        new Date(first.spawnAt - 2500).toISOString(),
+        "--until",
+        new Date(first.settledAt + 300).toISOString(),
+        containerName,
+      ]).catch((cause) => cause);
+      logs = `${raw.stdout ?? ""}\n${raw.stderr ?? ""}`
+        .split("\n")
+        .filter((line) =>
+          /thread|model|fallback|announce|subagent|spawn|completion|requester/i.test(line),
+        )
+        .filter((line) => !/password|token|authorization|secret|credential/i.test(line))
+        .map((line) => line.slice(0, 240))
+        .slice(-24);
+    }
+    return { index, ...result, logs };
+  };
+  const results = await Promise.all([0, 1, 2, 3, 4, 5].map(runOne));
+  const found = results.flatMap(({ index, anomalies = [], logs = [] }) =>
+    anomalies.map((anomaly, position) => ({ index, ...anomaly, logs: position === 0 ? logs : [] })),
+  );
+  const report = {
+    anomalies: found.slice(0, 2).map(({ window, completed, ...rest }) => ({
+      ...rest,
+      completedStatus: completed?.status,
+      window: window
+        .filter(({ method }) => method === "thread/start" || method === "initialize")
+        .slice(-8),
+    })),
+    summary: results.map(({ index, error, caseCount, anomalies }) => ({
+      index,
+      error: error?.slice(-600),
+      caseCount,
+      anomalies: anomalies?.map(({ iteration, agentId }) => `${iteration}:${agentId}`),
+    })),
+    reference: results.find(({ reference }) => reference)?.reference?.slice(0, 1),
+    timelineTail: results.find(({ timelineTail }) => timelineTail)?.timelineTail?.slice(-4),
+  };
+  // Always fail so the CI diagnostics artifact carries the full report.
+  assert.fail("PROOF-1645 " + JSON.stringify(report));
+});
