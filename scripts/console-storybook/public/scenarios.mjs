@@ -16,8 +16,17 @@ const runtimeLogsPage = {
 };
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
-const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
+const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
+const reservedConfigurationWrite = {
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+  method: "PATCH",
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The Configuration is reserved for provisioning and is not available for this operation.",
+};
+
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -28,6 +37,21 @@ const readyForm = [
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   ...createModelSecret("storybook-model-api-key"),
+];
+const modelCredentialSourceTypes = [
+  {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  },
+];
+const dedicatedOpenclawForm = [
+  ...readyForm,
+  { selector: "#agent-harness", value: "openclaw" },
+  { selector: ".launch-runtime summary", click: true },
+  { selector: "#execution-mode", value: "dedicated" },
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -675,6 +699,25 @@ export const scenarios = {
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
     ],
   },
+  navigationAgentReadRetry: {
+    group: "Pages/Navigation",
+    name: "Retry opening an Agent",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000002",
+        delayMs: 900,
+        status: 503,
+        once: true,
+      },
+    ],
+    description:
+      "The first read of Documentation assistant returns a simulated 503. The page stays on Agent details so you can retry or go back to the list.",
+    steps: [
+      "Open Documentation assistant. Loading agent details is replaced by Could not load agent details; the page heading stays Agent details.",
+      "Choose Try again. Documentation assistant opens without a page reload, and Back returns to the list.",
+    ],
+  },
   navigationRetained: {
     group: "Pages/Navigation",
     name: "Return to loaded pages",
@@ -970,7 +1013,7 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; supported Installations also offer Dedicated under Runtime details. No model is selected by default.",
+      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; Runtime details also offers Dedicated. No model is selected by default.",
     steps: [
       "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
@@ -1594,6 +1637,25 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createDeploymentPodQuotaFull: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment waits on a full Pod quota",
+    path: create,
+    actions: readyForm,
+    rules: [{ pathIncludes: "/deployments/", hold: true, once: true }],
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    },
+    description:
+      "The first deployment detail request stalls. Provisioning keeps polling, and the next detail response explains that the Namespace Pod quota is full.",
+    steps: [
+      "Click Create Agent. The provisioning line stays visible through the stalled detail request, then names the full Pod quota.",
+      "Open the Agent's version; confirm the deployment record shows the same reason.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",
@@ -1784,20 +1846,60 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    nativeWorkerSupport: "custom-image",
-    actions: [
-      ...readyForm,
-      { selector: "#agent-harness", value: "openclaw" },
-      { selector: ".launch-runtime summary", click: true },
-      { selector: "#execution-mode", value: "dedicated" },
-    ],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: dedicatedOpenclawForm,
     description:
-      "Experimental Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation declares custom-image native worker support. A model and dummy API-key Secret are selected; channel controls remain available.",
+      "Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation has the default runtime's native worker support and a model Credential Source catalog. Its selected dummy Secret is registered before provisioning; the Harness receives a placeholder.",
     steps: [
       "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
+  createDedicatedCodexCredentialSource: {
+    group: "Pages/Create Agent",
+    name: "Codex with model Credential Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "The same model Secret picker and Credential Gateway guidance apply to dedicated Codex. Creating the Agent registers its model source before guided provisioning.",
+    steps: [
+      "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
+      "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationUnknown: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration outcome unknown",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "ready",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The registration response is unavailable after the simulated Credential Source becomes ready. The form preserves the model Secret and asks the operator to check registration before retrying.",
+    steps: [
+      "Select Check credential registration. The saved source is found ready and Create Agent becomes available.",
+      "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
+    ],
+  },
+  createCredentialRegistrationCleanup: {
+    group: "Pages/Create Agent",
+    name: "Remove failed model credential registration",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "deleting",
+    actions: [
+      ...dedicatedOpenclawForm,
+      click("Create Agent"),
+      click("Check credential registration"),
+    ],
+    description:
+      "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
+    steps: [
+      "Select Remove failed credential registration and confirm that the model Secret remains saved.",
+      "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
     ],
   },
   createEmbedded: {
@@ -1811,6 +1913,73 @@ export const scenarios = {
     ],
     description:
       "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+  },
+  createOpenclawWithoutNativeWorkers: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw without native worker support",
+    path: create,
+    nativeWorkerSupport: false,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
+    steps: [
+      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
+      "Select Codex and confirm Dedicated remains available.",
+    ],
+  },
+  createOpenclawNoExecutionMode: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw with no usable execution mode",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This Sandbox Driver refuses Embedded OpenClaw and cannot provision Dedicated OpenClaw. The form explains why neither mode is available, disables Create Agent, and does not promise to save a draft.",
+    steps: [
+      "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
+      "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSandboxDriverOutage: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw during a Sandbox Driver outage",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    sandboxDriverUnavailable: true,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation's selected Sandbox Driver is unavailable right now, so Agent save answers 503 for every harness until the driver returns. The alert says Agents cannot be created for now and to reload, not that an administrator must select another Sandbox Driver. Create Agent stays disabled for OpenClaw and Codex.",
+    steps: [
+      "Confirm the alert says the Sandbox Driver is unavailable right now and Create Agent is disabled.",
+      "Select Codex and confirm the alert stays and Create Agent stays disabled.",
+    ],
+  },
+  createOpenclawSandboxDedicated: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw on a Sandbox Driver installation",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that provisions dedicated OpenClaw. It refuses Embedded execution, so selecting OpenClaw preselects Dedicated and disables Embedded.",
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
@@ -1892,6 +2061,38 @@ export const scenarios = {
     repositoryDescriptionsPending: true,
     description:
       "Repository choices are usable while descriptions load. Descriptions appear without changing selections or moving focus.",
+  },
+  createRepositoriesHiddenCharacters: {
+    group: "Pages/Create Agent",
+    name: "Repository descriptions with hidden characters",
+    path: create,
+    actions: repositoryForm,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        description: "Release notes \u202etxt.exe, zero\u200bwidth and \u2066isolate\u2069 end",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "example/handbook",
+        description: "Guías del equipo · Ελληνικά · Русский · עברית",
+        allowedProfiles: ["git-read"],
+      },
+      {
+        repositoryRef: "team",
+        displayName: "example/team",
+        description:
+          "Team \u{1f468}\u200d\u{1f469}\u200d\u{1f467} \u{1f3f3}\ufe0f\u200d\u{1f308} " +
+          "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} " +
+          "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u0915\u094d\u200d\u0937, " +
+          "stray \u200d\u200djoiners",
+        allowedProfiles: ["git-read"],
+      },
+    ],
+    description:
+      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and the England, Scotland and Wales flags, display intact. Other scripts display as written.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
@@ -2406,7 +2607,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: oauthForm,
     description:
-      "Experimental first-deploy login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+      "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",
@@ -2425,10 +2626,10 @@ export const scenarios = {
     pluginCapabilities,
     actions: startOAuthLogin,
     description:
-      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+      "The fixture completes login after one poll. Agent creation includes the source in both Harness authentication and its credentialSources list. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
-      "Choose a model and create the Agent. Deployment is simulated; the runtime token handoff is not proved here.",
+      "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",
     ],
   },
   createOAuthDenied: {
@@ -2469,16 +2670,15 @@ export const scenarios = {
   },
   pluginsOAuthRevision: {
     group: "Pages/Agent detail",
-    name: "Separate ChatGPT login for plugin editing (Experimental)",
+    name: "Saved ChatGPT login for plugin editing (Experimental)",
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "oauth",
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
     pluginDiscovery,
-    actions: [click("Sign in with OAuth")],
     description:
-      "A separate configuration login enables plugin browsing while the deployed Agent retains its own credential. Saving plugin selections never replaces authentication.",
+      "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -2486,9 +2686,16 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    actions: [click("Sign in with OAuth")],
+    credentialSources: [
+      { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
+      { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
+    ],
     description:
-      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+      "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
+    steps: [
+      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
+      "Inspect the PATCH: credentialSources keeps the tool entry, removes the old Harness entry, and adds the new Harness source once.",
+    ],
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
@@ -2600,12 +2807,38 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
         method: "POST",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        // The API's catch-all conflict names nothing to act on, so the Console keeps its own text.
+        message: "The requested platform resource already exists.",
         once: true,
       },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
       "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
+  },
+  createRefusalReason: {
+    group: "Pages/Create Agent",
+    name: "Provisioning refusal with a reason",
+    path: create,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+        once: true,
+      },
+    ],
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
+    steps: [
+      "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
+      "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
+    ],
   },
   createUnknown: {
     group: "Pages/Create Agent",
@@ -2740,12 +2973,20 @@ export const scenarios = {
     name: "Edit Configuration",
     path: draft,
     actions: [click("Edit Configuration")],
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        delayMs: 1500,
+      },
+    ],
     description:
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
+      "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
       "Change a draft setting, then choose Save Configuration.",
-      "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
-      "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
+      "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
+      "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
   },
   gatewayPasswordAccess: {
@@ -3067,7 +3308,7 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "queued",
     description:
-      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified.",
+      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
@@ -3238,9 +3479,23 @@ export const scenarios = {
     description:
       "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
     steps: [
-      "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying.",
+      "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
+  },
+  deploymentModelProbeRetried: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check after a retry",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit-attempt2" },
+    description:
+      "The startup model check was retried once. On the second attempt, the provider reported a rate limit.",
+    steps: [
+      "In the failed deployment, confirm the Cause gives the rate or usage limit advice and says the check was retried once and failed again.",
+    ],
+    gap: "The failure is simulated; it does not prove the runtime's retry or the provider's limit.",
   },
   deploymentModelProbeFailedReadOnly: {
     group: "Pages/Agent detail",
@@ -3251,11 +3506,26 @@ export const scenarios = {
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     readOnlyPermissionSummary: true,
     description:
-      "The same failed model check for a viewer whose permission answer denies Agent update. Recovery offers Open v7 Logs only, not the draft Configuration.",
+      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
+  },
+  deploymentModelProbeFailedDeployOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    description:
+      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+    steps: [
+      "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
+    ],
+    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -3642,7 +3912,35 @@ export const scenarios = {
       },
     ],
     actions: [click("Deploy new version")],
-    description: "A rejected deployment reports failure and re-enables the action.",
+    description:
+      "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
+  },
+  deployInProgress: {
+    group: "Pages/Agent detail",
+    name: "Deployment in progress",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        hold: true,
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
+  },
+  deployOutcomeUnknown: {
+    group: "Pages/Agent detail",
+    name: "Deployment outcome unknown",
+    path: draft,
+    rules: [{ method: "POST", suffix: "/deploy", delayMs: 1_000, status: 503, once: true }],
+    description:
+      "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+    ],
   },
   deployRefusedSetting: {
     group: "Pages/Agent detail",
@@ -3661,6 +3959,30 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description:
       "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
+  },
+  deployOpensVersion: {
+    group: "Pages/Agent detail",
+    name: "Deployment opens the new version",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        delayMs: 600,
+      },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        once: true,
+        delayMs: 900,
+      },
+    ],
+    description:
+      "An admitted deployment opens the new version. The draft stays shown, inactive, while the version loads; keyboard focus moves from “Deploying…” to the page heading, then to the new version’s heading, never to the page itself.",
+    steps: [
+      "Use Tab to reach Deploy new version, then press Enter. “Deploying…” appears and holds focus during the 600 ms request.",
+      "Once the deployment is admitted, focus moves to the Agent heading while the draft stays shown, then to the Loading page heading after 250 ms, then to the new version’s heading when it opens.",
+    ],
   },
   deployAgentPrincipalDenied: {
     group: "Pages/Agent detail",
@@ -4182,19 +4504,10 @@ export const scenarios = {
     name: "Save refused during provisioning",
     path: `${draft}&tab=channels`,
     slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Configuration is reserved for provisioning and is not available for this operation.",
-      },
-    ],
+    rules: [reservedConfigurationWrite],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
-      "The API refuses the write because the Configuration is reserved for provisioning. That 409 has no stale-generation detail, so the editor stays open with the refusal instead of offering a Reload draft that would meet it again.",
+      "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
   },
   channelSaveRejected: {
     group: "Components/Channels",
@@ -4368,6 +4681,20 @@ export const scenarios = {
     description:
       "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
   },
+  credentialsSaveProvisioningReserved: {
+    group: "Components/Credentials",
+    name: "Secret choices after a refused save",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
+    steps: [
+      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+    ],
+  },
   credentialsSlackCarried: {
     group: "Components/Credentials",
     name: "Slack token choice carried through a conflict",
@@ -4423,17 +4750,18 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         hold: true,
+        once: true,
       },
     ],
     actions: [
-      { selector: "#runtime-slack-app-token", value: "simulated-token" },
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
       click("Save channel Secrets"),
     ],
     description:
-      "A pending Secret save disables deployment. The real client times out after 15 seconds; reset the story to replay it.",
+      "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
   },
   credentialsSaveUnknown: {
     group: "Components/Credentials",
@@ -4442,15 +4770,15 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 503,
         once: true,
       },
     ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "simulated-token" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Save the simulated replacement to see an uncertain Secret save. Reload the draft and inspect saved state before deploying or retrying.",
+      "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",
@@ -4882,7 +5210,7 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "Check the inset arrows on the Namespace, Provider, Harness, and Authentication method controls. Use the controls with a mouse and keyboard.",
-      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Dedicated requires an Installation with native worker support; the separate Dedicated OpenClaw stories simulate that prerequisite.",
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Expand Runtime details and select Dedicated; the OpenClaw harness stays selected and channel controls become available.",
       "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
       "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",

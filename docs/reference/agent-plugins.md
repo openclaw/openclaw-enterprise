@@ -1,16 +1,15 @@
 # Agent plugins
 
-Plugins add selected tools or integrations to an Agent. Each Agent saves its
-own selections separately from its reusable [Configuration](configuration.md).
-Changes apply on the next successful deployment; they do not change another
-Agent or an active revision. New Agents start without user-selected plugins.
+Plugins add tools or integrations to an Agent. Selections belong to that Agent,
+separately from its reusable [Configuration](configuration.md). Changes apply on
+the next successful deployment; other Agents and active revisions stay unchanged.
+New Agents start without user-selected plugins.
 
-Use [Configure Agent plugins](../guides/topics/plugins-configure.md) to select,
-deploy, and check a plugin. Deploying plugins requires the Installation to
-select a bundled [Plugin Driver](drivers/plugin.md); none is selected by
-default. OpenClaw Control Plane (OCC) validates the policy shape and the selected
-Driver's supported controls before saving nonempty selections; startup performs
-the [remaining checks](#failures-and-boundaries).
+[Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
+deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
+none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
+and supported controls before saving nonempty selections. Startup performs the
+[remaining checks](#failures-and-boundaries).
 
 ## Current support
 
@@ -35,7 +34,10 @@ The new policy paths still need
 [real Agent verification](../testing/plugins.md#current-proof-notes). There is
 no bundled Claude PluginDriver.
 
-**Experimental** OAuth discovery needs [login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+**Experimental** OAuth discovery uses the saved credential source after
+[device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
+The Credential Gateway supplies a usable access token; closing the login session
+does not remove plugin-editing access.
 
 ## Lifecycle
 
@@ -88,9 +90,9 @@ selected.
 
 ## HTTP operations
 
-Plugin selections and default plugin approvers use the existing Agent
-create/update API. There is no separate plugin resource or install, delete,
-policy mutation, or plugin-tool invocation endpoint.
+Plugin selections and default approvers use Agent create/update. There are no
+separate plugin resources or install, delete, policy-mutation or tool-invocation
+endpoints.
 
 | Method and path                                  | Body                                                            | Successful response                     |
 | ------------------------------------------------ | --------------------------------------------------------------- | --------------------------------------- |

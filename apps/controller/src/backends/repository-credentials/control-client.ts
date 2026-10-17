@@ -310,7 +310,7 @@ export class UnixRepositoryCredentialControlClient implements RepositoryCredenti
         !githubId(entry.repositoryId) ||
         typeof entry.description !== "string" ||
         entry.description.trim().length === 0 ||
-        entry.description.length > 512 ||
+        Array.from(entry.description).length > 512 ||
         hasControlCharacter(entry.description)
       ) {
         continue;

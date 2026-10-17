@@ -702,6 +702,24 @@ export class NativeWorkerSupportError extends Error {
   }
 }
 
+export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+
+/**
+ * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
+ * process containment, and the Installation selects none. The Installation's shape refuses
+ * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
+ * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
+ * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
+ * and resumes once a qualifying Driver is selected.
+ */
+export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
+  constructor() {
+    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+    this.name = "DedicatedOpenClawSandboxError";
+  }
+}
+
 /**
  * A platform dependency a Compute Driver, or the Sandbox Driver it calls, reaches while
  * it reconciles a revision. `sandbox_admission` is the Sandbox gateway's per-caller

@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
 
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
-  NativeWorkerSupportError,
   PostgresPlatformState,
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
@@ -22,7 +22,11 @@ import { ConfigurationConflictError } from "../../apps/controller/src/drivers/co
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
-import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import {
+  conformanceKubernetesOptions,
+  createTestKubernetesComputeDriver,
+} from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -279,15 +283,14 @@ function installationDrivers({
   repoDriver,
   pluginDriver,
   sandboxDriver,
-  nativeWorkerSupport,
+  credentialGatewayDriver,
 }) {
   return {
     installation: {
       occ: { cluster: "postgres-agent-provisioning" },
       logging: {},
-      ...(nativeWorkerSupport === undefined ? {} : { runtime: { nativeWorkerSupport } }),
-      backend:
-        repoDriver === undefined
+      backend: [
+        ...(repoDriver === undefined
           ? []
           : [
               {
@@ -296,7 +299,24 @@ function installationDrivers({
                 configuration: { registryPath: "/unused/provisioning/registry.json" },
                 drivers: { repo: repoDriver.id },
               },
-            ],
+            ]),
+        ...(credentialGatewayDriver === undefined
+          ? []
+          : [
+              {
+                id: "provisioning-credential-gateway",
+                type: "openshell",
+                configuration: {
+                  endpoint: "http://127.0.0.1:8080",
+                  insecureTransport: "network-policy",
+                },
+                drivers: {
+                  sandbox: sandboxDriver.id,
+                  credential_gateway: credentialGatewayDriver.id,
+                },
+              },
+            ]),
+      ],
       drivers: {
         iam: { id: "native-iam", implementation: "native", configuration: {} },
         compute: {
@@ -323,12 +343,22 @@ function installationDrivers({
                 configuration: {},
               },
             }),
+        ...(credentialGatewayDriver === undefined
+          ? {}
+          : {
+              credential_gateway: {
+                id: credentialGatewayDriver.id,
+                implementation: credentialGatewayDriver.implementation,
+                configuration: {},
+              },
+            }),
       },
     },
     computeDriver,
     configurationDriver,
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
+    ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
     ...(repoDriver === undefined ? {} : { repoDriver }),
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
@@ -382,6 +412,7 @@ async function createFixture(context, options = {}) {
   let workerCompletion;
   const revokedBindings = [];
   const teardownCancellations = [];
+  const teardownWorkCancellations = [];
   const drivers = installationDrivers({
     computeDriver,
     configurationDriver,
@@ -389,7 +420,7 @@ async function createFixture(context, options = {}) {
     repoDriver: options.repoDriver,
     pluginDriver: options.pluginDriver,
     sandboxDriver: options.sandboxDriver,
-    nativeWorkerSupport: options.nativeWorkerSupport,
+    credentialGatewayDriver: options.credentialGatewayDriver,
   });
   const app = await composePostgresDevelopment(
     {
@@ -425,8 +456,22 @@ async function createFixture(context, options = {}) {
       await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`);
     }
     await stopWorker();
-    await app.close?.();
-    await pool.end();
+    try {
+      // Queued work stays in the database the file's later tests share; cancel it so no later
+      // worker picks it up (finding 1616), even when the test failed before its end.
+      for (const { workId, message } of teardownWorkCancellations) {
+        const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
+        if (claim !== undefined) {
+          const cancelled = await state.transact((unit) =>
+            unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
+          );
+          assert.equal(cancelled.status, "cancelled", workId);
+        }
+      }
+    } finally {
+      await app.close?.();
+      await pool.end();
+    }
   });
 
   async function request(method, path, { body, session: selectedSession = session } = {}) {
@@ -480,7 +525,7 @@ async function createFixture(context, options = {}) {
     if (options.beforeWorkerStatement !== undefined) {
       holdWorkerStatements(workerPool, options.beforeWorkerStatement);
     }
-    worker = createControllerWorker({
+    const started = createControllerWorker({
       pool: workerPool,
       drivers,
       pollIntervalMs: 15,
@@ -488,12 +533,19 @@ async function createFixture(context, options = {}) {
       maxAttempts: 3,
       emit: (event) => {
         options.onWorkerEvent?.(event);
-        // This persistence case ends at durable handoff, before credential service dispatch.
-        if (options.stopAfterProvisioning && event.code === "PROVISIONING_DEPLOYMENT_PENDING") {
-          workerCompletion = worker.stop();
+        // stopAfterProvisioning: this persistence case ends at durable handoff, before
+        // credential service dispatch. stopWorkerAfter: the run ends inside the pass that
+        // emitted the event, so a retry whose jittered backoff is already due cannot be claimed
+        // before the test stops the worker (finding 1610).
+        if (
+          (options.stopAfterProvisioning && event.code === "PROVISIONING_DEPLOYMENT_PENDING") ||
+          options.stopWorkerAfter?.(event)
+        ) {
+          workerCompletion ??= started.stop();
         }
       },
     });
+    worker = started;
     await worker.start();
   }
 
@@ -543,11 +595,17 @@ async function createFixture(context, options = {}) {
     teardownCancellations.push({ namespaceId, agentId });
   }
 
+  // Cancel this provisioning work at teardown if it is still queued then.
+  function cancelQueuedWorkAtTeardown(workId, message) {
+    teardownWorkCancellations.push({ workId, message });
+  }
+
   return {
     administratorPrincipalId,
     app,
     bootstrapNamespace,
     cancelProvisioningAtTeardown,
+    cancelQueuedWorkAtTeardown,
     computeDriver,
     pool,
     configurationDriver,
@@ -623,7 +681,8 @@ async function provisioningRow(pool, namespaceId, requestId) {
   return result.rows[0];
 }
 
-async function claimProvisioningWork(pool, workId) {
+// With ifQueued, work that is no longer queued is left alone and returns undefined.
+async function claimProvisioningWork(pool, workId, { ifQueued = false } = {}) {
   const claimToken = randomUUID();
   const claimed = await pool.query(
     `UPDATE occ.controller_work
@@ -638,6 +697,9 @@ async function claimProvisioningWork(pool, workId) {
      RETURNING idempotency_key`,
     [workId, claimToken],
   );
+  if (ifQueued && claimed.rowCount === 0) {
+    return undefined;
+  }
   assert.equal(claimed.rowCount, 1, "test must claim the exact queued provisioning work");
   return { idempotencyKey: workId, claimToken };
 }
@@ -1447,127 +1509,507 @@ test(
   },
 );
 
-test(
-  "provisioning worker reauthorizes after admission and revoked authority creates no backend effects",
-  { ...requiresPostgres, timeout: 60_000 },
-  async (context) => {
-    const secretDriver = createTestSecretDriver({ id: "secret-provisioning-revoked" });
-    const fixture = await createFixture(context, { secretDriver });
-    const namespace = await fixture.bootstrapNamespace();
-    const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    const body = provisioningBody(namespace.id, secrets);
-    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-      body,
-    });
-    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
-    const callsBeforeRevocation = structuredClone(secretDriver.calls);
-
-    await fixture.revokeCurrentPrincipal();
-    await fixture.startWorker();
-    const work = await waitFor("provisioning work to fail after authority revocation", async () => {
-      const observed = await fixture.pool.query(
-        "SELECT state, reason_code FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
-        [namespace.id, admitted.data.provisioning.workId],
+for (const harnessAuth of ["api_key", "credential_source"]) {
+  test(
+    harnessAuth === "api_key"
+      ? "provisioning worker reauthorizes after admission and revoked authority creates no backend effects"
+      : "provisioning worker reauthorizes an accepted source after only its exact operate grant is revoked",
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const sourceBacked = harnessAuth === "credential_source";
+      const drivers = sourceBacked ? sourceProvisioningDrivers() : {};
+      const fixture = await createFixture(context, drivers);
+      const namespace = await fixture.bootstrapNamespace();
+      let body;
+      let session = fixture.session;
+      let revokeAuthority = () => fixture.revokeCurrentPrincipal();
+      if (sourceBacked) {
+        const { source } = await createProvisioningModelSource(fixture, namespace.id);
+        body = sourceProvisioningBody(source.id, "openclaw");
+        // Give a separate requester only the required provisioning permissions. The API also
+        // requires Installation administer; this Role has no wildcard or Secret permission.
+        const roleId = `role-provisioning-${randomUUID()}`;
+        const sourceRoleId = `role-source-${randomUUID()}`;
+        await fixture.pool.query(
+          `INSERT INTO occ.iam_roles (id, namespace_id, name, permissions)
+           VALUES ($1, NULL, $2, $3::jsonb), ($4, $5, $6, $7::jsonb)`,
+          [
+            roleId,
+            `Source provisioning requester ${randomUUID()}`,
+            JSON.stringify([
+              { action: "administer", resourceKind: "installation" },
+              { action: "create", resourceKind: "agent" },
+              { action: "create", resourceKind: "configuration" },
+            ]),
+            sourceRoleId,
+            namespace.id,
+            `Exact model source operator ${randomUUID()}`,
+            JSON.stringify([{ action: "operate", resourceKind: "credential_source" }]),
+          ],
+        );
+        const requester = {
+          email: `source-provisioning-${randomUUID()}@example.test`,
+          password: `generated-password-${randomUUID()}`,
+        };
+        const created = await fixture.request("POST", "/api/auth/accounts", {
+          body: { ...requester, name: "Source provisioning requester", roleId },
+        });
+        assert.equal(created.status, 201, JSON.stringify(created.body));
+        const principalId = created.data.principalId;
+        session = await signInToControllerApp(fixture.app, requester);
+        const sourceBindingId = `binding-source-${randomUUID()}`;
+        for (const [id, selectedRoleId, kind, resourceId] of [
+          [`binding-provisioning-${randomUUID()}`, roleId, null, null],
+          [sourceBindingId, sourceRoleId, "credential_source", source.id],
+        ]) {
+          await fixture.pool.query(
+            `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, role_id, resource_kind, resource_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+            [id, namespace.id, principalId, selectedRoleId, kind, resourceId],
+          );
+        }
+        revokeAuthority = async () => {
+          const revoked = await fixture.pool.query(
+            "DELETE FROM occ.iam_access_bindings WHERE id = $1 RETURNING id",
+            [sourceBindingId],
+          );
+          assert.equal(revoked.rowCount, 1, "only the requester's exact source grant is revoked");
+          const iam = new NativeIAMDriver(fixture.state);
+          const installation = await fixture.state.loadInstallation();
+          for (const [action, resource] of [
+            ["administer", { kind: "installation", id: installation.id }],
+            ["create", { kind: "agent", namespaceId: namespace.id, id: namespace.id }],
+            ["create", { kind: "configuration", namespaceId: namespace.id, id: namespace.id }],
+          ]) {
+            const decision = await iam.authorize({ principalId, action, resource });
+            assert.equal(decision.allowed, true, `${action} ${resource.kind} must remain allowed`);
+          }
+          const sourceAccess = await iam.authorize({
+            principalId,
+            action: "operate",
+            resource: { kind: "credential_source", namespaceId: namespace.id, id: source.id },
+          });
+          assert.equal(sourceAccess.allowed, false, "the exact model source must be denied");
+        };
+      } else {
+        const secrets = await createProvisioningSecrets(fixture, namespace.id);
+        body = provisioningBody(namespace.id, secrets);
+      }
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        {
+          body,
+          session,
+        },
       );
-      assert.equal(observed.rowCount, 1);
-      return observed.rows[0].state === "failed_permanent" ? observed.rows[0] : undefined;
-    });
-    assert.equal(work.reason_code, "PROVISIONING_REJECTED");
-    // Only duplicate-name, plugin-policy and runtime-image refusals reach the status read; the
-    // error recorded for this authorization denial keeps its own message internal.
-    const job = await fixture.pool.query(
-      "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
-      [admitted.data.provisioning.workId],
-    );
-    assert.deepEqual(job.rows, [
-      {
-        error: { code: "PROVISIONING_REJECTED", message: "Agent provisioning could not complete." },
-      },
-    ]);
-    const denialAudit = await fixture.pool.query(
-      `SELECT kind, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      const callsBeforeRevocation = structuredClone(fixture.secretDriver.calls);
+      const runtimeCallsBeforeRevocation = structuredClone(fixture.computeDriver.calls);
+      const externalOperations = [
+        ...["createExact", "inspectExact"].map((method) =>
+          context.mock.method(fixture.configurationDriver, method),
+        ),
+        ...(sourceBacked
+          ? [
+              "listSourceTypes",
+              "registerSource",
+              "updateSource",
+              "sourceStatus",
+              "removeSource",
+              "attachForRevision",
+              "attachmentStatus",
+              "withdraw",
+            ].map((method) => context.mock.method(drivers.credentialGatewayDriver, method))
+          : []),
+        ...(sourceBacked
+          ? ["provisionHarness", "cleanup"].map((method) =>
+              context.mock.method(drivers.sandboxDriver, method),
+            )
+          : []),
+      ];
+      await revokeAuthority();
+      await fixture.startWorker();
+      const work = await waitFor(
+        "provisioning work to fail after authority revocation",
+        async () => {
+          const observed = await fixture.pool.query(
+            "SELECT state, reason_code FROM occ.controller_work WHERE work_kind = 'provisioning' AND namespace_id = $1 AND idempotency_key = $2",
+            [namespace.id, admitted.data.provisioning.workId],
+          );
+          assert.equal(observed.rowCount, 1);
+          return observed.rows[0].state === "failed_permanent" ? observed.rows[0] : undefined;
+        },
+      );
+      await fixture.stopWorker();
+      assert.equal(work.reason_code, "PROVISIONING_REJECTED");
+      // Only duplicate-name, plugin-policy and runtime-image refusals reach the status read; the
+      // error recorded for this authorization denial keeps its own message internal.
+      const job = await fixture.pool.query(
+        "SELECT progress->'error' AS error FROM occ.agent_provisioning_work WHERE work_id = $1",
+        [admitted.data.provisioning.workId],
+      );
+      assert.deepEqual(job.rows, [
+        {
+          error: {
+            code: "PROVISIONING_REJECTED",
+            message: "Agent provisioning could not complete.",
+          },
+        },
+      ]);
+      const denialAudit = await fixture.pool.query(
+        `SELECT kind, outcome, details->'__occAuditMetadata'->>'reasonCode' AS reason_code
        FROM occ.audit_events
        WHERE namespace_id = $1
          AND resource_kind = 'agent'
          AND resource_id = $2
          AND action = 'openclaw.agents.provision.failure'
          AND kind = 'authorization_denial'`,
-      [namespace.id, admitted.data.provisioning.workId],
-    );
-    assert.deepEqual(denialAudit.rows, [
-      {
-        kind: "authorization_denial",
-        outcome: "denied",
-        reason_code: "AUTHORIZATION_DENIED",
-      },
-    ]);
-    assert.deepEqual(
-      secretDriver.calls,
-      callsBeforeRevocation,
-      "revoked initiating authority must not perform further Secret backend operations",
-    );
-    const resources = await fixture.pool.query(
-      `SELECT
+        [namespace.id, admitted.data.provisioning.workId],
+      );
+      assert.deepEqual(denialAudit.rows, [
+        {
+          kind: "authorization_denial",
+          outcome: "denied",
+          reason_code: "AUTHORIZATION_DENIED",
+        },
+      ]);
+      assert.deepEqual(
+        fixture.secretDriver.calls,
+        callsBeforeRevocation,
+        "revoked initiating authority must not perform further Secret backend operations",
+      );
+      assert.deepEqual(
+        fixture.computeDriver.calls,
+        runtimeCallsBeforeRevocation,
+        "revoked authority must not perform runtime operations",
+      );
+      for (const operation of externalOperations) {
+        assert.equal(operation.mock.callCount(), 0, "revoked authority must not contact a backend");
+      }
+      const record = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      assert.equal(record.completed_phase, "admitted");
+      assert.equal(record.agent_id, null);
+      assert.equal(record.configuration_id, null);
+      const resources = await fixture.pool.query(
+        `SELECT
        (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
        (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations,
        (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id = $1) AS revisions,
-       (SELECT count(*)::integer FROM occ.secrets WHERE namespace_id = $1) AS secrets`,
+       (SELECT count(*)::integer FROM occ.secrets WHERE namespace_id = $1) AS secrets,
+       (SELECT count(*)::integer FROM occ.iam_access_bindings
+         WHERE namespace_id = $1 AND resource_kind = 'credential_source') AS source_grants`,
+        [namespace.id],
+      );
+      assert.deepEqual(resources.rows[0], {
+        agents: 0,
+        configurations: 0,
+        revisions: 0,
+        secrets: sourceBacked ? 1 : 4,
+        source_grants: 0,
+      });
+    },
+  );
+}
+
+// The gateway is the external credential-store boundary. These cases use real HTTP,
+// PostgreSQL checkpoints, Native IAM and Kubernetes authentication admission; they do
+// not claim OpenShell injection or a live model turn.
+function sourceProvisioningDrivers() {
+  const stored = new Set();
+  const credentialGatewayDriver = {
+    id: "credential-gateway-provisioning",
+    capability: "credential_gateway",
+    implementation: "test-credential-store",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource({ source }) {
+      stored.add(source.id);
+      return { state: "ready" };
+    },
+    async updateSource() {
+      return { state: "ready" };
+    },
+    async sourceStatus({ source }) {
+      return { state: stored.has(source.id) ? "ready" : "absent" };
+    },
+    async removeSource({ source }) {
+      stored.delete(source.id);
+    },
+    async attachForRevision() {
+      assert.fail("this case ends at provisioning handoff");
+    },
+    async attachmentStatus() {
+      assert.fail("this case ends at provisioning handoff");
+    },
+    async withdraw() {
+      assert.fail("this case has no deployed Sandbox");
+    },
+  };
+  const sandboxDriver = {
+    id: "sandbox-source-provisioning",
+    capability: "sandbox",
+    implementation: "test-provisioning",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("this case ends at provisioning handoff");
+    },
+    async cleanup() {},
+  };
+  const topology = new KubernetesComputeDriver(
+    conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["127.0.0.1/32"] }),
+    { id: "source-provisioning-topology", sandboxDriver, credentialGatewayDriver },
+  );
+  const computeDriver = createRuntimeComputeDriver();
+  computeDriver.validateHarnessAuth = topology.validateHarnessAuth.bind(topology);
+  // Namespace placement and actual transport effects remain the established runtime fixture.
+  computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  return { computeDriver, sandboxDriver, credentialGatewayDriver };
+}
+
+async function createProvisioningModelSource(fixture, namespaceId) {
+  const secret = await createNamespaceSecret(fixture, namespaceId, "gateway-model-key");
+  const registered = await fixture.request(
+    "POST",
+    `/namespaces/${namespaceId}/credential-sources`,
+    {
+      body: { name: "provisioning-model", type: "openai", secrets: { api_key: secret.ref } },
+    },
+  );
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  return { secret, source: registered.data };
+}
+
+function sourceProvisioningBody(sourceId, harness) {
+  const { agents, models } = createHarnessConfiguration(
+    harness,
+    harness === "openclaw" ? "gpt-5" : "gpt-6-astra",
+  );
+  return {
+    requestId: requestId(),
+    name: `Source ${harness} ${randomUUID().slice(0, 8)}`,
+    executionMode: "dedicated",
+    configuration: {
+      kind: "agent",
+      values: { agents, models },
+    },
+    harnessAuth: { method: "credential_source", sourceId },
+  };
+}
+
+for (const harness of ["openclaw", "codex"]) {
+  test(
+    `guided ${harness} provisioning holds its model source and grants only source access`,
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const fixture = await createFixture(context, {
+        ...sourceProvisioningDrivers(),
+        stopAfterProvisioning: true,
+      });
+      const namespace = await fixture.bootstrapNamespace();
+      const { secret, source } = await createProvisioningModelSource(fixture, namespace.id);
+      const body = sourceProvisioningBody(source.id, harness);
+      const admitted = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body },
+      );
+      assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+      assert.equal(queued.agent_id, null);
+      // The accepted model reference holds the source before an Agent exists.
+      const deleted = await fixture.request(
+        "DELETE",
+        `/namespaces/${namespace.id}/credential-sources/${source.id}`,
+      );
+      assert.equal(deleted.status, 409, JSON.stringify(deleted.body));
+      const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body,
+      });
+      assert.equal(replay.status, 202, JSON.stringify(replay.body));
+      assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+      await fixture.startWorker();
+      const status = await waitFor("source provisioning to hand off", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // Provisioning succeeds only after activation; this fixture stops at its queued handoff.
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
+      });
+      await fixture.stopWorker();
+      fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
+      const agent = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${status.agentId}`,
+      );
+      assert.deepEqual(agent.data.harnessAuth, body.harnessAuth);
+      assert.deepEqual(agent.data.credentialSources, [{ sourceId: source.id }]);
+      const revisions = await fixture.state.read((view) =>
+        view.revisions.listRevisions(namespace.id, status.agentId),
+      );
+      assert.equal(revisions.length, 1);
+      assert.equal(revisions[0].harness.id, harness);
+      assert.deepEqual(revisions[0].credentialSources, [
+        {
+          sourceId: source.id,
+          credentialGatewayId: "credential-gateway-provisioning",
+          sourceType: "openai",
+        },
+      ]);
+      const bindings = await fixture.pool.query(
+        "SELECT resource_kind, resource_id FROM occ.iam_access_bindings WHERE namespace_id = $1 AND identity_subject_id = $2 ORDER BY resource_kind, resource_id",
+        [namespace.id, agent.data.servicePrincipalId],
+      );
+      assert.deepEqual(bindings.rows, [
+        { resource_kind: "credential_source", resource_id: source.id },
+      ]);
+      assert.equal(
+        bindings.rows.some(({ resource_id }) => resource_id === secret.id),
+        false,
+      );
+    },
+  );
+}
+
+test(
+  "guided provisioning rejects Secret model delivery when a Credential Gateway is selected",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, sourceProvisioningDrivers());
+    const namespace = await fixture.bootstrapNamespace();
+    const secret = await createNamespaceSecret(fixture, namespace.id, "model-key");
+    for (const harness of ["openclaw", "codex"]) {
+      const body = sourceProvisioningBody("unused-source", harness);
+      body.harnessAuth = { method: "api_key", source: secret.ref };
+      const refused = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        {
+          body,
+        },
+      );
+      assert.equal(refused.status, 409, JSON.stringify(refused.body));
+      assert.match(refused.error.message, /requires credential-source Harness authentication/u);
+    }
+    const resources = await fixture.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
+       (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations`,
       [namespace.id],
     );
-    assert.deepEqual(resources.rows[0], {
-      agents: 0,
-      configurations: 0,
-      revisions: 0,
-      secrets: 4,
-    });
+    assert.deepEqual(resources.rows[0], { jobs: 0, agents: 0, configurations: 0 });
   },
 );
 
 test(
-  "provisioning refuses credential-source Harness authentication before authorization or writes",
+  "guided source provisioning cannot bind an uncertain registration",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const fixture = await createFixture(context);
-    const namespace = await fixture.bootstrapNamespace();
-    // The source row exists only so the request names a real, ready id; admission must refuse
-    // before it looks the source up, so its gateway and Secret details are irrelevant.
-    const sourceId = `cs_${randomUUID()}`;
-    await fixture.state.transact(async (unit) => {
-      await unit.credentialSources.createCredentialSource({
-        id: sourceId,
-        namespaceId: namespace.id,
-        name: `provisioning-source-${randomUUID()}`,
-        type: "openai",
-        config: {},
-        secrets: {},
-        driverId: "credential-gateway-provisioning",
-        state: "registering",
-        createdAt: new Date().toISOString(),
-      });
-      await unit.credentialSources.markCredentialSourceReady(namespace.id, sourceId);
-    });
-    const provision = () =>
-      fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
-        body: {
-          requestId: requestId(),
-          name: `Credential source ${randomUUID().slice(0, 8)}`,
-          executionMode: "dedicated",
-          configuration: { kind: "agent", values: { agents: { defaults: agentDefaults() } } },
-          harnessAuth: { method: "credential_source", sourceId },
-        },
-      });
-    const assertRefused = (response) => {
-      assert.equal(response.status, 400, JSON.stringify(response.body));
-      assert.equal(response.error.code, "INVALID_REQUEST");
-      assert.match(response.error.message, /does not support credential-source Harness/);
+    const drivers = sourceProvisioningDrivers();
+    drivers.credentialGatewayDriver.registerSource = async () => {
+      throw new Error("synthetic uncertain credential registration");
     };
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const secret = await createNamespaceSecret(fixture, namespace.id, "model-key");
+    const registration = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: { name: "uncertain model", type: "openai", secrets: { api_key: secret.ref } },
+      },
+    );
+    assert.equal(registration.status, 503, JSON.stringify(registration.body));
+    const sources = await fixture.request("GET", `/namespaces/${namespace.id}/credential-sources`);
+    assert.equal(sources.status, 200, JSON.stringify(sources.body));
+    assert.equal(sources.data.length, 1);
+    assert.equal(sources.data[0].state, "deleting");
+    const refused = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: sourceProvisioningBody(sources.data[0].id, "openclaw"),
+    });
+    assert.equal(refused.status, 404, JSON.stringify(refused.body));
+    const jobs = await fixture.pool.query(
+      "SELECT work_id FROM occ.agent_provisioning_work WHERE namespace_id = $1",
+      [namespace.id],
+    );
+    assert.equal(jobs.rowCount, 0);
+  },
+);
 
-    // The documented contract: even a caller who may operate the source is refused.
-    assertRefused(await provision());
-
-    // A caller who can create Agents and Configurations and administer the Installation, but
-    // holds no credential_source:operate, must not bind an Agent to the source through
-    // provisioning (the direct Agent path requires that grant).
+test(
+  "guided source provisioning authorizes its source and rechecks ownership before worker effects",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const drivers = sourceProvisioningDrivers();
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const { source } = await createProvisioningModelSource(fixture, namespace.id);
+    const body = sourceProvisioningBody(source.id, "openclaw");
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    // A selected gateway change cannot reuse another gateway's accepted source.
+    const switched = await createFixture(context, {
+      ...drivers,
+      credentialGatewayDriver: {
+        ...drivers.credentialGatewayDriver,
+        id: "credential-gateway-replacement",
+      },
+    });
+    const replay = await switched.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body,
+    });
+    assert.equal(replay.status, 503, JSON.stringify(replay.body));
+    const retry = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(retry.status, 503, JSON.stringify(retry.body));
+    const { workId } = admitted.data.provisioning;
+    const ended = (event) => event.event === "worker.completed" && event.workId === workId;
+    const events = [];
+    const worker = await createFixture(context, {
+      ...drivers,
+      credentialGatewayDriver: {
+        ...drivers.credentialGatewayDriver,
+        id: "credential-gateway-replacement",
+      },
+      onWorkerEvent: (event) => events.push(event),
+      // Stop in the pass that ends the first attempt: its retry can be due at once (finding 1610).
+      stopWorkerAfter: ended,
+    });
+    await worker.startWorker();
+    await waitFor("the worker to revalidate the source owner", async () => events.find(ended));
+    await worker.stopWorker();
+    assert.deepEqual(
+      events.filter(ended).map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [{ attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" }],
+    );
+    const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.equal(row.completed_phase, "admitted");
+    assert.equal(row.agent_id, null);
+    assert.equal(row.configuration_id, null);
+    const resources = await fixture.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
+       (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations,
+       (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id = $1) AS revisions`,
+      [namespace.id],
+    );
+    assert.deepEqual(resources.rows[0], { agents: 0, configurations: 0, revisions: 0 });
+    // The actor retains provisioning grants but cannot operate this exact source.
     const principalId = await fixture.revokeCurrentPrincipal();
     const roleId = `role-provisioning-${randomUUID()}`;
     const bindingId = `binding-provisioning-${randomUUID()}`;
@@ -1575,7 +2017,7 @@ test(
       "INSERT INTO occ.iam_roles (id, namespace_id, name, permissions) VALUES ($1, NULL, $2, $3::jsonb)",
       [
         roleId,
-        `Provisioning without credential sources ${randomUUID()}`,
+        `Provisioning without source ${randomUUID()}`,
         JSON.stringify([
           { action: "administer", resourceKind: "installation" },
           { action: "create", resourceKind: "agent" },
@@ -1584,37 +2026,25 @@ test(
       ],
     );
     await fixture.pool.query(
-      `INSERT INTO occ.iam_access_bindings
-       (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id)
-       VALUES ($1, NULL, $2, NULL, $3, NULL, NULL)`,
+      "INSERT INTO occ.iam_access_bindings (id, namespace_id, identity_subject_id, group_subject_id, role_id, resource_kind, resource_id) VALUES ($1, NULL, $2, NULL, $3, NULL, NULL)",
       [bindingId, principalId, roleId],
     );
     try {
-      assertRefused(await provision());
+      const denied = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+        body: { ...body, requestId: requestId() },
+      });
+      assert.equal(denied.status, 403, JSON.stringify(denied.body));
     } finally {
       await fixture.pool.query("DELETE FROM occ.iam_access_bindings WHERE id = $1", [bindingId]);
       await fixture.pool.query("DELETE FROM occ.iam_roles WHERE id = $1", [roleId]);
     }
-
-    // Neither refusal stored a plan, queued work, created resources or recorded a denial.
-    const resources = await fixture.pool.query(
-      `SELECT
-       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS plans,
-       (SELECT count(*)::integer FROM occ.controller_work
-        WHERE namespace_id = $1 AND work_kind = 'provisioning') AS work,
-       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
-       (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations,
-       (SELECT count(*)::integer FROM occ.audit_events
-        WHERE namespace_id = $1 AND action LIKE 'openclaw.agents.provision%') AS audits`,
-      [namespace.id],
+    const claim = await claimProvisioningWork(fixture.pool, admitted.data.provisioning.workId);
+    await fixture.state.transact((unit) =>
+      unit.provisioning.cancel(claim, {
+        code: "PROVISIONING_CANCELLED",
+        message: "source ownership case completed without effects",
+      }),
     );
-    assert.deepEqual(resources.rows[0], {
-      plans: 0,
-      work: 0,
-      agents: 0,
-      configurations: 0,
-      audits: 0,
-    });
   },
 );
 
@@ -2514,16 +2944,63 @@ test(
 );
 
 test(
-  "dropping native worker support from the runtime image before the worker runs rejects dedicated OpenClaw provisioning",
+  "a new dedicated OpenClaw request without a provisioning Sandbox Driver is refused with a 409 naming it",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, {
+      computeDriver: createRuntimeComputeDriver(),
+      configurationDriver: createProvisioningConfigurationDriver({
+        id: "configuration-provisioning-no-sandbox",
+      }),
+      secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    // The Installation cannot admit dedicated OpenClaw, so it does not report native workers.
+    const installation = await fixture.request("GET", "/installation");
+    assert.equal(installation.status, 200, JSON.stringify(installation.body));
+    assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const body = provisioningBody(namespace.id, secrets);
+    body.configuration.values.agents.defaults = {
+      model: "openai/gpt-5",
+      models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+    };
+    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason,
+    // not a 503 the Console reads as an unknown outcome (finding 1609).
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const refused = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body },
+      );
+      assert.equal(refused.status, 409, JSON.stringify(refused.body));
+      assert.deepEqual(refused.body.error, {
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+      });
+    }
+    // The refusal stored nothing: no provisioning job or Agent.
+    const stored = await fixture.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS jobs,
+       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents`,
+      [namespace.id],
+    );
+    assert.deepEqual(stored.rows[0], { jobs: 0, agents: 0 });
+  },
+);
+
+test(
+  "losing native Sandbox containment before the worker runs leaves provisioning retryable without effects",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
     const drivers = {
       computeDriver: createRuntimeComputeDriver(),
       configurationDriver: createProvisioningConfigurationDriver({
-        id: "configuration-provisioning-native-support",
+        id: "configuration-provisioning-native-containment",
       }),
       secretDriver: createTestSecretDriver({ id: "secret-provisioning" }),
-      // Dedicated native OpenClaw needs a full-containment provisioning Sandbox Driver.
       sandboxDriver: {
         id: "sandbox-provisioning",
         capability: "sandbox",
@@ -2535,10 +3012,7 @@ test(
         async cleanup() {},
       },
     };
-    const fixture = await createFixture(context, {
-      ...drivers,
-      nativeWorkerSupport: "custom-image",
-    });
+    const fixture = await createFixture(context, drivers);
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const body = provisioningBody(namespace.id, secrets);
@@ -2551,41 +3025,92 @@ test(
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    // The Installation now runs a runtime image without native worker support. Every attempt
-    // would refuse the plan the same way, so the worker fails it on the first one and says why.
-    // The first recorded error settles it: a retried refusal would leave the work running.
-    const switched = await createFixture(context, drivers);
-    await switched.startWorker();
-    const failed = await waitFor(
-      "the switched worker to refuse the provisioning work",
-      async () => {
-        const row = await provisioningRow(switched.pool, namespace.id, body.requestId);
-        return row.progress.error === undefined ? undefined : row;
+    // The selected Driver has lost process containment since admission. The worker must
+    // revalidate the complete Sandbox contract before creating any provisioning resources.
+    // The retry's jittered backoff can be due at once, so the worker stops in the pass that
+    // ends this work's first attempt rather than after the test reads the event (finding 1610).
+    const { workId } = admitted.data.provisioning;
+    const completed = [];
+    const switched = await createFixture(context, {
+      ...drivers,
+      sandboxDriver: { ...drivers.sandboxDriver, facets: ["networking", "filesystem"] },
+      onWorkerEvent: (event) => {
+        if (event.event === "worker.completed") {
+          completed.push(event);
+        }
       },
+      stopWorkerAfter: (event) => event.event === "worker.completed" && event.workId === workId,
+    });
+    await switched.startWorker();
+    await waitFor("the worker to finish its first provisioning attempt", async () =>
+      completed.find((event) => event.workId === workId),
     );
     await switched.stopWorker();
-    assert.equal(failed.status, "failed");
-    assert.deepEqual(failed.progress.error, {
-      code: "PROVISIONING_REJECTED",
-      message: new NativeWorkerSupportError().message,
+    assert.deepEqual(
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [{ attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" }],
+    );
+    const row = await provisioningRow(switched.pool, namespace.id, body.requestId);
+    assert.equal(row.status, "running");
+    assert.equal(row.completed_phase, "admitted");
+    assert.equal(row.agent_id, null);
+    assert.equal(row.configuration_id, null);
+    assert.equal(row.progress.pendingEffect, undefined);
+    assert.deepEqual(row.progress.error, {
+      code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+      message: "Agent provisioning could not complete.",
     });
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],
     );
-    assert.deepEqual(work.rows, [
-      { state: "failed_permanent", reason_code: "PROVISIONING_REJECTED", attempt_count: 1 },
-    ]);
+    assert.deepEqual(work.rows, [{ state: "queued", reason_code: null, attempt_count: 1 }]);
+    const resources = await switched.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agents WHERE namespace_id = $1) AS agents,
+       (SELECT count(*)::integer FROM occ.configurations WHERE namespace_id = $1) AS configurations,
+       (SELECT count(*)::integer FROM occ.agent_revisions WHERE namespace_id = $1) AS revisions`,
+      [namespace.id],
+    );
+    assert.deepEqual(resources.rows[0], { agents: 0, configurations: 0, revisions: 0 });
+    assert.deepEqual(drivers.computeDriver.calls, []);
 
-    // Reading status reports the stored failure: native worker support is admission for writes.
+    // Status and retry both require the current Sandbox contract. Restoring the complete
+    // Driver makes the queued status readable and the existing attempt eligible again.
+    const message = "A required platform dependency is unavailable.";
     const status = await switched.request("GET", admitted.data.provisioning.url);
-    assert.equal(status.status, 200, JSON.stringify(status.body));
-    assert.equal(status.data.status, "failed");
-    assert.deepEqual(status.data.error, failed.progress.error);
-    // Retry would run the plan again, so it is still refused for the missing support.
+    assert.equal(status.status, 503, JSON.stringify(status.body));
+    assert.equal(status.body.error.message, message);
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
-    assert.equal(retried.status, 400, JSON.stringify(retried.body));
-    assert.equal(retried.body.error.message, new NativeWorkerSupportError().message);
+    assert.equal(retried.status, 503, JSON.stringify(retried.body));
+    assert.equal(retried.body.error.message, message);
+    // Replaying the accepted request ID reads the stored work too: the same retryable 503, not
+    // the 409 a new request gets for the fixed Installation shape (finding 1614).
+    const provisionPath = `/namespaces/${namespace.id}/agents/provision`;
+    const replayed = await switched.request("POST", provisionPath, { body });
+    assert.equal(replayed.status, 503, JSON.stringify(replayed.body));
+    assert.equal(replayed.body.error.message, message);
+    const restoredStatus = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(restoredStatus.status, 200, JSON.stringify(restoredStatus.body));
+    assert.equal(restoredStatus.data.status, "queued");
+    assert.equal(restoredStatus.data.attemptCount, 1);
+    assert.equal(restoredStatus.data.error, undefined);
+    const restoredRetry = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+    assert.equal(restoredRetry.status, 202, JSON.stringify(restoredRetry.body));
+    assert.equal(restoredRetry.data.workId, admitted.data.provisioning.workId);
+
+    const cleanupClaim = await claimProvisioningWork(
+      fixture.pool,
+      admitted.data.provisioning.workId,
+    );
+    await fixture.state.transact((unit) =>
+      unit.provisioning.cancel(cleanupClaim, {
+        code: "PROVISIONING_CANCELLED",
+        message: "containment revalidation test completed without worker dispatch",
+      }),
+    );
   },
 );
 
@@ -2673,6 +3198,7 @@ test(
     const secretDriver = createTestSecretDriver({ id: "secret-provisioning" });
     const implementation = secretDriver.implementation;
     let breakSecretDriver = false;
+    let workId;
     const completed = [];
     const fixture = await createFixture(context, {
       configurationDriver: createProvisioningConfigurationDriver({
@@ -2689,6 +3215,10 @@ test(
           completed.push(event);
         }
       },
+      // Stop in the pass that ends the first attempt: its retry can be due at once (finding 1610).
+      // workId is unset while bootstrapNamespace runs the worker.
+      stopWorkerAfter: (event) =>
+        workId !== undefined && event.event === "worker.completed" && event.workId === workId,
     });
     context.after(() => {
       secretDriver.implementation = implementation;
@@ -2704,15 +3234,27 @@ test(
     // No usable Secret Driver is an outage, not an ownership refusal: the worker keeps the
     // generic message and retries the work.
     breakSecretDriver = true;
+    workId = admitted.data.provisioning.workId;
+    fixture.cancelQueuedWorkAtTeardown(
+      workId,
+      "Secret Driver outage test completed after its first attempt",
+    );
     await fixture.startWorker();
-    const first = await waitFor("the worker to finish its first provisioning attempt", async () =>
-      completed.find(({ workId }) => workId === admitted.data.provisioning.workId),
+    await waitFor("the worker to finish its first provisioning attempt", async () =>
+      completed.find((event) => event.workId === workId),
     );
     await fixture.stopWorker();
     assert.deepEqual(
-      { attempt: first.attempt, outcome: first.outcome, code: first.code },
-      { attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" },
+      completed
+        .filter((event) => event.workId === workId)
+        .map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [{ attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" }],
     );
+    const work = await fixture.pool.query(
+      "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+      [workId],
+    );
+    assert.deepEqual(work.rows, [{ state: "queued", reason_code: null, attempt_count: 1 }]);
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(row.progress.error, {
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",

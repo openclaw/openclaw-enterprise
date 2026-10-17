@@ -120,7 +120,8 @@ function normalizeFile(file, laneName, index, issues) {
 }
 
 // Files run one at a time unless the lane sets fileConcurrency and lists the file in
-// parallelFiles, the files audited to share the runner, in the order they start.
+// parallelFiles, the files audited to share the runner (which start longest first, ties in
+// listed order; see fileDurations).
 // serialFiles names why a file must run alone. Any other file also runs alone, so a
 // new or unaudited file fails closed.
 function fileModes(lane, laneName, files, issues) {
@@ -169,14 +170,63 @@ function fileConcurrencyLimit(value, path, issues) {
   return value;
 }
 
-function normalizeManifest(raw) {
+// The index may name a table of measured file times (repository path to milliseconds,
+// e.g. medians of green main runs). Shared slots start the longest file first, so a long
+// file never waits for a slot while short ones run. A file without a row starts before
+// every measured one, in parallelFiles order: nothing says it is short.
+function fileDurations(raw, manifestPath, issues) {
+  const durations = new Map();
+  const reference = raw.fileDurations;
+  if (reference === undefined) {
+    return durations;
+  }
+  if (
+    typeof reference !== "string" ||
+    !/^\.\/[A-Za-z0-9._/-]+\.json$/.test(reference) ||
+    reference.split("/").includes("..")
+  ) {
+    issues.push(issue("invalid-manifest", "fileDurations must be a ./relative .json path"));
+    return durations;
+  }
+  let table;
+  try {
+    table = JSON.parse(readFileSync(resolve(dirname(manifestPath), reference), "utf8"));
+  } catch {
+    issues.push(issue("invalid-manifest", `fileDurations ${reference} is not readable JSON`));
+    return durations;
+  }
+  if (!isObject(table) || table.version !== 1 || !isObject(table.files)) {
+    issues.push(
+      issue("invalid-manifest", `fileDurations ${reference} must be version 1 with a files object`),
+    );
+    return durations;
+  }
+  for (const [path, ms] of Object.entries(table.files)) {
+    if (!Number.isInteger(ms) || ms < 0) {
+      issues.push(
+        issue("invalid-manifest", `fileDurations ${path} must be a whole number of milliseconds`),
+      );
+      continue;
+    }
+    durations.set(path, ms);
+  }
+  return durations;
+}
+
+function normalizeManifest(raw, manifestPath) {
   const issues = [];
   const lanes = new Map();
   const groups = new Map();
 
   if (!isObject(raw)) {
-    return { lanes, groups, issues: [issue("invalid-manifest", "manifest must be a JSON object")] };
+    return {
+      lanes,
+      groups,
+      durations: new Map(),
+      issues: [issue("invalid-manifest", "manifest must be a JSON object")],
+    };
   }
+  const durations = fileDurations(raw, manifestPath, issues);
   if (raw.version !== 1) {
     issues.push(issue("invalid-manifest", "manifest version must be 1"));
   }
@@ -219,7 +269,7 @@ function normalizeManifest(raw) {
     groups.set(groupName, stringArray(laneNames, `groups.${groupName}`, issues, true));
   }
 
-  return { lanes, groups, issues };
+  return { lanes, groups, durations, issues };
 }
 
 async function readJson(path) {
@@ -543,6 +593,16 @@ function fileTimeout() {
   }
   const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
   return { timeoutMs, laneDeadline: timeoutMs < limitMs };
+}
+
+// Longest measured first; unmeasured files lead, and ties keep parallelFiles order (the
+// sort is stable).
+function startOrder(paths, durations) {
+  const rank = (path) => durations.get(path) ?? Number.POSITIVE_INFINITY;
+  return [...paths].sort((left, right) => {
+    const [a, b] = [rank(left), rank(right)];
+    return a === b ? 0 : a > b ? -1 : 1;
+  });
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
@@ -1324,8 +1384,9 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   const laneStarted = performance.now();
   const concurrency = lane ? fileConcurrency(lane, issues) : 1;
   if (lane && lane.fileConcurrency > 1) {
+    const measured = lane.parallelFiles.filter((path) => manifest.durations.has(path)).length;
     process.stderr.write(
-      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})\n`,
+      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})${measured > 0 ? `, longest first (${measured} of ${lane.parallelFiles.length} shared files measured)` : ""}\n`,
     );
   }
   if (lane && issues.length === 0) {
@@ -1354,10 +1415,12 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     const indexes = lane.files.map((_, index) => index);
     const parallel =
       concurrency > 1
-        ? lane.parallelFiles.map((path) => lane.files.findIndex((file) => file.path === path))
+        ? startOrder(lane.parallelFiles, manifest.durations).map((path) =>
+            lane.files.findIndex((file) => file.path === path),
+          )
         : [];
     // Serial files run first and alone, in manifest order; then audited files share
-    // `concurrency` slots, started in parallelFiles order.
+    // `concurrency` slots, started longest first (see fileDurations).
     for (const index of indexes.filter((entry) => !parallel.includes(entry))) {
       await runAt(index, "serial");
     }
@@ -1674,7 +1737,7 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath));
+  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
 
   if (command === "audit") {
     const summary = await auditManifest(root, manifest);

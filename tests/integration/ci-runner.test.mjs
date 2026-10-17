@@ -3703,6 +3703,106 @@ test("run shares slots only between audited parallel files and runs the rest alo
   );
 });
 
+test("run starts shared files longest first from the measured table, unmeasured first", async (t) => {
+  const root = await fixture(t);
+  const files = ["short", "long", "new", "middle"].map(
+    (name) => `tests/integration/${name}.test.mjs`,
+  );
+  for (const path of files) {
+    await writeFile(join(root, path), 'import test from "node:test";\ntest("case", () => {});\n');
+  }
+  // Rows for files outside the lane are ignored.
+  await writeJson(join(root, "durations.json"), {
+    version: 1,
+    files: {
+      "tests/integration/short.test.mjs": 10,
+      "tests/integration/long.test.mjs": 50_000,
+      "tests/integration/middle.test.mjs": 20,
+      "tests/integration/gone.test.mjs": 90_000,
+    },
+  });
+  const manifest = (fileDurations) => ({
+    version: 1,
+    ...(fileDurations === undefined ? {} : { fileDurations }),
+    lanes: {
+      shared: { fileConcurrency: 2, parallelFiles: files, files: files.map((path) => ({ path })) },
+    },
+    groups: { ci: ["shared"] },
+  });
+  const starts = async (name, fileDurations) => {
+    await writeJson(join(root, `${name}.json`), manifest(fileDurations));
+    const result = run(
+      root,
+      ["run", "shared", "--manifest", `${name}.json`, "--root", root].concat([
+        "--state",
+        `state/${name}.jsonl`,
+        "--results",
+        `results/${name}.json`,
+      ]),
+      { CI_RUNNER_FILE_CONCURRENCY: "2" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(join(root, `results/${name}.json`), "utf8"));
+    return {
+      stderr: result.stderr,
+      ...Object.fromEntries(
+        summary.files.map((file) => [
+          file.path.split("/").at(-1).replace(".test.mjs", ""),
+          file.startOffsetMs,
+        ]),
+      ),
+    };
+  };
+
+  // Two slots: the unmeasured and the longest file start together; the next freed slot
+  // takes the middle file, the last one the shortest.
+  const measured = await starts("measured", "./durations.json");
+  assert.ok(measured.new < measured.middle && measured.long < measured.middle);
+  assert.ok(measured.middle <= measured.short);
+  assert.match(measured.stderr, /longest first \(3 of 4 shared files measured\)/);
+
+  // Without a table, shared files start in parallelFiles order.
+  const listed = await starts("listed");
+  assert.ok(listed.short < listed.new && listed.long < listed.new);
+  assert.ok(listed.new <= listed.middle);
+  assert.doesNotMatch(listed.stderr, /longest first/);
+});
+
+test("audit rejects an unusable file duration table", async (t) => {
+  const root = await fixture(t);
+  await writeFile(join(root, "tests/integration/one.test.mjs"), "import 'node:test';\n");
+  await writeJson(join(root, "durations.json"), {
+    version: 1,
+    files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
+  });
+  const audit = async (fileDurations) => {
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      fileDurations,
+      lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
+      groups: { ci: ["one"] },
+    });
+    const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+    assert.equal(result.status, 1, result.stdout);
+    return JSON.parse(result.stdout).issues.map((entry) => entry.message);
+  };
+
+  assert.deepEqual(await audit("./durations.json"), [
+    "fileDurations tests/integration/one.test.mjs must be a whole number of milliseconds",
+    "fileDurations tests/integration/two.test.mjs must be a whole number of milliseconds",
+  ]);
+  assert.deepEqual(await audit("./missing.json"), [
+    "fileDurations ./missing.json is not readable JSON",
+  ]);
+  for (const reference of ["../durations.json", "./../durations.json", "durations.json", 5]) {
+    assert.deepEqual(await audit(reference), ["fileDurations must be a ./relative .json path"]);
+  }
+  await writeJson(join(root, "durations.json"), { version: 2, files: {} });
+  assert.deepEqual(await audit("./durations.json"), [
+    "fileDurations ./durations.json must be version 1 with a files object",
+  ]);
+});
+
 test("audit requires current discovered test files and rejects duplicate ownership", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");

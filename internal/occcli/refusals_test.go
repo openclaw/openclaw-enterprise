@@ -200,6 +200,7 @@ func TestNamespaceKeyRefusalNamesTheKeysNamespace(t *testing.T) {
 		`{"data":{"key":"test-key","namespaceId":"ns_"}}`,
 		`{"data":{"key":"test-key","namespaceId":"ns_` + strings.Repeat("a", 65) + `"}}`,
 		`{"data":{"key":"test-key","namespaceId":"default"}}`,
+		`{"data":{"key":"test-key","namespaceId":123}}`,
 	} {
 		err := runRefused(t, writeKeyFile(t, contents), mismatch, "namespace", "list")
 		if err == nil || !strings.Contains(err.Error(), "hint: this service key is scoped to one Namespace;") {

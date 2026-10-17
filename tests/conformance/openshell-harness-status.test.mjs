@@ -2,14 +2,18 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import vm from "node:vm";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
@@ -216,6 +220,8 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         assert.deepEqual(refused.body, { error: "unauthorized" });
       }
       // The token is checked first: without it every other path and method is the same 401.
+      // With it, anything but the status read (such as the Agent Gateway's app-server
+      // upgrade on /) is told the Harness is unavailable and the held code, nothing more.
       for (const request of [
         { url: "/" },
         { url: "/openclaw/runtime/diagnostics" },
@@ -225,9 +231,10 @@ test("a provider-owned Codex Harness serves its held startup failure only to the
         const refused = call(handler, request);
         assert.equal(refused.status, 401, JSON.stringify(request));
         assert.deepEqual(refused.body, { error: "unauthorized" });
-        const missing = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
-        assert.equal(missing.status, 404);
-        assert.deepEqual(missing.body, { error: "not_found" });
+        const unavailable = call(handler, { ...request, authorization: `Bearer ${TOKEN}` });
+        assert.equal(unavailable.status, 503, JSON.stringify(request));
+        assert.equal(unavailable.headers["cache-control"], "no-store");
+        assert.deepEqual(unavailable.body, { error: "runtime_failure_held", code: expected.code });
       }
     });
   }
@@ -314,6 +321,39 @@ test("the OpenShell client reads a held failure from the real Harness wrapper th
   );
   // The held wrapper is not a Codex app-server: no WebSocket handshake completes.
   assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, signal), false);
+  // The Agent Gateway's own upgrade gets 503 naming the held code, not a missing route.
+  const upgrade = await new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port: freePort,
+      path: "/",
+      headers: {
+        authorization: `Bearer ${TOKEN}`,
+        connection: "Upgrade",
+        upgrade: "websocket",
+        "sec-websocket-version": "13",
+        "sec-websocket-key": "AAAAAAAAAAAAAAAAAAAAAA==",
+      },
+      signal,
+    });
+    request.on("upgrade", (_response, socket) => {
+      socket.destroy();
+      reject(new Error("the held wrapper must not upgrade"));
+    });
+    request.on("response", (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () =>
+        resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }),
+      );
+    });
+    request.on("error", reject);
+    request.end();
+  });
+  assert.deepEqual(upgrade, {
+    status: 503,
+    body: JSON.stringify({ error: "runtime_failure_held", code: "MODEL_PROBE_FAILED" }),
+  });
 });
 
 test("the OpenShell client reaches a bearer-passthrough service through the gateway listener", async (t) => {
@@ -712,4 +752,163 @@ test("the OpenShell client verifies an IP-literal TLS gateway listener against t
       },
     );
   }
+});
+
+// Finding 1605: a request target that does not parse as a URL path, such as "//",
+// used to throw in a wrapper's HTTP handler. Node then ends the wrapper process,
+// the container restarts and the startup model probe runs (and may bill) again.
+// Each wrapper status server answers 400 instead and keeps serving.
+test("runtime wrapper status servers answer 400 to a request target that is not a path", async (t) => {
+  const badRequest = { error: "bad_request" };
+  await t.test("the provider-owned held failure checks the token first", () => {
+    const { servers } = runCodexEntrypoint({
+      env: providerEnv,
+      probe: failedProbe("stream error: model unavailable"),
+    });
+    const { handler } = servers.find((server) => server.listening !== undefined);
+    for (const url of ["//", "//:99999"]) {
+      const refused = call(handler, { url });
+      assert.equal(refused.status, 401, url);
+      assert.deepEqual(refused.body, { error: "unauthorized" });
+      const malformed = call(handler, { url, authorization: `Bearer ${TOKEN}` });
+      assert.equal(malformed.status, 400, url);
+      assert.deepEqual(
+        { ...malformed.headers },
+        {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        },
+      );
+      assert.deepEqual(malformed.body, badRequest);
+    }
+    assert.equal(call(handler, { authorization: `Bearer ${TOKEN}` }).status, 200);
+  });
+
+  await t.test("the Compute status port answers before any route or token check", () => {
+    const { servers } = runCodexEntrypoint({
+      env: {
+        APP_SERVER_TOKEN: TOKEN,
+        OPENCLAW_AGENT_REVISION_ID: "rev_fixture",
+        OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
+        OPENCLAW_RUNTIME_STATUS_PORT: "18791",
+        OPENCLAW_POD_UID: "pod-fixture",
+      },
+      probe: failedProbe("stream error: model unavailable"),
+    });
+    const { handler } = servers.find((server) => server.listening !== undefined);
+    const answer = call(handler, { url: "//" });
+    assert.equal(answer.status, 400);
+    assert.deepEqual(answer.body, badRequest);
+    assert.equal(call(handler, {}).body.runtimeFailure.code, "MODEL_PROBE_FAILED");
+  });
+
+  await t.test(
+    "the dedicated OpenClaw worker readiness port answers before any route check",
+    () => {
+      const stop = new Error("stop after the readiness server starts");
+      let handler;
+      const directory = mkdtempSync(join(tmpdir(), "native-worker-readiness-"));
+      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      assert.throws(
+        () =>
+          vm.runInNewContext(NATIVE_WORKER_ENTRYPOINT, {
+            URL,
+            Buffer,
+            console: { error() {} },
+            process: {
+              execPath: process.execPath,
+              env: {
+                OPENCLAW_RUNTIME_STATUS_PORT: "18789",
+                OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+                OPENCLAW_NODE_STATE_DIR: join(directory, "state"),
+                OPENCLAW_NODE_SETUP_CODE: "fixture-setup-code",
+                OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+                TMPDIR: join(directory, "tmp"),
+                OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+              },
+            },
+            require(specifier) {
+              if (specifier === "node:http") {
+                return {
+                  createServer(value) {
+                    handler = value;
+                    return { listen() {} };
+                  },
+                };
+              }
+              if (specifier === "node:fs") {
+                // The worker starts its readiness server, then prepares its private TMPDIR
+                // with mkdirSync; stopping there leaves only the readiness server running.
+                return {
+                  ...nodeRequire("node:fs"),
+                  mkdirSync() {
+                    throw stop;
+                  },
+                };
+              }
+              return nodeRequire(specifier);
+            },
+          }),
+        (error) => error === stop,
+      );
+      assert.equal(typeof handler, "function");
+      let status;
+      let body = "";
+      handler(
+        { method: "GET", url: "//", headers: {} },
+        {
+          writeHead(code) {
+            status = code;
+          },
+          end(chunk) {
+            body += chunk ?? "";
+          },
+        },
+      );
+      assert.equal(status, 400);
+      assert.deepEqual(JSON.parse(body), badRequest);
+    },
+  );
+
+  await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
+    const probeServer = createServer();
+    const freePort = await listen(probeServer);
+    await close(probeServer);
+    const { servers } = runCodexEntrypoint({
+      env: providerEnv,
+      probe: failedProbe("stream error: model unavailable"),
+      http: { createServer, port: freePort },
+    });
+    const held = servers.find((server) => server.real !== undefined);
+    t.after(() => close(held.real));
+    await new Promise((resolve) =>
+      held.real.listening ? resolve() : held.real.once("listening", resolve),
+    );
+    // The request line carries "//" verbatim; HTTP clients would normalize it.
+    const raw = await new Promise((resolve, reject) => {
+      const socket = connect(freePort, "127.0.0.1");
+      let text = "";
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk) => {
+        text += chunk;
+      });
+      socket.on("end", () => resolve(text));
+      socket.on("error", reject);
+      socket.end(
+        `GET // HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer ${TOKEN}\r\nConnection: close\r\n\r\n`,
+      );
+    });
+    assert.match(raw, /^HTTP\/1\.1 400 /);
+    assert.ok(raw.includes(JSON.stringify(badRequest)), raw);
+    // The same wrapper still serves its held failure afterwards.
+    const signal = AbortSignal.timeout(5_000);
+    const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${freePort}` });
+    const document = await client.getServiceDocument(
+      serviceUrl,
+      "/openclaw/runtime/status",
+      TOKEN,
+      signal,
+    );
+    assert.equal(document.status, 200);
+  });
 });

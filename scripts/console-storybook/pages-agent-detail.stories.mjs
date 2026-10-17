@@ -45,7 +45,9 @@ export const CurrentVersionDuringDeployment = story("currentVersionDuringDeploym
 export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
+export const DeploymentModelProbeRetried = story("deploymentModelProbeRetried");
 export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
+export const DeploymentModelProbeFailedDeployOnly = story("deploymentModelProbeFailedDeployOnly");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
@@ -76,9 +78,18 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
+export const DeployOutcomeUnknown = {
+  ...story("deployOutcomeUnknown"),
+  name: "Deployment outcome unknown",
+};
 export const DeployRefusedSetting = {
   ...story("deployRefusedSetting"),
   name: "Deployment refused by a Configuration setting",
+};
+export const DeployOpensVersion = {
+  ...story("deployOpensVersion"),
+  name: "Deployment opens the new version",
 };
 export const DeployAgentPrincipalDenied = {
   ...story("deployAgentPrincipalDenied"),

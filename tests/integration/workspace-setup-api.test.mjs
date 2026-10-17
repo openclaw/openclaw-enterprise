@@ -4,6 +4,7 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
@@ -290,8 +291,8 @@ test("Agent save accepts initial workspace files for a main roster entry in any 
 });
 
 test("Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox", async (t) => {
-  // Finding 1144: a Sandbox Harness has no workspace initializer, and OpenShell forces the
-  // OpenClaw workspace to its mount, so the setting refusal named a path nobody wrote.
+  // A provider without an initializer must remain unsupported even when its configuration
+  // hook moves the workspace. Report the missing capability, not a caller path error.
   const sandboxDriver = {
     id: "workspace-setup-sandbox",
     capability: "sandbox",
@@ -345,4 +346,70 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     (await f.request("GET", f.path)).data.filter(({ name }) => name.startsWith("Sandboxed")).length,
     0,
   );
+});
+
+test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+  const definition = {
+    id: "workspace-openshell",
+    type: "openshell",
+    configuration: { endpoint: "http://127.0.0.1:9", insecureTransport: "network-policy" },
+    drivers: {
+      sandbox: "workspace-openshell-sandbox",
+      credential_gateway: "workspace-openshell-credentials",
+    },
+  };
+  const backend = createOpenShellBackend(definition);
+  t.after(() => backend.client.close());
+  const sandboxDriver = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model-egress",
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+            binaries: [{ path: "/usr/local/bin/node" }],
+          },
+        ],
+      },
+    },
+    { id: "workspace-openshell-sandbox", backend },
+  );
+  const f = await setup(t, { sandboxDriver });
+  for (const [runtime, model] of [
+    ["openclaw", "openai/gpt-4.1"],
+    ["codex", "codex/gpt-5.1"],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: {
+        kind: "agent",
+        values: {
+          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        },
+      },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const files = { "USER.md": `private-${runtime}-workspace-content` };
+    // Real API admission composes Compute with OpenShell's workspace projection and validator.
+    // No Sandbox is provisioned: the private payload remains staged for deployment.
+    const created = await f.create(`OpenShell ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: files,
+    });
+    assert.equal(created.status, 201, `${runtime}: ${JSON.stringify(created.body)}`);
+    assert.equal(created.data.desiredRuntimeState, "stopped");
+    assert.deepEqual((await f.staged(created.data.id)).files, files);
+    assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+  }
 });

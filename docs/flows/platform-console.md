@@ -127,6 +127,7 @@ stops reads. Missing provenance stays explicit.
 from the list immediately shows **Loading agent details…** and **Back to Agents**.
 Access checks finish before the Agent’s name, actions, and overview appear together.
 Other ways into an Agent keep the shown page until then; a fresh load shows loading after 400 ms.
+Once shown, loading stays at least 300 ms (`loadingMinimumMs`); the Agent's scroll and focus follow.
 Going back cancels the read and returns to the list; a second press does
 nothing. A refocus during that read keeps this page. Other first visits and
 Refresh show loading after 250 ms. A held page keeps its own navigation and header.
@@ -287,12 +288,14 @@ preflight.
 
 **Open vN Logs** opens the failed revision from any version or draft. Logs reserves space;
 Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
-the tab leaves visible output in place.
+the tab leaves visible output in place. Recovery links scroll their version tab into view
+and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
 
 [Runtime logs](agent-runtime-logs.md) explains access. A status `403` hides Pod details,
 not separately authorized logs. Denials last until logout; newly granted `operate` permits
 another status read. A refused log read or download clears the rows. A late success cannot
-restore them or start a download. Back rebuilds a refused view; otherwise it shows the page it checked.
+restore them or start a download. Refusing previously allowed log text rereads status at
+once; that read supersedes a stale one in flight. Back rebuilds a refused view; otherwise it shows the page it checked.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -370,6 +373,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-16 22:40: Hold loading 300 ms; open recovery links in view; reread status on a log refusal. (ui-jank-code-12)
 - 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
 - 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 - 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)

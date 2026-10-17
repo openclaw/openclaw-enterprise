@@ -265,36 +265,36 @@ admitted revision** shows the frozen snapshot.
 
 ### Update
 
-In **New version in progress**, v7 deploys while v6 stays current. Open v6 in
-**Current version during deployment**; compare queued, failed, activated, and unavailable
-activity. Resize **First version**: wrapped lines stay aligned under their preparation step.
+In **New version in progress**, v7 deploys while v6 remains current. **Current
+version during deployment** shows v6 with v7 activity. Compare queued, failed,
+activated, and unavailable states. Resize **First version**: wrapped lines align
+under each step, not its number.
 
-From **New version failed** or **Failed deployment logs from draft**, open v7 Logs and
-go Back. At 390px, check Follow, filters, and tab visibility in **Runtime status and logs
-for v7**. Then [walk through losing and regaining log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md).
+In **Deployment outcome unknown**, press Enter on **Deploy new version**.
+“Deploying…” clears, “Outcome unknown” takes focus, and Deploy stays disabled.
 
-Version metadata stays visible when saved settings are unreadable. Follow the
-[walkthrough](../../scripts/console-storybook/unreadable-configuration-workflow.md)
-in **Unreadable Agent draft** and **Unreadable revision snapshot** for banner
-scope and navigation.
+Open v7 Logs from **New version failed**, then go Back. At 390px, the selected
+tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md)
+to check Follow, Download, and permission changes. These stories use simulated responses.
 
-**Current observations** starts unrequested; compare
-**Current observations for v7**, **Unknown observation for v6**, and
-**Current observation unavailable**. Clicking requests timestamped diagnostics
-for that version without changing its recorded deployment result.
+Unreadable Configuration does not hide version metadata. Check the [draft and
+revision banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)
+and their navigation.
 
-Outcome-unknown stories in **Components/Channels** and **Components/Credentials**
-disable deployment until **Reload draft**; they cannot prove a write committed.
+**Current observations** starts without a request. Compare v7, unknown v6, and
+unavailable observations: requesting timestamped diagnostics must not change the
+recorded deployment result.
 
-Browsing does not deploy. Credentials need deployment; workspace writes apply
-immediately. Native JSON excludes Agent-owned Backend and execution mode.
-[Revisions and channel drafts](../reference/console.md#inspect-detail-revisions-and-channel-drafts)
-defines version deployment and Slack sender access.
+In **Components/Channels** and **Components/Credentials**, an unknown write
+outcome disables deployment until **Reload draft**. Whether the write committed is still unknown.
 
-**Enable gateway password access** stages a reference. Cancel discards it; Save
-Configuration, then Deploy new version applies it. Compare the
-**Gateway password** access configured, save denied, and save in progress
-stories; they do not prove credential delivery or login.
+Browsing never deploys. Deploy credential changes; workspace edits apply immediately.
+Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
+sender access](../reference/console.md#inspect-detail-revisions-and-channel-drafts).
+
+In **Enable gateway password access**, Cancel discards the staged reference.
+To apply it, save Configuration, then deploy. Compare configured, save-denied,
+and save-in-progress stories; none proves credential delivery or login.
 
 ### Stop
 

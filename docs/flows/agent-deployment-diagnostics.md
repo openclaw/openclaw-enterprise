@@ -127,13 +127,25 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
+- A dedicated Codex model check cause whose detail ends `-attempt2`, such as
+  `turn-failed-attempt2`, means the check was retried once, after a timeout or
+  a transient failure, and the second attempt failed that way. An unreachable
+  model provider is transient: each attempt waits out its 30-second limit, so
+  `error-event-attempt2` follows about a minute after the check starts. Codex
+  reports a refused port, an unresolvable host and a rejected TLS certificate
+  the same way, so a permanent mistake such as a wrong endpoint host or port
+  or a blocked egress route is also retried once before it is held. If Codex
+  reconnects and the model answers in the same attempt, the check passes.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
   A failed `HARNESS_RESTARTING` check instead means the Harness process keeps
   exiting while OpenShell restarts it; its Sandbox logs show why.
   A failed deployment's status names the held failure's code and cause, such as
-  `RUNTIME_MODEL_PROBE_FAILED`. The
+  `RUNTIME_MODEL_PROBE_FAILED`. While it holds a failure, the Harness answers
+  the Agent Gateway's connection with `503` naming the held code, but the
+  Gateway logs only `Unexpected server response: 503`; Compute's authenticated
+  status read carries the code. The
   [Sandbox source](../guides/topics/agent-logs.md#sandbox-source) shows policy
   decisions; an operator can read the
   [Harness output](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs).
@@ -153,6 +165,10 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 03:40: Say that an unreachable model provider covers permanent connection mistakes, and pass a check whose network wait recovered. (lows-1017d, findings 1621 and 1622)
+
+- 2026-10-17 02:30: Retry the dedicated Codex model check once when the model provider is unreachable. (lows-1017c, finding 1618)
 
 - 2026-10-14 15:27: Reject redirected status responses before reading their bodies. (authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4 - 8e916a6c)
 

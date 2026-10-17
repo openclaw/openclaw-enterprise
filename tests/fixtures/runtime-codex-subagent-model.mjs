@@ -110,8 +110,14 @@ try {
       return false;
     }
   });
+  const configuration = JSON.parse(await readFile("/home/node/.openclaw/openclaw.json", "utf8"));
   const observed = [];
   for (const scenario of cases) {
+    assert.equal(
+      configuration.agents.entries[scenario.agentId].workspace,
+      `/home/node/workspace/${scenario.agentId}`,
+      "The Gateway keeps its Agent workspace on its own writable filesystem.",
+    );
     const parentKey = `agent:${scenario.agentId}:routing-parent`;
     await callGatewayFromCli(
       "sessions.create",
@@ -147,22 +153,35 @@ try {
     const receipt = result.result.details;
     assert.equal(receipt.status, "accepted", JSON.stringify(result));
     const native = await waitFor("native child thread/start", () =>
-      requests
-        .slice(offset)
-        .find(
-          ({ method, params }) =>
-            method === "thread/start" && params.cwd === `/home/node/workspace/${scenario.agentId}`,
-        ),
+      requests.slice(offset).find(({ method }) => method === "thread/start"),
     );
+    assert.equal(native.params.cwd, scenario.cwd, "Native execution uses the Harness workspace.");
     assert.deepEqual(
       { modelProvider: native.params.modelProvider, model: native.params.model },
       { modelProvider: "openai-compatible", model: scenario.model },
     );
+    // Every Agent maps to the same remote root. Settle this run, including its
+    // configured fallbacks, before the next case observes native requests.
+    const completed = await callGatewayFromCli(
+      "agent.wait",
+      {
+        url: "ws://127.0.0.1:8080",
+        password: process.env.OPENCLAW_GATEWAY_PASSWORD,
+        timeout: "45000",
+      },
+      { runId: receipt.runId, timeoutMs: 30000 },
+    );
+    assert.equal(completed.runId, receipt.runId);
+    assert.equal(completed.status, "error", JSON.stringify(completed));
+    assert.notEqual(completed.pendingError, true);
+    assert.equal(typeof completed.endedAt, "number");
     observed.push({
       agentId: scenario.agentId,
       childSessionKey: receipt.childSessionKey,
       modelProvider: native.params.modelProvider,
       model: native.params.model,
+      cwd: native.params.cwd,
+      terminalStatus: completed.status,
     });
   }
   console.log(JSON.stringify({ commit: provenance.commit, observed }));

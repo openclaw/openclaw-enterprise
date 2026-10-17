@@ -9,6 +9,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -21,7 +22,11 @@ import {
   waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import {
+  createRepositoryLaunchFixture,
+  focusedDescription,
+  focusedText,
+} from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {
@@ -166,6 +171,260 @@ test("Agent deployment reports preflight errors and requires reload for changed 
     .waitFor();
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
 });
+
+// Deploy new version disabled the pressed button, dropping keyboard focus to the document, and
+// flashed "Checking Configuration…" then "Requesting deployment…" for a frame each (finding 1619).
+// One delayed status now covers the request and holds focus until the outcome is known.
+test("Deploy new version keeps keyboard focus and shows one delayed status", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment focus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deployment focus",
+    nativeValues("deployment-focus"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const status = page.locator(".agent-draft-actions p[role=status]");
+  await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+  const focusedRole = () =>
+    page.evaluate(() => globalThis.document.activeElement?.getAttribute("role") ?? null);
+  const pressDeploy = async () => {
+    await deploy.focus();
+    await page.keyboard.press("Enter");
+  };
+
+  // A failed read re-enables Deploy: focus returns to it, described by the failure.
+  const unavailable = "Service unavailable. The read could not be completed. Try again.";
+  const failedRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await failedRead.requested;
+  assert.equal(await focusedRole(), "status");
+  failedRead.release();
+  await page.getByText(unavailable).waitFor();
+  assert.equal(await focusedText(page), "Deploy new version");
+  assert.equal(await focusedDescription(page), unavailable);
+
+  // A reader who moved on while the read ran keeps their place.
+  const movedOn = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await movedOn.requested;
+  await page.evaluate(() => globalThis.document.activeElement?.blur());
+  movedOn.release();
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
+
+  // A stale draft keeps Deploy disabled, so the refusal itself takes focus.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("changed"));
+  await pressDeploy();
+  const stale = "Configuration or authentication changed. Reload this draft before deploying.";
+  await page.getByText(stale, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), stale);
+
+  // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
+  // focus.
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    once: true,
+    method: "POST",
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deploy unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await unknownOutcome.requested;
+  unknownOutcome.release();
+  const failure = page.locator(".agent-draft-actions p[role=alert]");
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.getAttribute("role") === "alert",
+  );
+  assert.ok((await failure.textContent()).length > 0);
+  assert.equal(await focusedText(page), await failure.textContent());
+  assert.equal(await status.textContent(), "");
+  assert.equal(await deploy.isDisabled(), true);
+
+  // An admitted deployment shows one status while its request runs, and the status keeps
+  // focus until the new version opens.
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  await page.evaluate(() => {
+    const shown = [];
+    const node = globalThis.document.querySelector(".agent-draft-actions p[role=status]");
+    new globalThis.MutationObserver(() => {
+      if (node.textContent && node.textContent !== shown.at(-1)) {
+        shown.push(node.textContent);
+      }
+    }).observe(node, { childList: true, characterData: true, subtree: true });
+    globalThis.deployStatusTexts = shown;
+  });
+  const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    method: "POST",
+  });
+  await pressDeploy();
+  await admitted.requested;
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), "Deploying…");
+  // The text sits in the 250 ms delayed-status span, so a quick request never shows it.
+  assert.equal(await status.locator(".delayed-status").textContent(), "Deploying…");
+  admitted.release();
+  await page.waitForURL(/revision=rev_/);
+  assert.deepEqual(await page.evaluate(() => globalThis.deployStatusTexts), ["Deploying…"]);
+});
+
+// After an admitted deployment the draft page stays on screen, inert, while the new version
+// loads. Focus fell from the Deploying… status to the page body for 100-580 ms until the new
+// version's heading took it (finding 1626). The held page's heading now keeps it, through the
+// loading page when admission or the Agent read outlasts 250 ms, and hands it to the new
+// version's heading as the page shows, even while the version is still being read. Going Back
+// during the load keeps it too, until the draft's heading takes it. A reader who left the status
+// during the request is not pulled back while the page is held.
+for (const [scenario, heldRead, heldMs, reader] of [
+  ["a quick Agent read", "agent", 100, "stays"],
+  ["a slow Agent read", "agent", 700, "stays"],
+  ["a slow Namespace access check", "namespaces", 700, "stays"],
+  ["a version read that outlasts the 2 s reveal wait", "revision", 2600, "stays"],
+  ["a reader who goes Back during a slow Agent read", "agent", 700, "goes back"],
+  ["a reader who moved on", "agent", 700, "moves on"],
+]) {
+  test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
+    const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Deployment hand-off",
+      nativeValues("deployment-hand-off"),
+      { harnessAuth: { method: "runtime" } },
+    );
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const { page } = await newPage(t, fixture);
+    await login(
+      page,
+      fixture,
+      `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+    );
+    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+      method: "POST",
+    });
+    await page.getByRole("button", { name: "Deploy new version" }).focus();
+    await page.keyboard.press("Enter");
+    await admitted.requested;
+    assert.equal(await focusedText(page), "Deploying…");
+    if (reader === "moves on") {
+      await page.evaluate(() => globalThis.document.activeElement?.blur());
+    }
+    // Every frame from admission until the new version shows: the focused node (numbered, so a
+    // replaced heading counts as a new one), and whether the loading page stood in.
+    await page.evaluate(() => {
+      const ids = new WeakMap();
+      let next = 0;
+      const trail = [];
+      const state = { trail, loadingShown: false, stopped: false };
+      const sample = () => {
+        if (state.stopped) {
+          return;
+        }
+        const node = globalThis.document.activeElement;
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (trail.at(-1) !== entry) {
+          trail.push(entry);
+        }
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||=
+          shown.includes("Reading this Agent.") || shown.includes("Checking Namespace access.");
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.focusFrames = state;
+      sample();
+    });
+    const heldPath = {
+      agent: path,
+      namespaces: "/namespaces",
+      revision: `${path}/revisions/rev_*`,
+    }[heldRead];
+    const versionRead = await holdRequests(t, page, `${fixture.origin}${heldPath}`, {
+      once: true,
+      method: "GET",
+    });
+    admitted.release();
+    await versionRead.requested;
+    if (reader === "goes back") {
+      // The Loading page has replaced the held draft by now; Back returns to the draft.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await page.goBack({ waitUntil: "commit" });
+      versionRead.release();
+      await page.waitForURL(/revision=draft/);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, heldMs));
+      versionRead.release();
+      await page.waitForURL(/revision=rev_/);
+    }
+    await page.waitForFunction(
+      () =>
+        globalThis.document.activeElement?.tagName === "H1" &&
+        globalThis.document.activeElement.isConnected &&
+        !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
+        globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+    );
+    const { trail, loadingShown } = await page.evaluate(() => {
+      globalThis.focusFrames.stopped = true;
+      return globalThis.focusFrames;
+    });
+    if (heldRead !== "revision" && heldMs > 250) {
+      assert.ok(loadingShown, trail.join(" | "));
+    }
+    assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
+    if (reader === "moves on") {
+      // Nothing takes focus while the page is held; the new version's heading takes it once shown.
+      assert.deepEqual(trail.slice(0, -1), ["BODY"], trail.join(" | "));
+    } else {
+      assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
+      assert.ok(!trail.includes("BODY"), trail.join(" | "));
+      // The held heading shows the same name: the focused heading at the end is a later one.
+      assert.notEqual(
+        trail.at(-1),
+        trail.find((entry) => entry.startsWith("H1#")),
+        trail.join(" | "),
+      );
+    }
+  });
+}
 
 for (const [field, change] of [
   ["execution mode", { executionMode: "dedicated" }],

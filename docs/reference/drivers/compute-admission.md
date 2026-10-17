@@ -120,9 +120,12 @@ through the same
 `validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone, in
 any letter case (or none), and the managed workspace path (or
 `/home/node/workspace` on a dedicated Harness); preparation also needs runtime
-storage, an Installation setting. Kubernetes Compute first refuses any Harness
-in a Sandbox, with a `409` naming the Sandbox: its Sandbox carries no workspace
-initializer, and OpenShell moves the OpenClaw workspace to its mount.
+storage, an Installation setting. For a provisioning Sandbox, Compute approves only the managed workspace path
+returned by its selected `configureAgent` transform. It initializes the approved
+Harness PVC in a restricted private bootstrap Deployment, verifies completion,
+and removes all writer Pods before Sandbox handoff. The Harness checks the
+completion marker at its effective path, including OpenShell relocation. Other
+workspace paths fail; Sandbox repository bindings remain unsupported.
 [Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
 applies the same
 [shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),

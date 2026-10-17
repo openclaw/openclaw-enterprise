@@ -162,6 +162,7 @@ const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
+  NAMESPACE_POD_QUOTA_EXCEEDED: "NAMESPACE_POD_QUOTA_EXCEEDED",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
@@ -2422,7 +2423,7 @@ export class ControllerWorker {
           result.outcome === "permanent" ||
           (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
         if (result.decision !== undefined) {
-          await this.appendAgentDeletionDenial(unit, claim, result);
+          await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
           await this.appendAgentDeletionOutcome(unit, claim, result);
         }
@@ -2482,32 +2483,6 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentDeletionDenial(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    result: AgentDeletionDispatchResult,
-  ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent deletion authorization context is unavailable.");
-    }
-    await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      kind: "authorization_denial",
-      actorId: claim.actorId,
-      source: "occ",
-      action: "openclaw.agents.delete",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
-      reasonCode: result.code,
-      outcome: "denied",
-    });
-  }
-
   private async finalizeAgentStop(
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
@@ -2536,7 +2511,7 @@ export class ControllerWorker {
         result.outcome === "permanent" ||
         (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       if (result.decision !== undefined) {
-        await this.appendAgentStopDenial(unit, claim, result);
+        await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
         await this.appendAgentStopOutcome(unit, claim, result);
       }
@@ -2614,13 +2589,14 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentStopDenial(
+  private async appendAgentDenial(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
-    result: AgentStopDispatchResult,
+    result: DispatchResult,
+    operation: "deletion" | "stop",
   ): Promise<void> {
     if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent stop authorization context is unavailable.");
+      throw new Error(`The worker Agent ${operation} authorization context is unavailable.`);
     }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
@@ -2630,7 +2606,7 @@ export class ControllerWorker {
       kind: "authorization_denial",
       actorId: claim.actorId,
       source: "occ",
-      action: "openclaw.agents.stop",
+      action: operation === "deletion" ? "openclaw.agents.delete" : "openclaw.agents.stop",
       resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
       iamDriverId: this.iamDriverId,
       ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
@@ -4526,6 +4502,8 @@ export class ControllerWorker {
         : await this.refusedStopRecheckMs(claim, resolved.refusedStopMs ?? 0);
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
+    // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
+    let activeRevisionChanged = false;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -4567,6 +4545,7 @@ export class ControllerWorker {
         ) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          activeRevisionChanged = true;
           return;
         }
         if (current.desiredRuntimeState !== "running") {
@@ -4582,6 +4561,7 @@ export class ControllerWorker {
         if (activeAgent === undefined) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          activeRevisionChanged = true;
           return;
         }
         activated = resolved.revision;
@@ -4720,15 +4700,20 @@ export class ControllerWorker {
     } else {
       stopYields = this.stopYields.count(claim.idempotencyKey);
     }
+    // A lost pointer race reports the retry this pass committed, not the resolved success
+    // (finding 1611).
+    const reported = activeRevisionChanged
+      ? { outcome: "retry" as const, code: "ACTIVE_REVISION_CHANGED" }
+      : resolved;
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: claim.revisionId,
-      result: resolved.outcome,
-      outcome: resolved.outcome,
-      code: resolved.code,
+      result: reported.outcome,
+      outcome: reported.outcome,
+      code: reported.code,
       ...failureLogFields,
       ...this.deployTimingFields(claim),
       ...stopYieldsField(stopYields),
@@ -5096,6 +5081,19 @@ export class ControllerWorker {
     this.passOutcome = result.outcome;
     if (!completed) {
       this.passOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+      // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
+      this.emit({
+        event: "worker.completed",
+        ...workLogFields(claim),
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId,
+        revisionId: claim.revisionId,
+        result: "retry",
+        outcome: "retry",
+        code: "ACTIVE_REVISION_CHANGED",
+        ...this.deployTimingFields(claim),
+        ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
+      });
       return;
     }
     // Original admission time survives queue waits and retries. Maintenance and

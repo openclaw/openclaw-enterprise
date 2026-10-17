@@ -1636,6 +1636,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -1674,6 +1675,115 @@ test(
         );
       });
     }
+  },
+);
+
+test(
+  "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "externalchatgpt", { prefix: 56 });
+    const namespaceId = await seedCanonicalData(db);
+    const sourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+       VALUES($1,$2,'External ChatGPT','chatgpt','{}','external-gateway','ready',now())`,
+      [sourceId, namespaceId],
+    );
+    const binding = {
+      method: "credential_source",
+      sourceId,
+      credentialGatewayId: "external-gateway",
+      sourceType: "chatgpt",
+      loginMode: "chatgptAuthTokens",
+    };
+    let revisionNumber = 2;
+    const insertSnapshot = (auth) =>
+      db.app.query(
+        `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+         SELECT $2,namespace_id,agent_id,$3,
+           jsonb_set(admitted_spec,'{harness_auth}',$4::jsonb) || '{"sandbox_driver_id":"external-sandbox"}'::jsonb,
+           backend_id,now()
+         FROM occ.agent_revisions WHERE namespace_id=$1 AND revision_number=1
+         RETURNING admitted_spec->'harness_auth' AS auth`,
+        [namespaceId, `rev_${randomUUID()}`, revisionNumber++, JSON.stringify(auth)],
+      );
+    const invalidSnapshot = (error) =>
+      error.code === "23514" && error.constraint === "agent_revisions_admitted_snapshot";
+
+    // A valid PAT snapshot from main must survive the new function replacement.
+    const patSourceId = `cs_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+       VALUES($1,$2,'Existing PAT','codex-pat','{}','external-gateway','ready',now())`,
+      [patSourceId, namespaceId],
+    );
+    const patBinding = {
+      ...binding,
+      sourceId: patSourceId,
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    assert.deepEqual((await insertSnapshot(patBinding)).rows, [{ auth: patBinding }]);
+
+    // Exercise the actual old CHECK constraint first, not the application validator.
+    await assert.rejects(insertSnapshot(binding), invalidSnapshot);
+    const secretId = `sec_${randomUUID()}`;
+    await db.app.query(
+      `INSERT INTO occ.secrets(id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+       VALUES($1,$2,'Legacy OAuth','secrets','fixture','oauth-source','value',$3,now())`,
+      [secretId, namespaceId, randomUUID()],
+    );
+    const legacyBinding = {
+      method: "oauth",
+      source: { kind: "secret", namespaceId, id: secretId },
+    };
+    await db.app.query("UPDATE occ.agents SET harness_auth=$2::jsonb WHERE namespace_id=$1", [
+      namespaceId,
+      JSON.stringify(legacyBinding),
+    ]);
+    // A preexisting native OAuth binding blocks the new grammar atomically; the
+    // migration cannot silently relabel a Secret as a gateway-owned connection.
+    const beforeRefusal = await historySnapshot(db);
+    assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
+    assert.deepEqual(await historySnapshot(db), beforeRefusal);
+    assert.deepEqual(
+      (
+        await db.app.query("SELECT harness_auth FROM occ.agents WHERE namespace_id=$1", [
+          namespaceId,
+        ])
+      ).rows,
+      [{ harness_auth: legacyBinding }],
+    );
+    await db.app.query("UPDATE occ.agents SET harness_auth=NULL WHERE namespace_id=$1", [
+      namespaceId,
+    ]);
+    const receipts = await historyReceipts(db.migrator);
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preCanonicalHarnessAuth",
+    });
+    await assertCompletedHistory(db, receipts);
+    assert.deepEqual((await insertSnapshot(binding)).rows, [{ auth: binding }]);
+    const apiKey = { ...binding, loginMode: "api_key" };
+    assert.deepEqual((await insertSnapshot(apiKey)).rows, [{ auth: apiKey }]);
+    assert.deepEqual(
+      (
+        await db.app.query(
+          "SELECT admitted_spec->'harness_auth' AS auth FROM occ.agent_revisions WHERE admitted_spec #>> '{harness_auth,sourceId}'=$1",
+          [patSourceId],
+        )
+      ).rows,
+      [{ auth: patBinding }],
+    );
+    assert.deepEqual((await insertSnapshot(patBinding)).rows, [{ auth: patBinding }]);
+    // Only the admitted mode expands: unknown modes and credential payloads remain invalid.
+    await assert.rejects(insertSnapshot({ ...binding, loginMode: "unknown" }), invalidSnapshot);
+    await assert.rejects(
+      insertSnapshot({ ...binding, accessTokenPlaceholder: "synthetic-placeholder" }),
+      invalidSnapshot,
+    );
   },
 );
 
@@ -1913,6 +2023,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -1997,6 +2108,7 @@ test(
       [53, "preCredentialSourcePat"],
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
+      [56, "preCanonicalHarnessAuth"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2009,7 +2121,9 @@ test(
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
         // Abort 0056 after its function was created, before the deferred trigger exists.
+        // 0057 replaces the Harness validator, so reject that function replacement.
         const rollbackTag = [
+          [56, "CREATE FUNCTION"],
           [55, "CREATE TRIGGER"],
           [54, "ALTER TABLE"],
           [53, "CREATE FUNCTION"],

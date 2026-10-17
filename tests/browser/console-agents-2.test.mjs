@@ -22,7 +22,11 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledFetches,
   takeLayoutShifts,
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   openCreateSecretDialog,
@@ -720,6 +724,252 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     "Provisioning failed.",
   ]);
 });
+
+// Finding 1617: a first deployment that waits on a full Namespace Pod quota names the quota
+// instead of the bare provisioning line, for a reader of the Agent. Other waits, and a reader
+// whose deployment read is refused, keep the bare line.
+test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
+  const quotaFull =
+    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  for (const deploymentReadable of [true, false]) {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Pod quota ${deploymentReadable}`, {
+      ready: true,
+    });
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const updatedAt = new Date().toISOString();
+    const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+    const url = `/namespaces/${namespace.id}/agents/provision/work_quota`;
+    const agentId = "agt_00000000-0000-4000-8000-00000000a617";
+    const revisionId = "rev_00000000-0000-4000-8000-00000000a617";
+    const job = (status, extra = {}) => ({
+      workId: "work_quota",
+      status,
+      phase: "configuration",
+      attemptCount: 1,
+      updatedAt,
+      url,
+      ...extra,
+    });
+    const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
+    await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+      route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+      }),
+    );
+    // The job starts, creates its Agent, hands off its first deployment, which waits on the
+    // quota for two reads and then on the runtime, and the job then fails.
+    const reads = [
+      job("running"),
+      job("running", { phase: "transport", agentId }),
+      job("running", handedOff),
+      job("running", handedOff),
+      job("running", handedOff),
+      job("failed", {
+        ...handedOff,
+        error: {
+          code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+          message: "Agent provisioning could not complete.",
+        },
+      }),
+    ];
+    let read = 0;
+    await page.route(`**/namespaces/${namespace.id}/agents/provision/work_quota`, (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+      }),
+    );
+    const attempts = [
+      { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
+      { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
+      { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
+    ];
+    const deploymentReads = [];
+    const deploymentRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname.includes("/deployments/")) {
+        deploymentRequests.push(new URL(request.url()).pathname);
+      }
+    });
+    await page.route(
+      `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
+      (route) => {
+        // The job read that handed this deployment off is the one this read follows.
+        deploymentReads.push(read);
+        const lastAttempt = attempts[Math.min(deploymentReads.length - 1, attempts.length - 1)];
+        return route.fulfill(
+          deploymentReadable
+            ? {
+                status: 200,
+                contentType: "application/json",
+                body: JSON.stringify({
+                  data: {
+                    deploymentId: revisionId,
+                    namespaceId: namespace.id,
+                    agentId,
+                    status: "queued",
+                    error: null,
+                    warnings: [],
+                    progress: {
+                      lastAttempt: { at: updatedAt, ...lastAttempt },
+                      nextAttemptAt: updatedAt,
+                    },
+                  },
+                  meta,
+                }),
+              }
+            : {
+                status: 404,
+                contentType: "application/json",
+                body: JSON.stringify({
+                  error: { code: "NOT_FOUND", message: "Resource not found." },
+                  meta,
+                }),
+              },
+        );
+      },
+    );
+
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Pod quota");
+    await page.getByLabel("Authentication method").selectOption("codex_pat");
+    await createModelCredentialSecret(page, "model-secret-value");
+    await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+    await page.evaluate(() => {
+      globalThis.provisioningWrites = [];
+      new globalThis.MutationObserver((records) => {
+        for (const record of records) {
+          if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
+            const text = [...record.addedNodes].map((node) => node.textContent).join("");
+            if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
+              globalThis.provisioningWrites.push(text);
+            }
+          }
+        }
+      }).observe(globalThis.document.body, { childList: true, subtree: true });
+    });
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+    assert.equal(read, reads.length);
+    // Only a running job that handed off its deployment reads it, once per job read.
+    assert.deepEqual(deploymentReads, [3, 4, 5]);
+    assert.equal(deploymentRequests.length, 3);
+    assert.deepEqual(
+      await page.evaluate(() => globalThis.provisioningWrites),
+      deploymentReadable
+        ? [
+            "Provisioning request accepted.",
+            "Provisioning queued…",
+            "Provisioning Agent…",
+            quotaFull,
+            "Provisioning Agent…",
+            "Provisioning failed.",
+          ]
+        : [
+            "Provisioning request accepted.",
+            "Provisioning queued…",
+            "Provisioning Agent…",
+            "Provisioning failed.",
+          ],
+      `deployment readable: ${deploymentReadable}`,
+    );
+  }
+});
+
+// A deployment read is optional. Even an unfinished response body gets only the time until
+// the next provisioning poll; a second full interval after cancelling it would also be wrong.
+for (const [name, leave] of [
+  [
+    "Create observes successful provisioning at the next poll despite stalled deployment details",
+    false,
+  ],
+  ["Leaving Create Agent during a stalled deployment detail read stops polling the old job", true],
+]) {
+  test(name, async (t) => {
+    const agentId = "agt_00000000-0000-4000-8000-00000000a681";
+    const revisionId = "rev_00000000-0000-4000-8000-00000000a681";
+    const detailPath = `/agents/${agentId}/deployments/${revisionId}`;
+    const bodyStarted = Promise.withResolvers();
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request, reply, payload) {
+        if (!request.url.endsWith(detailPath)) {
+          return payload;
+        }
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "application/json" });
+        reply.raw.write('{"data":', bodyStarted.resolve);
+      },
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Slow deployment details", { ready: true });
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+
+    const provision = `/namespaces/${namespace.id}/agents/provision`;
+    const url = `${provision}/work_slow_detail`;
+    const job = { url, agentId, revisionId, phase: "handoff", status: "running" };
+    await page.route(`**${provision}`, (route) =>
+      route.fulfill({ status: 202, json: { data: { provisioning: job } } }),
+    );
+    const finishPoll = Promise.withResolvers();
+    await page.route(`**${url}`, async (route) => {
+      // Let the browser report cancellation before navigation can cancel the detail read itself.
+      await finishPoll.promise;
+      await route.fulfill({ json: { data: { provisioning: { ...job, status: "succeeded" } } } });
+    });
+
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Slow deployment details");
+    await page.getByLabel("Authentication method").selectOption("codex_pat");
+    await createModelCredentialSecret(page, "model-secret-value");
+    await page.getByLabel("Model", { exact: true }).selectOption({ index: 1 });
+    await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(1_000);
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await bodyStarted.promise;
+
+    const detailCancelled = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url().endsWith(detailPath),
+      timeout: 5_000,
+    });
+    if (leave) {
+      finishPoll.resolve();
+      await page.getByRole("link", { name: "Agents", exact: true }).click();
+      await detailCancelled;
+      await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+      await waitForSettledFetches(page, `/namespaces/${namespace.id}${detailPath}`, 1);
+      await page.clock.runFor(2_000);
+      await waitForIdleFetches(page);
+      assert.equal(
+        await settledFetches(page, url),
+        0,
+        "A departed view must not poll the old job.",
+      );
+      return;
+    }
+
+    try {
+      await Promise.all([
+        detailCancelled,
+        page.waitForRequest((request) => request.url().endsWith(url), { timeout: 5_000 }),
+        page.clock.runFor(1_000),
+      ]);
+    } finally {
+      finishPoll.resolve();
+    }
+    await page.waitForURL((location) => location.pathname.endsWith(`/agents/${agentId}`));
+  });
+}
 
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);

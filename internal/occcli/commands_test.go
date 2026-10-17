@@ -983,3 +983,42 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 		}
 	}
 }
+
+// Subject IDs are opaque and can match across identities and groups. Tables
+// must preserve the discriminator that decides whether the grant is direct.
+func TestIAMAccessBindingTablesDistinguishIdentityAndGroupSubjects(t *testing.T) {
+	const identity = `{"id":"binding_direct","namespaceId":"` + testNamespaceID + `","subjectKind":"identity","subjectId":"operators","roleId":"role_read","resourceKind":"agent","resourceId":"` + testAgentID + `"}`
+	const group = `{"id":"binding_group","namespaceId":"` + testNamespaceID + `","subjectKind":"group","subjectId":"operators","roleId":"role_read","resourceKind":"agent","resourceId":"` + testAgentID + `"}`
+	path := "GET /namespaces/" + testNamespaceID + "/iam/access-bindings"
+	responses := map[string]string{path: "[" + identity + "," + group + "]", path + "/binding_direct": identity, path + "/binding_group": group}
+	for _, args := range [][]string{{"list"}, {"get", "binding_direct"}, {"get", "binding_group"}} {
+		out, _, err := runOCC(t, responses, append([]string{"--namespace", testNamespaceID, "iam", "access-binding"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "SUBJECT KIND") {
+			t.Fatalf("table must identify the subject kind:\n%s", out)
+		}
+		lines := strings.Split(strings.TrimSpace(out), "\n")[1:]
+		wantRows := 1
+		if args[0] == "list" {
+			wantRows = 2
+		}
+		if len(lines) != wantRows {
+			t.Fatalf("expected %d binding rows: %s", wantRows, out)
+		}
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) != 6 {
+				t.Fatalf("expected the binding columns: %s", line)
+			}
+			want := "identity"
+			if fields[0] == "binding_group" {
+				want = "group"
+			}
+			if len(fields) != 6 || fields[1] != want || fields[2] != "operators" {
+				t.Fatalf("table must keep %s subject beside its opaque ID: %s", want, line)
+			}
+		}
+	}
+}
