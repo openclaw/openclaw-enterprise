@@ -4783,18 +4783,29 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
         ({ method, params }) =>
           method === "item/started" && params?.item?.type === "commandExecution",
       ).length;
-    const commandActivity = (turn) =>
-      turn.items.filter(
-        ({ method, params }) =>
+    const hasCommandActivity = ({ items }) => {
+      // The collector validates turn/completed and can return command output without a start or
+      // completion. Ignore that output only if it explicitly belongs to another thread or turn.
+      const { threadId, turn } = items.find(({ method }) => method === "turn/completed").params;
+      return items.some(({ method, params }) => {
+        if (method === "item/commandExecution/outputDelta") {
+          return (
+            (!params?.threadId || params.threadId === threadId) &&
+            (!params?.turnId || params.turnId === turn.id)
+          );
+        }
+        return (
           method === "item/commandExecution/requestApproval" ||
           ((method === "item/started" || method === "item/completed") &&
-            params?.item?.type === "commandExecution"),
-      ).length;
+            params?.item?.type === "commandExecution")
+        );
+      });
+    };
     let backendTurn = await requestBackendTurn();
     const skippedTurns = [];
     // Ask once more only when the turn showed no command activity at all. A rewritten,
     // declined, approval-gated or unsettled command is still judged below.
-    if (commandActivity(backendTurn) === 0) {
+    if (!hasCommandActivity(backendTurn)) {
       skippedTurns.push({
         items: backendTurn.items.length,
         replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
