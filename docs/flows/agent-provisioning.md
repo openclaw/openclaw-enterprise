@@ -93,20 +93,35 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 `packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
 
-The existing worker dispatches the job under its queue claim. Before effects and result commits, OCC verifies current ownership, Namespace readiness and exact authority. Completed outputs are reused on retry. Configuration creation uses the accepted inline values and existing bindings. Once that Configuration exists, OCC creates a stopped Agent, persists its auth/provider/plugin/repository/workspace selections and grants its service principal exact Secret permissions. Source-backed provisioning records the canonical model source and grants only
-source `operate`. Admission, replay, retry and worker execution recheck caller
-authority, source readiness and Gateway ownership. Queued/running work prevents
-source deletion.
+Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
+effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
+values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
+workspace selections, and grants its service principal the exact Secret permissions.
 
-The Compute Driver prepares runtime credentials through the existing credential path, without a loopback HTTP call. The Kubernetes Driver owns trusted-proxy configuration and generated credential protection; provisioning carries no gateway token or trust override.
+Source-backed provisioning records the canonical model source and grants only source `operate`.
+Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
+ownership. Queued or running work prevents source deletion.
 
-Kubernetes Configuration requests inherit the provisioning claim cancellation signal. Losing the claim stops an outstanding configuration request instead of holding the serial worker after its owner is gone.
+Compute prepares runtime credentials without loopback HTTP. Kubernetes owns trusted-proxy
+configuration and credential protection; provisioning supplies neither gateway token nor trust
+override. Losing the provisioning claim cancels outstanding Kubernetes Configuration requests,
+freeing the serial worker.
 
 ### 4. Deployment becomes the lifecycle owner
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. A Stop during the first rollout records `REVISION_STOPPED`. A Stop or deletion before handoff records `PROVISIONING_CANCELLED`, and its message names which one; the status keeps the Agent's ID. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for a new deployment, asking for repair only for other failures. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
+The job records its first revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
+defers work without consuming retries until that revision activates or fails. The same handle reports
+success or the deployment’s safe error. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
+before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
+
+Create Agent (`apps/controller/src/console/agents/create.mjs:waitForProvisioning`) waits one second
+between status reads, using that interval for details such as a full Namespace Pod quota. At the
+next poll it cancels any unfinished detail read. Leaving the page stops polling, not provisioning.
+If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
+After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;
+subsequent deployments use Deploy.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
@@ -153,6 +168,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
