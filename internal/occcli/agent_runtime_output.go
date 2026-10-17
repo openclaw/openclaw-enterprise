@@ -60,9 +60,6 @@ type runtimeLogRecord struct {
 }
 
 func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, notices io.Writer) error {
-	if string(page.Stream) == "null" || len(page.Stream) == 0 {
-		noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
-	}
 	for _, raw := range page.Records {
 		var record runtimeLogRecord
 		if err := json.Unmarshal(raw, &record); err != nil {

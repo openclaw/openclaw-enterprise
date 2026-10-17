@@ -320,6 +320,7 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 		return err
 	}
 	cursor := ""
+	noPod := false
 	for {
 		pageQuery := query
 		if cursor != "" {
@@ -361,6 +362,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 				return err
 			}
 		} else {
+			// A present stream ends the absence, even when it has no new records.
+			missingPod := string(page.Stream) == "null" || len(page.Stream) == 0
+			if missingPod && !noPod {
+				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+			}
+			noPod = missingPod
 			if err := app.printRuntimeLogPage(page, notices); err != nil {
 				return err
 			}
