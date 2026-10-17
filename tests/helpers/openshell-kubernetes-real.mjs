@@ -1121,7 +1121,14 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerUrl,
     appServerTokenPath,
+    commandGraceMs = 5_000,
   }) {
+    // How long to observe a command still running when its turn completes. A caller whose
+    // command is bounded by its own timeout passes that bound plus a margin.
+    assert.ok(
+      Number.isSafeInteger(commandGraceMs) && commandGraceMs > 0 && commandGraceMs <= 60_000,
+      "commandGraceMs must be a positive number of milliseconds, at most 60 s.",
+    );
     const script = String.raw`
       const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
       const appServerToken = ${
@@ -1133,7 +1140,9 @@ export function createOpenShellKubernetesFixture({
       const pending = new Map();
       const items = [];
       const pendingCommands = new Map();
-      let threadId, turnId, commandDeadline;
+      let threadId, turnId, commandDeadline, turnCompletedAt;
+      // Start time and output volume of each command, never its output.
+      const commandTimes = new Map();
       let nextId = 1;
       let assistant = "";
       let finished = false;
@@ -1171,11 +1180,28 @@ export function createOpenShellKubernetesFixture({
         }
       }
 
+      // Timing of commands still running, so an unknown outcome says how long it waited.
+      function pendingCommandTimes() {
+        const now = Date.now();
+        return [...pendingCommands.keys()].map((id) => {
+          const { startedAt, deltas = 0, bytes = 0 } = commandTimes.get(id) ?? {};
+          return {
+            startedBeforeTurnEndMs: startedAt && turnCompletedAt ? turnCompletedAt - startedAt : null,
+            runningMs: startedAt ? now - startedAt : null,
+            outputDeltas: deltas,
+            outputBytes: bytes,
+          };
+        });
+      }
+
       function fail(error) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
+          commandGraceMs: ${commandGraceMs},
+          sinceTurnEndMs: turnCompletedAt ? Date.now() - turnCompletedAt : null,
+          pendingCommands: pendingCommandTimes(),
         }));
         process.exit(1);
       }
@@ -1255,6 +1281,12 @@ export function createOpenShellKubernetesFixture({
         if (!commandDeadline && commandEvent && !command) return unknownCommandOutcome();
         const starting = method === "item/started" && command;
         const ending = method === "item/completed" && command;
+        if (method === "item/commandExecution/outputDelta" && params?.turnId === turnId &&
+            commandTimes.has(params.itemId)) {
+          const time = commandTimes.get(params.itemId);
+          time.deltas += 1;
+          time.bytes += typeof params.delta === "string" ? params.delta.length : 0;
+        }
         if (commandDeadline) {
           if (starting) return unknownCommandOutcome();
           if (ending) {
@@ -1268,7 +1300,10 @@ export function createOpenShellKubernetesFixture({
         }
         rememberFailureSignals(message);
         items.push(message);
-        if (starting) pendingCommands.set(item.id, item.command);
+        if (starting) {
+          pendingCommands.set(item.id, item.command);
+          commandTimes.set(item.id, { startedAt: Date.now(), deltas: 0, bytes: 0 });
+        }
         if (ending) {
           pendingCommands.delete(item.id);
           if (commandDeadline && !pendingCommands.size) finish();
@@ -1299,9 +1334,12 @@ export function createOpenShellKubernetesFixture({
             fail(new Error("Codex harness turn did not complete successfully"));
             return;
           }
-          // A command can outlive its turn. Briefly observe only its original socket;
-          // the overall turn deadline still applies. Never extend either deadline on activity.
-          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, 5_000);
+          // A command can outlive its turn: Codex returns a long command to the model, which
+          // may reply before it ends. Observe only its original socket until its completion
+          // event or the caller's bound; the overall turn deadline still applies. Never extend
+          // either deadline on activity.
+          turnCompletedAt = Date.now();
+          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, ${commandGraceMs});
           else finish();
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
@@ -1336,12 +1374,19 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
-  async function requestCodexTurnFromGatewayPod({ namespace, gatewayPod, providerModel, prompt }) {
+  async function requestCodexTurnFromGatewayPod({
+    namespace,
+    gatewayPod,
+    providerModel,
+    prompt,
+    commandGraceMs,
+  }) {
     return requestCodexTurnFromPod({
       namespace,
       pod: gatewayPod,
       providerModel,
       prompt,
+      commandGraceMs,
     });
   }
 
