@@ -391,7 +391,8 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 
 // The UTC offset made timestamps wrap onto a second line in the fixed 170 px (150 px at 1100 px
 // and below) time column above 760 px, so every log row took two lines (findings 1681, 1697).
-// From 1000 px down the message moves below the time instead of shrinking to a sliver.
+// In a Logs card under 662 px (a 1000 px window and below, or about 1101-1280 px beside the
+// version list) the message moves below the time instead of shrinking to a sliver.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
