@@ -96,27 +96,24 @@ revisionTest(
     const prepared = [];
     const withdrawn = [];
     let pendingOnce = true;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.namespaceId === fixture.namespace.id) {
-            prepared.push(revision.id);
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(revision, source) {
-          withdrawn.push([revision.id, source.id]);
-          // The first observation is still pending, so the worker must retry, not report success.
-          if (pendingOnce) {
-            pendingOnce = false;
-            return { sourceId: source.id, state: "pending" };
-          }
-          return { sourceId: source.id, state: "revoked" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.namespaceId === fixture.namespace.id) {
+          prepared.push(revision.id);
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push([revision.id, source.id]);
+        // The first observation is still pending, so the worker must retry, not report success.
+        if (pendingOnce) {
+          pendingOnce = false;
+          return { sourceId: source.id, state: "pending" };
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    });
     await fixture.work(active, "succeeded");
     const deployments = prepared.length;
 
@@ -751,21 +748,18 @@ test(
       agent: { auth: "credential_source" },
     });
     let calls = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        // What the Kubernetes Compute Driver throws for a SandboxDriver that cannot name the
-        // revision's Sandbox.
-        async withdrawCredentialSource() {
-          calls += 1;
-          throw new CredentialWithdrawalRefusedError(
-            "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
-            "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
-          );
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      // What the Kubernetes Compute Driver throws for a SandboxDriver that cannot name the
+      // revision's Sandbox.
+      async withdrawCredentialSource() {
+        calls += 1;
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+          "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
+        );
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+    });
     await fixture.work(active, "succeeded");
     const withdrawal = await requestWithdrawal(
       fixture,
@@ -809,20 +803,17 @@ test(
       },
     );
     let calls = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        // What the Credential Gateway throws when OpenShell refuses the controller's identity
-        // in the Workspace, so a missing Sandbox cannot be told from a hidden one (finding 1676).
-        async withdrawCredentialSource() {
-          calls += 1;
-          throw new SandboxGatewayUnauthorizedError(
-            "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
-          );
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      // What the Credential Gateway throws when OpenShell refuses the controller's identity
+      // in the Workspace, so a missing Sandbox cannot be told from a hidden one (finding 1676).
+      async withdrawCredentialSource() {
+        calls += 1;
+        throw new SandboxGatewayUnauthorizedError(
+          "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
+        );
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+    });
     await fixture.work(active, "succeeded");
     const withdrawal = await requestWithdrawal(
       fixture,
@@ -970,20 +961,17 @@ test(
     let calls = 0;
     const lastAttempt = Promise.withResolvers();
     const lastAttemptReleased = Promise.withResolvers();
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async withdrawCredentialSource(_revision, source) {
-          // The last attempt stays pending, so the worker fails the work permanently.
-          if (++calls === 2) {
-            lastAttempt.resolve();
-            await lastAttemptReleased.promise;
-          }
-          return { sourceId: source.id, state: "pending" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      async withdrawCredentialSource(_revision, source) {
+        // The last attempt stays pending, so the worker fails the work permanently.
+        if (++calls === 2) {
+          lastAttempt.resolve();
+          await lastAttemptReleased.promise;
+        }
+        return { sourceId: source.id, state: "pending" };
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+    });
     await fixture.work(active, "succeeded");
     const sourceId = owner.harnessAuth.sourceId;
     await fixture.controller.withdrawAgentCredentialSource(
@@ -1038,20 +1026,17 @@ test(
     );
     const prepared = [];
     let revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          prepared.push(revision.id);
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, revisionContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+      },
+    });
     await fixture.work(active, "succeeded");
     const deployments = prepared.length;
     const sourceId = owner.harnessAuth.sourceId;
@@ -2220,22 +2205,19 @@ revisionTest(
     );
     const dispatched = [];
     let revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.id === active.id) {
-            dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.id === active.id) {
+          dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+      },
+    });
     await fixture.work(active, "succeeded");
     assert.deepEqual(dispatched, [[toolSourceId, remainingToolSourceId]]);
 
@@ -2279,20 +2261,17 @@ revisionTest(
     await fixture.stop();
     await recordPendingWithdrawal(fixture, owner, active, remainingToolSourceId);
     revoke = false;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, revisionContext) {
+        dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
+      },
+    });
     await runMaintenance();
     const recovered = (await withdrawalAttempts(fixture, active)).at(-1);
     assert.equal(
@@ -2626,22 +2605,19 @@ revisionTest(
     const toolSourceId = toolSources(owner)[0].sourceId;
     const modelSourceId = owner.harnessAuth.sourceId;
     const dispatched = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async prepareRevision(revision, revisionContext) {
-          if (revision.id === active.id) {
-            dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: "revoked" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async prepareRevision(revision, revisionContext) {
+        if (revision.id === active.id) {
+          dispatched.push((revisionContext?.credentialSources ?? []).map(({ id }) => id));
+        }
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: "revoked" };
+      },
+    });
     await fixture.work(active, "succeeded");
     assert.deepEqual(dispatched, [[toolSourceId]]);
 
@@ -2704,16 +2680,13 @@ revisionTest(
     // The Agent principal's exact grant is removed between admission and dispatch.
     await removeSourceGrant(fixture, owner, toolSourceId);
     const prepared = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, revisionContext) {
-          prepared.push(revision.id);
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      async prepareRevision(revision, revisionContext) {
+        prepared.push(revision.id);
+        return fixture.compute.prepareRevision(revision, revisionContext);
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+    });
     await fixture.work(active, "failed_permanent");
     const failed = await fixture.observerPool.query(
       "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
@@ -2735,16 +2708,13 @@ revisionTest(
     const active = await fixture.revision(owner, 1);
     const toolSourceId = toolSources(owner)[0].sourceId;
     const modelSourceId = owner.harnessAuth.sourceId;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        maintenanceIntervalMs: 3_600_000,
-        async withdrawCredentialSource(_revision, source) {
-          return { sourceId: source.id, state: "revoked" };
-        },
+    await startWithGateway(fixture, {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      async withdrawCredentialSource(_revision, source) {
+        return { sourceId: source.id, state: "revoked" };
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
-    );
+    });
     await fixture.work(active, "succeeded");
 
     // The tool source has a pending withdrawal. The Agent principal then loses its grant on the
