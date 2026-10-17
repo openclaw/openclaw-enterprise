@@ -132,7 +132,7 @@ Other first visits and Refresh show loading after 250 ms. Returns hold the page
 inert with its header and disabled Namespace selector, showing **Still checking…**
 after one second. Up to 16 views retain route, Namespace and session ownership,
 excluding passwords and discovery state. Interrupted returns preserve views;
-interrupted Refresh discards them.
+Refresh discards them.
 
 `apps/controller/src/console/api-client.mjs:createApiClient` keeps its abort signal through JSON/text body reads. Cancellation preserves its reason; socket failures reach interrupted-read recovery. Only JSON syntax failures become invalid-response errors. Failed bodies are never replayed.
 
@@ -149,8 +149,8 @@ sets visible deployment cells to **Reading deployment…**, hidden for 250 ms an
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
 not a link to the old revision. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
-A changed user or session key clears retained views and drafts before further
-private reads. Missing sessions open login; failed reads offer Retry.
+Changed users or session keys clear retained views and drafts before private
+reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
 
@@ -177,7 +177,7 @@ to Agents; global pages remain open; recovered warnings disappear.
 
 Agents use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
-Installation-wide collection. No readable selection means no Agent request.
+Installation-wide collection. Unreadable selections prevent Agent requests.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
@@ -194,9 +194,9 @@ restores inheritance. Submission, uncertain outcomes and invalid JSON lock editi
 `capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
 The picker keeps credential guidance in **Access and credential setup**.
 Instructions and details scroll while search and pagination stay reachable.
-Available and Configured retain separate selections, queries, filters and expanded
+Available and Configured retain selections, queries, filters and expanded
 rows without fetching or changing drafts. Removing selections clears details;
-discovery resets clear both tabs.
+discovery resets both tabs.
 
 `create.mjs:loadPluginCatalog` and `loadPluginTools` implement
 [PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
