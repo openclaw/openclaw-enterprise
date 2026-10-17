@@ -933,6 +933,34 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
   assert.equal(await focusedTab(page), "Configuration");
 });
 
+// A version whose deploy is running, and a page at `viewport` for it. Once the test routes its
+// record, open() signs in to its Configuration tab under a fake clock and waits for it to settle.
+async function pendingDeploy(t, viewport, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const size = `${viewport.width}x${viewport.height}`;
+  const namespace = await fixture.createNamespace(`${name} deploy ${size}`, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, `${name} Deploy`, nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const pending = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+  await trackSettledFetches(page);
+  const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
+  const open = async () => {
+    await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration"),
+    );
+    await page.getByText("Recorded status: running").waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    await page.getByRole("heading", { name: "Share Agent" }).waitFor();
+    await waitForIdleFetches(page);
+  };
+  return { page, recordUrl, namespace, agent, pending, open };
+}
+
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
 // of them unchanged, and moved Share Agent twice: down when the first attempt was recorded and
 // up when the deploy settled, CLS 0.024 (finding 1598). An unchanged poll now touches no node, a
@@ -943,17 +971,13 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Quiet deploy ${size}`, { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Quiet Deploy", nativeValues("v1"));
-    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    const pending = await fixture.deployAgent(namespace.id, agent.id);
-    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await trackSettledFetches(page);
+    const { page, recordUrl, namespace, agent, pending, open } = await pendingDeploy(
+      t,
+      viewport,
+      "Quiet",
+    );
     // The fixture has no deployment worker: serve the record a deploy reports as it runs.
     let record = { status: "running", progress: { lastAttempt: null, nextAttemptAt: null } };
-    const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
     // Set to hold the record's reads until the test releases them.
     let recordGate = null;
     await page.route(recordUrl, async (route) => {
@@ -974,16 +998,7 @@ for (const viewport of [
         }),
       });
     });
-    await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration"),
-    );
-    await page.getByText("Recorded status: running").waitFor();
-    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-    await page.getByRole("heading", { name: "Share Agent" }).waitFor();
-    await waitForIdleFetches(page);
+    await open();
     // Polls run only when the test advances the clock.
     const now = await page.evaluate(() => Date.now());
     await page.clock.pauseAt(new Date(now + 1000));
@@ -1093,15 +1108,11 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a watched deploy that fails shows its recovery without moving the overview at ${size}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Failing deploy ${size}`, { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Failing Deploy", nativeValues("v1"));
-    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-    const pending = await fixture.deployAgent(namespace.id, agent.id);
-    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await trackSettledFetches(page);
-    const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
+    const { page, recordUrl, namespace, agent, pending, open } = await pendingDeploy(
+      t,
+      viewport,
+      "Failing",
+    );
     let record = deploymentRecord(namespace, agent, pending, "running");
     await page.route(recordUrl, (route) => route.fulfill(record));
     // Native administration is open, so its link is the primary action until the card shows.
@@ -1113,16 +1124,7 @@ for (const viewport of [
         },
       }),
     );
-    await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration"),
-    );
-    await page.getByText("Recorded status: running").waitFor();
-    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-    await page.getByRole("heading", { name: "Share Agent" }).waitFor();
-    await waitForIdleFetches(page);
+    await open();
     await page.evaluate(() => globalThis.document.fonts.ready);
     await nextFrames(page);
     // Polls run only when the test advances the clock.
