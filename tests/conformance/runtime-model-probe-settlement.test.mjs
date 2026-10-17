@@ -313,9 +313,10 @@ function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {
 
 test("the upfront credential check runs only where OpenClaw would send the same request", () => {
   const openai = upfrontCheck("openai", undefined);
-  // A rejection names the provider's 401 and, when the child classified it, a
-  // closed-vocabulary code; the response body never leaves the child.
-  assert.deepEqual(openai.rejected, { providerStatus: 401 });
+  // A rejection names the provider's 401, who answered it (from response header
+  // names only) and, when the child classified it, a closed-vocabulary code; the
+  // response body and header values never leave the child.
+  assert.deepEqual(openai.rejected, { providerStatus: 401, providerSource: "unknown" });
   assert.deepEqual(openai.stages, ["preflight"]);
   assert.equal(openai.calls.length, 1);
   assert.equal(openai.calls[0].options.env.U, "https://api.openai.com/v1/responses");
@@ -344,19 +345,30 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     upfrontCheck("anthropic", undefined, "sk-ant-api03-fixture").calls[0].options.env.U,
     "https://api.anthropic.com/v1/messages",
   );
-  // Only the provider's 401 (exit 3-6) is a rejection.
-  for (const status of [0, 1, 2, 7, null]) {
-    assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false);
+  // Only the provider's 401 (exit 3-6 plus a known source 0, 10 or 20) is a rejection.
+  for (const status of [0, 1, 2, 7, 9, 10, 12, 17, 27, 30, 33, 43, -3, null]) {
+    assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false, status);
   }
-  for (const [status, providerCode] of [
-    [4, "invalid_api_key"],
-    [5, "missing_api_key"],
-    [6, "insufficient_permissions"],
+  for (const [status, providerCode, providerSource] of [
+    [4, "invalid_api_key", "unknown"],
+    [5, "missing_api_key", "unknown"],
+    [6, "insufficient_permissions", "unknown"],
+    [13, undefined, "provider"],
+    [14, "invalid_api_key", "provider"],
+    [15, "missing_api_key", "provider"],
+    [16, "insufficient_permissions", "provider"],
+    [23, undefined, "relay"],
+    [25, "missing_api_key", "relay"],
   ]) {
-    assert.deepEqual(upfrontCheck("openai", undefined, "fixture-key", status).rejected, {
-      providerStatus: 401,
-      providerCode,
-    });
+    assert.deepEqual(
+      upfrontCheck("openai", undefined, "fixture-key", status).rejected,
+      {
+        providerStatus: 401,
+        providerSource,
+        ...(providerCode === undefined ? {} : { providerCode }),
+      },
+      String(status),
+    );
   }
   for (const [provider, fragment, key] of [
     ["openai", { baseUrl: "https://api.openai.com/v1/" }],
@@ -396,6 +408,7 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   const received = [];
   let answer = 401;
   let answerBody = "{}";
+  let answerHeaders = {};
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
@@ -406,7 +419,9 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
         auth: request.headers.authorization,
         body,
       });
-      response.writeHead(answer, { "content-type": "application/json" }).end(answerBody);
+      response
+        .writeHead(answer, { "content-type": "application/json", ...answerHeaders })
+        .end(answerBody);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -423,13 +438,17 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   assert.deepEqual(received, [
     { method: "POST", url: "/v1/responses", auth: "Bearer fixture-key", body: "{}" },
   ]);
-  // The 401 is classified from the provider's error code or one of two fixed
-  // phrases (finding 1643: a request that reached the provider without its
-  // credential is told apart from a rejected key); anything else stays 3.
+  // The 401 is classified from the provider's error code or a few fixed phrases
+  // (finding 1643: a request that reached the provider without its credential is
+  // told apart from a rejected key); anything else stays 3. OpenAI's actual
+  // answer to an absent, empty, schemeless or duplicated Authorization header on
+  // /v1/responses is "Missing bearer or basic authentication in header" with a
+  // null code.
   for (const [body, code] of [
     ['{"error":{"code":"invalid_api_key","message":"Incorrect API key provided: sk-x"}}', 4],
     ['{"error":{"code":null,"message":"You didn\'t provide an API key."}}', 5],
     ['{"error":{"message":"No API key provided."}}', 5],
+    ['{"error":{"code":null,"message":"Missing bearer or basic authentication in header"}}', 5],
     ['{"error":{"code":"insufficient_permissions","message":"x"}}', 6],
     ['{"error":{"message":"Missing scopes: api.responses.write"}}', 6],
     ['{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', 4],
@@ -441,6 +460,32 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
     answerBody = body;
     assert.equal(await run(url), code, body);
   }
+  // Who answered is read from response header names alone and added as 10
+  // (the provider: OpenAI's x-request-id plus an openai-* or x-openai-* header,
+  // or Anthropic's request-id plus x-should-retry) or 20 (the OpenShell relay:
+  // an x-openshell-* header); header values never matter.
+  for (const [headers, source] of [
+    [{ "x-request-id": "req_fixture", "openai-version": "2020-10-01" }, 10],
+    [{ "x-request-id": "req_fixture", "x-openai-authorization-error": "1" }, 10],
+    [{ "X-Request-Id": "req_fixture", "OpenAI-Processing-Ms": "3" }, 10],
+    [{ "request-id": "req_fixture", "x-should-retry": "false" }, 10],
+    [{ "x-request-id": "req_fixture" }, 0],
+    [{ "request-id": "req_fixture" }, 0],
+    [{ "x-should-retry": "false" }, 0],
+    [{ "openai-version": "2020-10-01" }, 0],
+    [{ "x-request-id": "req_fixture", "x-not-openai-marker": "1" }, 0],
+    [{ "x-openshell-policy": "fixture-policy" }, 20],
+    [{ "X-OpenShell-Policy": "fixture-policy", "x-request-id": "r", "openai-version": "1" }, 20],
+    [{ "x-openshell": "no-dash-suffix" }, 0],
+  ]) {
+    answerHeaders = headers;
+    answerBody =
+      '{"error":{"code":null,"message":"Missing bearer or basic authentication in header"}}';
+    assert.equal(await run(url), source + 5, JSON.stringify(headers));
+    answerBody = "{}";
+    assert.equal(await run(url), source + 3, JSON.stringify(headers));
+  }
+  answerHeaders = {};
   answerBody = "{}";
   for (const status of [400, 403, 429, 500]) {
     answer = status;

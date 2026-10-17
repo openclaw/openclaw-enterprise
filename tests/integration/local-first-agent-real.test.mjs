@@ -484,10 +484,15 @@ test("native terminal failures report only fixed failure codes", async (t) => {
   }
 
   await t.test("name the held failure and its provider response", async () => {
-    const provider = { providerStatus: 401, providerCode: "invalid_api_key" };
+    const provider = {
+      providerStatus: 401,
+      providerCode: "invalid_api_key",
+      providerSource: "provider",
+    };
     const records = probeLog({ code: "AUTHENTICATION_FAILED", ...provider });
     // The provider fields reach the assertion's input through the production sanitizer.
     assert.equal(records[0]?.fields?.providerCode, provider.providerCode);
+    assert.equal(records[0]?.fields?.providerSource, provider.providerSource);
     const observed = await observe(
       handoff,
       handoff,
@@ -519,8 +524,10 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       code: "PRIVATE_SENTINEL",
       providerStatus: 200,
       providerCode: "private-sentinel",
+      providerSource: "private-sentinel-source",
     });
     assert.equal(records[0]?.fields?.providerCode, "private-sentinel");
+    assert.equal(records[0]?.fields?.providerSource, "private-sentinel-source");
     const failed = { ...deployment, error: failure("RUNTIME_MODEL_PROBE_FAILED") };
     const observed = await observe(
       failed,
@@ -535,6 +542,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       code: "none",
       providerStatus: "other",
       providerCode: "none",
+      providerSource: "none",
     });
     const single = await observe(
       failed,
@@ -547,6 +555,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       code: "other",
       providerStatus: "other",
       providerCode: "other",
+      providerSource: "other",
     });
     for (const providerStatus of [399, 401.5, 600]) {
       const statusPage = page(probeLog({ providerStatus }));
@@ -613,6 +622,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       code: "none",
       providerStatus: "none",
       providerCode: "none",
+      providerSource: "none",
     });
     for (const other of [
       { ...deployment, deploymentId: "another-revision" },
@@ -700,7 +710,8 @@ test("native terminal failures report only fixed failure codes", async (t) => {
           errorCode: "RUNTIME_MODEL_PROBE_FAILED",
           lastAttemptCode: "none",
         },
-        modelProbe: { probes: 1, code: "MODEL_PROBE_FAILED", ...provider },
+        // The full probe's provider summary names no responder.
+        modelProbe: { probes: 1, code: "MODEL_PROBE_FAILED", ...provider, providerSource: "none" },
       },
     );
     // Codes outside the closed vocabulary print as unrecognized, with no log read.

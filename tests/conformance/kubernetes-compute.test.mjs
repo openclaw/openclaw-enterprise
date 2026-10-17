@@ -11060,8 +11060,10 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     timeout: options.timeout,
                   });
                   if (args[0] === "-e") {
-                    // The upfront request's child exits 3 only on the provider's 401.
-                    return { status: upfront ? 3 : 0 };
+                    // The upfront request's child exits 3-6 (plus 10 or 20 for the
+                    // responder) only on the provider's 401: 13 is an unclassified
+                    // 401 that carried OpenAI's response headers.
+                    return { status: upfront ? 13 : 0 };
                   }
                   if (variant.startsWith("cap exceeded")) {
                     return {
@@ -11258,12 +11260,14 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
         // The log line keeps the provider's HTTP status from its error, never the text;
-        // the upfront rejection names its 401 and only a closed-vocabulary code.
+        // the upfront rejection names its 401, who answered it and only a
+        // closed-vocabulary code.
         assert.equal(
           probeLog.providerStatus,
           upfront ? 401 : cause?.kind === "PROBE_STATUS" ? 404 : undefined,
         );
         assert.equal(probeLog.providerCode, undefined);
+        assert.equal(probeLog.providerSource, upfront ? "provider" : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();

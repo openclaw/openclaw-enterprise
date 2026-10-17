@@ -124,13 +124,13 @@ passes the gateway's attachments to the Sandbox. The revision activates only
 after every attachment is `ready`.
 While a Credential Gateway is selected, deployment rejects the Secret-backed and
 account methods with `409`. Other Compute
-implementations reject bindings they do not support. SSH embedded OpenClaw accepts
+implementations reject unsupported bindings. SSH embedded OpenClaw accepts
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
 outside revision immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
-Codex validates inputs and requires a successful native model probe before serving.
+Codex requires a successful native model probe before serving.
 API-key/PAT/external-token state stays ephemeral; `chatgptAuthTokens` delegates
 refresh externally with no refresh token or native fallback. Dedicated Gateways
 receive no model credentials. Configuration `secretBindings` and the initial
@@ -138,8 +138,8 @@ runtime credential API serve separate Gateway transport/channel authentication.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)
-in the process that owns model access, with temporary state beneath the
-runtime's selected `TMPDIR`. Embedded activation uses the shared gateway's
+in the process that owns model access, with temporary state under its
+`TMPDIR`. Embedded activation uses the shared gateway's
 `Recreate` strategy: cutover can stop the working gateway before the
 replacement validates its credentials. Invalid credentials or a provider
 failure leave the replacement unready and the Agent unavailable until repair
@@ -148,11 +148,11 @@ and restart or a new deployment. There is no automatic rollback.
 Both startup checks call the configured primary model. OpenClaw disables tools
 and model fallback. Codex ignores user configuration and rules, disables execution
 and external tools, and uses read-only filesystem policy without approval grants;
-a tool event cannot satisfy its success check. The Codex probe runs with a minimal
-environment that keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
+a tool event cannot satisfy its success check. The Codex probe's minimal
+environment keeps only the runtime's TLS trust variables (`SSL_CERT_FILE`,
 `SSL_CERT_DIR`), so a TLS-inspecting egress proxy can serve it. Dedicated Codex
 reaches its model over Responses WebSocket by default (embedded OpenClaw uses
-HTTP streaming), so an egress proxy or firewall in front of that model host must
+HTTP streaming), so an egress proxy or firewall before that model host must
 allow the WebSocket upgrade. Compatible endpoints use HTTPS Responses streaming, including the probe.
 Secret-backed Codex uses [Compute configuration](drivers/kubernetes-compute.md#configuration);
 OpenShell sources supply their own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
@@ -168,15 +168,17 @@ Codex logs each attempt as a structured `codex.model_probe` record with its
 number, elapsed milliseconds, exit code, recognized termination signal, and
 final code (`READY`, `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`,
 `AUTHENTICATION_FAILED`, or `UNAVAILABLE`). Both probe logs add a
-`MODEL_PROBE_FAILED` [cause](agents/deployment.md#model-check-failure-cause) and
-omit credentials and raw provider output. `occ agent logs` and the console Logs
-tab show it as `causeKind` and `causeDetail`. The runtime failure status is
+`MODEL_PROBE_FAILED` [cause](agents/deployment.md#model-check-failure-cause)
+(`causeKind` and `causeDetail` in `occ agent logs` and the console Logs tab) and
+omit credentials and raw provider output. The runtime failure status is
 published only after retries end.
 
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
 probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
 request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
-event or access-token login error reporting 401 or 403. A CPU-starved OpenClaw
+event or access-token login error reporting 401 or 403. OpenClaw's record adds
+`providerCode` (`invalid_api_key`, `missing_api_key`, `insufficient_permissions`)
+and `providerSource` (`provider`, `relay`, `unknown`; header names only). A CPU-starved OpenClaw
 probe reports `MODEL_PROBE_CPU_STARVED`. Timeouts, provider server errors,
 and transport failures report `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`, or
 `LOGIN_FAILED`. The worker fails deployment at once on each held
@@ -195,7 +197,7 @@ and logging `Waiting for Harness plugin runtime status` at most every 30
 seconds. The deployment's convergence deadline governs a Harness that never
 reports. A redeploy keeps the Service on the serving revision until activation.
 
-Startup checks may incur model usage charges. They verify neither other configured models nor validity after upstream revocation.
+Startup checks may incur model charges and verify neither other configured models nor validity after upstream revocation.
 Embedded probe transport configuration must use literal metadata rather than
 additional environment or Secret references; the selected provider's
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias remains supported.

@@ -57,6 +57,8 @@ const providerCodes = new Set([
   "missing_api_key",
   "insufficient_permissions",
 ]);
+// Who answered the upfront 401, read from response header names only.
+const providerSources = new Set(["provider", "relay", "unknown"]);
 
 const absentOr = (value, observe) =>
   value === undefined || value === null ? "none" : observe(value);
@@ -83,6 +85,9 @@ function observedModelProbe(logs, revisionId) {
     ),
     providerCode: absentOr(fields.providerCode, (code) =>
       providerCodes.has(code) ? code : "other",
+    ),
+    providerSource: absentOr(fields.providerSource, (source) =>
+      providerSources.has(source) ? source : "other",
     ),
   };
 }
