@@ -3532,7 +3532,7 @@ export const scenarios = {
       },
     ],
     description:
-      "Watch v7 change from running to failed. Recovery appears below Deployment activity, so the details you were reading stay in place. The deployment and failure are simulated.",
+      "Watch v7 change from running to failed. Recovery appears below Deployment activity instead of pushing the overview down. The status and details update in place. The deployment and failure are simulated.",
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",
