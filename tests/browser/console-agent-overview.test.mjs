@@ -1070,7 +1070,7 @@ for (const viewport of [
 // changes, since a live region or alert announces reliably only when it is inserted.
 test("deployment poll patches rewrite only changed text and replace a node whose role changes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await page.goto(new URL("/console/", fixture.origin).href);
   const outcome = await page.evaluate(async () => {
     const { element, patchChildren } = await import("/console/dom.mjs");
