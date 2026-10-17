@@ -120,8 +120,9 @@ The worker emits fixed operational event classes through the same logger:
   SandboxDriver.
 - `worker.health`: reports readiness and pending work count at debug level.
 - `worker.completed`: includes `namespaceId`, work identity, attempt, outcome
-  (the queue's decision: a retry that spent the attempt budget is `permanent`)
-  and a stable result code; AgentRevision operations also include `agentId` and
+  and a stable result code; for an Agent stop, deletion or credential-source
+  withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
+  the Driver's classification; AgentRevision operations also include `agentId` and
   `revisionId`. A failed or deferred revision pass adds `cause`: the error class,
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
