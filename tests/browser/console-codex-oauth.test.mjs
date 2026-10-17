@@ -21,7 +21,8 @@ const DEVICE_POLL_MS = 5_000;
 
 async function signInReady(page, advanceApiClock) {
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-  // The pending view schedules the poll in the same update that shows this status.
+  // The pending view schedules the poll in the same update that shows this status. A later
+  // re-render restarts that timer, and a jump from the current time still covers it.
   await page
     .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
     .waitFor();
