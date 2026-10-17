@@ -1461,15 +1461,17 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   const withdrawals = [];
   let withdrawalFailure;
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
+  nativeConfiguration.models.providers.openai.baseUrl = "https://provider.example.test/v1";
+  nativeConfiguration.models.providers.openai.models[0].baseUrl =
+    "https://models.example.test:443/inference/v1/";
+  nativeConfiguration.models.providers.openai.api = "openai-completions";
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
       sandboxDriverId: sandboxDriver.id,
-      configuration: admitLoggingConfiguration(
-        createHarnessConfiguration("openclaw", "gpt-5"),
-        "info",
-      ),
+      configuration: admitLoggingConfiguration(nativeConfiguration, "info"),
       plugins: undefined,
     },
   });
@@ -1530,6 +1532,15 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
       ({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG",
     ).value,
   );
+  assert.equal(
+    nativeConfig.models.providers.openai.baseUrl,
+    "https://models.example.test/inference/v1",
+  );
+  assert.equal(
+    nativeConfig.models.providers.openai.models[0].baseUrl,
+    "https://models.example.test/inference/v1",
+  );
+  assert.equal(nativeConfig.models.providers.openai.models[0].api, "openai-completions");
   assert.deepEqual(nativeConfig.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
@@ -8488,7 +8499,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     worker.env.find(({ name }) => name === "NODE_COMPILE_CACHE")?.value,
     "/home/node/.openclaw-node/.cache/node-compile",
   );
-  assert.equal(workerProgram.includes("chmodSync(temporary, 0o700)"), true);
+  assert.equal(workerProgram.includes("chmodSync(privateTemporary, 0o700)"), true);
   assert.equal(workerProgram.includes("initializeRuntimeAssets();"), true);
   assert.equal(workerProgram.includes("OPENCLAW_BUNDLED_SKILLS_DIR"), true);
   assert.equal(workerProgram.includes('publishImageTree("/app/custodian-skills"'), true);
@@ -12694,28 +12705,24 @@ test("revision lifecycle rejects another driver or missing identity before clust
         "Configuration setting models.providers.openai.models.0 must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw.",
     },
   );
-  assert.throws(
-    () =>
-      production.validateHarnessAuth(
-        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-        apiKeyAuth,
-        {
-          ...dedicatedNativeConfiguration,
-          models: {
-            providers: {
-              openai: {
-                ...dedicatedNativeConfiguration.models.providers.openai,
-                baseUrl: "https://models.example.test/v1",
-              },
+  // A compatible provider can use a different host and a nested API prefix.
+  assert.doesNotThrow(() =>
+    production.validateHarnessAuth(
+      { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      apiKeyAuth,
+      {
+        ...dedicatedNativeConfiguration,
+        models: {
+          providers: {
+            openai: {
+              ...dedicatedNativeConfiguration.models.providers.openai,
+              baseUrl: "https://models.example.test/inference/v1",
+              api: "openai-completions",
             },
           },
         },
-      ),
-    {
-      name: "ConfigurationHarnessError",
-      message:
-        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw.",
-    },
+      },
+    ),
   );
   // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
   // preparation applies the same rule to the admitted revision.
@@ -12750,8 +12757,20 @@ test("revision lifecycle rejects another driver or missing identity before clust
     [
       withEntry({ baseUrl: "not a url" }),
       "models.providers.openai.models.0.baseUrl",
-      "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
     ],
+    ...[
+      "http://models.example.test/v1",
+      "https://models.example.test:8443/v1",
+      "https://models.example.test/v1?key=forbidden",
+      "https://models.example.test/v1#fragment",
+      "https://*.example.test/v1",
+      "https://models.example.test/other",
+    ].map((baseUrl) => [
+      withEntry({ baseUrl }),
+      "models.providers.openai.models.0.baseUrl",
+      "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+    ]),
     [
       withEntry({ reasoning: "yes" }),
       "models.providers.openai.models.0.reasoning",

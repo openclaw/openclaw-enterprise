@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: sunnymodi
 ---
 
@@ -56,8 +56,9 @@ a private child of `TMPDIR`, preserving the Sandbox's shared temporary directory
    provider enrollment files and the configured API selector. Update the owning
    references and source-backed execution flow.
 
-The accompanying implementation must record exact checks and missing runtime
-prerequisites. Local development proof does not establish production qualification
+The accompanying Driver implementation and registered native regression input are
+present. Final-head custom-provider model and redeployment proof remains pending.
+The PR records exact checks and missing runtime prerequisites. Local development proof does not establish production qualification
 or qualify a new default runtime image. No image pin or publication is proposed.
 
 ## Alternatives and open decision
