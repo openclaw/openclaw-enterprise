@@ -255,7 +255,7 @@ export function renderAgentList(context) {
   // Each row's latest deployment, read after the list paints. A return to a retained list
   // revalidates only the list's own reads, so these never hold its reveal (finding 1644); the
   // retained rows read them again in place instead. So one still running doesn't keep the list
-  // from being retained either (finding 1663), and its answer is dropped once a reread starts.
+  // from being retained either (finding 1663): leaving aborts it, and the list rereads it.
   const cells = new Map(); // The shown rows' deployment cells, each with its Agent.
   const rowRead = { revalidate: false, rereadOnResume: true };
   function readDeployment(item) {
@@ -288,12 +288,10 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
-    const read = deployments.get(item.id);
-    // An answer read before the view resumed is never shown as current (#2717).
-    const latest = () => context.isCurrent() && deployments.get(item.id) === read;
-    void read
+    void deployments
+      .get(item.id)
       .then((result) => {
-        if (!latest()) {
+        if (!context.isCurrent()) {
           return;
         }
         if (result === null) {
@@ -325,7 +323,8 @@ export function renderAgentList(context) {
         );
       })
       .catch((error) => {
-        if (!latest()) {
+        // A read the list's reset aborted fails here; it never paints the list it left.
+        if (!context.isCurrent()) {
           return;
         }
         fillDeployment(

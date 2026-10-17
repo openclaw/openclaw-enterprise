@@ -482,14 +482,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return { view, refresh, diagnostics, scopeSelector };
   }
 
-  function sameControl(node, root, outside = null) {
+  function sameControl(node, root) {
     // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
     // Other links (Observability) keep the href comparison.
     const nav = node.getAttribute("data-nav");
     return (
       [...root.querySelectorAll(node.localName)].find(
         (candidate) =>
-          !outside?.contains(candidate) &&
           candidate.className === node.className &&
           (nav
             ? candidate.getAttribute("data-nav") === nav
@@ -587,7 +586,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       if (node.closest(".account")) {
         return shell.querySelector(".account-toggle");
       }
-      return sameControl(node, shell, shell.querySelector('.content [aria-live="polite"]'));
+      // The sidebar, toggle and header precede the page view, so their match is found first.
+      return sameControl(node, shell);
     },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());

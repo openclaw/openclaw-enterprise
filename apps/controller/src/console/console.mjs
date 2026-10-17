@@ -1609,7 +1609,7 @@ async function loadPage({
     mountedViewState = viewState;
     // A read the view redoes when it resumes (rereadOnResume, the Agents list's row
     // deployments) neither keeps the view from being reused while it runs nor, if it fails,
-    // afterwards (finding 1663). Its section drops an answer that lands after the reread started.
+    // afterwards (finding 1663). Leaving aborts it, and its section rereads it on resume.
     const viewRequest = async (path, options = {}) => {
       const counted = !options.rereadOnResume;
       if (counted) {
