@@ -347,6 +347,122 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
     .waitFor();
 });
 
+// A fast answer painted "Waiting for diagnostic results…" for a frame and moved focus to it and
+// back (finding 1714). The waiting line, the disabled button and the focus move now wait 250 ms.
+test("A fast diagnostics answer neither shows the waiting line nor moves focus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Diagnostics fast", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Fast Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  const { page } = await newPage(t, fixture);
+  await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+    }),
+  );
+  const answer = (observedAt) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        revisionId: revision.id,
+        observedAt,
+        checks: [
+          {
+            component: "slack",
+            check: "authentication",
+            state: "succeeded",
+            checkedAt: observedAt,
+          },
+        ],
+      },
+      meta: { requestId: "req_test_diagnostics_fast" },
+    }),
+  });
+  const holdRun = (observedAt) =>
+    holdRequests(t, page, `${fixture.origin}${deploymentPath}/diagnostics`, {
+      method: "POST",
+      once: true,
+      fulfill: answer(observedAt),
+    });
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  const observations = page.locator(".version-diagnostics");
+  const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+  const waiting = observations.getByText("Waiting for diagnostic results…");
+  await run.waitFor();
+  // Every waiting line added and every element focused inside the panel, painted or not.
+  await page.evaluate(() => {
+    const panel = globalThis.document.querySelector(".version-diagnostics");
+    globalThis.diagnosticsSeen = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.textContent.includes("Waiting for diagnostic results")) {
+            globalThis.diagnosticsSeen.push("waiting line");
+          }
+        }
+      }
+    }).observe(panel, { childList: true, subtree: true });
+    panel.addEventListener("focusin", (event) =>
+      globalThis.diagnosticsSeen.push(`focus ${event.target.localName}`),
+    );
+  });
+  const seen = () => page.evaluate(() => globalThis.diagnosticsSeen.splice(0));
+  const focused = (locator) =>
+    locator.evaluate((node) => node === globalThis.document.activeElement);
+  const description = () =>
+    run.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+    );
+
+  await run.focus();
+  assert.deepEqual(await seen(), ["focus button"]);
+  for (const [observedAt, slow] of [
+    ["2026-09-30T12:00:02.000Z", false],
+    ["2026-09-30T12:00:04.000Z", false],
+    ["2026-09-30T12:00:06.000Z", true],
+  ]) {
+    const held = await holdRun(observedAt);
+    await page.keyboard.press("Enter");
+    try {
+      await held.requested;
+      await page.clock.runFor(249);
+      assert.equal(await waiting.count(), 0);
+      assert.equal(await run.isEnabled(), true);
+      assert.equal(await focused(run), true);
+      if (slow) {
+        // Past the delay the run behaves as before: the line shows and takes focus from the
+        // disabled button.
+        await page.clock.runFor(1);
+        await waiting.waitFor();
+        assert.equal(await focused(waiting), true);
+        assert.equal(await run.isDisabled(), true);
+        // Focus events land at once, mutation records a microtask later.
+        assert.deepEqual((await seen()).sort(), ["focus p", "waiting line"]);
+      }
+    } finally {
+      held.release();
+    }
+    const shown = await page.evaluate((value) => new Date(value).toLocaleString(), observedAt);
+    const observed = observations.getByText(`Observed ${shown}`);
+    await observed.waitFor();
+    assert.equal(await focused(run), true);
+    assert.equal(await description(), await observed.textContent());
+    assert.deepEqual(await seen(), slow ? ["focus button"] : []);
+  }
+});
+
 test("Diagnostics explain a missing Slack channel and keep the recorded failure in view", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

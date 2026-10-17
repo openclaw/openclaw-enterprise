@@ -3683,12 +3683,28 @@ export const scenarios = {
     rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 3000 }],
     steps: [
       "Tab to Run diagnostics for this version, then press Enter or Space.",
-      "Focus moves to “Waiting for diagnostic results…” while the button is disabled. Leave focus there.",
+      "After 250 ms, focus moves to “Waiting for diagnostic results…” while the button is disabled. Leave focus there.",
       "When the checks arrive, focus returns to Run diagnostics. Its description gives the Observed time.",
       "Click Refresh record, which re-renders this panel as a deployment poll does, then press Tab. Run diagnostics still has that description.",
     ],
     description:
       "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
+  },
+  diagnosticsFast: {
+    group: "Pages/Agent detail",
+    name: "Current observations that answer at once",
+    path: candidateVersion,
+    deployed: true,
+    slack: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 100 }],
+    steps: [
+      "Tab to Run diagnostics for this version, then press Enter. The checks answer in 100 ms.",
+      "No “Waiting for diagnostic results…” line appears and the button does not disable. Focus stays on Run diagnostics, and its description gives the Observed time.",
+      "Press Enter again. The checks replace the earlier ones directly, with no waiting line in between.",
+    ],
+    description:
+      "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",

@@ -835,11 +835,18 @@ function createVersionDeploymentRecord(
   return { section, show, release, current: () => status };
 }
 
+// The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
+// it never shows the waiting line (finding 1714).
+const DIAGNOSTICS_WAITING_DELAY_MS = 250;
+
 function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus = () => null) {
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics = null;
   let error = null;
   let loading = false;
+  // Set once a run outlasts DIAGNOSTICS_WAITING_DELAY_MS: the waiting line replaces the last
+  // result and the button disables itself.
+  let waitingShown = false;
   // The id of the result that describes the button after a run. render() sets it on both: a
   // deployment poll re-renders the panel, and patchChildren drops attributes that render()
   // does not set (finding 1712).
@@ -850,17 +857,29 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       return;
     }
     loading = true;
-    error = null;
-    diagnostics = null;
-    outcomeId = null;
-    render();
-    // The button disables itself while it waits: move focus to the waiting line, as Deploy
-    // does, so a keyboard reader is not dropped to the page (finding 1705).
     const runButton = section.querySelector(".deployment-heading button");
-    const waitingLine = section.lastElementChild;
-    focusSaveOutcome(section, [], waitingLine);
+    // Until the delay passes, the last result and the focused button stay as they are, so a fast
+    // answer replaces the result directly: no waiting line is painted or announced, and focus
+    // does not move (finding 1714). A second press meanwhile does nothing.
+    let waitingLine = null;
+    const waitingTimer = setTimeout(() => {
+      if (!loading || !context.isCurrent()) {
+        return;
+      }
+      waitingShown = true;
+      error = null;
+      diagnostics = null;
+      outcomeId = null;
+      render();
+      // The button disables itself while it waits: move focus to the waiting line, as Deploy
+      // does, so a keyboard reader is not dropped to the page (finding 1705).
+      waitingLine = section.lastElementChild;
+      focusSaveOutcome(section, [], waitingLine);
+    }, DIAGNOSTICS_WAITING_DELAY_MS);
+    let answer = null;
+    let failure = null;
     try {
-      diagnostics = await context.request(
+      answer = await context.request(
         `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
         { method: "POST", readOnly: true },
       );
@@ -872,15 +891,21 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         context.onExpired();
         return;
       }
-      error = cause;
+      failure = cause;
     } finally {
+      clearTimeout(waitingTimer);
       if (context.isCurrent()) {
-        const waited = document.activeElement === waitingLine;
+        const active = document.activeElement;
+        const waited = active === runButton || (waitingLine !== null && active === waitingLine);
         loading = false;
+        waitingShown = false;
+        diagnostics = answer;
+        error = failure;
+        outcomeId = null;
         render();
-        // The result replaces the waiting line: focus returns to the button, described by
-        // the alert or the "Observed" line (not the whole check list, which the view's live
-        // region already reads), unless the reader has moved on.
+        // The result replaces the waiting line (or the last result): focus returns to, or stays
+        // on, the button, described by the alert or the "Observed" line (not the whole check
+        // list, which the view's live region already reads), unless the reader has moved on.
         if (waited) {
           const outcome = error
             ? section.querySelector('[role="alert"]')
@@ -893,7 +918,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
   }
 
   function renderChecks() {
-    if (loading) {
+    if (waitingShown) {
       // Focusable here, not only by focusSaveOutcome: a deployment poll re-renders the panel,
       // and patchChildren drops attributes that render() does not set.
       return element(
@@ -995,7 +1020,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         // below is the one announcement, and a changed label inside the Agent view's live
         // region was announced as well (finding 1698).
         button("Run diagnostics for this version", () => void run(), {
-          disabled: loading,
+          disabled: waitingShown,
           ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
         }),
       ),
