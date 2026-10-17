@@ -2080,12 +2080,12 @@ export const scenarios = {
           "Team \u{1f468}\u200d\u{1f469}\u200d\u{1f467} \u{1f3f3}\ufe0f\u200d\u{1f308} " +
           "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} " +
           "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u0915\u094d\u200d\u0937, " +
-          "stray \u200d\u200djoiners",
+          "joined A\u200dB, stray \u200d\u200djoiners",
         allowedProfiles: ["git-read"],
       },
     ],
     description:
-      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and the England, Scotland and Wales flags, display intact. Other scripts display as written.",
+      "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
@@ -4690,17 +4690,18 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         hold: true,
+        once: true,
       },
     ],
     actions: [
-      { selector: "#runtime-slack-app-token", value: "simulated-token" },
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
       click("Save channel Secrets"),
     ],
     description:
-      "A pending Secret save disables deployment. The real client times out after 15 seconds; reset the story to replay it.",
+      "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
   },
   credentialsSaveUnknown: {
     group: "Components/Credentials",
@@ -4709,15 +4710,15 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 503,
         once: true,
       },
     ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "simulated-token" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Save the simulated replacement to see an uncertain Secret save. Reload the draft and inspect saved state before deploying or retrying.",
+      "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",

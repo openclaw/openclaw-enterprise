@@ -1140,6 +1140,39 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       retry: true,
     },
     {
+      // Channel credential validation runs before admission, so this 503 refused the request.
+      name: "channel credential outage",
+      status: 503,
+      error: {
+        code: "CHANNEL_CREDENTIAL_UNAVAILABLE",
+        message:
+          "Channel credential validation is temporarily unavailable. Retry before deploying.",
+        details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
+      },
+      text: "Channel credential validation is temporarily unavailable. Retry before deploying. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // A 503 without a code, such as a proxy's, names no refusal whatever it says.
+      name: "uncoded outage",
+      status: 503,
+      error: { message: "Synthetic named outage." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Met after admission (the provisioning worker, deploy), never refused before it here.
+      name: "named outage after admission",
+      status: 503,
+      error: {
+        code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+        message:
+          "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
       name: "catch-all outage",
       status: 503,
       error: {
@@ -1158,6 +1191,14 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
         message:
           "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
       },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
+      name: "named code on a 502",
+      status: 502,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic named outage." },
       text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
       retry: true,
     },
@@ -1197,7 +1238,7 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       await page.getByLabel("Authentication method").selectOption("codex_pat");
       await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
       await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-      const requestId = `req_00000000-0000-4000-8000-00000000000${index}`;
+      const requestId = `req_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
       const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
       await page.route(provisionUrl, (route) =>
         route.request().method() === "POST"

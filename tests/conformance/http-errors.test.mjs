@@ -10,7 +10,8 @@ import {
   ConfigurationOwnershipError,
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { PresetValidationError } from "../../packages/contracts/src/index.ts";
+import { PROVISIONING_REFUSAL_CODES } from "../../apps/controller/src/console/agents/list.mjs";
+import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -946,6 +947,41 @@ for (const [name, error, expected] of cases) {
     assert.equal(sent.error.message, failure.message);
   });
 }
+
+// Create Agent shows the reason of a 503 from POST /agents/provision only for the codes that
+// request sends before its own admission (finding 1635). Every other 503 code, and every code
+// this table does not map (it may answer 503), is listed here with where it comes from, so a new
+// one fails this test until someone decides which it is.
+const NOT_PROVISIONING_REFUSALS = [
+  // Discovery and runtime log reads, never a provisioning request.
+  "CHANNEL_DIRECTORY_INVALID_RESPONSE",
+  "CHANNEL_DIRECTORY_UNAVAILABLE",
+  "MODEL_DISCOVERY_INVALID_RESPONSE",
+  "MODEL_DISCOVERY_UNAVAILABLE",
+  "PLUGIN_DISCOVERY_INVALID_RESPONSE",
+  "PLUGIN_DISCOVERY_UNAVAILABLE",
+  "RUNTIME_LOGS_AUDIT_UNAVAILABLE",
+  "RUNTIME_LOGS_CLUSTER_RBAC",
+  "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
+  "RUNTIME_LOGS_UNAVAILABLE",
+  // The runtime credential routes, deploy and the provisioning worker, after admission.
+  "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+  // Raised by other routes themselves, outside this mapping.
+  "INSTALLATION_EXISTS",
+  "METHOD_NOT_ALLOWED",
+  "NATIVE_ADMIN_RETURN_RATE_LIMITED",
+  "REPOSITORY_OPTIONS_UNAVAILABLE",
+  "UNKNOWN_OUTCOME",
+];
+
+test("every API error code that may answer 503 is classified for Create Agent's provisioning refusals", () => {
+  const statuses = new Map(cases.map(([, , expected]) => [expected.code, expected.status]));
+  const unclassified = ERROR_CODES.filter((code) => (statuses.get(code) ?? 503) === 503);
+  assert.deepEqual(
+    [...PROVISIONING_REFUSAL_CODES, ...NOT_PROVISIONING_REFUSALS].sort(),
+    unclassified.sort(),
+  );
+});
 
 test("a submitted Secret binding destination names its rule and key, never the Secret", () => {
   const source = { kind: "secret", namespaceId: "ns_1", id: "sec_private_id" };
