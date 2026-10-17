@@ -2186,6 +2186,9 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
+      // The Sandbox gateway refused the controller's identity, so the Driver could not confirm
+      // the revision's Sandbox gone: retrying cannot help until an operator restores the role,
+      // so the stop fails with that code instead of recording the Sandbox stopped (finding 1676).
       result =
         error instanceof ComputeStopYieldedError
           ? {
@@ -2193,7 +2196,9 @@ export class ControllerWorker {
               code: "AGENT_STOP_YIELDED",
               ...(stopping === undefined ? {} : { revision: stopping }),
             }
-          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          : error instanceof SandboxGatewayUnauthorizedError
+            ? { outcome: "permanent", code: error.code }
+            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
   }
@@ -2399,7 +2404,11 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676).
+      result =
+        error instanceof SandboxGatewayUnauthorizedError
+          ? { outcome: "permanent", code: error.code }
+          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentDeletion(claim, result);
   }

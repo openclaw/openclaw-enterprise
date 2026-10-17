@@ -1,7 +1,63 @@
-import { TransientDependencyError } from "@openclaw-enterprise/occ";
+import { SandboxGatewayUnauthorizedError, TransientDependencyError } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 export class OpenShellGatewayFailure extends Error {}
+
+const GRPC_PERMISSION_DENIED = 7;
+const GRPC_UNAUTHENTICATED = 16;
+
+/** Runs one gateway call; see `gatewayIdentityRefusal`. */
+export type GatewayCall = <T>(call: () => Promise<T>) => Promise<T>;
+
+/**
+ * Wraps the gateway calls of one Sandbox operation in `workspace`. A refusal of the
+ * controller's own gateway identity (grpc-js PERMISSION_DENIED or UNAUTHENTICATED, which
+ * `unary` passes through raw) becomes `SandboxGatewayUnauthorizedError`, so the worker fails
+ * the work with that code at once instead of spending its attempts on a generic failure.
+ * `unconfirmed` names what the refusal leaves unconfirmed, for example "the Harness exposure
+ * of Sandbox x cannot be confirmed withdrawn".
+ */
+export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): GatewayCall {
+  return async (call) => {
+    try {
+      return await call();
+    } catch (error) {
+      const record = asRecord(error);
+      // grpc-js ServiceError: a numeric status code and a string details field.
+      const code = typeof record?.details === "string" ? record.code : undefined;
+      if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
+        throw new SandboxGatewayUnauthorizedError(
+          `OpenShell refused the controller gateway identity in Workspace ${workspace}, so ${unconfirmed}.`,
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  };
+}
+
+/**
+ * Proves that a Sandbox lookup's NOT_FOUND means the Sandbox is gone. OpenShell answers
+ * NOT_FOUND alike for a Sandbox that does not exist and for one this identity may not see (no
+ * existence oracle: GetSandbox, DeleteSandbox, GetService, DeleteService, DetachSandboxProvider
+ * all hide it), so an identity that lost its Workspace role would otherwise read every Sandbox
+ * as removed while it, its exposure and its credentials stay live (findings 1670, 1676).
+ * GetWorkspace keeps PERMISSION_DENIED, so a Workspace this identity can still read is the
+ * proof; a refusal there fails with `SANDBOX_GATEWAY_UNAUTHORIZED` through `refused`, and a
+ * Workspace OpenShell reports missing fails closed with `absent()`. A role restored between
+ * the two reads would confirm a live Sandbox; that needs a flap within one round trip.
+ */
+export async function confirmSandboxAbsent(
+  client: { getWorkspace(name: string, signal: AbortSignal): Promise<unknown> },
+  workspace: string,
+  signal: AbortSignal,
+  refused: GatewayCall,
+  absent: () => Error,
+): Promise<void> {
+  if ((await refused(() => client.getWorkspace(workspace, signal))) === undefined) {
+    throw absent();
+  }
+}
 
 export class OpenShellSandboxAlreadyExistsError extends Error {
   readonly sandboxName: string;

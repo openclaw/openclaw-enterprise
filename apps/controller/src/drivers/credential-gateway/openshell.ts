@@ -34,6 +34,8 @@ import {
   type OpenShellGatewayPlacement,
 } from "../../backends/openshell.ts";
 import {
+  confirmSandboxAbsent,
+  gatewayIdentityRefusal,
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
@@ -1141,19 +1143,41 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   /**
    * Detaches the source's provider from the revision's Sandbox. Only a REVOKED receipt reports
-   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes.
+   * `revoked`: the Sandbox's placeholders then stop resolving, even in running processes. A
+   * missing Sandbox reports `absent` only once GetWorkspace proves this identity still sees the
+   * Workspace: GetSandbox and DetachSandboxProvider answer NOT_FOUND alike for a Sandbox that is
+   * gone and for one the identity may not see (finding 1676), and `absent` settles the
+   * withdrawal while a hidden Sandbox would keep resolving the credential. A refusal fails
+   * with `SANDBOX_GATEWAY_UNAUTHORIZED`; the worker retries the withdrawal.
    */
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
     const provider = openShellProviderName(context.sourceId);
     const sandbox = context.sandbox.resourceName;
+    const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
+    const refused = gatewayIdentityRefusal(workspace, unconfirmed);
+    const absent = async (): Promise<CredentialAttachmentStatus> => {
+      await confirmSandboxAbsent(
+        client,
+        workspace,
+        context.signal,
+        refused,
+        () =>
+          new OpenShellCredentialGatewayFailure(
+            `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
+          ),
+      );
+      return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+    };
     if (context.recheck === true) {
       // A recorded revocation needs a new detach only if the Sandbox lists the provider again,
       // for example after a create that OpenShell accepted before the withdrawal landed after it.
-      const existing = await client.getSandbox({ name: sandbox, workspace }, context.signal);
+      const existing = await refused(() =>
+        client.getSandbox({ name: sandbox, workspace }, context.signal),
+      );
       if (existing === undefined) {
-        return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+        return absent();
       }
       const providers = existing.spec?.providers;
       if (!Array.isArray(providers) || !providers.includes(provider)) {
@@ -1161,15 +1185,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
     }
     // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
-    const detached = await client.detachSandboxProvider(
-      workspace,
-      sandbox,
-      provider,
-      context.signal,
+    const detached = await refused(() =>
+      client.detachSandboxProvider(workspace, sandbox, provider, context.signal),
     );
-    // A missing Sandbox has no placeholders left to resolve.
+    // A missing Sandbox has no placeholders left to resolve, once it is confirmed missing.
     if (detached === undefined) {
-      return Object.freeze({ sourceId: context.sourceId, state: "absent" });
+      return absent();
     }
     const status = await client.getSandboxProviderStatus(
       workspace,

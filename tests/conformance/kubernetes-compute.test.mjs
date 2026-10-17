@@ -1103,8 +1103,21 @@ function dedicatedFirstDeployFixture({
         }
         return read(kind, name, target);
       };
-      const write = async ({ body }) => {
+      const write = async ({ body }, { replace = false } = {}) => {
         const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
+        // Like the API server: every write bumps resourceVersion, and a replace that names a
+        // stale one is a 409 Conflict (finding 1678). Two writes with the metadata of one read,
+        // as workspaceNodeReady once did (#2750 review), fail here as they do live.
+        const current = previous?.metadata.resourceVersion;
+        const named = body.metadata.resourceVersion;
+        if (replace && previous !== undefined && named !== undefined && named !== current) {
+          throw Object.assign(
+            new Error(
+              `Operation cannot be fulfilled on ${kind} ${body.metadata.name}: the object has been modified`,
+            ),
+            { statusCode: 409 },
+          );
+        }
         const changed =
           kind === "Deployment" && JSON.stringify(previous?.spec) !== JSON.stringify(body.spec);
         const value = {
@@ -1114,7 +1127,7 @@ function dedicatedFirstDeployFixture({
             ...previous?.metadata,
             ...body.metadata,
             uid: `${body.metadata.name}-uid`,
-            resourceVersion: "1",
+            resourceVersion: String(Number(current ?? "0") + 1),
           },
         };
         if (kind === "Deployment") {
@@ -1144,7 +1157,7 @@ function dedicatedFirstDeployFixture({
       };
       api[`patchNamespaced${kind}`] = write;
       api[`createNamespaced${kind}`] = write;
-      api[`replaceNamespaced${kind}`] = write;
+      api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
     }
   }
   clients.core.listNamespace = async () => ({ items: [] });

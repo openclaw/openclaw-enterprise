@@ -859,11 +859,12 @@ export class SandboxRevisionUnsupportedError extends Error {
 
 /**
  * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
- * Driver cannot tell a withdrawn Harness exposure from one it is no longer allowed to see: an
- * unauthorized Sandbox lookup answers NOT_FOUND there, like a missing one. The exposure may still
- * route unauthenticated traffic to the Sandbox, so the Driver fails closed and the worker fails
- * the deployment with `code` instead of reporting the revision ready. An operator restores the
- * identity's Workspace role and deploys again. The message stays in the controller.
+ * Driver cannot tell a Sandbox that is gone, with its Harness exposure withdrawn and its
+ * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup
+ * answers NOT_FOUND there, like a missing one. The Sandbox may still run, route unauthenticated
+ * traffic and resolve credentials, so the Driver fails closed and the worker fails the deployment
+ * with `code` instead of reporting the revision ready, stopped or removed. An operator restores
+ * the identity's Workspace role and runs the operation again. The message stays in the controller.
  */
 export class SandboxGatewayUnauthorizedError extends Error {
   readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";

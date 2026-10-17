@@ -11,7 +11,6 @@ import {
   DependencyUnavailableError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
-  SandboxGatewayUnauthorizedError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
@@ -46,6 +45,8 @@ import {
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
 import {
+  confirmSandboxAbsent,
+  gatewayIdentityRefusal,
   openShellSandboxLogReader,
   openShellSandboxObserver,
   type OpenShellGatewayClient,
@@ -2652,7 +2653,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // Every reconcile pass reaches here. Re-sending CreateSandbox for a Sandbox that
     // exists would hit the gateway's request_id replay, which refuses a changed spec
     // (REQUEST_ID_PAYLOAD_MISMATCH) and forgets the create after 24 h (ALREADY_EXISTS).
-    let existing = await client.getSandbox(selector, context.signal);
+    // GetSandbox also answers NOT_FOUND for a Sandbox this identity may not see (finding
+    // 1676). That is safe here without a Workspace read: nothing is recorded as gone, and
+    // CreateSandbox keeps PERMISSION_DENIED for a non-member, so a hidden Sandbox is neither
+    // adopted nor created over; the create fails with SANDBOX_GATEWAY_UNAUTHORIZED below.
+    const refused = gatewayIdentityRefusal(
+      workspace,
+      `Sandbox ${sandbox.resourceName} cannot be created or adopted`,
+    );
+    let existing = await refused(() => client.getSandbox(selector, context.signal));
     if (!codex && existing === undefined) {
       await prepareNativeWorkspace(context, this.options, sandbox);
     }
@@ -2675,9 +2684,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       let created;
       let alreadyExists = false;
       try {
-        created = await client.createSandbox(
-          { ...create, requestId: requestIds[attempt]! },
-          context.signal,
+        created = await refused(() =>
+          client.createSandbox({ ...create, requestId: requestIds[attempt]! }, context.signal),
         );
       } catch (error) {
         if (error instanceof OpenShellRequestReplayRefusedError) {
@@ -2803,41 +2811,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   ): Promise<void> {
     // A refusal from any of the three calls is the same lost or expired identity: the
     // deployment fails with that code instead of spending its attempts on a generic failure.
-    const refused = async <T>(call: () => Promise<T>): Promise<T> => {
-      try {
-        return await call();
-      } catch (error) {
-        const record = asRecord(error);
-        // grpc-js ServiceError: a numeric status code and a string details field.
-        const code = typeof record?.details === "string" ? record.code : undefined;
-        if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
-          throw new SandboxGatewayUnauthorizedError(
-            `OpenShell refused the controller gateway identity in Workspace ${workspace}, so the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn.`,
-            { cause: error },
-          );
-        }
-        throw error;
-      }
-    };
+    const unconfirmed = `the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn`;
+    const refused = gatewayIdentityRefusal(workspace, unconfirmed);
     // Read first: after the first withdrawal every reconcile pass passes here, and a
     // DeleteService per pass would be a gateway mutation per pass for nothing.
     if ((await refused(() => client.getService(workspace, sandbox, "", signal))) !== undefined) {
       await refused(() => client.deleteService(workspace, sandbox, "", signal));
       return;
     }
-    // NOT_FOUND is also what OpenShell answers for a Sandbox this identity may not see (no
-    // existence oracle), and an identity that lost its Workspace role would otherwise read
-    // every pass as "already withdrawn" while the exposure stays (finding 1670). GetWorkspace
-    // keeps PERMISSION_DENIED, so a Workspace this identity can still read is the proof that
-    // the Sandbox, or its exposure, is gone; anything else fails closed. A role restored
-    // between the two reads would confirm a live exposure; that needs a flap within one round
-    // trip, and the next worker start's sweep reads the service again.
-    const visible = await refused(() => client.getWorkspace(workspace, signal));
-    if (visible === undefined) {
-      throw new OpenShellSandboxConfigurationFailure(
-        `OpenShell reports no Workspace ${workspace}, so the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn.`,
-      );
-    }
+    // An absent service is withdrawn only once GetWorkspace proves the identity still sees the
+    // Workspace (finding 1670); the next worker start's sweep reads the service again.
+    await confirmSandboxAbsent(
+      client,
+      workspace,
+      signal,
+      refused,
+      () =>
+        new OpenShellSandboxConfigurationFailure(
+          `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
+        ),
+    );
   }
 
   private async initializeWorkspace(
@@ -2856,6 +2849,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
     // Supervisor readiness permits private exec; the Harness is still waiting for
     // the completion marker. A later reconciliation handles a still-starting Pod.
+    // NOT_FOUND here (also a Sandbox hidden from this identity, finding 1676) only defers the
+    // setup: this pass read or created the Sandbox a moment ago, so it is a flap within one
+    // pass, nothing is recorded as gone, and the next pass's create fails closed.
     if (current?.phase !== "SANDBOX_PHASE_READY" && current?.phase !== 2) {
       return;
     }
@@ -3064,13 +3060,30 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       const client = this.gatewayClientForNamespace(sandbox.namespaceName);
       const workspace = workspaceName(context.namespace);
-      await client.deleteSandbox(
-        {
-          name: sandbox.resourceName,
+      const selector = { name: sandbox.resourceName, workspace };
+      // A stop, retire or delete records the Sandbox removed only once OpenShell confirms it.
+      // GetSandbox and DeleteSandbox answer NOT_FOUND alike for a Sandbox that is gone and for
+      // one this identity may not see (finding 1676), so an absent Sandbox counts as removed
+      // only after GetWorkspace proves the identity still sees the Workspace; a refusal on any
+      // call fails with SANDBOX_GATEWAY_UNAUTHORIZED, and the worker keeps retrying the stop
+      // or deletion instead of recording a live Sandbox, with its exposure and credentials, as
+      // gone. The read also spares a DeleteSandbox per pass once the Sandbox is gone.
+      const unconfirmed = `Sandbox ${sandbox.resourceName} cannot be confirmed removed`;
+      const refused = gatewayIdentityRefusal(workspace, unconfirmed);
+      if ((await refused(() => client.getSandbox(selector, context.signal))) === undefined) {
+        await confirmSandboxAbsent(
+          client,
           workspace,
-        },
-        context.signal,
-      );
+          context.signal,
+          refused,
+          () =>
+            new OpenShellSandboxConfigurationFailure(
+              `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
+            ),
+        );
+      } else {
+        await refused(() => client.deleteSandbox(selector, context.signal));
+      }
       const harnessId = context.revision.harness.id;
       if (
         context.revision.harness.mode === "dedicated" &&
@@ -3183,7 +3196,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   /**
    * Reads the dedicated revision's own Sandbox record without touching it. Only the
    * gateway's lifecycle phase and restart state are used; the Harness transport is not
-   * contacted.
+   * contacted. A Sandbox hidden from this identity reads `lost` (`SANDBOX_MISSING`, finding
+   * 1676): an observation, not a removal, and no controller path acts on it today.
    */
   async observeHarness(context: SandboxLogContext): Promise<SandboxHarnessObservation> {
     this.requireOperatorWorkspaceMode("observe a Harness");
@@ -3218,7 +3232,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   /**
    * The revision's supervisor Pod opens its workspace-node connection. OpenShell labels that
    * Pod with the Sandbox's gateway-minted ID (`sandbox_runtime.rs` `control_labels`), a UUID
-   * distinct from the Sandbox name, so the ID is read from the gateway's own record.
+   * distinct from the Sandbox name, so the ID is read from the gateway's own record. A Sandbox
+   * hidden from this identity (finding 1676) contributes no peer: the Gateway then admits its
+   * node connection from nowhere, which is restrictive, not a removal.
    */
   async workspaceNodePeerLabels(
     context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },

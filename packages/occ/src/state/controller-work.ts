@@ -736,7 +736,7 @@ function deploymentErrorMessage(code: string): string {
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
-      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the Harness exposure withdrawn. Restore the controller gateway identity's Workspace role, then deploy again.";
+      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the revision's Sandbox removed, its Harness exposure withdrawn or its credentials detached. Restore the controller gateway identity's Workspace role, then deploy, stop or delete again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":
