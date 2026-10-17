@@ -60,6 +60,30 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
   "runtime.gateway_settings_overridden": ["container"],
 });
 
+// Allowlisted wrapper fields whose values must also have a fixed shape; a value of
+// another shape is dropped. The model probes' provider fields (runtime-entrypoints.ts)
+// are fixed tokens or lowercase identifiers (letters and underscores, at most 48
+// characters), so no key, token, URL, email or id passes.
+const PROVIDER_IDENTIFIER = /^[a-z]+(?:_[a-z]+){0,7}$/;
+const providerIdentifier = (value: unknown) =>
+  typeof value === "string" && value.length <= 48 && PROVIDER_IDENTIFIER.test(value);
+const oneOf = (...values: string[]) => {
+  const known: ReadonlySet<unknown> = new Set(values);
+  return (value: unknown) => known.has(value);
+};
+const WRAPPER_FIELD_VALUES: Readonly<
+  Record<string, Readonly<Record<string, (value: unknown) => boolean>>>
+> = Object.freeze({
+  "openclaw.model_probe": Object.freeze({
+    providerCode: providerIdentifier,
+    responseHeaderMarker: oneOf("none", "provider-like", "openshell-policy", "mixed"),
+    bodyShape: oneOf("json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"),
+    providerErrorCode: providerIdentifier,
+    providerErrorType: providerIdentifier,
+  }),
+  "codex.model_probe": Object.freeze({ providerCode: providerIdentifier }),
+});
+
 // `runtime.gateway_settings_overridden` names (never values) the owner settings a
 // Gateway replaced. A name can carry an owner-typed key, so the list is kept only
 // when every item is a short key path; otherwise the event keeps no list.
@@ -211,10 +235,11 @@ function scalar(value: unknown): string | number | boolean | undefined {
 function pickFields(
   source: Readonly<Record<string, unknown>>,
   allowed: Iterable<string>,
+  valid: Readonly<Record<string, (value: unknown) => boolean>> = {},
 ): Readonly<Record<string, string | number | boolean>> | undefined {
   const fields: Record<string, string | number | boolean> = {};
   for (const key of allowed) {
-    if (!Object.hasOwn(source, key)) {
+    if (!Object.hasOwn(source, key) || (Object.hasOwn(valid, key) && !valid[key]!(source[key]))) {
       continue;
     }
     const value = scalar(source[key]);
@@ -254,7 +279,11 @@ type Classified =
 function classifyStructured(value: Readonly<Record<string, unknown>>): Classified {
   const event = value.event;
   if (typeof event === "string" && Object.hasOwn(WRAPPER_FIELDS, event)) {
-    let fields = pickFields(value, WRAPPER_FIELDS[event]!);
+    let fields = pickFields(
+      value,
+      WRAPPER_FIELDS[event]!,
+      Object.hasOwn(WRAPPER_FIELD_VALUES, event) ? WRAPPER_FIELD_VALUES[event] : undefined,
+    );
     const overridden = event === "runtime.gateway_settings_overridden";
     const settings = overridden ? overriddenSettings(value.settings) : undefined;
     if (settings !== undefined) {

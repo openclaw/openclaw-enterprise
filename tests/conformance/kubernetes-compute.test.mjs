@@ -11345,10 +11345,12 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                     // The upfront request's child exits 3-6 (plus 10 or 20 for the
                     // responder) only on the provider's 401: 13 is an unclassified
                     // 401 that carried OpenAI's response headers. Its stdout names
-                    // the body's shape and closed-set error code and type.
+                    // the body's shape and identifier error code and type.
                     return {
                       status: upfront ? 13 : 0,
-                      stdout: upfront ? '["json-error-code","other","invalid_request_error"]' : "",
+                      stdout: upfront
+                        ? '["json-error-code","invalid_bearer_token","invalid_request_error"]'
+                        : "",
                     };
                   }
                   if (variant.startsWith("cap exceeded")) {
@@ -11415,21 +11417,19 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(calls.length, upfront ? 1 : 2);
         assert.equal(probeTemplate, "/approved-temporary/openclaw-auth-probe-");
         // The upfront request carries the credential as OpenClaw sends it to
-        // the provider's default endpoint, the closed sets of error codes (C) and
-        // types (T) it may name, and nothing else from the environment.
+        // the provider's default endpoint, the identifier rule (R) its error code
+        // and type must match to be named, and nothing else from the environment.
         const [upfrontCall, probeCall] = calls;
         assert.equal(upfrontCall.command, "/usr/local/bin/node");
         assert.equal(upfrontCall.timeout, 10_000);
         assert.deepEqual(Object.keys(upfrontCall.environment).sort(), [
-          "C",
           "H",
           "NODE_EXTRA_CA_CERTS",
+          "R",
           "SSL_CERT_FILE",
-          "T",
           "U",
         ]);
-        assert.ok(JSON.parse(upfrontCall.environment.C).includes("invalid_api_key"));
-        assert.ok(JSON.parse(upfrontCall.environment.T).includes("invalid_request_error"));
+        assert.equal(upfrontCall.environment.R, "^[a-z]+(?:_[a-z]+){0,7}$");
         assert.equal(upfrontCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
         assert.deepEqual(
           [upfrontCall.environment.U, JSON.parse(upfrontCall.environment.H)],
@@ -11560,7 +11560,7 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(probeLog.providerCode, undefined);
         assert.equal(probeLog.responseHeaderMarker, upfront ? "provider-like" : undefined);
         assert.equal(probeLog.bodyShape, upfront ? "json-error-code" : undefined);
-        assert.equal(probeLog.providerErrorCode, upfront ? "other" : undefined);
+        assert.equal(probeLog.providerErrorCode, upfront ? "invalid_bearer_token" : undefined);
         assert.equal(probeLog.providerErrorType, upfront ? "invalid_request_error" : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {

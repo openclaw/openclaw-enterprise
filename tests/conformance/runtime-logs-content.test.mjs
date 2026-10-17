@@ -493,6 +493,107 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
   ]);
 });
 
+test("the model probes' provider fields keep only values of their fixed shape", () => {
+  const event = (fields) =>
+    JSON.stringify({ event: "openclaw.model_probe", code: "AUTHENTICATION_FAILED", ...fields });
+  // Codes and types are lowercase identifiers (letters and underscores, at most 48
+  // characters), carried verbatim; the marker and shape are closed sets.
+  const identifiers = [
+    "invalid_api_key",
+    "usage_limit_reached",
+    "missing_api_key",
+    "invalid_request_error",
+    "invalid_bearer_token",
+    "other",
+    "constructor",
+    "a_b_c_d_e_f_g_h",
+    "abcdefghij_abcdefghij_abcdefghij_abcdefghij_abcd",
+  ];
+  const markers = ["none", "provider-like", "openshell-policy", "mixed"];
+  const shapes = ["json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"];
+  const kept = identifiers.map((value, index) => ({
+    providerCode: value,
+    providerErrorCode: value,
+    providerErrorType: value,
+    responseHeaderMarker: markers[index % markers.length],
+    bodyShape: shapes[index % shapes.length],
+  }));
+  // Every credential-shaped canary, and values of any other shape or type, is dropped.
+  const hostile = [
+    ...Object.values(canaries()),
+    "sk-proj-abc",
+    "sk_live_abc123",
+    "https://api.example.test/v1",
+    "user@example.test",
+    "Invalid_api_key",
+    "invalid-api-key",
+    "invalid_api_key ",
+    "_invalid",
+    "__proto__",
+    "a_b_c_d_e_f_g_h_i",
+    "abcdefghij_abcdefghij_abcdefghij_abcdefghij_abcde",
+    "invalid_\u0430pi_key",
+    "",
+    401,
+    true,
+  ];
+  const dropped = hostile.map((value) => ({
+    providerCode: value,
+    providerErrorCode: value,
+    providerErrorType: value,
+    responseHeaderMarker: value,
+    bodyShape: value,
+  }));
+  // The marker and shape keep only their own members, never an identifier.
+  for (const value of ["other", "constructor", "Mixed", "provider_like", "empty "]) {
+    dropped.push({ responseHeaderMarker: value, bodyShape: value });
+  }
+  // The Codex probe's provider code has the same rule; other wrapper events keep
+  // their fields unchecked.
+  const others = [
+    { event: "codex.model_probe", code: "MODEL_PROBE_FAILED", providerCode: "usage_limit_reached" },
+    { event: "codex.model_probe", code: "MODEL_PROBE_FAILED", providerCode: "usage-limit" },
+    { event: "runtime.startup_phase", phase: "plugin-install", code: "Plugin-Not-In-Catalog" },
+  ].map((fields) => JSON.stringify(fields));
+  const { records, withheld } = sanitize(gatewayStream, [
+    ...[...kept, ...dropped].map(event),
+    ...others,
+  ]);
+  assert.equal(withheld, 0);
+  const line = (fields) => ({
+    kind: "wrapper",
+    level: "error",
+    message: "openclaw.model_probe",
+    fields: { code: "AUTHENTICATION_FAILED", ...fields },
+  });
+  assert.deepEqual(pick(records, wrapperKeys), [
+    ...kept.map(line),
+    ...dropped.map(() => line({})),
+    {
+      kind: "wrapper",
+      level: "error",
+      message: "codex.model_probe",
+      fields: { code: "MODEL_PROBE_FAILED", providerCode: "usage_limit_reached" },
+    },
+    {
+      kind: "wrapper",
+      level: "error",
+      message: "codex.model_probe",
+      fields: { code: "MODEL_PROBE_FAILED" },
+    },
+    {
+      kind: "wrapper",
+      level: "info",
+      message: "runtime.startup_phase",
+      fields: { phase: "plugin-install", code: "Plugin-Not-In-Catalog" },
+    },
+  ]);
+  const text = JSON.stringify(records);
+  for (const value of hostile.filter((value) => typeof value === "string" && value.length > 3)) {
+    assert.ok(!text.includes(value), value);
+  }
+});
+
 test("a Gateway settings override keeps its setting names, never values (D322)", () => {
   const event = (settings) =>
     JSON.stringify({

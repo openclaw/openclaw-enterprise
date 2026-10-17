@@ -1052,7 +1052,7 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
   for (const [name, upfrontStatus, providerCode, responseHeaderMarker, upfrontStdout, body] of [
     ["an unclassified 401 without known header names", 3, undefined, "none"],
     [
-      "an unclassified 401 whose error carries a closed-set code and type",
+      "an unclassified 401 whose error carries a known code and type",
       13,
       undefined,
       "provider-like",
@@ -1064,12 +1064,24 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       },
     ],
     [
-      "an unclassified 401 whose error has an off-set code and no type",
+      "an unclassified 401 whose error has a non-identifier code and no type",
       13,
       undefined,
       "provider-like",
       '["json-error-code","other",""]',
       { bodyShape: "json-error-code", providerErrorCode: "other" },
+    ],
+    [
+      "an unclassified 401 whose error carries an unknown identifier code and type",
+      13,
+      undefined,
+      "provider-like",
+      '["json-error-code","invalid_bearer_token","some_new_error_type"]',
+      {
+        bodyShape: "json-error-code",
+        providerErrorCode: "invalid_bearer_token",
+        providerErrorType: "some_new_error_type",
+      },
     ],
     [
       "an unclassified non-JSON 401",
@@ -1086,6 +1098,14 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       "provider-like",
       JSON.stringify([hostile, hostile, "Bearer " + hostile]),
       {},
+    ],
+    [
+      "a 401 whose child names a non-identifier code and type",
+      13,
+      undefined,
+      "provider-like",
+      JSON.stringify(["json-error-code", "Hostile_key", "hostile_" + "a".repeat(41)]),
+      { bodyShape: "json-error-code" },
     ],
     ["a rejected key with provider-like headers", 14, "invalid_api_key", "provider-like"],
     [
@@ -1113,7 +1133,7 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       assert.equal(probe.providerStatus, 401);
       assert.equal(probe.providerCode, providerCode);
       assert.equal(probe.responseHeaderMarker, responseHeaderMarker);
-      // The 401 body's closed-set tokens, each only when the child named it.
+      // The 401 body's shape and identifier tokens, each only when the child named it.
       assert.deepEqual(
         {
           bodyShape: probe.bodyShape,
@@ -1130,7 +1150,7 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       assert.equal(probe.cause, undefined);
       for (const line of diagnostics) {
         assert.ok(!line.includes("fixture-model-key"), "the credential never reaches the log");
-        assert.ok(!line.includes("Hostile"), "off-set child output never reaches the log");
+        assert.ok(!/hostile/i.test(line), "off-set child output never reaches the log");
       }
 
       const listening = servers.filter((server) => server.listening !== undefined);

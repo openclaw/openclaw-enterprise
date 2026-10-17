@@ -60,9 +60,10 @@ const providerCodes = new Set([
 // Which response header names the upfront 401 carried (names only, no origin claim).
 // "none" is a real value here, so an absent field prints "absent" instead.
 const responseHeaderMarkers = new Set(["none", "provider-like", "openshell-policy", "mixed"]);
-// The upfront 401 body's form and its error.code and error.type, each from a closed
-// set ("other" off-set); the message never reaches the log. They mirror the sets in
-// runtime-entrypoints.ts; runtime-model-probe-settlement.test.mjs pins that.
+// The upfront 401 body's form, from a closed set, and its error.code and error.type,
+// verbatim when they are lowercase identifiers ("other" otherwise); the message never
+// reaches the log. They mirror runtime-entrypoints.ts; runtime-model-probe-settlement.test.mjs
+// pins that.
 export const bodyShapes = new Set([
   "json-error-code",
   "json-error-no-code",
@@ -70,31 +71,14 @@ export const bodyShapes = new Set([
   "non-json",
   "empty",
 ]);
-export const providerErrorCodes = new Set([
-  "invalid_api_key",
-  "insufficient_permissions",
-  "invalid_organization",
-  "mismatched_organization",
-  "no_organization",
-  "invalid_project",
-  "mismatched_project",
-  "account_deactivated",
-  "deactivated_workspace",
-  "ip_not_authorized",
-  "other",
-]);
-export const providerErrorTypes = new Set([
-  "invalid_request_error",
-  "authentication_error",
-  "permission_error",
-  "other",
-]);
+export const providerErrorToken = (value) =>
+  typeof value === "string" && value.length <= 48 && /^[a-z]+(?:_[a-z]+){0,7}$/.test(value);
 
 const absentOr = (value, observe) =>
   value === undefined || value === null ? "none" : observe(value);
-// For fields where "none" is a real value: absent prints "absent", off-set "other".
-const markerOrAbsent = (value, known) =>
-  value === undefined || value === null ? "absent" : known.has(value) ? value : "other";
+// For fields where "none" is a real value: absent prints "absent", invalid "other".
+const markerOrAbsent = (value, valid) =>
+  value === undefined || value === null ? "absent" : valid(value) ? value : "other";
 const failureCategory = (code) => (runtimeFailureCodes.has(code) ? code : "unrecognized");
 const progressCode = (code) => (deploymentProgressCodes.has(code) ? code : "unknown");
 
@@ -119,10 +103,12 @@ function observedModelProbe(logs, revisionId) {
     providerCode: absentOr(fields.providerCode, (code) =>
       providerCodes.has(code) ? code : "other",
     ),
-    responseHeaderMarker: markerOrAbsent(fields.responseHeaderMarker, responseHeaderMarkers),
-    bodyShape: markerOrAbsent(fields.bodyShape, bodyShapes),
-    providerErrorCode: markerOrAbsent(fields.providerErrorCode, providerErrorCodes),
-    providerErrorType: markerOrAbsent(fields.providerErrorType, providerErrorTypes),
+    responseHeaderMarker: markerOrAbsent(fields.responseHeaderMarker, (marker) =>
+      responseHeaderMarkers.has(marker),
+    ),
+    bodyShape: markerOrAbsent(fields.bodyShape, (shape) => bodyShapes.has(shape)),
+    providerErrorCode: markerOrAbsent(fields.providerErrorCode, providerErrorToken),
+    providerErrorType: markerOrAbsent(fields.providerErrorType, providerErrorToken),
   };
 }
 
@@ -190,11 +176,17 @@ async function observeDeployment(observation, deployment, revision, request, sig
   }
 }
 
+// The CI reporter keeps a failure message's first 600 characters
+// (scripts/ci/failure-redaction.mjs), so the model check, whose error code can be
+// up to 48 characters, prints first.
+const observationText = (observation) =>
+  JSON.stringify({ modelProbe: observation.modelProbe, ...observation });
+
 export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
   if (response.status === "failed") {
     const observation = await observeNativeFailure(diagnostics);
     assert.fail(
-      `${expectation}: ${failureCategory(response.error?.code)} ${JSON.stringify(observation)}`,
+      `${expectation}: ${failureCategory(response.error?.code)} ${observationText(observation)}`,
     );
   }
 }
@@ -229,7 +221,7 @@ async function assertNativeRedeployNotFailed(
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
   assert.fail(
-    `${expectation}: ${failureCategory(deployment.error?.code)} ${JSON.stringify(observation)}`,
+    `${expectation}: ${failureCategory(deployment.error?.code)} ${observationText(observation)}`,
   );
 }
 

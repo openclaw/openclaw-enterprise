@@ -15,8 +15,7 @@ import reporter from "../../scripts/ci/reporter.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   bodyShapes as helperBodyShapes,
-  providerErrorCodes as helperErrorCodes,
-  providerErrorTypes as helperErrorTypes,
+  providerErrorToken as helperErrorToken,
 } from "../helpers/local-first-agent-native.mjs";
 
 const execute = promisify(execFile);
@@ -409,8 +408,9 @@ test("the upfront credential check runs only where OpenClaw would send the same 
   }
 });
 
-// The closed sets the child receives (C, T) and the parent keeps.
-const UPFRONT_ERROR_CODES = [
+// Codes and types OpenAI documents or is known to send; each is an identifier the
+// child and parent carry verbatim.
+const KNOWN_ERROR_CODES = [
   "invalid_api_key",
   "insufficient_permissions",
   "invalid_organization",
@@ -422,20 +422,67 @@ const UPFRONT_ERROR_CODES = [
   "deactivated_workspace",
   "ip_not_authorized",
 ];
-const UPFRONT_ERROR_TYPES = ["invalid_request_error", "authentication_error", "permission_error"];
+const KNOWN_ERROR_TYPES = ["invalid_request_error", "authentication_error", "permission_error"];
 const HOSTILE_KEY = "sk-proj-HostileFixtureKey0123456789abcdef";
+// Identifier-shaped values, carried verbatim: lowercase letters and underscores, one
+// to eight words, at most 48 characters. "constructor" is a plain value, never a lookup.
+const IDENTIFIERS = [
+  "a",
+  "unknown_code",
+  "invalid_bearer_token",
+  "constructor",
+  "a_b_c_d_e_f_g_h",
+  "abcdefghij_abcdefghij_abcdefghij_abcdefghij_abcd",
+];
+// Anything else becomes "other": key-, token-, JWT-, URL-, email- and id-shaped
+// strings, uppercase, digits, dashes, dots, edge underscores, nine words, 49+
+// characters, unicode lookalikes and whitespace.
+const NON_IDENTIFIERS = [
+  "",
+  HOSTILE_KEY,
+  "sk-abcdefghijklmnop",
+  "sk_live_abcdef0123456789",
+  "sk_live_ABCDEFghijklmnopqrstuv",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+  "https://api.example.test/v1",
+  "api.openai.com",
+  "user@example.test",
+  "org-AbCdEf123",
+  "proj_123",
+  "Invalid_api_key",
+  "INVALID_API_KEY",
+  "invalid-api-key",
+  "invalid api key",
+  "invalid_api_key\n",
+  " invalid_api_key",
+  "_invalid",
+  "invalid_",
+  "invalid__key",
+  "__proto__",
+  "a_b_c_d_e_f_g_h_i",
+  "abcdefghij_abcdefghij_abcdefghij_abcdefghij_abcde",
+  "a".repeat(49),
+  "invalid_\u0430pi_key",
+  "\u0131nvalid_api_key",
+  "invalid_api_ke\u0443",
+  "\uff49nvalid",
+  "toString",
+];
 
-test("the upfront check keeps only closed-set body tokens from its child", () => {
+test("the upfront check keeps only identifier-shaped body tokens from its child", () => {
   const { calls } = upfrontCheck("openai", undefined);
-  // Only stdout is read, bounded; the child gets the closed sets, never "other".
+  // Only stdout is read, bounded; the child gets the identifier rule.
   assert.deepEqual([...calls[0].options.stdio], ["ignore", "pipe", "ignore"]);
   assert.equal(calls[0].options.encoding, "utf8");
   assert.ok(calls[0].options.maxBuffer <= 1024);
-  assert.deepEqual(JSON.parse(calls[0].options.env.C), UPFRONT_ERROR_CODES);
-  assert.deepEqual(JSON.parse(calls[0].options.env.T), UPFRONT_ERROR_TYPES);
-  // The QA helper reads the same sets, plus "other".
-  assert.deepEqual([...helperErrorCodes], [...UPFRONT_ERROR_CODES, "other"]);
-  assert.deepEqual([...helperErrorTypes], [...UPFRONT_ERROR_TYPES, "other"]);
+  assert.equal(calls[0].options.env.R, "^[a-z]+(?:_[a-z]+){0,7}$");
+  // The QA helper applies the same rule.
+  for (const value of [...IDENTIFIERS, ...KNOWN_ERROR_CODES, ...KNOWN_ERROR_TYPES, "other"]) {
+    assert.equal(helperErrorToken(value), true, value);
+  }
+  for (const value of [...NON_IDENTIFIERS, undefined, null, 401, ["a"]]) {
+    assert.equal(helperErrorToken(value), false, String(value));
+  }
   assert.deepEqual(
     [...helperBodyShapes],
     ["json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"],
@@ -464,13 +511,43 @@ test("the upfront check keeps only closed-set body tokens from its child", () =>
       bodyShape,
     );
   }
-  for (const code of UPFRONT_ERROR_CODES) {
-    assert.equal(rejected(JSON.stringify(["json-error-code", code, ""])).providerErrorCode, code);
+  for (const value of [...KNOWN_ERROR_CODES, ...KNOWN_ERROR_TYPES, ...IDENTIFIERS]) {
+    assert.deepEqual(rejected(JSON.stringify(["json-error-code", value, value])), {
+      ...base,
+      bodyShape: "json-error-code",
+      providerErrorCode: value,
+      providerErrorType: value,
+    });
   }
-  for (const type of UPFRONT_ERROR_TYPES) {
-    assert.equal(rejected(JSON.stringify(["json-error-code", "", type])).providerErrorType, type);
+  // The parent re-checks each token on its own: a child that passed a value of
+  // another shape has it dropped, never passed on.
+  for (const value of NON_IDENTIFIERS) {
+    assert.deepEqual(
+      rejected(JSON.stringify(["json-error-code", value, value])),
+      { ...base, bodyShape: "json-error-code" },
+      value,
+    );
   }
-  // Each token is checked on its own: exact, case-sensitive set members only.
+  // An identifier that is part of the request's key, such as a lowercase passphrase
+  // echoed back, becomes "other".
+  for (const [key, echoed] of [
+    ["my_secret_passphrase", "my_secret_passphrase"],
+    ["sk-proj-abc_def_ghi0123", "abc_def_ghi"],
+  ]) {
+    assert.deepEqual(
+      upfrontCheck("openai", undefined, key, {
+        status: 13,
+        stdout: JSON.stringify(["json-error-code", echoed, echoed]),
+      }).rejected,
+      {
+        ...base,
+        bodyShape: "json-error-code",
+        providerErrorCode: "other",
+        providerErrorType: "other",
+      },
+      key,
+    );
+  }
   assert.deepEqual(
     rejected(JSON.stringify(["json-error-code", "Invalid_API_Key", "authentication_error "])),
     { ...base, bodyShape: "json-error-code" },
@@ -483,7 +560,7 @@ test("the upfront check keeps only closed-set body tokens from its child", () =>
   // Anything off-set, misplaced or malformed is dropped, never passed on.
   for (const stdout of [
     JSON.stringify(["html", "", ""]),
-    JSON.stringify(["other", "invalid_request_error", "invalid_api_key"]),
+    JSON.stringify(["other", "invalid-request-error", "Invalid_api_key"]),
     JSON.stringify([HOSTILE_KEY, HOSTILE_KEY, "Bearer " + HOSTILE_KEY]),
     JSON.stringify([["empty"], { code: "invalid_api_key" }, 401]),
     JSON.stringify({ bodyShape: "empty", providerErrorCode: "invalid_api_key" }),
@@ -612,7 +689,7 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   assert.equal(await run("http://127.0.0.1:1/v1/responses"), 0, "an unreachable endpoint");
 });
 
-test("the upfront child names a 401 body's shape and closed-set code and type, never its text", async (t) => {
+test("the upfront child names a 401 body's shape and identifier code and type, never its text", async (t) => {
   const { createServer } = await import("node:http");
   const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
   const source = /\["-e",\s*'([^']+)',/.exec(GATEWAY_RUNTIME_ENTRYPOINT.slice(begin))?.[1];
@@ -641,14 +718,13 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => server.close());
   const url = `http://127.0.0.1:${server.address().port}/v1/responses`;
-  const run = (body) => {
+  const run = (body, rule = env.R) => {
     answerBody = body;
     return execute(process.execPath, ["-e", source], {
       env: {
         U: url,
         H: JSON.stringify({ authorization: "Bearer fixture-key" }),
-        C: env.C,
-        T: env.T,
+        ...(rule !== null && { R: rule }),
       },
     }).then(
       ({ stdout, stderr }) => ({ status: 0, stdout, stderr }),
@@ -699,7 +775,15 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
       undefined,
       "authentication_error",
     ],
-    // Off-set codes and types, however key-shaped, become "other".
+    // Unknown identifiers pass verbatim.
+    [
+      '{"error":{"code":"invalid_bearer_token","type":"some_new_error_type","message":"x"}}',
+      13,
+      "json-error-code",
+      "invalid_bearer_token",
+      "some_new_error_type",
+    ],
+    // Non-identifier codes and types, however key-shaped, become "other".
     [
       `{"error":{"code":${quoted},"type":${quoted},"message":${quoted},"param":${quoted}}}`,
       13,
@@ -723,12 +807,19 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
     ],
     ['{"error":{"code":"","type":{"name":"x"}}}', 13, "json-error-code", "other", "other"],
     ['{"error":{"code":false}}', 13, "json-error-code", "other", undefined],
-    // Prototype-shaped names are plain off-set values or own keys, never lookups.
+    // Prototype-shaped names are plain values or own keys, never lookups.
     [
       '{"error":{"code":"__proto__","type":"constructor"}}',
       13,
       "json-error-code",
       "other",
+      "constructor",
+    ],
+    [
+      '{"error":{"code":"constructor","type":"__proto__"}}',
+      13,
+      "json-error-code",
+      "constructor",
       "other",
     ],
     [
@@ -796,6 +887,34 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
         text,
       );
     }
+  }
+  // Every identifier-shaped value passes verbatim; every other value, however
+  // hostile, becomes "other" and never appears in the child's output or the result.
+  for (const value of IDENTIFIERS) {
+    const child = await run(
+      JSON.stringify({ error: { code: value, type: value, message: HOSTILE_KEY } }),
+    );
+    assert.deepEqual(JSON.parse(child.stdout), ["json-error-code", value, value], value);
+    assert.equal(child.stderr, "");
+  }
+  for (const value of NON_IDENTIFIERS.filter(Boolean)) {
+    const child = await run(
+      JSON.stringify({ error: { code: value, type: value, message: value } }),
+    );
+    assert.equal(child.status, 13, value);
+    assert.deepEqual(JSON.parse(child.stdout), ["json-error-code", "other", "other"], value);
+    const { rejected } = upfrontCheck("openai", undefined, "fixture-key", child);
+    for (const text of [child.stdout, child.stderr, JSON.stringify(rejected)]) {
+      assert.ok(!text.includes(value) && !/Hostile|fixture-key/.test(text), value);
+    }
+  }
+  // Without the rule the child names no code or type: it fails closed.
+  for (const rule of [null, ""]) {
+    const child = await run(
+      '{"error":{"code":"invalid_api_key","type":"invalid_request_error"}}',
+      rule,
+    );
+    assert.deepEqual(JSON.parse(child.stdout), ["json-error-code", "other", "other"], String(rule));
   }
   // A body that breaks off mid-read names no shape: it was neither empty nor parsed.
   breakOff = true;
