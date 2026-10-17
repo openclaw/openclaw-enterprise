@@ -56,7 +56,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
       body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
     }),
   );
-  // The job hands off its first deployment and polls it three times before failing.
+  // Create Agent reads the handed-off deployment three times before the job fails.
   const reads = [
     job("running"),
     job("running", handedOff),

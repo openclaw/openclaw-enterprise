@@ -33,6 +33,8 @@ test("a refocus recheck of the Agents list does not move focus to its heading", 
   // The rows' deployment reads finish first, so the held check is the session's.
   await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
   await link.focus();
+  // The recheck can only move focus that is still in the list.
+  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
   const onHeading = () =>
     page.evaluate(
       () => globalThis.document.activeElement === globalThis.document.querySelector(".content h1"),
