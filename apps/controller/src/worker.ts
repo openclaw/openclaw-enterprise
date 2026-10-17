@@ -4019,11 +4019,15 @@ export class ControllerWorker {
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
+          // Sandbox refusals with admitted access use the terminal withdrawal path;
+          // ordinary active runtimes retain their recovery policy below.
           if (
             error instanceof WorkClaimLostError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof ComputeStopYieldedError ||
-            error instanceof ComputePreparationFailedError
+            error instanceof ComputePreparationFailedError ||
+            (error instanceof SandboxGatewayUnauthorizedError &&
+              this.revisionAccessStatus(revision) !== "none")
           ) {
             throw error;
           }

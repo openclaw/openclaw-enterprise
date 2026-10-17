@@ -116,7 +116,8 @@ Agent permissions. See [Slack setup](../guides/integrations/slack.md) for that
 Driver's management and Gateway consumers.
 
 If terminal active-version maintenance loses deployer, credential or backend
-authority, or current configuration refuses admitted access, OCC persists
+authority, permanently loses Sandbox authorization, or current configuration
+refuses admitted access, OCC persists
 revision-access withdrawal before effects. Pure Compute status marks configuration
 refusal as `withdrawn`; restoring it to `current` cannot cancel pending removal.
 Kubernetes

@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { ComputePreparationFailedError } from "../../packages/occ/src/index.ts";
+import {
+  ComputePreparationFailedError,
+  SandboxGatewayUnauthorizedError,
+} from "../../packages/occ/src/index.ts";
 import {
   backendDefinition,
   backendId,
@@ -56,6 +59,7 @@ for (const [cause, access] of [
   ["authorization", "Compute-admitted"],
   ["configuration", "Compute-admitted"],
   ["secret-driver", "Gateway outbound"],
+  ["sandbox-permission", "Gateway outbound"],
 ]) {
   test(
     `active ${access} withdrawal survives ${cause} refusal, restored authority and worker restart`,
@@ -80,6 +84,7 @@ for (const [cause, access] of [
       let removalAvailable = false;
       let accessCurrent = true;
       let activationUnavailable = cause === "deadline";
+      let sandboxPermissionRefused = false;
       const decisionsAtRemoval = [];
       // This boundary Driver fails removal while the real worker, IAM and PostgreSQL
       // decide its durable phase. The concrete Pod/tunnel failure is covered by k3d.
@@ -94,6 +99,9 @@ for (const [cause, access] of [
         },
         async prepareRevision(revision) {
           prepared += 1;
+          if (sandboxPermissionRefused) {
+            throw new SandboxGatewayUnauthorizedError("The Sandbox gateway refused its identity.");
+          }
           return fixture.compute.prepareRevision(revision);
         },
         async activateRevision() {
@@ -139,6 +147,7 @@ for (const [cause, access] of [
         deadline: "CONVERGENCE_DEADLINE_EXCEEDED",
         configuration: "REVISION_ACCESS_WITHDRAWN",
         "secret-driver": "SECRET_DRIVER_MISMATCH",
+        "sandbox-permission": "SANDBOX_GATEWAY_UNAUTHORIZED",
       }[cause];
       const expectedData = cause === "deadline" ? { timeoutMs: 1_000 } : undefined;
       const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
@@ -154,6 +163,9 @@ for (const [cause, access] of [
       if (cause === "configuration") {
         accessCurrent = false;
       }
+      // A permanent Sandbox permission refusal must reach the same durable
+      // removal phase when the active revision still owns admitted access.
+      sandboxPermissionRefused = cause === "sandbox-permission";
       if (cause !== "deadline") {
         await fixture.start(compute, {
           providers: [],
@@ -199,6 +211,7 @@ for (const [cause, access] of [
       }
       activationUnavailable = false;
       accessCurrent = true;
+      sandboxPermissionRefused = false;
       const beforeRestart = withdrawn;
       await fixture.start(compute, { providers, convergenceTimeoutMs: 1_000 });
       await waitFor("removal-only retries after restart", async () =>
@@ -275,6 +288,57 @@ test(
     await fixture.start(compute);
     await fixture.work({ idempotencyKey: recovery.idempotency_key }, "succeeded");
     assert.ok(prepared > originalPreparationCount);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+  },
+);
+
+test(
+  "active revision without access admission recovers after a Sandbox gateway permission refusal",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 1 });
+    const { owner, candidate } = await fixture.admitInitialRevision("sandbox-permission-recovery", {
+      agent: { executionMode: "dedicated" },
+    });
+    let sandboxPermissionRefused = false;
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 60_000,
+      async prepareRevision(revision) {
+        if (sandboxPermissionRefused) {
+          throw new SandboxGatewayUnauthorizedError("The Sandbox gateway refused its identity.");
+        }
+        return fixture.compute.prepareRevision(revision);
+      },
+    };
+    await fixture.start(compute);
+    await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    const [maintenance] = (await fixture.advanceMaintenance(candidate)).rows;
+    assert.ok(maintenance);
+
+    // Without admitted access, the existing active-runtime recovery policy
+    // retains maintenance through a provider refusal and never starts withdrawal.
+    sandboxPermissionRefused = true;
+    await fixture.start(compute);
+    await fixture.work({ idempotencyKey: maintenance.idempotency_key }, "failed_permanent");
+    await fixture.stop();
+    const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
+    assert.equal(
+      (await queue.findWork(maintenance.idempotency_key)).reasonCode,
+      "REVISION_FINALIZATION_INCOMPLETE",
+    );
+    assert.equal(
+      await queue.findWorkAttempt(maintenance.idempotency_key, withdrawalPending),
+      undefined,
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    const [recovery] = (await fixture.advanceMaintenance(candidate)).rows;
+    assert.ok(recovery, "an ordinary active runtime retains its next maintenance pass");
+
+    sandboxPermissionRefused = false;
+    await fixture.start(compute);
+    await fixture.work({ idempotencyKey: recovery.idempotency_key }, "succeeded");
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
   },
 );

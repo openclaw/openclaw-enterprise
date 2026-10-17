@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
 updated: 2026-10-17
-last_updated_session: authoring-run/e42db43f-12e0-4e90-8f4c-c21707b46f91
+last_updated_session: authoring-run/3eb9cf81-4deb-49ce-82e7-d52bf1940560
 ---
 
 # Gateway Outbound Flow
@@ -143,8 +143,11 @@ required runtime retirement together. The next pass calls
 `ControllerWorker.processRevision` preserves permanent
 `resolveRevisionSecretContext` refusals through `finalizeRevision` when access was
 admitted. Restoring the selected Secret Driver cannot resume that revision after
-withdrawal begins. Without admitted access, active Secret-context failures retain
-the existing continuing-maintenance recovery path.
+withdrawal begins. For active revisions with admitted access, permanent Sandbox
+authorization refusals also reach `finalizeRevision` instead of generic active
+maintenance recovery. Transient authentication failures retain their retry
+classification. Without admitted access, active Secret-context and Sandbox
+failures retain the existing continuing-maintenance recovery path.
 
 `KubernetesComputeDriver.revisionAccessStatus` returns `none` without admitted
 access, `current` when its immutable Gateway/reader admission is still permitted,
@@ -204,6 +207,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-17 19:31: Preserve admitted-access withdrawal on permanent active Sandbox refusal during the worker refresh. (authoring-run/3eb9cf81-4deb-49ce-82e7-d52bf1940560 - 0757fb95d8f3f14e4e3b3d6c1839a19ee64e898a)
 
 - 2026-10-17 19:07: Preserve current native runtime, credential-source capabilities and canonical authentication during upstream refresh; renumber the outbound migration. (authoring-run/e42db43f-12e0-4e90-8f4c-c21707b46f91 - f106ce5b31c608bd99a0859cd6972ebdfa402461)
 
