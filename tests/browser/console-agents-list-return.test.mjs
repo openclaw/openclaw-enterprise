@@ -348,43 +348,40 @@ for (const outcome of ["fills", "is refused"]) {
   });
 }
 
-// Records, in every frame from now on, how many rows of the shown Agents table paint their
-// "Reading deployment…" text (a text node neither hidden nor transparent), and when.
-function recordPaintedReading(reading) {
-  const document = globalThis.document;
-  const frames = [];
-  globalThis.__readingFrames = frames;
-  const painted = (cell) => {
-    const walker = document.createTreeWalker(cell, globalThis.NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const text = walker.currentNode;
-      if (!text.textContent.trim()) {
-        continue;
-      }
-      let shown = globalThis.getComputedStyle(text.parentElement).visibility === "visible";
-      for (let node = text.parentElement; shown && node !== cell.parentElement;) {
-        shown = globalThis.getComputedStyle(node).opacity !== "0";
-        node = node.parentElement;
-      }
-      if (shown) {
-        return true;
-      }
-    }
-    return false;
-  };
+// Sample the first frame, then seek the actual CSS animations. A busy browser may deliver
+// its first animation frame late; elapsed time between two callbacks is not the loading delay.
+function measureReadingDelay(reading) {
   const sample = () => {
-    const table = document.querySelector('.content [aria-live="polite"]:not([inert]) .agent-table');
-    if (table) {
-      const cells = [...table.querySelectorAll(".agent-deployment")].filter(
-        (cell) => cell.textContent === reading,
-      );
-      frames.push({
-        at: globalThis.performance.now(),
-        reading: cells.length,
-        painted: cells.filter(painted).length,
-      });
+    const table = globalThis.document.querySelector(
+      '.content [aria-live="polite"]:not([inert]) .agent-table',
+    );
+    const labels = [...(table?.querySelectorAll(".agent-deployment span") ?? [])].filter(
+      (node) => node.textContent === reading && node.childElementCount === 0,
+    );
+    if (!labels.length) {
+      globalThis.requestAnimationFrame(sample);
+      return;
     }
-    globalThis.requestAnimationFrame(sample);
+    const visible = () =>
+      labels.filter((node) => {
+        const { visibility, opacity } = globalThis.getComputedStyle(node);
+        return visibility === "visible" && opacity !== "0";
+      }).length;
+    const firstFrame = visible();
+    const animations = labels.flatMap((label) => label.getAnimations());
+    const visibleAt = (ms) => {
+      for (const animation of animations) {
+        animation.pause();
+        animation.currentTime = ms;
+      }
+      return visible();
+    };
+    globalThis.__readingVisibility = {
+      labels: labels.length,
+      firstFrame,
+      at249: visibleAt(249),
+      at250: visibleAt(250),
+    };
   };
   globalThis.requestAnimationFrame(sample);
 }
@@ -411,7 +408,7 @@ for (const visit of ["a first visit", "a return"]) {
     const first = visit === "a first visit";
     let rows = first ? await holdRowReads(t, page, namespace) : null;
     if (first) {
-      await page.addInitScript(`(${recordPaintedReading})(${JSON.stringify(READING)})`);
+      await page.addInitScript(`(${measureReadingDelay})(${JSON.stringify(READING)})`);
     }
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
@@ -420,23 +417,19 @@ for (const visit of ["a first visit", "a return"]) {
       await tagView(page);
       await openAgent(page, agents[0]);
       rows = await holdRowReads(t, page, namespace);
-      await page.evaluate(recordPaintedReading, READING);
+      await page.evaluate(measureReadingDelay, READING);
       await page.goBack();
       await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
       assert.equal(await viewTag(page), "kept", "the retained list was reused");
     }
     await rows.revisions.requested;
-    // A read still pending after 250 ms says so, in every row.
-    await page.waitForFunction(() => globalThis.__readingFrames.at(-1)?.painted === 3, null, {
-      timeout: 5_000,
+    const observation = await page.waitForFunction(() => globalThis.__readingVisibility);
+    assert.deepEqual(await observation.jsonValue(), {
+      labels: 3,
+      firstFrame: 0,
+      at249: 0,
+      at250: 3,
     });
-    const frames = await page.evaluate(() => globalThis.__readingFrames.slice());
-    // From the first frame that shows the table, every row is being read, and no row paints its
-    // text until the read has been pending for (nearly) 250 ms.
-    const trail = JSON.stringify(frames);
-    assert.deepEqual({ ...frames[0], at: 0 }, { at: 0, reading: 3, painted: 0 }, trail);
-    const firstPainted = frames.find((frame) => frame.painted > 0);
-    assert.ok(firstPainted.at - frames[0].at >= 200, trail);
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     for (const text of Object.values(await deploymentCells(page))) {

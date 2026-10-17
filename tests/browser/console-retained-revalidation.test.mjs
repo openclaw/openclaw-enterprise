@@ -1131,6 +1131,23 @@ for (const target of [
   });
 }
 
+test("a list recheck never reclaims focus moved to the Namespace selector", async (t) => {
+  const { namespace, agent, page } = await openList(t, "Refocus elsewhere", "Former focus");
+  const link = page.getByRole("link", { name: agent.name });
+  await link.focus();
+  const read = await holdOnce(t, page, agentsRead(namespace));
+  await refocus(page);
+  await read.requested;
+  const selector = page.locator("#namespace-selector:not(:disabled)");
+  await selector.focus();
+  assert.equal(await isFocused(selector), true);
+  read.release();
+  await page.locator(settledView).getByRole("link", { name: agent.name }).waitFor();
+  // Unlike the sidebar link, the selector is replaced during remount. Even if focus falls to
+  // the body, the reader left the Agent link deliberately; do not move them back to it.
+  assert.equal(await isFocused(link), false);
+});
+
 for (const [outcome, failsAgain, leaveFocus] of [
   ["opens the Agent", false, false],
   ["fails a second time", true, false],

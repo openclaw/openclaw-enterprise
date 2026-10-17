@@ -749,6 +749,7 @@ export const scenarios = {
       "Wait for Agents, then select Refresh. The list stays shown, inactive, for 250 ms, then Loading replaces it. When the list returns, focus is on Refresh.",
       "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 300 ms it dims with a progress cursor, without moving, and after 1 s Still checking… appears beside Refresh until the unchanged Agents list returns.",
       "Focus an Agent link, switch windows, then return. The list stays visible and inactive, says Still checking… after 1 s, then returns focus to the link. If you focus Namespaces while waiting, focus stays there.",
+      "Open the Agent. In the sidebar, focus Agents and press Enter. Focus waits on the page heading while the list loads, then returns to the Agent link; it does not drop to the page body.",
     ],
   },
   navigationAgentReturn: {
@@ -3439,7 +3440,7 @@ export const scenarios = {
       "Back reveals the rechecked Agents list before a slow deployment read finishes. The previous result does not stand in for the pending one.",
     steps: [
       "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
-      "The list is usable while Latest deployment says “Reading deployment…”, with no link to the previous revision. It changes to “Deployment access denied”; the Agent is still visible.",
+      "The list is usable immediately. Latest deployment starts blank; after 250 ms it says “Reading deployment…”, never linking to the old result. When access is denied, the Agent stays visible.",
     ],
   },
   agentsDeploymentError: {
@@ -3514,6 +3515,24 @@ export const scenarios = {
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
+  },
+  deploymentFailsWhileWatching: {
+    group: "Pages/Agent detail",
+    name: "Deployment fails while watching",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    // Show the in-progress record on arrival, then let the next poll read the failed record.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        once: true,
+        data: { status: "running", progress: null, error: null, warnings: [] },
+      },
+    ],
+    description:
+      "Watch v7 change from running to failed. Recovery appears below Deployment activity, so the details you were reading stay in place. The deployment and failure are simulated.",
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",
