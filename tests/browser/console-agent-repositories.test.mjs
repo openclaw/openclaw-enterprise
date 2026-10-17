@@ -883,7 +883,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
   // trust every description source. An independent control-socket peer sends them raw
   // through the actual Unix client, GitHub Driver and OCC validation.
   const description =
-    "Release notes ‮txt.exe, zero​width, ⁦isolate⁩, C1\u0085 end; " +
+    "Release notes \u202etxt.exe, zero\u200bwidth, \u2066isolate\u2069, C1\u0085 end; " +
     "日本語 עברית العربية Café 😀👍🏽";
   const shown =
     "Release notes \\u202etxt.exe, zero\\u200bwidth, \\u2066isolate\\u2069, C1\\u0085 end; " +
@@ -951,6 +951,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
   await page.getByText(shown, { exact: true }).waitFor();
   assert.equal(await text.textContent(), shown);
   // Searching rebuilds the row from the stored description while its next lookup is held.
+  // Assert before the GitHub Driver's 2 s lookup timeout ends the hold and drops the text.
   await page.getByLabel("Find a repository").fill("application");
   await waitForCondition(() => lookups === 2, "the rebuilt row did not request descriptions");
   assert.equal(await text.textContent(), shown);

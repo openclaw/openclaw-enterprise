@@ -280,14 +280,17 @@ test("repository metadata preserves supplementary Unicode through the character 
 });
 
 test("repository metadata replaces controls and invisible or bidi characters", async (t) => {
-  // Finding 1628: every code point the filter replaces, between letters, and the code points
-  // just outside each replaced range, which stay.
+  // Finding 1628: controls (Cc), format characters (Cf: bidi, zero-width, invisible operators,
+  // tags) and line and paragraph separators are replaced; their neighbours and private use stay.
   const hidden = [
-    0x00, 0x09, 0x1f, 0x7f, 0x80, 0x85, 0x9f, 0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
-    0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066, 0x2067, 0x2068, 0x2069,
-    0xfeff,
+    0x00, 0x09, 0x1f, 0x7f, 0x80, 0x85, 0x9f, 0xad, 0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
+    0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2061, 0x2064, 0x2066, 0x2067,
+    0x2068, 0x2069, 0x206a, 0x206f, 0xfeff, 0xfff9, 0xfffb, 0xe0001, 0xe0041, 0xe007f,
   ];
-  const kept = [0xa0, 0x061b, 0x200a, 0x2010, 0x2027, 0x202f, 0x205f, 0x2070, 0xfefc];
+  const kept = [
+    0xa0, 0xac, 0xae, 0x061b, 0x061d, 0x200a, 0x2010, 0x2027, 0x202f, 0x205f, 0x2070, 0xfefc,
+    0xfffc, 0x1f3f4, 0xe000,
+  ];
   const spell = (codes) => codes.map((code) => `x${String.fromCodePoint(code)}`).join("") + "x";
   // Letters, combining marks, CJK, right-to-left scripts and emoji with modifiers stay intact.
   const unicode = "Café 日本語 עברית العربية 😀👍🏽❤️";
@@ -299,7 +302,7 @@ test("repository metadata replaces controls and invisible or bidi characters", a
         repositoryRef: "repo-a",
         repository: "fixture/hidden",
         repositoryId: "75",
-        description: `‮${spell(hidden)}⁩`,
+        description: `\u202e${spell(hidden)}\u2069`,
       },
       {
         repositoryRef: "repo-b",

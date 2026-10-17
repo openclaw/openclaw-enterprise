@@ -29,11 +29,11 @@ const maxQueued = 20;
 const startsPerMinute = 15;
 const maxRequested = 20;
 const responseLimit = 64 * 1024;
-// A repository owner writes the description, and the Create Agent picker shows it. Besides C0
-// and DEL, C1 controls and the characters that change how text displays without being seen
-// (Trojan Source, CVE-2021-42574) become spaces: bidi controls, zero-width characters and the
-// line and paragraph separators, the set pushed ref names refuse (client-contracts.ts).
-const hiddenCharacter = /[\u0080-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/u;
+// A repository owner writes the description, and the Create Agent picker shows it. Control
+// characters (C0, DEL, C1), format characters and the line and paragraph separators become
+// spaces. Format characters change how text displays without being seen (Trojan Source,
+// CVE-2021-42574): bidi controls, zero-width characters, invisible operators and tag characters.
+const hiddenCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 /** Descriptions are optional display data; all token ownership remains in the credential service. */
 export function createGitHubRepositoryDescriptions(options: DescriptionOptions) {
@@ -165,14 +165,7 @@ export function createGitHubRepositoryDescriptions(options: DescriptionOptions) 
           throw new Error("repository-id-mismatch");
         }
         if (typeof record.description === "string") {
-          const description = Array.from(record.description, (character) => {
-            const code = character.charCodeAt(0);
-            return code <= 0x1f || code === 0x7f || hiddenCharacter.test(character)
-              ? " "
-              : character;
-          })
-            .join("")
-            .trim();
+          const description = record.description.replace(hiddenCharacter, " ").trim();
           const bounded = Array.from(description).slice(0, 512).join("");
           if (bounded) {
             onDescription(bounded);
