@@ -152,6 +152,12 @@ if (demoStatePath !== undefined) {
 const portableCommandArgumentBytes = 30 * 1024;
 const diagnosticQueryTimeoutMs = 3_000;
 const observerPoolConnectionTimeoutMs = 5_000;
+// Codex hands a long command back to the model, which may reply and end the turn before the
+// command ends. The tool upstream probe bounds its curl, and every turn waits for a command
+// still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
+// a fixed 5 s wait).
+const toolProbeCurlMaxSeconds = 8;
+const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
@@ -170,6 +176,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexCommandGraceMs,
 });
 const {
   kubectl,
@@ -4818,13 +4825,7 @@ const sandboxProbeFunction = [
  * Sandbox process behind OpenShell's proxy and the model never composes a credentialed command.
  * Returns the turn and readers for the script's NAME=value output lines.
  */
-async function runSandboxProbe(
-  topology,
-  nonce,
-  script,
-  harnessPod = topology.harnessPod,
-  { commandGraceMs } = {},
-) {
+async function runSandboxProbe(topology, nonce, script, harnessPod = topology.harnessPod) {
   const scriptPath = `/sandbox/enterprise/${nonce}.sh`;
   await kubectl(
     "exec",
@@ -4863,7 +4864,6 @@ async function runSandboxProbe(
         prompt:
           `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
           `Then reply with exactly ${nonce}.`,
-        commandGraceMs,
       });
       const serialized = JSON.stringify(turn);
       assert.equal(
@@ -5564,11 +5564,6 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
     id: current.data.activeRevisionId,
     agentId,
   });
-  // curl bounds the probe command, so the turn waits for its result up to that bound plus a
-  // margin. Codex hands a long command back to the model, which may end the turn before the
-  // command ends; a 20 s curl outlived the turn's former 5 s wait (finding 1630).
-  const curlMaxSeconds = 8;
-  const commandGraceMs = (curlMaxSeconds + 6) * 1_000;
   const probe = async (label) => {
     const nonce = `openshell-tool-${label}-${randomUUID()}`;
     const body = `/tmp/${nonce}.json`;
@@ -5576,16 +5571,14 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
       "#!/bin/bash",
       ...sandboxProbeFunction,
       `probe TOOL curl -sS -o ${body} -w '%{http_code} %{time_total}' --connect-timeout 3 ` +
-        `--max-time ${curlMaxSeconds} -H "Authorization: Bearer $${toolA.environmentName}" ${toolA.url}`,
+        `--max-time ${toolProbeCurlMaxSeconds} -H "Authorization: Bearer $${toolA.environmentName}" ${toolA.url}`,
       `printf 'TOOL_PLACEHOLDER=%s\\n' "$(grep -o '"placeholder":[a-z]*' ${body} ` +
         `2>/dev/null | cut -d: -f2)"`,
       `printf 'TOOL_DIGEST=%s\\n' "$(grep -o '"digest":"[0-9a-f]*"' ${body} ` +
         `2>/dev/null | cut -d'"' -f4)"`,
       "",
     ].join("\n");
-    const { run, value, exitCode } = await runSandboxProbe(topology, nonce, script, harnessPod, {
-      commandGraceMs,
-    });
+    const { run, value, exitCode } = await runSandboxProbe(topology, nonce, script, harnessPod);
     const [httpStatus = null, curlSeconds = null] = (value("TOOL_OUT") ?? "").split(" ");
     // The echo answers 200 even without an Authorization header, so delivery is proved by the
     // digest of what it received, compared here and never printed.

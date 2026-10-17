@@ -291,10 +291,10 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   }
 });
 
-test("OpenShell probe waits for a command that outlives its turn up to the caller's bound", async (t) => {
+test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {
   // Finding 1630: Codex hands a long command back to the model, which can reply and end the
   // turn while the command still runs. The in-Pod client waits for that command's completion
-  // event up to the caller's bound, and reports the command's timing when the bound expires.
+  // event up to the fixture's bound, and reports the command's timing when the bound expires.
   const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const server = createServer();
@@ -319,7 +319,6 @@ test("OpenShell probe waits for a command that outlives its turn up to the calle
   t.after(() => {
     process.env.PATH = path;
   });
-  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({});
   const threadId = "probe-thread";
   const turnId = "probe-turn";
   const nonce = "probe-command";
@@ -367,17 +366,17 @@ test("OpenShell probe waits for a command that outlives its turn up to the calle
       }, lateMs);
     });
   });
-  const probe = (commandGraceMs) =>
-    observeSandboxProbe({
+  const probe = (codexCommandGraceMs) => {
+    const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+      codexCommandGraceMs,
+    });
+    return observeSandboxProbe({
       nonce,
       traceSecrets: [],
       requestTurn: () =>
-        requestCodexTurnFromGatewayPod({
-          namespace: "fixture",
-          gatewayPod: "fixture",
-          commandGraceMs,
-        }),
+        requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" }),
     });
+  };
 
   // Within the bound, the late completion settles the probe with the command's own result.
   const started = Date.now();
@@ -402,14 +401,12 @@ test("OpenShell probe waits for a command that outlives its turn up to the calle
   assert.ok(summary.pendingCommands[0].startedBeforeTurnEndMs >= 0);
   assert.ok(summary.pendingCommands[0].runningMs >= lateMs / 4);
 
-  await assert.rejects(
-    requestCodexTurnFromGatewayPod({
-      namespace: "fixture",
-      gatewayPod: "fixture",
-      commandGraceMs: 0,
-    }),
-    /commandGraceMs must be a positive number/,
-  );
+  for (const codexCommandGraceMs of [0, 1.5, 60_001, "5000"]) {
+    assert.throws(
+      () => createOpenShellKubernetesFixture({ codexCommandGraceMs }),
+      /codexCommandGraceMs must be a positive number/,
+    );
+  }
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {

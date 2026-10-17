@@ -473,7 +473,16 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.4",
+  // How long a Codex turn observes a command still running when the turn completes. A suite
+  // whose probe commands bound themselves (curl --max-time) passes that bound plus a margin.
+  codexCommandGraceMs = 5_000,
 }) {
+  assert.ok(
+    Number.isSafeInteger(codexCommandGraceMs) &&
+      codexCommandGraceMs > 0 &&
+      codexCommandGraceMs <= 60_000,
+    "codexCommandGraceMs must be a positive number of milliseconds, at most 60 s.",
+  );
   const base = createRealKubernetesFixture({
     kubeconfigPath,
     kubernetesContext,
@@ -1121,14 +1130,7 @@ export function createOpenShellKubernetesFixture({
     prompt,
     appServerUrl,
     appServerTokenPath,
-    commandGraceMs = 5_000,
   }) {
-    // How long to observe a command still running when its turn completes. A caller whose
-    // command is bounded by its own timeout passes that bound plus a margin.
-    assert.ok(
-      Number.isSafeInteger(commandGraceMs) && commandGraceMs > 0 && commandGraceMs <= 60_000,
-      "commandGraceMs must be a positive number of milliseconds, at most 60 s.",
-    );
     const script = String.raw`
       const appServerUrl = ${JSON.stringify(appServerUrl)} ?? process.env.APP_SERVER_URL;
       const appServerToken = ${
@@ -1199,7 +1201,7 @@ export function createOpenShellKubernetesFixture({
         process.stderr.write(error?.stack || String(error));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
-          commandGraceMs: ${commandGraceMs},
+          commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt ? Date.now() - turnCompletedAt : null,
           pendingCommands: pendingCommandTimes(),
         }));
@@ -1336,10 +1338,10 @@ export function createOpenShellKubernetesFixture({
           }
           // A command can outlive its turn: Codex returns a long command to the model, which
           // may reply before it ends. Observe only its original socket until its completion
-          // event or the caller's bound; the overall turn deadline still applies. Never extend
+          // event or the fixture's bound; the overall turn deadline still applies. Never extend
           // either deadline on activity.
           turnCompletedAt = Date.now();
-          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, ${commandGraceMs});
+          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, ${codexCommandGraceMs});
           else finish();
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
@@ -1374,19 +1376,12 @@ export function createOpenShellKubernetesFixture({
     );
   }
 
-  async function requestCodexTurnFromGatewayPod({
-    namespace,
-    gatewayPod,
-    providerModel,
-    prompt,
-    commandGraceMs,
-  }) {
+  async function requestCodexTurnFromGatewayPod({ namespace, gatewayPod, providerModel, prompt }) {
     return requestCodexTurnFromPod({
       namespace,
       pod: gatewayPod,
       providerModel,
       prompt,
-      commandGraceMs,
     });
   }
 
