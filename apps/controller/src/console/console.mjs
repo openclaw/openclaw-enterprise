@@ -618,14 +618,17 @@ function showStillChecking() {
 // the shown page's own: the navigation and header change together with the body, never around
 // it (finding 1515). Its selector names the destination's Namespace, but a Namespace recovery
 // block appears only if the shown page had one (finding 1527). Returns null when no page is shown.
-// keepFocus: focus in the shown page, which falls to the body once the page goes inert, moves to
-// the held heading instead (finding 1626).
+// keepFocus: focus in the shown page, which falls to the body once the page goes inert, or on
+// its heading (which the console focused, say for a load this one replaces) moves to the held
+// heading instead (finding 1626).
 function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
     return null;
   }
-  const focusHeld = keepFocus && view.contains(document.activeElement);
+  const focused = document.activeElement;
+  const focusHeld =
+    keepFocus && (view.contains(focused) || focused === app.querySelector(".content h1"));
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
@@ -1043,8 +1046,9 @@ async function loadPage({
   let retained = retainedView !== null;
   // An Agent link opens its destination immediately. Other visits keep the shown page inert
   // until a retained view revalidates or admission and the destination's first read settle.
-  // An Agent page loading behind the held page (the new version an admitted deployment opens,
-  // say) keeps keyboard focus on the held heading until its own heading takes it (finding 1626).
+  // While an Agent page loads behind the held page (the new version an admitted deployment opens,
+  // say), focus that was in the held page waits on its heading until the Agent's heading takes it
+  // (finding 1626).
   let shell =
     knownPrivateState && !openingAgent
       ? holdShownView(current, { busyCue: !resumingView, keepFocus: Boolean(current.agentId) })

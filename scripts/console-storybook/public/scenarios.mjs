@@ -3814,6 +3814,7 @@ export const scenarios = {
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         skip: 2,
+        once: true,
         delayMs: 900,
       },
     ],

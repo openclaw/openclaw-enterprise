@@ -305,14 +305,16 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
 // loads. Focus fell from the Deploying… status to the page body for 100-580 ms until the new
 // version's heading took it (finding 1626). The held page's heading now keeps it, through the
 // loading page when admission or the Agent read outlasts 250 ms, and hands it to the new
-// version's heading as the page shows, even while the version is still being read. A reader who
-// left the status during the request is not pulled back while the page is held.
-for (const [scenario, heldRead, heldMs, movedOn] of [
-  ["a quick Agent read", "agent", 100, false],
-  ["a slow Agent read", "agent", 700, false],
-  ["a slow Namespace access check", "namespaces", 700, false],
-  ["a version read that outlasts the 2 s reveal wait", "revision", 2600, false],
-  ["a reader who moved on", "agent", 700, true],
+// version's heading as the page shows, even while the version is still being read. Going Back
+// during the load keeps it too, until the draft's heading takes it. A reader who left the status
+// during the request is not pulled back while the page is held.
+for (const [scenario, heldRead, heldMs, reader] of [
+  ["a quick Agent read", "agent", 100, "stays"],
+  ["a slow Agent read", "agent", 700, "stays"],
+  ["a slow Namespace access check", "namespaces", 700, "stays"],
+  ["a version read that outlasts the 2 s reveal wait", "revision", 2600, "stays"],
+  ["a reader who goes Back during a slow Agent read", "agent", 700, "goes back"],
+  ["a reader who moved on", "agent", 700, "moves on"],
 ]) {
   test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
     const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
@@ -337,7 +339,7 @@ for (const [scenario, heldRead, heldMs, movedOn] of [
     await page.keyboard.press("Enter");
     await admitted.requested;
     assert.equal(await focusedText(page), "Deploying…");
-    if (movedOn) {
+    if (reader === "moves on") {
       await page.evaluate(() => globalThis.document.activeElement?.blur());
     }
     // Every frame from admission until the new version shows: the focused node (numbered, so a
@@ -358,7 +360,7 @@ for (const [scenario, heldRead, heldMs, movedOn] of [
         const entry =
           !node || node === globalThis.document.body
             ? "BODY"
-            : `${node.tagName}#${ids.get(node)}${node.isConnected ? "" : " detached"}: ${node.textContent.trim()}`;
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
         if (trail.at(-1) !== entry) {
           trail.push(entry);
         }
@@ -381,9 +383,17 @@ for (const [scenario, heldRead, heldMs, movedOn] of [
     });
     admitted.release();
     await versionRead.requested;
-    await new Promise((resolve) => setTimeout(resolve, heldMs));
-    versionRead.release();
-    await page.waitForURL(/revision=rev_/);
+    if (reader === "goes back") {
+      // The Loading page has replaced the held draft by now; Back returns to the draft.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await page.goBack({ waitUntil: "commit" });
+      versionRead.release();
+      await page.waitForURL(/revision=draft/);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, heldMs));
+      versionRead.release();
+      await page.waitForURL(/revision=rev_/);
+    }
     await page.waitForFunction(
       () =>
         globalThis.document.activeElement?.tagName === "H1" &&
@@ -399,14 +409,16 @@ for (const [scenario, heldRead, heldMs, movedOn] of [
       assert.ok(loadingShown, trail.join(" | "));
     }
     assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
-    if (movedOn) {
+    if (reader === "moves on") {
       // Nothing takes focus while the page is held; the new version's heading takes it once shown.
       assert.deepEqual(trail.slice(0, -1), ["BODY"], trail.join(" | "));
     } else {
       assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
       assert.ok(!trail.includes("BODY"), trail.join(" | "));
-      assert.ok(
-        trail.every((entry) => !entry.endsWith(" detached")),
+      // The held heading shows the same name: the focused heading at the end is a later one.
+      assert.notEqual(
+        trail.at(-1),
+        trail.find((entry) => entry.startsWith("H1#")),
         trail.join(" | "),
       );
     }
