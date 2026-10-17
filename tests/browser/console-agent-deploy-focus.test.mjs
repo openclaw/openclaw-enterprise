@@ -70,7 +70,8 @@ test("A reader who leaves the held heading during an admitted deployment is not 
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
   await page.evaluate(() => globalThis.document.activeElement?.blur());
   await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
-  // The loading page stands for 18 frames (300 ms at 60 Hz) with nothing taking focus.
+  // The loading page stands with nothing taking focus: 18 sampled frames while the read is
+  // held (the page itself stays at least loadingMinimumMs).
   const shown = await page.evaluate(() => globalThis.focusFrames.frames);
   await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 18, shown);
   agentRead.release();

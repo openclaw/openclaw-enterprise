@@ -643,7 +643,7 @@ async function savePreset(fixture, namespace, name, agent, marker) {
 // Installation's OpenClaw answer.
 async function openPreset(t, fixture, namespace, presetId, openclaw) {
   const { page } = await newPage(t, fixture, { browser });
-  if (openclaw) {
+  if (openclaw !== undefined) {
     await routeInstallationWithoutProvisioning(page, fixture, { openclaw });
   }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -818,7 +818,7 @@ async function fillOpenClawDraft(t, fixture, namespace, name) {
 }
 
 // Submits the form past its disabled Create Agent button, then fails on any POST whose path
-// matches `writePath` within 2 s. Without a refusal the Configuration save goes out within
+// matches `writePath` within 2 s. Without a refusal the first write goes out within
 // milliseconds.
 async function assertBypassedSubmitWritesNothing(page, writePath) {
   const wrote = page.waitForRequest(
