@@ -437,6 +437,11 @@ test("Codex runtime retries a transient startup model probe failure once", async
   const erroredWith = (message) => probe([started, errorEvent(message)], { status: 1 });
   const killed = probe([], { status: null, signal: "SIGKILL" });
   const recoveredNotice = errorEvent("Reconnecting... 1/3 stream disconnected before completion");
+  // Finding 1618: the pinned Codex build prints this for a provider it cannot connect to
+  // (refused, unresolvable or failed TLS alike) and keeps waiting until the probe times out.
+  const networkWait = (cause = "Connection failed: error sending request") =>
+    errorEvent(`Reconnecting... waiting for network (${cause})`);
+  const unreachable = probe([started, networkWait(), networkWait()], timedOut, 30000);
   // Each transient class, by the one marker that makes it transient.
   const transient = [
     [
@@ -506,6 +511,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
       erroredWith("Connection failed: tcp connect error"),
       "error-event",
     ],
+    ["an unreachable provider", unreachable, "error-event"],
     ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
     [
       "a terminated probe",
@@ -612,6 +618,24 @@ test("Codex runtime retries a transient startup model probe failure once", async
     [
       "a dropped stream naming the API key in any case",
       erroredWith("stream disconnected before completion: Incorrect API key provided"),
+      "error-event",
+    ],
+    // Only a network wait for a failed connection is transient; any other Reconnecting
+    // notice the recovered-stream rule refused is held, even with a transient cause.
+    [
+      "a network wait for a provider 503",
+      erroredWith("Reconnecting... waiting for network (unexpected status 503)"),
+      "error-event",
+      { status: 503 },
+    ],
+    [
+      "a network wait that does not start the notice",
+      erroredWith(`Error: ${networkWait().message}`),
+      "error-event",
+    ],
+    [
+      "a network wait for a failed connection naming a credential",
+      erroredWith(networkWait("Connection failed: invalid credential").message),
       "error-event",
     ],
   ];
