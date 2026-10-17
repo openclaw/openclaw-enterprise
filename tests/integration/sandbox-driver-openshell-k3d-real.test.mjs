@@ -2014,16 +2014,8 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-// The Kubernetes client's rejection of a request the API server refused to authenticate.
-function isKubernetesUnauthorized(error) {
-  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
-}
-
-// Finding 1711: a 401 on prepareRevision names no credential. `tokenSources()` names the ones
-// the Compute call may have used, by name and kind, never a value.
-function withFirstPrepareRevisionFailureDiagnostic(computeDriver, tokenSources) {
+function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
   let reported = false;
-  let unauthorizedReported = false;
   return new Proxy(computeDriver, {
     get(target, property) {
       if (property === "prepareRevision") {
@@ -2040,8 +2032,34 @@ function withFirstPrepareRevisionFailureDiagnostic(computeDriver, tokenSources) 
                   : `OpenShell integration: initial Compute prepareRevision retry: ${error.message}`;
               process.stderr.write(`${message}\n`);
             }
-            if (!unauthorizedReported && isKubernetesUnauthorized(error)) {
-              unauthorizedReported = true;
+            throw error;
+          }
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+// The Kubernetes client's rejection of a request the API server refused to authenticate.
+function isKubernetesUnauthorized(error) {
+  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
+}
+
+// Finding 1711: a 401 on prepareRevision names no credential. On the first one, `tokenSources()`
+// names the credentials the call may have used, by name and kind, never a value.
+function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
+  let reported = false;
+  return new Proxy(computeDriver, {
+    get(target, property) {
+      if (property === "prepareRevision") {
+        return async (...args) => {
+          try {
+            return await target.prepareRevision(...args);
+          } catch (error) {
+            if (!reported && isKubernetesUnauthorized(error)) {
+              reported = true;
               process.stderr.write(
                 `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
               );
@@ -2128,28 +2146,6 @@ async function prepareProductionInstallation(
   operatorConfiguration.loadFromFile(kubeconfigPath);
   operatorConfiguration.setCurrentContext(kubernetesContext);
   const operatorKubernetes = KubernetesObjectApi.makeApiClient(operatorConfiguration);
-  const operatorUser = operatorConfiguration.getCurrentUser();
-  const operatorCredentialKind =
-    operatorUser?.exec !== undefined
-      ? "exec plugin"
-      : operatorUser?.authProvider !== undefined
-        ? "auth provider"
-        : operatorUser?.token !== undefined
-          ? "bearer token"
-          : operatorUser?.certData !== undefined || operatorUser?.certFile !== undefined
-            ? "client certificate"
-            : "none";
-  // Names and kinds only: no credential value reaches the log.
-  const tokenSources = () => ({
-    compute: {
-      kubeconfigContext: controller.authentication.context,
-      user: `system:serviceaccount:${platformNamespace}:${controller.account}`,
-      kind: "ServiceAccount token (kubectl create token, default lifetime)",
-      mintedAt: controller.tokenMintedAt,
-    },
-    sandboxOperator: { kubeconfigContext: kubernetesContext, kind: operatorCredentialKind },
-    teardownStarted: teardownStarted(),
-  });
 
   const directory = await mkdtemp(join(tmpdir(), "oce-openshell-sandboxdriver-"));
   const startupPath = join(directory, "installation.json");
@@ -2260,6 +2256,17 @@ async function prepareProductionInstallation(
     createOpenShellBackend: createSandboxDriver.createBackend,
     createSandboxDriver,
   });
+  // Names and kinds only: no credential value reaches the log.
+  const tokenSources = () => ({
+    compute: {
+      kubeconfigContext: controller.authentication.context,
+      user: `system:serviceaccount:${platformNamespace}:${controller.account}`,
+      kind: "ServiceAccount token (kubectl create token, default lifetime)",
+      mintedAt: controller.tokenMintedAt,
+    },
+    sandboxOperator: { kubeconfigContext: kubernetesContext, kind: "test operator kubeconfig" },
+    teardownStarted: teardownStarted(),
+  });
   const loadWorkerDrivers = async () => {
     const loaded = await loadInstallationConfiguration({
       mode: "production",
@@ -2273,8 +2280,8 @@ async function prepareProductionInstallation(
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
-        computeDriver: withFirstPrepareRevisionFailureDiagnostic(
-          loaded.computeDriver,
+        computeDriver: withUnauthorizedTokenSourceDiagnostic(
+          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
           tokenSources,
         ),
       },
