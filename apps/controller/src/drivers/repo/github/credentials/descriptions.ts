@@ -33,7 +33,17 @@ const responseLimit = 64 * 1024;
 // characters (C0, DEL, C1), format characters and the line and paragraph separators become
 // spaces. Format characters change how text displays without being seen (Trojan Source,
 // CVE-2021-42574): bidi controls, zero-width characters, invisible operators and tag characters.
-const hiddenCharacter = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+// Two kinds stay (group 1), because emoji and some scripts need them: a zero-width non-joiner or
+// joiner (U+200C, U+200D) between two letters, marks or symbols (Persian, Indic conjuncts, family
+// emoji), and a subdivision flag (black flag, a region and subdivision code in tag letters, cancel
+// tag). Runs of joiners and other tag text still become spaces. The picker keeps the same ones:
+// apps/controller/src/console/agents/repositories.mjs:descriptionText.
+const hiddenCharacter =
+  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}[\u{e0061}-\u{e007a}]{2}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{1,4}\u{e007f})|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+function visibleDescription(text: string): string {
+  return text.replace(hiddenCharacter, (character, kept?: string) => kept ?? " ").trim();
+}
 
 /** Descriptions are optional display data; all token ownership remains in the credential service. */
 export function createGitHubRepositoryDescriptions(options: DescriptionOptions) {
@@ -165,8 +175,9 @@ export function createGitHubRepositoryDescriptions(options: DescriptionOptions) 
           throw new Error("repository-id-mismatch");
         }
         if (typeof record.description === "string") {
-          const description = record.description.replace(hiddenCharacter, " ").trim();
-          const bounded = Array.from(description).slice(0, 512).join("");
+          // Filter again after the cut, which can leave a joiner or tag sequence unfinished.
+          const description = visibleDescription(record.description);
+          const bounded = visibleDescription(Array.from(description).slice(0, 512).join(""));
           if (bounded) {
             onDescription(bounded);
           }

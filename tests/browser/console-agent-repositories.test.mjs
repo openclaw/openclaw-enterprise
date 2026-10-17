@@ -882,12 +882,52 @@ test("Repository descriptions show hidden and direction-changing characters as e
   // Finding 1628: the credential service replaces these characters, but the picker must not
   // trust every description source. An independent control-socket peer sends them raw
   // through the actual Unix client, GitHub Driver and OCC validation.
-  const description =
+  const hiddenDescription =
     "Release notes \u202etxt.exe, zero\u200bwidth, \u2066isolate\u2069, C1\u0085 end; " +
     "日本語 עברית العربية Café 😀👍🏽";
-  const shown =
+  const hiddenShown =
     "Release notes \\u202etxt.exe, zero\\u200bwidth, \\u2066isolate\\u2069, C1\\u0085 end; " +
     "日本語 עברית العربية Café 😀👍🏽";
+  // Finding 1633: joiners in words and emoji, and subdivision flags, display as written. Other
+  // joiners and tag text show as escapes.
+  const joined = [
+    "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}", // family: man, woman, girl
+    "\u{1f3f3}\ufe0f\u200d\u{1f308}", // rainbow flag: variation selector, then joiner
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", // Persian with a non-joiner
+    "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
+    "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", // Scotland
+    "\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", // subdivision code with digits
+  ].join(" ");
+  // Tag characters spelling `text`, raw and as the picker escapes them.
+  const tags = (text) => [
+    Array.from(text, (letter) => String.fromCodePoint(0xe0000 + letter.charCodeAt(0))).join(""),
+    Array.from(text, (letter) => `\\U000e00${letter.charCodeAt(0).toString(16)}`).join(""),
+  ];
+  const [scotland, scotlandShown] = tags("gbsct");
+  const [cancel, cancelShown] = tags("\x7f");
+  const escaped = [
+    ["lead:\u200dx", "lead:\\u200dx"],
+    ["double:a\u200d\u200cb", "double:a\\u200d\\u200cb"],
+    ["trail:a\u200d.", "trail:a\\u200d."],
+    [`tags:x${scotland}${cancel}`, `tags:x${scotlandShown}${cancelShown}`],
+    [`short:\u{1f3f4}${tags("gb")[0]}${cancel}`, `short:\u{1f3f4}${tags("gb")[1]}${cancelShown}`],
+    [
+      `long:\u{1f3f4}${tags("gbabcde")[0]}${cancel}`,
+      `long:\u{1f3f4}${tags("gbabcde")[1]}${cancelShown}`,
+    ],
+    [`open:\u{1f3f4}${scotland}`, `open:\u{1f3f4}${scotlandShown}`],
+    [
+      `region:\u{1f3f4}${tags("GBsct")[0]}${cancel}`,
+      `region:\u{1f3f4}${tags("GBsct")[1]}${cancelShown}`,
+    ],
+    [
+      `code:\u{1f3f4}${tags("gbSCT")[0]}${cancel}`,
+      `code:\u{1f3f4}${tags("gbSCT")[1]}${cancelShown}`,
+    ],
+  ];
+  const description = `${hiddenDescription} ${joined} ${escaped.map(([raw]) => raw).join(" ")}`;
+  const shown = `${hiddenShown} ${joined} ${escaped.map(([, text]) => text).join(" ")}`;
   const directory = await socketDirectory(t, "repository-description-escapes-");
   const controlSocket = join(directory, "control.sock");
   const held = [];

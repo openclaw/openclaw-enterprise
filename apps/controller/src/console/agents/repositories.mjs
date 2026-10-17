@@ -14,6 +14,19 @@ const DESCRIPTION_REQUEST_DELAY = 250;
 const DESCRIPTION_REFRESH_DELAY = 2_000;
 const DESCRIPTION_REFRESH_MAX_DELAY = 30_000;
 const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
+// A description shows like a log line (visibleText escapes invisible and bidi characters), except
+// for the joiners and subdivision flags the credential service keeps (group 1), so emoji and
+// Persian or Indic words display intact. Keep in step with hiddenCharacter in
+// apps/controller/src/drivers/repo/github/credentials/descriptions.ts.
+const DESCRIPTION_CHARACTER =
+  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}[\u{e0061}-\u{e007a}]{2}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{1,4}\u{e007f})|[^]/gu;
+
+function descriptionText(value) {
+  return String(value).replace(
+    DESCRIPTION_CHARACTER,
+    (character, kept) => kept ?? visibleText(character),
+  );
+}
 
 // Search casing that does not follow the browser locale (#2317): en-US lower case, where the
 // Turkish capital İ lowers to i and a combining dot above, so the dot is dropped, and the
@@ -490,7 +503,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             ? element(
                 "span",
                 { className: "repository-description" },
-                visibleText(entry.description),
+                descriptionText(entry.description),
               )
             : null,
           showReference || readOnly
@@ -882,7 +895,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           description = element("span", { className: "repository-description" });
           identity.querySelector("strong").after(description);
         }
-        setText(description, visibleText(entry.description));
+        setText(description, descriptionText(entry.description));
       } else {
         description?.remove();
       }
