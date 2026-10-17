@@ -73,6 +73,27 @@ async function settled(socketPath, payload) {
   throw new Error("metadata lookup did not settle");
 }
 
+// Starts a registry whose repositories (repo-a, repo-b, ...) carry `texts` as their GitHub
+// descriptions, waits for the lookup to settle and returns the descriptions served, in order.
+async function servedDescriptions(t, texts) {
+  const refs = texts.map((_text, index) => `repo-${String.fromCharCode(97 + index)}`);
+  const fixture = await startRegistryCredentialServiceFixture(t, {
+    autoOpen: false,
+    gateway: { listen: "127.0.0.1:0" },
+    repositories: texts.map((description, index) => ({
+      repositoryRef: refs[index],
+      repository: `fixture/${refs[index]}`,
+      repositoryId: String(73 + index),
+      description,
+    })),
+  });
+  const result = await settled(fixture.config.gateway.controlSocket, {
+    namespaceId: fixture.namespaceId,
+    repositoryRefs: refs,
+  });
+  return result.descriptions.map((entry) => entry.description);
+}
+
 test("private metadata sessions reject other methods and routes before issuing a token", async (t) => {
   const clock = createControlledClock();
   const github = await startGitHubFixture(t, { clock });
@@ -252,31 +273,10 @@ test("shutdown cancels an active metadata read and retires its issued token", as
 test("repository metadata preserves supplementary Unicode through the character limit", async (t) => {
   // GitHub permits this 350-character description; its UTF-16 length crosses 512.
   const description = "a".repeat(187) + "😀".repeat(163);
-  const fixture = await startRegistryCredentialServiceFixture(t, {
-    autoOpen: false,
-    gateway: { listen: "127.0.0.1:0" },
-    repositories: [
-      {
-        repositoryRef: "repo-a",
-        repository: "fixture/repository",
-        repositoryId: "73",
-        description,
-      },
-      {
-        repositoryRef: "repo-b",
-        repository: "fixture/other",
-        repositoryId: "74",
-        description: "😀".repeat(513),
-      },
-    ],
-  });
-  const result = await settled(fixture.config.gateway.controlSocket, {
-    namespaceId: fixture.namespaceId,
-    repositoryRefs: ["repo-a", "repo-b"],
-  });
-  assert.equal(result.descriptions[0].description, description);
-  assert.equal(result.descriptions[0].description.isWellFormed(), true);
-  assert.equal(result.descriptions[1].description, "😀".repeat(512));
+  const [served, cut] = await servedDescriptions(t, [description, "😀".repeat(513)]);
+  assert.equal(served, description);
+  assert.equal(served.isWellFormed(), true);
+  assert.equal(cut, "😀".repeat(512));
 });
 
 test("repository metadata replaces controls and invisible or bidi characters", async (t) => {
@@ -295,30 +295,8 @@ test("repository metadata replaces controls and invisible or bidi characters", a
   const spell = (codes) => codes.map((code) => `x${String.fromCodePoint(code)}`).join("") + "x";
   // Letters, combining marks, CJK, right-to-left scripts and emoji with modifiers stay intact.
   const unicode = "Café 日本語 עברית العربية 😀👍🏽❤️";
-  const fixture = await startRegistryCredentialServiceFixture(t, {
-    autoOpen: false,
-    gateway: { listen: "127.0.0.1:0" },
-    repositories: [
-      {
-        repositoryRef: "repo-a",
-        repository: "fixture/hidden",
-        repositoryId: "75",
-        description: `\u202e${spell(hidden)}\u2069`,
-      },
-      {
-        repositoryRef: "repo-b",
-        repository: "fixture/kept",
-        repositoryId: "76",
-        description: `${spell(kept)} ${unicode}`,
-      },
-    ],
-  });
-  const result = await settled(fixture.config.gateway.controlSocket, {
-    namespaceId: fixture.namespaceId,
-    repositoryRefs: ["repo-a", "repo-b"],
-  });
   assert.deepEqual(
-    result.descriptions.map((entry) => entry.description),
+    await servedDescriptions(t, [`\u202e${spell(hidden)}\u2069`, `${spell(kept)} ${unicode}`]),
     ["x ".repeat(hidden.length) + "x", `${spell(kept)} ${unicode}`],
   );
 });
@@ -355,43 +333,14 @@ test("repository metadata keeps joiners in words and emoji and subdivision flags
     ["\u{1f3f4}\u{e0047}\u{e0042}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "\u{1f3f4}      "], // capital region
     ["\u{1f3f4}\u{e0067}\u{e0062}\u{e0053}\u{e0043}\u{e0054}\u{e007f}", "\u{1f3f4}      "], // capital code
   ];
-  const fixture = await startRegistryCredentialServiceFixture(t, {
-    autoOpen: false,
-    gateway: { listen: "127.0.0.1:0" },
-    repositories: [
-      {
-        repositoryRef: "repo-a",
-        repository: "fixture/kept",
-        repositoryId: "77",
-        description: kept,
-      },
-      {
-        repositoryRef: "repo-b",
-        repository: "fixture/replaced",
-        repositoryId: "78",
-        description: `start ${replaced.map(([raw]) => raw).join("|")} end`,
-      },
-      // The 512 code point cut can leave a joiner or flag unfinished; it is filtered again.
-      {
-        repositoryRef: "repo-c",
-        repository: "fixture/cut-joiner",
-        repositoryId: "79",
-        description: `${"a".repeat(511)}\u200db`,
-      },
-      {
-        repositoryRef: "repo-d",
-        repository: "fixture/cut-flag",
-        repositoryId: "80",
-        description: `${"a".repeat(508)}${scotland}`,
-      },
-    ],
-  });
-  const result = await settled(fixture.config.gateway.controlSocket, {
-    namespaceId: fixture.namespaceId,
-    repositoryRefs: ["repo-a", "repo-b", "repo-c", "repo-d"],
-  });
   assert.deepEqual(
-    result.descriptions.map((entry) => entry.description),
+    await servedDescriptions(t, [
+      kept,
+      `start ${replaced.map(([raw]) => raw).join("|")} end`,
+      // The 512 code point cut can leave a joiner or flag unfinished; it is filtered again.
+      `${"a".repeat(511)}\u200db`,
+      `${"a".repeat(508)}${scotland}`,
+    ]),
     [
       kept,
       `start ${replaced.map(([, shown]) => shown).join("|")} end`,

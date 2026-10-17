@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-11
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-17
+last_updated_session: fix-1692
 ---
 
 # Controller Worker Flow
@@ -118,13 +118,14 @@ defines who can retry; a takeover becomes the work's actor, audited as
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop calls `recoverStale()`, on idle passes one bounded native-exposure
-sweep step (`withdrawHarnessExposure` for one listed active-at-start or failed
-revision, five logged attempts), then `claim()`. The
+Each loop calls `recoverStale()`, one bounded native-exposure sweep step
+(`withdrawHarnessExposure` for one listed active-at-start or failed revision,
+five logged attempts) on idle passes and after every five claimed passes, then
+`claim()`. The
 [PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
 eligible work with `FOR UPDATE SKIP LOCKED`, assigning claim token, lease
-deadline and attempt increment. Another live claim on the Agent (or Namespace,
-for Namespace work) prevents concurrent ownership.
+deadline and attempt increment. Another live claim on the Agent (or Namespace)
+prevents concurrent ownership.
 
 An empty queue waits, bounded. After work or idle, `health()` queries work,
 calls `onHealthy`, emits `worker.health`; readiness needs both. Serialized
@@ -132,7 +133,7 @@ failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
 
 Each pass start and claim renewal calls `onProgress`; the liveness probe
 restarts a worker with a stale marker. A client `query_timeout` usually
-frees a stuck pass, discarding its connection. See
+frees a stuck pass. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects

@@ -171,7 +171,12 @@ at once. The driver's own message stays in the controller:
 the controller's identity while it confirms a Harness exposure withdrawn or a
 Sandbox removed; an Agent stop, deletion or credential withdrawal fails with it
 too, so a Sandbox the identity may no longer see (the provider hides it as
-missing) is never recorded gone.
+missing) is never recorded gone. A missing role fails at once; an identity the
+provider could not authenticate (`transient`: a token file or signing key between
+refreshes) retries within the attempt budget first. The worker logs the failed
+stop, deletion or withdrawal with the same guidance the deployment status shows.
+A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
+the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 
 When the provider refuses the controller's own identity during `ensureNamespace`
 or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.
