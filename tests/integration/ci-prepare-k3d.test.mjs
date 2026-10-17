@@ -14,16 +14,7 @@ import {
   immutableImage,
   nodeBaseImage,
 } from "../helpers/ci-prepare-fixture.mjs";
-
-// Like Promise.all over a case's scenarios, but waits for every one so no process
-// outlives the test's temporary directories, then rethrows the first failure.
-async function eachSettled(items, each) {
-  const results = await Promise.allSettled(items.map(each));
-  const failed = results.find(({ status }) => status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-}
+import { eachSettled } from "../helpers/child-processes.mjs";
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
@@ -79,6 +70,22 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 1000 ms\./);
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     assert.equal(state.env, undefined);
+    const cleanup = await commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+  });
+
+  // The deadline error names the last read's outcome: a refused read followed by reads that
+  // answer without a Pod CIDR reports the missing CIDR, not the earlier refusal (finding 1699).
+  // The wait only has to outlast one refused read (it fails only if that fake kubectl read takes
+  // 2 s or more), so no read count or pacing is asserted.
+  test("fixture preparation reports the last Pod CIDR read, not an earlier refusal", async (t) => {
+    const commands = await fixtureImageCommands(t, "refused-then-no-pod-cidr", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "2000",
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 2000 ms\./);
+    assert.doesNotMatch(result.stderr, /synthetic node read refusal/);
     const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });

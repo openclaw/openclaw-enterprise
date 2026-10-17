@@ -52,6 +52,8 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxGatewayUnauthorizedError,
+  SANDBOX_DELETION_UNCONFIRMED,
+  operationRefusalHint,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   TransientDependencyError,
@@ -523,6 +525,12 @@ function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
  */
 const MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS = 5;
 const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
+/**
+ * The sweep step runs on passes that follow an empty claim, and after this many claimed passes
+ * in a row regardless, so a queue that is never empty cannot starve it (finding 1695).
+ */
+const HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES = 5;
+/** The code a Sandbox Driver's delete reports when its target vanished between read and delete. */
 
 interface PendingHarnessExposureWithdrawal {
   readonly revision: Readonly<AgentRevision>;
@@ -539,6 +547,12 @@ function harnessExposureWithdrawalCode(error: unknown): string {
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
     ? code
     : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
+}
+
+/** The operator guidance a failed stop, deletion or withdrawal logs with its code (finding 1694). */
+function refusalHintField(terminal: boolean, code: string): { readonly hint?: string } {
+  const hint = terminal ? operationRefusalHint(code) : undefined;
+  return hint === undefined ? {} : { hint };
 }
 
 /** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */
@@ -985,6 +999,7 @@ export class ControllerWorker {
   private harnessExposureListed = false;
   private harnessExposureListingFailures = 0;
   private claimedLastPass = false;
+  private claimedPassesSinceSweep = 0;
   private readonly repoDriver: RepoDriver | undefined;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
@@ -1248,13 +1263,19 @@ export class ControllerWorker {
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
         // A sweep step asks the Sandbox gateway, up to its deadline: it runs on passes that
         // follow an empty claim, so queued work is not delayed by a gateway that does not
-        // answer.
-        if (!this.claimedLastPass) {
+        // answer, and once per HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES claimed passes in a row,
+        // so a saturated queue still gets one step (finding 1695).
+        if (
+          !this.claimedLastPass ||
+          this.claimedPassesSinceSweep >= HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES
+        ) {
+          this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
         }
         const claim = await this.queue.claim();
         this.claimedLastPass = claim !== undefined;
         if (claim !== undefined) {
+          this.claimedPassesSinceSweep += 1;
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
           const started = process.hrtime.bigint();
@@ -2206,6 +2227,8 @@ export class ControllerWorker {
       // The Sandbox gateway refused the controller's identity, so the Driver could not confirm
       // the revision's Sandbox gone: retrying cannot help until an operator restores the role,
       // so the stop fails with that code instead of recording the Sandbox stopped (finding 1676).
+      // An identity the gateway could not authenticate mends itself (a token file or signing
+      // key between refreshes), so it retries within the attempt budget first (finding 1694).
       result =
         error instanceof ComputeStopYieldedError
           ? {
@@ -2214,7 +2237,7 @@ export class ControllerWorker {
               ...(stopping === undefined ? {} : { revision: stopping }),
             }
           : error instanceof SandboxGatewayUnauthorizedError
-            ? { outcome: "permanent", code: error.code }
+            ? { outcome: error.transient ? "retry" : "permanent", code: error.code }
             : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
@@ -2421,10 +2444,11 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676).
+      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676), and
+      // an unauthenticated one retries first (finding 1694).
       result =
         error instanceof SandboxGatewayUnauthorizedError
-          ? { outcome: "permanent", code: error.code }
+          ? { outcome: error.transient ? "retry" : "permanent", code: error.code }
           : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentDeletion(claim, result);
@@ -2530,9 +2554,12 @@ export class ControllerWorker {
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
+      // `result` is the Driver's classification; `outcome` the queue's decision, so a retry that
+      // spent the attempt budget reads `permanent` here, as the hint says (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
+      ...refusalHintField(this.passOutcome === "permanent", result.code),
     });
   }
 
@@ -2634,10 +2661,12 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: result.revision?.id,
+      // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
       ...stopYieldsField(stopYields),
+      ...refusalHintField(this.passOutcome === "permanent", result.code),
     });
   }
 
@@ -2850,11 +2879,14 @@ export class ControllerWorker {
       // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
       // mismatch does; a replay tries again. So does a Sandbox gateway that refuses the
       // controller's identity (finding 1676): retrying cannot restore the Workspace role, and
-      // the reason names the fix instead of a generic failure.
-      const refused =
+      // the reason names the fix instead of a generic failure. An identity the gateway could
+      // not authenticate keeps the reason but retries first (finding 1694).
+      const coded =
         error instanceof CredentialWithdrawalRefusedError ||
         error instanceof SandboxGatewayUnauthorizedError;
-      const code = refused ? error.code : "DEPENDENCY_UNAVAILABLE";
+      const refused =
+        coded && !(error instanceof SandboxGatewayUnauthorizedError && error.transient);
+      const code = coded ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
@@ -2977,9 +3009,12 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: claim.revisionId,
+      // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
+      // series queued (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
+      ...refusalHintField(terminal(result), result.code),
     });
   }
 
@@ -3116,10 +3151,19 @@ export class ControllerWorker {
         pending.dueAt =
           Date.now() + HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS * 2 ** (pending.attempts - 1);
       }
+      const code = harnessExposureWithdrawalCode(error);
+      // A target that vanished between the Driver's read and its delete (a failed candidate
+      // retired by the next activation, or a role lost in between) is unconfirmed, not failed:
+      // the next attempt settles it through the Driver's absence check (finding 1696). An
+      // exposure dropped on its last attempt is a failure whatever the error, since nothing
+      // settles it before the next start.
       this.emit({
-        event: "worker.harness-exposure-withdrawal-failed",
+        event:
+          code === SANDBOX_DELETION_UNCONFIRMED && !permanent
+            ? "worker.harness-exposure-withdrawal-unconfirmed"
+            : "worker.harness-exposure-withdrawal-failed",
         ...fields,
-        code: harnessExposureWithdrawalCode(error),
+        code,
         attempt: pending.attempts,
         outcome: permanent ? "permanent" : "retry",
       });
@@ -4053,10 +4097,13 @@ export class ControllerWorker {
             cleanupFailedPreparation: true,
             ...(error.evidence === undefined ? {} : { data: { preparation: error.evidence } }),
           };
+        } else if (error instanceof SandboxGatewayUnauthorizedError) {
+          // A missing Workspace role fails the deployment at once; an identity the gateway
+          // could not authenticate retries within the attempt budget first (finding 1694).
+          result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
           error instanceof SandboxRevisionUnsupportedError ||
-          error instanceof SandboxGatewayUnauthorizedError ||
           error instanceof CredentialSourceRevisionError ||
           error instanceof ActivationFailedError
         ) {

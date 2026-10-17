@@ -591,6 +591,8 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
         error.message,
         /DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed/,
       );
+      // The code the worker's sweep logs apart from a failure (finding 1696).
+      assert.equal(error.code, "SANDBOX_DELETION_UNCONFIRMED");
       assert.equal(error.cause?.code, grpc.status.NOT_FOUND);
       return true;
     });
@@ -686,7 +688,14 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
     }
     await assert.rejects(
       client.deleteService("tenant-workspace", "sandbox-missing", "", signal),
-      /DeleteService did not find the Sandbox, so the deletion is unconfirmed/,
+      (error) => {
+        assert.match(
+          error.message,
+          /DeleteService did not find the Sandbox, so the deletion is unconfirmed/,
+        );
+        assert.equal(error.code, "SANDBOX_DELETION_UNCONFIRMED");
+        return true;
+      },
     );
     const deletions = requests.filter(([method]) => method === "DeleteService");
     assert.equal(deletions.length, 5);
