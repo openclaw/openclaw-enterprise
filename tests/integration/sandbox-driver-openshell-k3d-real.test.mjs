@@ -4717,9 +4717,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
       `(6) curl -fsSI --max-time 10 https://acme.com; ` +
-      (modelSourceType === "codex-pat" ? `(7) ${deniedConfigCommand}. ` : "") +
       `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
-      (modelSourceType === "codex-pat" ? "Command 7 must also fail. " : "") +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -4733,9 +4731,6 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   const deniedCommand = completedCommands.find(({ command }) =>
     String(command).includes("acme.com"),
-  );
-  const deniedConfigRequest = completedCommands.find(({ command }) =>
-    String(command).includes(deniedBackend),
   );
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
@@ -4769,36 +4764,70 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
+  assert.match(result.assistant, new RegExp(nonce));
+  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
+  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
+  assert.match(result.assistant, /READONLY_DENIED/);
+  assert.match(result.assistant, /ESCAPE_DENIED/);
+  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
+  assert.match(result.assistant, /ACME_DENIED/);
   if (modelSourceType === "codex-pat") {
-    // Which numbered commands ran and how long each took, by label only: a missing command 7
-    // then shows whether the model skipped it, rewrote it, or ran it after the turn's reply.
-    const commandLabel = (command) =>
-      [
-        [workspaceCommand, "write"],
-        [approvedPathCommand, "read"],
-        [readonlyCommand, "readonly"],
-        [escapedCommand, "escape"],
-        [approvedCommand, "openclaw"],
-        [deniedCommand, "acme"],
-      ].find(([item]) => item === command)?.[1] ??
-      (/chatgpt_base_url|features list|backend-api/.test(String(command.command))
-        ? "codex-rewritten"
-        : "other");
-    const commandSummary = {
-      started: result.items.filter(
+    // The backend probe gets its own turn: as a seventh command in the turn above, the model
+    // sometimes ended its turn after the sixth and never started it (finding 1682).
+    const backendNonce = `openshell-backend-${randomUUID()}`;
+    const requestBackendTurn = () =>
+      requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        providerModel,
+        prompt:
+          `Use the shell exec tool from ${providerWorkspace} to run exactly this one command, ` +
+          `which is expected to fail: ${deniedConfigCommand}. ` +
+          `Then reply with exactly ${backendNonce}.`,
+      });
+    const startedCommands = (turn) =>
+      turn.items.filter(
         ({ method, params }) =>
           method === "item/started" && params?.item?.type === "commandExecution",
-      ).length,
-      completed: completedCommands.map((command) => ({
-        label: commandLabel(command),
+      ).length;
+    let backendTurn = await requestBackendTurn();
+    const skippedTurns = [];
+    // Ask once more only when the turn started no command at all. A rewritten, declined or
+    // unsettled command is still judged below.
+    if (startedCommands(backendTurn) === 0) {
+      skippedTurns.push({
+        items: backendTurn.items.length,
+        replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+      });
+      backendTurn = await requestBackendTurn();
+    }
+    const backendCommands = backendTurn.items
+      .filter(({ method }) => method === "item/completed")
+      .map(({ params }) => params?.item)
+      .filter(({ type }) => type === "commandExecution");
+    const deniedConfigRequest = backendCommands.find(({ command }) =>
+      String(command).includes(deniedBackend),
+    );
+    // How the turn went, by label only: a missing request then shows whether the model
+    // skipped it, rewrote it, or asked for approval instead.
+    const commandSummary = {
+      skippedTurns,
+      started: startedCommands(backendTurn),
+      completed: backendCommands.map((command) => ({
+        label:
+          command === deniedConfigRequest
+            ? "codex-backend"
+            : /chatgpt_base_url|features list|backend-api/.test(String(command.command))
+              ? "codex-rewritten"
+              : "other",
         status: command.status,
         exitCode: command.exitCode,
         durationMs: command.durationMs ?? null,
       })),
-      approvalRequests: result.items.filter(
+      approvalRequests: backendTurn.items.filter(
         ({ method }) => method === "item/commandExecution/requestApproval",
       ).length,
-      replyHasNonce: new RegExp(nonce).test(result.assistant),
+      replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
     };
     assert.ok(
       deniedConfigRequest,
@@ -4806,7 +4835,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     );
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${result.items.some(
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${backendTurn.items.some(
         ({ method, params }) =>
           method === "item/commandExecution/requestApproval" &&
           params?.itemId === deniedConfigRequest.id,
@@ -4847,14 +4876,8 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       },
       30_000,
     );
+    assert.match(backendTurn.assistant, new RegExp(backendNonce));
   }
-  assert.match(result.assistant, new RegExp(nonce));
-  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
-  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
-  assert.match(result.assistant, /READONLY_DENIED/);
-  assert.match(result.assistant, /ESCAPE_DENIED/);
-  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
-  assert.match(result.assistant, /ACME_DENIED/);
 }
 
 // Prints NAME_EXIT and NAME_OUT for one probe command; stderr is dropped.
