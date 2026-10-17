@@ -5441,14 +5441,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? "WORKLOAD_UNSCHEDULABLE"
         : undefined;
     };
-    const incomplete = async (pendingReason?: ComputePendingReason): Promise<ComputeReadiness> => {
+    const incomplete = async ({
+      pendingReason,
+      fallbackReason,
+    }: {
+      pendingReason?: ComputePendingReason;
+      fallbackReason?: ComputePendingReason;
+    } = {}): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
         revision,
         namespace,
         workspaceSetup !== undefined,
       );
       const reason =
-        pendingReason ?? (runtimeFailure === undefined ? await observedPendingReason() : undefined);
+        pendingReason ??
+        (runtimeFailure === undefined
+          ? ((await observedPendingReason()) ?? fallbackReason)
+          : undefined);
       return {
         ...result,
         ...(runtimeFailure === undefined ? {} : { runtimeFailure }),
@@ -6120,11 +6129,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (
-          !(await this.providerHarnessReady(revision, namespace, requirements.labels)) ||
-          !(await this.workspaceNodeReady(revision, namespace))
-        ) {
-          return incomplete();
+        // Report the first pending check. More specific failure, quota or scheduling
+        // evidence can explain the wait; a check we have not reached cannot.
+        if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
+          return incomplete({ fallbackReason: "PROVIDER_HARNESS_POD_PENDING" });
+        }
+        if (!(await this.workspaceNodeReady(revision, namespace))) {
+          return incomplete({ fallbackReason: "PROVIDER_WORKSPACE_NODE_PENDING" });
         }
         if (credentialContext !== undefined) {
           const statuses = await this.requireCredentialGateway().attachmentStatus({
@@ -6144,7 +6155,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             statuses.length !== attachments.length ||
             statuses.some((status) => status.state !== "ready")
           ) {
-            return incomplete();
+            return incomplete({ fallbackReason: "CREDENTIAL_ATTACHMENT_PENDING" });
           }
         }
         if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
@@ -6226,7 +6237,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return incomplete();
         }
         if (!(await this.workspaceNodeReady(revision, namespace))) {
-          return incomplete("WORKSPACE_NODE_PENDING");
+          return incomplete({ pendingReason: "WORKSPACE_NODE_PENDING" });
         }
         return repositoryMaterial !== undefined &&
           !(await this.repositoryMaterialReady(revision, namespace, repositoryMaterial))
@@ -6299,7 +6310,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       if (!workspaceNodeIsReady) {
         // Both workloads are ready: only the node's connection is outstanding (D222).
-        return incomplete("WORKSPACE_NODE_PENDING");
+        return incomplete({ pendingReason: "WORKSPACE_NODE_PENDING" });
       }
       // Gateway plugin and node observations may outlive the material readiness observation.
       if (

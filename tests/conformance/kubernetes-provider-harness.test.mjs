@@ -84,6 +84,7 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(await fixture.prepare(), {
     ...expected,
     ready: false,
+    pendingReason: "PROVIDER_HARNESS_POD_PENDING",
   });
   assert.deepEqual(setupRequests, [
     {
@@ -116,6 +117,7 @@ test("provider Harness endpoint preparation re-observes the same revision across
       assert.deepEqual(await fixture.prepare(), {
         ...expectedRevision(fixture),
         ready: stage.ready,
+        ...(stage.ready ? {} : { pendingReason: "PROVIDER_HARNESS_POD_PENDING" }),
       });
       assert.deepEqual(fixture.hooks.slice(hooksBefore), ["start"]);
       assert.equal(fixture.provisions.length, provisionsBefore + 1);
@@ -520,19 +522,27 @@ for (const scenario of [
   });
 }
 
-test("provider Harness unready Pod prevents transport status observation", async () => {
-  const fixture = await endpointWithGateway();
-  let observations = 0;
+test("provider Harness unready Pod stops before workspace node or transport status", async () => {
+  const observations = [];
+  const fixture = await endpointWithGateway(
+    providerEndpointFixture({
+      async isConnected() {
+        observations.push("workspace node");
+        return true;
+      },
+    }),
+  );
   fixture.sandbox.harnessStatus = async () => {
-    observations++;
-    return { state: "failed", runtimeFailure: heldFailure };
+    observations.push("transport");
+    return { state: "serving" };
   };
   fixture.observePods([fixture.pod("starting", "False")]);
   assert.deepEqual(await fixture.prepare(), {
     ...expectedRevision(fixture),
     ready: false,
+    pendingReason: "PROVIDER_HARNESS_POD_PENDING",
   });
-  assert.equal(observations, 0);
+  assert.deepEqual(observations, []);
 });
 
 for (const scenario of transportScenarios) {
@@ -565,9 +575,23 @@ for (const scenario of transportScenarios) {
   });
 }
 
-for (const scenario of transportScenarios) {
-  test(`provider Harness ready credential attachment still requires ${scenario.name}`, async () => {
-    const fixture = await endpointWithGateway();
+for (const scenario of [
+  {
+    name: "waits for its workspace node before checking the attachment",
+    disconnected: true,
+    outcome: { ready: false, pendingReason: "PROVIDER_WORKSPACE_NODE_PENDING" },
+  },
+  {
+    name: "waits for the attachment before checking the transport",
+    attachmentPending: true,
+    outcome: { ready: false, pendingReason: "CREDENTIAL_ATTACHMENT_PENDING" },
+  },
+  ...transportScenarios,
+]) {
+  test(`provider Harness with a credential source: ${scenario.name}`, async () => {
+    const fixture = await endpointWithGateway(
+      providerEndpointFixture({ isConnected: async () => !scenario.disconnected }),
+    );
     const { driver, revision } = fixture;
     fixture.observePods([fixture.pod("ready")]);
     const harnessObservations = [];
@@ -585,7 +609,10 @@ for (const scenario of transportScenarios) {
       },
       async attachmentStatus(context) {
         attachmentChecks.push(context.sources.map(({ id }) => id));
-        return context.sources.map(({ id }) => ({ sourceId: id, state: "ready" }));
+        return context.sources.map(({ id }) => ({
+          sourceId: id,
+          state: scenario.attachmentPending ? "pending" : "ready",
+        }));
       },
     };
     const toolSource = {
@@ -614,9 +641,11 @@ for (const scenario of transportScenarios) {
       ...expectedRevision(fixture),
       ...scenario.outcome,
     });
-    assert.deepEqual(attachmentChecks, [[toolSource.id]]);
-    assert.equal(harnessObservations.length, 1);
-    assert.equal(harnessObservations[0].revision, sourced);
+    assert.deepEqual(attachmentChecks, scenario.disconnected ? [] : [[toolSource.id]]);
+    assert.deepEqual(
+      harnessObservations.map(({ revision: observed }) => observed),
+      scenario.answer ? [sourced] : [],
+    );
   });
 }
 

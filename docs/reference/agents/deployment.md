@@ -159,19 +159,21 @@ the setting and what is accepted, never its value, before any revision is create
 
 ### Pending deployment progress
 
-While a revision is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
-revision Pod has `PodScheduled` `False` with reason `Unschedulable`,
-`NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
-names a Pod quota still full, and `WORKSPACE_NODE_PENDING` when the
-Harness and gateway are ready and only the workspace node's gateway connection
-is outstanding. Activation of a dedicated revision reports
-`WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
-workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
-not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
-pending until it is ready, a held runtime failure ends it, or the convergence
-deadline passes. The worker rechecks an unready revision after 500 ms, growing
-with the deployment's age to 5 s at 200 s.
+Deployment `progress.lastAttempt.code` reports the worker's last observation.
+Kubernetes reports `REVISION_UNSCHEDULABLE` for a live revision Pod's
+`PodScheduled=False`, reason `Unschedulable`, or `NAMESPACE_POD_QUOTA_EXCEEDED`
+when the Deployment's `ReplicaFailure` names a Pod quota still full.
+For a provider-owned Harness, Compute reports the first pending check: one matching Ready Pod
+(`PROVIDER_HARNESS_POD_PENDING`), workspace connection (`WORKSPACE_NODE_PENDING`),
+then credential attachments (`CREDENTIAL_ATTACHMENT_PENDING`). Later checks may not have run.
+During preparation, other Harnesses can also report
+`WORKSPACE_NODE_PENDING` while waiting for the workspace node to connect to its
+Gateway. Activation of a dedicated revision reports
+`WORKSPACE_NODE_BINDING_PENDING` until the gateway applies its assigned
+workspace node, then `WORKSPACE_NODE_PENDING` until that node connects.
+Otherwise the code is `REVISION_INCOMPLETE`. Rechecks start at 500 ms, reach
+5 s at deployment age 200 s, and end at readiness, held runtime failure or
+the convergence deadline.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with

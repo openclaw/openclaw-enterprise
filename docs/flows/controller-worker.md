@@ -287,14 +287,13 @@ same metrics contract.
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.defer`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.retry`
 
-Pending convergence refunds the attempt and requeues unready revisions on the
-cadence in
-[pending deployment progress](../reference/agents/deployment.md#pending-deployment-progress),
-others with backoff. Compute's `pendingReason` selects the pending code.
-`PostgresWorkQueue.defer` appends `reconcile` evidence only when its outcome and
-code differ from that work item's latest evidence. Dependency failures consume
-attempts; permanent failure, exhaustion, deadline, or `AUTHENTICATION_FAILED`
-terminates work. See [outcomes](../reference/controller.md) and
+Pending convergence refunds the attempt. Unready revisions follow the
+[pending recheck cadence](../reference/agents/deployment.md#pending-deployment-progress);
+others back off. Provider Pod, workspace node and attachment waits retain
+`REVISION_INCOMPLETE` so older workers recognize progress past OAuth bootstrap.
+`defer` records changes in outcome, code or `pendingReason`. Dependency failures
+consume attempts. Permanent failure, exhaustion, deadline or `AUTHENTICATION_FAILED`
+ends work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
 Before publishing a permanent refusal (not a held runtime failure, the deadline

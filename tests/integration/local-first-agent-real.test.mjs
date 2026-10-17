@@ -401,7 +401,7 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
 });
 
-test("the missed native handoff deadline reports only Pod readiness for its exact revision", async () => {
+test("the missed native handoff deadline reports the last readiness check separately from later Pods", async () => {
   const namespaceId = `ns_${randomUUID()}`;
   const agentId = `agt_${randomUUID()}`;
   const revisionId = `rev_${randomUUID()}`;
@@ -486,6 +486,22 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
   assert.equal(await sample([{ ...agent, role: "private-sentinel" }]), "unavailable");
   assert.equal(await sample([{ ...gateway, phase: "private-sentinel" }]), "unavailable");
   assert.equal(await sample([gateway], "another-revision"), "unavailable");
+
+  // Pods can both become Ready after the worker recorded the first pending check.
+  const runtime = { revisionId, pods: [{ ...gateway, ready: true }, agent] };
+  for (const code of [
+    "PROVIDER_HARNESS_POD_PENDING",
+    "WORKSPACE_NODE_PENDING",
+    "CREDENTIAL_ATTACHMENT_PENDING",
+  ]) {
+    const last = {
+      ...deployment,
+      progress: { lastAttempt: { code, message: "private-sentinel" } },
+    };
+    const { deployment: seen, runtimeAfterDeadline } = await observe([last, runtime], runtimePaths);
+    assert.equal(seen.lastAttemptCode, code);
+    assert.deepEqual(runtimeAfterDeadline, { gateway: oneReady, agent: oneReady });
+  }
 
   await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
   const late = { ...provisioned, status: "succeeded" };
