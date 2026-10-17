@@ -11155,8 +11155,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
-        // The log line keeps the provider's HTTP status from its error, never the text.
-        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
+        // The log line keeps the provider's HTTP status from its error, never the text;
+        // the upfront rejection names its 401 and only a closed-vocabulary code.
+        assert.equal(
+          probeLog.providerStatus,
+          upfront ? 401 : cause?.kind === "PROBE_STATUS" ? 404 : undefined,
+        );
+        assert.equal(probeLog.providerCode, undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();

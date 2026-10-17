@@ -2077,11 +2077,11 @@ function probeOpenClawAuthenticationFailure() {
 // code and two fixed phrases into a closed vocabulary (the body itself is never
 // kept): "missing_api_key" means the request arrived without a credential, which
 // under a Sandbox provider points at the credential proxy rather than the key.
-const UPFRONT_REJECTION_CODES = { 4: "invalid_api_key", 5: "missing_api_key", 6: "insufficient_permissions" };
 const UPFRONT_ENDPOINTS = {
   openai: ["https://api.openai.com/v1", { "openai-responses": "/responses", "openai-completions": "/chat/completions" }, (key) => ({ authorization: "Bearer " + key })],
   anthropic: ["https://api.anthropic.com", { "anthropic-messages": "/v1/messages" }, (key) => !key.startsWith("sk-ant-oat") && { "x-api-key": key, "anthropic-version": "2023-06-01" }],
 };
+const UPFRONT_REJECTION_CODES = { 4: "invalid_api_key", 5: "missing_api_key", 6: "insufficient_permissions" };
 function credentialRejectedUpfront(provider, fragment, key, stage) {
   fragment ??= {};
   const [base, paths, authorize] = UPFRONT_ENDPOINTS[provider] ?? [];

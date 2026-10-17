@@ -307,12 +307,15 @@ function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {
       }),
     },
   );
-  return { rejected, calls, stages };
+  // A rejection is built in the VM context: copy it so deepEqual compares plain objects.
+  return { rejected: rejected === false ? false : { ...rejected }, calls, stages };
 }
 
 test("the upfront credential check runs only where OpenClaw would send the same request", () => {
   const openai = upfrontCheck("openai", undefined);
-  assert.equal(openai.rejected, true);
+  // A rejection names the provider's 401 and, when the child classified it, a
+  // closed-vocabulary code; the response body never leaves the child.
+  assert.deepEqual(openai.rejected, { providerStatus: 401 });
   assert.deepEqual(openai.stages, ["preflight"]);
   assert.equal(openai.calls.length, 1);
   assert.equal(openai.calls[0].options.env.U, "https://api.openai.com/v1/responses");
@@ -341,9 +344,19 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     upfrontCheck("anthropic", undefined, "sk-ant-api03-fixture").calls[0].options.env.U,
     "https://api.anthropic.com/v1/messages",
   );
-  // Only the provider's 401 (exit 3) is a rejection.
-  for (const status of [0, 1, null]) {
+  // Only the provider's 401 (exit 3-6) is a rejection.
+  for (const status of [0, 1, 2, 7, null]) {
     assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false);
+  }
+  for (const [status, providerCode] of [
+    [4, "invalid_api_key"],
+    [5, "missing_api_key"],
+    [6, "insufficient_permissions"],
+  ]) {
+    assert.deepEqual(upfrontCheck("openai", undefined, "fixture-key", status).rejected, {
+      providerStatus: 401,
+      providerCode,
+    });
   }
   for (const [provider, fragment, key] of [
     ["openai", { baseUrl: "https://api.openai.com/v1/" }],
@@ -382,6 +395,7 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   assert.ok(source);
   const received = [];
   let answer = 401;
+  let answerBody = "{}";
   const server = createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => (body += chunk));
@@ -392,7 +406,7 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
         auth: request.headers.authorization,
         body,
       });
-      response.writeHead(answer, { "content-type": "application/json" }).end("{}");
+      response.writeHead(answer, { "content-type": "application/json" }).end(answerBody);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -409,6 +423,23 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   assert.deepEqual(received, [
     { method: "POST", url: "/v1/responses", auth: "Bearer fixture-key", body: "{}" },
   ]);
+  // The 401 is classified from the provider's error code or one of two fixed
+  // phrases (finding 1643: a request that reached the provider without its
+  // credential is told apart from a rejected key); anything else stays 3.
+  for (const [body, code] of [
+    ['{"error":{"code":"invalid_api_key","message":"Incorrect API key provided: sk-x"}}', 4],
+    ['{"error":{"code":null,"message":"You didn\'t provide an API key."}}', 5],
+    ['{"error":{"message":"No API key provided."}}', 5],
+    ['{"error":{"code":"insufficient_permissions","message":"x"}}', 6],
+    ['{"error":{"message":"Missing scopes: api.responses.write"}}', 6],
+    ['{"error":{"code":"other","message":"Unauthorized"}}', 3],
+    ["not json", 3],
+    ['{"error":"string"}', 3],
+  ]) {
+    answerBody = body;
+    assert.equal(await run(url), code, body);
+  }
+  answerBody = "{}";
   for (const status of [400, 403, 429, 500]) {
     answer = status;
     assert.equal(await run(url), 0, `HTTP ${status}`);
