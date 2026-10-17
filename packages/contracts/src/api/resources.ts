@@ -763,7 +763,7 @@ export const AgentProvisioningStatusSchema = Type.Object(
             ],
             {
               description:
-                "The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted.",
+                "With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores.",
             },
           ),
         },

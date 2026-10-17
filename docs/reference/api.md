@@ -2412,7 +2412,7 @@ Create a new Agent and queue first-time provisioning
 | `data.provisioning.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.provisioning.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
 | `data.provisioning.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
-| `data.provisioning.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.provisioning.progress.lastAttempt` | `null or object` | Yes | With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores. |
 | `data.provisioning.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.provisioning.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.provisioning.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
@@ -2478,7 +2478,7 @@ Get first-time provisioning status for one exact work item
 | `data.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
 | `data.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
-| `data.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.progress.lastAttempt` | `null or object` | Yes | With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores. |
 | `data.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
@@ -2544,7 +2544,7 @@ Retry failed first-time provisioning for one exact work item
 | `data.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
 | `data.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
-| `data.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.progress.lastAttempt` | `null or object` | Yes | With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores. |
 | `data.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
