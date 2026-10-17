@@ -403,8 +403,9 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "occ-topology-teardown-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const helper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url);
-    const exported = /^export \{([^}]+)\};$/m
-      .exec(await readFile(helper, "utf8"))[1]
+    const exportList = /^export \{([^}]+)\};$/m.exec(await readFile(helper, "utf8"));
+    assert.ok(exportList, "the topology helper ends with one export { ... } list");
+    const exported = exportList[1]
       .split(",")
       .map((name) => name.trim())
       .filter(Boolean);
@@ -419,17 +420,19 @@ test(
         resolve(specifier, context, nextResolve) {
           const resolved = nextResolve(specifier, context);
           return resolved.url === ${JSON.stringify(helper.href)}
-            ? { url: ${JSON.stringify(pathToFileURL(standIn).href)}, format: "module", shortCircuit: true }
+            ? { url: ${JSON.stringify(pathToFileURL(standIn).href)}, shortCircuit: true }
             : resolved;
         },
       });`,
     );
+    // Tests per file: each must reach arrangeProductionTopology, so a new test bumps its count.
     const files = {
       "harness-topology-k3d-real.test.mjs": 6,
       "harness-topology-k3d-otel-real.test.mjs": 2,
       "harness-topology-k3d-slack-real.test.mjs": 1,
     };
-    await Promise.all(
+    // Settle every file before asserting, so no child still writes once the directory is removed.
+    const results = await Promise.all(
       Object.entries(files).map(async ([file, tests]) => {
         const record = join(directory, `${file}.log`);
         const env = {
@@ -453,34 +456,37 @@ test(
           ],
           { env, timeout: 15_000 },
         ).then(
-          () => ({ code: 0, stderr: "" }),
+          () => ({ code: 0, stdout: "", stderr: "" }),
           (error) => error,
         );
-        const steps = (await readFile(record, "utf8").catch(() => ""))
-          .split("\n")
-          .filter(Boolean)
-          .map((line) => line.split("\t"));
-        const names = [...new Set(steps.map(([name]) => name))];
-        assert.equal(
-          names.length,
-          tests,
-          `${file} arranged a topology in every test\n${exited.stderr}`,
-        );
-        for (const name of names) {
-          assert.deepEqual(
-            steps.filter(([test]) => test === name).map(([, step]) => step),
-            [
-              "worker stop",
-              "cluster roles delete",
-              "platform Namespace delete with the worker stopped",
-            ],
-            `${file}: ${name}`,
-          );
-        }
-        assert.notEqual(exited.killed, true, `${file} exited on its own`);
-        assert.equal(exited.code, 1, `${file} fails its stand-in topology`);
+        return { file, tests, exited, record: await readFile(record, "utf8").catch(() => "") };
       }),
     );
+    for (const { file, tests, exited, record } of results) {
+      const steps = record
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => line.split("\t"));
+      const names = [...new Set(steps.map(([name]) => name))];
+      assert.equal(
+        names.length,
+        tests,
+        `${file} arranged a topology in every test\n${exited.stdout}\n${exited.stderr}`,
+      );
+      for (const name of names) {
+        assert.deepEqual(
+          steps.filter(([test]) => test === name).map(([, step]) => step),
+          [
+            "worker stop",
+            "cluster roles delete",
+            "platform Namespace delete with the worker stopped",
+          ],
+          `${file}: ${name}`,
+        );
+      }
+      assert.notEqual(exited.killed, true, `${file} exited on its own`);
+      assert.equal(exited.code, 1, `${file} fails its stand-in topology`);
+    }
   },
 );
 
