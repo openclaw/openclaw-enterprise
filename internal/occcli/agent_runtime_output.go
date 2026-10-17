@@ -217,6 +217,9 @@ func (app *application) printRuntime(description any) error {
 			}
 			row["restarts"] = container["restartCount"]
 			row["state"] = container["state"]
+			if reason, ok := container["reason"].(string); ok && reason != "" {
+				row["state"] = displayValue(container["state"]) + " (" + reason + ")"
+			}
 			if termination, ok := container["lastTermination"].(map[string]any); ok {
 				parts := []string{}
 				if reason, ok := termination["reason"].(string); ok {
