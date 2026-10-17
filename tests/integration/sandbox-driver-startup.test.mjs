@@ -2714,8 +2714,9 @@ for (const harnessId of ["codex", "openclaw"]) {
           },
         }).status;
       // A completed setup whose workspace has no record refuses on every retry.
-      assert.equal(wrapped({ ...setup, completed: true }), 2);
-      // A missing runtime may be back on a retry, and so may a lock the wrapper cannot take.
+      const { files: _files, ...record } = setup;
+      assert.equal(wrapped({ ...record, completed: true }), 2);
+      // A missing runtime may be back on a retry; a workspace path the wrapper rejects exits 1.
       assert.equal(wrapped(setup), 1);
       assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }), 1);
     });
