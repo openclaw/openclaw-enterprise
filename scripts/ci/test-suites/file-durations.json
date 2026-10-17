@@ -2,7 +2,7 @@
   "version": 1,
   "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (3d9ad33ab and the four before it), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
   "files": {
-    "tests/browser/console-agent-channels.test.mjs": 34200,
+    "tests/browser/console-agent-channels.test.mjs": 18000,
     "tests/browser/console-agent-detail-2.test.mjs": 77600,
     "tests/browser/console-agent-detail.test.mjs": 57600,
     "tests/browser/console-agent-draft-guards.test.mjs": 40100,
@@ -52,7 +52,7 @@
     "tests/conformance/kubernetes-runtime-credentials.test.mjs": 1800,
     "tests/conformance/kubernetes-secret-driver.test.mjs": 10400,
     "tests/conformance/module-boundaries.test.mjs": 17100,
-    "tests/conformance/module-policy.test.mjs": 33500,
+    "tests/conformance/module-policy.test.mjs": 9700,
     "tests/conformance/native-admin-upgrade-reset.test.mjs": 1500,
     "tests/conformance/native-admin-websocket-relay.test.mjs": 1100,
     "tests/conformance/node-enrollment-client.test.mjs": 2900,
