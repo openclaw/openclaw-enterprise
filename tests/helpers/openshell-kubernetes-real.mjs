@@ -464,6 +464,9 @@ export function createOpenShellKubernetesFixture({
   kubernetesContext,
   gatewayImage,
   codexImage,
+  // How long a Codex turn observes a command still running when the turn completes. A suite
+  // whose probe commands bound themselves (curl --max-time) passes that bound plus a margin.
+  codexCommandGraceMs = 5_000,
   databaseUrl,
   openShellGatewayImage,
   openShellSandboxImage,
@@ -473,16 +476,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.4",
-  // How long a Codex turn observes a command still running when the turn completes. A suite
-  // whose probe commands bound themselves (curl --max-time) passes that bound plus a margin.
-  codexCommandGraceMs = 5_000,
 }) {
-  assert.ok(
-    Number.isSafeInteger(codexCommandGraceMs) &&
-      codexCommandGraceMs > 0 &&
-      codexCommandGraceMs <= 60_000,
-    "codexCommandGraceMs must be a positive number of milliseconds, at most 60 s.",
-  );
   const base = createRealKubernetesFixture({
     kubeconfigPath,
     kubernetesContext,
@@ -490,6 +484,12 @@ export function createOpenShellKubernetesFixture({
     codexImage,
     databaseUrl,
   });
+  assert.ok(
+    Number.isSafeInteger(codexCommandGraceMs) &&
+      codexCommandGraceMs > 0 &&
+      codexCommandGraceMs <= 60_000,
+    "codexCommandGraceMs must be a positive number of milliseconds, at most 60 s.",
+  );
 
   async function kubectl(...args) {
     return base.kubectl(...args);

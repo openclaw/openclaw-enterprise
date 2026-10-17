@@ -99,6 +99,12 @@ const modelBaseUrl = (
 ).replace(/\/$/u, "");
 const modelEndpoint = new URL(modelBaseUrl);
 const modelPort = Number(modelEndpoint.port || 443);
+// Codex hands a long command back to the model, which may reply and end the turn before the
+// command ends. The tool upstream probe bounds its curl, and every turn waits for a command
+// still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
+// a fixed 5 s wait).
+const toolProbeCurlMaxSeconds = 8;
+const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -152,12 +158,6 @@ if (demoStatePath !== undefined) {
 const portableCommandArgumentBytes = 30 * 1024;
 const diagnosticQueryTimeoutMs = 3_000;
 const observerPoolConnectionTimeoutMs = 5_000;
-// Codex hands a long command back to the model, which may reply and end the turn before the
-// command ends. The tool upstream probe bounds its curl, and every turn waits for a command
-// still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
-// a fixed 5 s wait).
-const toolProbeCurlMaxSeconds = 8;
-const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
 );
