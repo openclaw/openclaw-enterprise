@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   k3sImage,
   kubectlVersion,
@@ -303,6 +304,27 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   t.after(() => server.close());
   await once(server, "listening");
   const directory = await fixture(t);
+  // Finding 1665: wakes the client's first command-deadline timer after 1 ms instead of its
+  // delay, as an early libuv wake would, and records that it did.
+  const earlyWake = join(directory, "early-wake.mjs");
+  const earlyWakeMarker = join(directory, "early-wake");
+  await writeFile(
+    earlyWake,
+    [
+      'import { writeFileSync } from "node:fs";',
+      "const grace = Number(process.env.EARLY_WAKE_GRACE_MS);",
+      "const setTimeoutOriginal = globalThis.setTimeout;",
+      "let woken = false;",
+      "globalThis.setTimeout = (callback, delay, ...rest) => {",
+      "  if (!woken && delay > grace - 50 && delay <= grace) {",
+      "    woken = true;",
+      `    writeFileSync(${JSON.stringify(earlyWakeMarker)}, String(delay));`,
+      "    delay = 1;",
+      "  }",
+      "  return setTimeoutOriginal(callback, delay, ...rest);",
+      "};",
+    ].join("\n"),
+  );
   await writeFile(
     join(directory, "kubectl"),
     [
@@ -310,6 +332,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
       "shift",
       `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `if [ -n "$EARLY_WAKE_GRACE_MS" ]; then export NODE_OPTIONS=--import=${pathToFileURL(earlyWake)}; fi`,
       'exec "$@"',
     ].join("\n"),
     { mode: 0o755 },
@@ -401,6 +424,34 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   assert.equal(summary.pendingCommands[0].outputBytes, "TOOL_EXIT=".length);
   assert.ok(summary.pendingCommands[0].startedBeforeTurnEndMs >= 0);
   assert.ok(summary.pendingCommands[0].runningMs >= lateMs / 4);
+
+  // An early timer wake must not end the grace before turn completion plus the bound: the
+  // client re-arms for the remainder. A one-shot timer would report an unknown outcome here.
+  const probeWithEarlyWake = async (codexCommandGraceMs) => {
+    await rm(earlyWakeMarker, { force: true });
+    process.env.EARLY_WAKE_GRACE_MS = String(codexCommandGraceMs);
+    try {
+      return await probe(codexCommandGraceMs);
+    } finally {
+      delete process.env.EARLY_WAKE_GRACE_MS;
+      assert.equal(
+        await readFile(earlyWakeMarker, "utf8"),
+        String(codexCommandGraceMs),
+        "the command-deadline timer must wake early",
+      );
+    }
+  };
+  const early = await probeWithEarlyWake(lateMs * 4);
+  assert.equal(early.run.exitCode, 28, "an early wake keeps waiting for the late command");
+  const expired = await probeWithEarlyWake(lateMs / 4).then(
+    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
+    (failure) => failure,
+  );
+  assert.match(expired.message, /Codex command outcome is unknown/);
+  const expiredSummary = JSON.parse(
+    /Native execution summary: (\{.*?\]\})/s.exec(expired.message)[1],
+  );
+  assert.ok(expiredSummary.sinceTurnEndMs >= lateMs / 4, "never end the grace before its bound");
 
   for (const codexCommandGraceMs of [0, 1.5, 60_001, "5000"]) {
     assert.throws(

@@ -110,32 +110,45 @@ async function observeNativeFailure({
     const deploymentPath = nativeDeploymentPath(namespaceId, provisioned, provisioningPath);
     const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
     const deployment = await request("GET", deploymentPath, undefined, diagnosticSignal);
-    if (
-      deployment?.namespaceId === namespaceId &&
-      deployment.agentId === provisioned.agentId &&
-      deployment.deploymentId === provisioned.revisionId
-    ) {
-      const code = deployment.error?.code;
-      observation.deployment = {
-        status: observedStatus(deployment.status),
-        errorCode: absentOr(code, failureCategory),
-        lastAttemptCode: absentOr(deployment.progress?.lastAttempt?.code, progressCode),
-      };
-      if (deployment.status === "failed" && providerFailureCodes.has(code)) {
-        observation.modelProbe = "unavailable";
-        const logs = await request(
-          "GET",
-          `${deploymentPath}/runtime/logs?source=agent&tailLines=1000`,
-          undefined,
-          diagnosticSignal,
-        );
-        observation.modelProbe = observedModelProbe(logs, provisioned.revisionId);
-      }
-    }
+    const revision = {
+      namespaceId,
+      agentId: provisioned.agentId,
+      revisionId: provisioned.revisionId,
+      deploymentPath,
+    };
+    await observeDeployment(observation, deployment, revision, request, diagnosticSignal);
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
   return observation;
+}
+
+// The exact revision's status and codes and, for a held model-check failure, that check's
+// log event. Sets `deployment` (and `modelProbe`) on the observation as it learns them.
+async function observeDeployment(observation, deployment, revision, request, signal) {
+  if (
+    deployment?.namespaceId !== revision.namespaceId ||
+    deployment.agentId !== revision.agentId ||
+    deployment.deploymentId !== revision.revisionId
+  ) {
+    return;
+  }
+  const code = deployment.error?.code;
+  observation.deployment = {
+    status: observedStatus(deployment.status),
+    errorCode: absentOr(code, failureCategory),
+    lastAttemptCode: absentOr(deployment.progress?.lastAttempt?.code, progressCode),
+  };
+  if (deployment.status === "failed" && providerFailureCodes.has(code)) {
+    observation.modelProbe = "unavailable";
+    const logs = await request(
+      "GET",
+      `${revision.deploymentPath}/runtime/logs?source=agent&tailLines=1000`,
+      undefined,
+      signal,
+    );
+    observation.modelProbe = observedModelProbe(logs, revision.revisionId);
+  }
 }
 
 export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
@@ -145,6 +158,74 @@ export async function assertNativeWorkNotFailed(response, expectation, diagnosti
       `${expectation}: ${failureCategory(response.error?.code)} ${JSON.stringify(observation)}`,
     );
   }
+}
+
+// A redeploy's failure, reported like the first deployment's: the replacement revision's
+// codes and its model check, from the same fixed vocabularies and one five-second budget.
+async function assertNativeRedeployNotFailed(
+  deployment,
+  expectation,
+  { request, namespaceId, agentId, revisionId, signal },
+) {
+  if (deployment?.status !== "failed") {
+    return;
+  }
+  const observation = { deployment: "unavailable" };
+  try {
+    assert.ok(
+      isResourceId(namespaceId, "ns") &&
+        isResourceId(agentId, "agt") &&
+        isResourceId(revisionId, "rev"),
+      "The native redeploy returned an invalid binding",
+    );
+    const revision = {
+      namespaceId,
+      agentId,
+      revisionId,
+      deploymentPath: `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`,
+    };
+    const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+    await observeDeployment(observation, deployment, revision, request, diagnosticSignal);
+  } catch {
+    // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
+  }
+  assert.fail(
+    `${expectation}: ${failureCategory(deployment.error?.code)} ${JSON.stringify(observation)}`,
+  );
+}
+
+// Polls the replacement revision until it is active. A failed redeploy fails the test with
+// its public failure code; it never prints the deployment's message or other peer text.
+export async function waitForNativeRedeploy({
+  request,
+  namespaceId,
+  agentId,
+  revisionId,
+  signal,
+  timeoutMs = 8 * 60_000,
+  pollMs = 2_000,
+}) {
+  const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
+  const deadline = Date.now() + timeoutMs;
+  let deployment;
+  let agent;
+  while (Date.now() < deadline) {
+    signal.throwIfAborted();
+    deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+    await assertNativeRedeployNotFailed(
+      deployment,
+      "Redeployment with the retained native workspace must succeed",
+      { request, namespaceId, agentId, revisionId, signal },
+    );
+    agent = await request("GET", agentPath);
+    if (deployment.status === "succeeded" && agent.activeRevisionId === revisionId) {
+      break;
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))),
+    );
+  }
+  return { deployment, agent };
 }
 
 const hasIdentifier = (value) => typeof value === "string" && value.length > 0;

@@ -21,6 +21,7 @@ import {
   nativeFirstAgentProofTimeout,
   nativeProvisioningPath,
   runtimeLogSources,
+  waitForNativeRedeploy,
 } from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
@@ -639,6 +640,119 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       name: "AssertionError",
       message: /^Guided native provisioning must succeed: unrecognized \{"provisioning":/,
     });
+  });
+
+  await t.test("name a failed redeploy's code and model check without peer text", async () => {
+    const replacementId = `rev_${randomUUID()}`;
+    const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
+    const replacementPath = `${agentPath}/deployments/${replacementId}`;
+    const replacementLogPath = `${replacementPath}/runtime/logs?source=agent&tailLines=1000`;
+    const failed = { ...deployment, deploymentId: replacementId };
+    const replacementPage = (records) => ({ ...page(records), revisionId: replacementId });
+    async function redeploy(responses, expectedPaths) {
+      const calls = [];
+      const request = async (method, path, body, signal) => {
+        calls.push({ method, path, body, signal });
+        return responses[calls.length - 1];
+      };
+      const signal = AbortSignal.timeout(30_000);
+      const wait = waitForNativeRedeploy({
+        request,
+        namespaceId,
+        agentId,
+        revisionId: replacementId,
+        signal,
+      });
+      let message;
+      await assert.rejects(wait, (error) => {
+        assert.equal(error.name, "AssertionError");
+        message = error.message;
+        return true;
+      });
+      assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
+      assert.deepEqual(
+        calls.map(({ path }) => path),
+        expectedPaths,
+      );
+      for (const call of calls.slice(1)) {
+        assert.ok(call.signal instanceof AbortSignal && call.signal !== signal);
+      }
+      const [, category, json] =
+        message.match(
+          /^Redeployment with the retained native workspace must succeed: (\S+) (.*)$/,
+        ) ?? [];
+      assert.ok(json, message);
+      return { category, ...JSON.parse(json) };
+    }
+
+    const provider = { providerStatus: 429, providerCode: "rate_limit_exceeded" };
+    const records = probeLog({ code: "MODEL_PROBE_FAILED", ...provider });
+    const probeFailed = { ...failed, error: failure("RUNTIME_MODEL_PROBE_FAILED") };
+    assert.deepEqual(
+      await redeploy(
+        [probeFailed, replacementPage(records)],
+        [replacementPath, replacementLogPath],
+      ),
+      {
+        category: "RUNTIME_MODEL_PROBE_FAILED",
+        deployment: {
+          status: "failed",
+          errorCode: "RUNTIME_MODEL_PROBE_FAILED",
+          lastAttemptCode: "none",
+        },
+        modelProbe: { probes: 1, code: "MODEL_PROBE_FAILED", ...provider },
+      },
+    );
+    // Codes outside the closed vocabulary print as unrecognized, with no log read.
+    const unknown = {
+      ...failed,
+      error: failure("RUNTIME_PRIVATE_SENTINEL"),
+      progress: { lastAttempt: { code: "PRIVATE_SENTINEL", message: "private-sentinel" } },
+    };
+    assert.deepEqual(await redeploy([unknown], [replacementPath]), {
+      category: "unrecognized",
+      deployment: { status: "failed", errorCode: "unrecognized", lastAttemptCode: "unknown" },
+    });
+    // Only the replacement revision's own record and log page are reported.
+    assert.deepEqual(await redeploy([{ ...failed, deploymentId: revisionId }], [replacementPath]), {
+      category: "RUNTIME_AUTHENTICATION_FAILED",
+      deployment: "unavailable",
+    });
+    const firstPage = page(probeLog({ providerStatus: 401 }));
+    const stale = await redeploy([failed, firstPage], [replacementPath, replacementLogPath]);
+    assert.equal(stale.modelProbe, "unavailable");
+
+    // A redeploy returns once it succeeded and is active, without diagnostic reads.
+    const ready = { ...failed, status: "succeeded", error: null };
+    const calls = [];
+    const responses = [
+      { ...ready, status: "running" },
+      { activeRevisionId: revisionId },
+      ready,
+      { activeRevisionId: revisionId },
+      ready,
+      { activeRevisionId: replacementId },
+    ];
+    const active = await waitForNativeRedeploy({
+      request: async (method, path) => {
+        calls.push(path);
+        return responses[calls.length - 1];
+      },
+      namespaceId,
+      agentId,
+      revisionId: replacementId,
+      signal: AbortSignal.timeout(30_000),
+      pollMs: 1,
+    });
+    assert.deepEqual(active, { deployment: ready, agent: { activeRevisionId: replacementId } });
+    assert.deepEqual(calls, [
+      replacementPath,
+      agentPath,
+      replacementPath,
+      agentPath,
+      replacementPath,
+      agentPath,
+    ]);
   });
 });
 
@@ -1302,31 +1416,14 @@ test(
           assert.notEqual(replacement.id, provisioned.revisionId);
           assert.equal(replacement.harness.id, "openclaw");
           assert.equal(replacement.harness.mode, "dedicated");
-          const replacementDeadline = Date.now() + 8 * 60_000;
-          let replacementDeployment;
-          let replacementAgent;
-          while (Date.now() < replacementDeadline) {
-            nativeContext.signal.throwIfAborted();
-            replacementDeployment = await request(
-              "GET",
-              `${nativePath}/deployments/${replacement.id}`,
-            );
-            assert.notEqual(
-              replacementDeployment.status,
-              "failed",
-              "Redeployment with the retained native workspace must succeed",
-            );
-            replacementAgent = await request("GET", nativePath);
-            if (
-              replacementDeployment.status === "succeeded" &&
-              replacementAgent.activeRevisionId === replacement.id
-            ) {
-              break;
-            }
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.min(2_000, Math.max(1, replacementDeadline - Date.now()))),
-            );
-          }
+          const { deployment: replacementDeployment, agent: replacementAgent } =
+            await waitForNativeRedeploy({
+              request,
+              namespaceId: first.namespaceId,
+              agentId: nativeAgent.id,
+              revisionId: replacement.id,
+              signal: nativeContext.signal,
+            });
           assert.equal(replacementDeployment?.status, "succeeded");
           assert.equal(replacementAgent?.activeRevisionId, replacement.id);
           const replacementProvider = await readProviderRevision(replacement.id);
