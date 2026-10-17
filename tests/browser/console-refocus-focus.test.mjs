@@ -120,6 +120,7 @@ test("refocusing the Agents list while a row reads its deployment keeps the read
   });
   assert.equal(await isFocused(link), true, "keep focus on the Agent link");
   assert.equal(await listKept(page), true, "reuse the list");
+  // The resumed list's reread fills the row; the held answer goes to the aborted request.
   row.release();
   const deployment = page.locator(settledView).locator(".agent-deployment a");
   await deployment.waitFor();
@@ -159,21 +160,55 @@ test("refocusing during a deployment reread keeps focus on that deployment", asy
   assert.equal(await isFocused(deployment), true, "the fresh link takes focus");
 });
 
-// Sidebar and page-header controls are replaced by the recheck's shells; focus returns to the
-// same control once the list is reused (finding 1662).
+// A row read that failed is reread on resume too, so it doesn't make a refocus rebuild the list.
+test("refocusing the Agents list after a row read failed keeps the reader's place", async (t) => {
+  const { fixture, namespace, page } = await openDeployedList(t, "Refocus failed row");
+  const failed = await holdRequests(t, page, deploymentsRead(namespace), {
+    once: true,
+    fulfill: { status: 500, json: { error: { code: "INTERNAL", message: "Unavailable." } } },
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await failed.requested;
+  failed.release();
+  const cell = page.locator(settledView).locator(".agent-deployment");
+  await cell.getByText("Deployment unavailable").waitFor();
+  const link = page.locator(settledView).getByRole("link", { name: "Refocus Agent" });
+  await link.focus();
+  await tagList(page);
+  await refocusHeld(t, page);
+  assert.equal(await isFocused(link), true, "keep focus on the Agent link");
+  assert.equal(await listKept(page), true, "reuse the list");
+  await cell.getByRole("link", { name: "v1 · succeeded", exact: true }).waitFor();
+});
+
+// Shell controls outside the page are replaced by the recheck's shells; focus returns to the
+// same control once the list is reused (finding 1662). An account menu item, whose new menu
+// starts closed, gives it to the menu's toggle.
 test("refocusing the Agents list restores focus on sidebar and header controls", async (t) => {
   const { fixture, namespace, page } = await openDeployedList(t, "Refocus shell");
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.locator(settledView).locator(".agent-deployment a").waitFor();
-  for (const control of [
-    page.locator(".sidebar").getByRole("link", { name: "Namespaces", exact: true }),
-    page.locator(".account-toggle"),
-    page.locator("#namespace-selector"),
-    page.getByRole("button", { name: "Refresh", exact: true }),
+  const toggle = page.locator(".account-toggle");
+  for (const [control, restored = control] of [
+    [page.locator(".sidebar").getByRole("link", { name: "Namespaces", exact: true })],
+    [toggle],
+    [page.getByRole("menuitem", { name: "Settings" }), toggle],
+    [page.locator("#namespace-selector")],
+    [page.getByRole("button", { name: "Refresh", exact: true })],
   ]) {
+    if (restored !== control) {
+      await toggle.click();
+    }
     await control.focus();
     assert.equal(await isFocused(control), true);
     await refocusHeld(t, page);
-    assert.equal(await isFocused(control), true, "focus returns to the same control");
+    assert.equal(await isFocused(restored), true, "focus returns to the same control");
   }
+  // At phone width the navigation toggle sits outside the sidebar and header.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const navigation = page.getByRole("button", { name: "Open navigation" });
+  await navigation.focus();
+  assert.equal(await isFocused(navigation), true);
+  await refocusHeld(t, page);
+  assert.equal(await isFocused(navigation), true, "focus returns to the navigation toggle");
 });

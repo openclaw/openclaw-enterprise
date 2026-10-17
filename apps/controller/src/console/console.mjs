@@ -668,14 +668,15 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
 // inert (finding 1654). restore() gives focus back once the page remounts (an input keeps its
 // caret), unless the reader has moved focus since. A deployment link that the list's reread
 // replaced gives it to the cell's pending deployment instead, as Back does, and so does a
-// pending deployment that a second refocus's reread replaced (finding 1663). A sidebar or
-// page-header control, which the recheck's shells replace, gives it to the same control in the
-// remounted shell, unless that control is gone or disabled (finding 1662).
+// pending deployment that a second refocus's reread replaced (finding 1663). A shell control
+// outside the page (sidebar, page header, navigation toggle), which the recheck's shells replace,
+// gives it to the same control in the remounted shell, unless that control is gone or disabled
+// (finding 1662).
 function focusInShownView() {
   const view = app.querySelector('.content [aria-live="polite"]');
   const focused = document.activeElement;
   const inView = view?.contains(focused) === true;
-  const shellControl = !inView && focused?.closest?.(".sidebar, .page-header") != null;
+  const shellControl = !inView && focused?.closest?.(".shell") != null;
   if (!inView && !shellControl) {
     return null;
   }

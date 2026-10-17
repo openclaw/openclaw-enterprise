@@ -482,13 +482,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return { view, refresh, diagnostics, scopeSelector };
   }
 
-  function sameControl(node, root) {
+  function sameControl(node, root, outside = null) {
     // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
     // Other links (Observability) keep the href comparison.
     const nav = node.getAttribute("data-nav");
     return (
       [...root.querySelectorAll(node.localName)].find(
         (candidate) =>
+          !outside?.contains(candidate) &&
           candidate.className === node.className &&
           (nav
             ? candidate.getAttribute("data-nav") === nav
@@ -575,11 +576,18 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
-    // The shown shell's control that matches one from an earlier render: the same sidebar link
-    // or button, Namespace selector, Refresh or heading. Null when the shell has none.
+    // The shown shell's control, outside its page view, that matches one from an earlier
+    // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
+    // toggle. A new shell's account menu starts closed, so its items give way to the toggle.
     matchingControl(node) {
-      const root = app.querySelector(node.closest(".sidebar") ? ".sidebar" : ".page-header");
-      return root && sameControl(node, root);
+      const shell = app.querySelector(":scope > .shell");
+      if (!shell) {
+        return null;
+      }
+      if (node.closest(".account")) {
+        return shell.querySelector(".account-toggle");
+      }
+      return sameControl(node, shell, shell.querySelector('.content [aria-live="polite"]'));
     },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
