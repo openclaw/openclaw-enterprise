@@ -11,6 +11,7 @@ import {
   fileBrowser,
   holdRequests,
   login,
+  nativeValues,
   newPage,
   pathRequests,
 } from "./console-agents-browser-helpers.mjs";
@@ -643,6 +644,75 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+});
+
+test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, Create Agent does not send users to Embedded", async (t) => {
+  // The Driver lacks the process facet, so the Installation cannot admit dedicated OpenClaw. Like
+  // every selected Sandbox Driver it also refuses Embedded execution at Agent save and deploy, so
+  // the Console copy must not recommend Embedded unconditionally (finding 1612).
+  const drivers = provisioningDrivers();
+  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  const fixture = await createConsoleAppFixture(t, {
+    ...drivers,
+    sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Partial Sandbox", { ready: true });
+  const installation = await fixture.request("GET", "/installation");
+  assert.equal(installation.status, 200);
+  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "partial-key");
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Dedicated OpenClaw",
+      template: {
+        agent: {
+          name: "Dedicated OpenClaw Agent",
+          executionMode: "dedicated",
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+        configuration: { values: nativeValues("partial-sandbox") },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution.",
+  );
+
+  // A saved Dedicated OpenClaw Preset opens as saved and is blocked; the alert names Codex first,
+  // Embedded only with its condition, and the administrator's fix.
+  const { page: presetPage } = await newPage(t, fixture, { browser });
+  await login(presetPage, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await presetPage.getByLabel("Preset template").selectOption(preset.data.id);
+  await presetPage.getByRole("button", { name: "Use Preset" }).click();
+  const alert = presetPage
+    .getByRole("alert")
+    .filter({ hasText: /^Dedicated OpenClaw is unavailable: / });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw.",
+  );
+  assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(
+    await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
 });
 
 test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {

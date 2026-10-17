@@ -112,9 +112,11 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
   imageReferenceProblem,
   keyedSettingPath,
+  provisionsDedicatedOpenClaw,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -2742,14 +2744,8 @@ function requireNativeWorkerSandbox(
   if (harness.id !== "openclaw" || harness.mode !== "dedicated") {
     return;
   }
-  const requiredFacets = ["networking", "filesystem", "process"] as const;
-  if (
-    sandboxDriver?.provisionHarness === undefined ||
-    requiredFacets.some((facet) => !sandboxDriver.facets.includes(facet))
-  ) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
-    );
+  if (!provisionsDedicatedOpenClaw(sandboxDriver)) {
+    throw new ConfigurationFailure(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
   }
 }
 

@@ -1871,7 +1871,7 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
+      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
     steps: [
       "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
       "Select Codex and confirm Dedicated remains available.",
@@ -2701,7 +2701,7 @@ export const scenarios = {
       "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
     steps: [
       "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
-      "Choose Embedded execution, then create the Agent again.",
+      "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
   createUnknown: {

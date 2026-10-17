@@ -481,10 +481,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   );
   // The Installation reports native worker support only when it can admit dedicated OpenClaw:
   // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
+  // Its absence does not say whether Embedded remains: any selected Sandbox Driver refuses
+  // Embedded execution, so the copy names Codex and the condition (finding 1612).
   const nativeWorkersUnavailable = element(
     "p",
     { className: "error", role: "alert", hidden: true },
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose Embedded execution or the Codex harness.",
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw.",
   );
   const configuration = element("textarea", {
     id: "configuration-json",
@@ -1620,7 +1622,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = nativeRefused
-        ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support, so OpenClaw uses Embedded execution. Slack requires Codex."
+        ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
         : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
@@ -1642,7 +1644,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       harness.disabled && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
         : nativeRefused
-          ? "OpenClaw is available for both providers. This installation runs OpenClaw with Embedded execution only; choose Codex for Dedicated execution."
+          ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
           : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
     if (binding?.method === "runtime") {
       harnessHint.textContent =

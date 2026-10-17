@@ -94,7 +94,6 @@ import type {
   RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
-  SandboxFacet,
   SandboxHarnessLostCode,
   Secret,
   SecretBindings,
@@ -212,6 +211,7 @@ import {
 } from "./runtime-logs/index.ts";
 import {
   nativeWorkerSupportSource,
+  provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
   type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
@@ -288,6 +288,7 @@ export {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
@@ -368,6 +369,7 @@ export {
 } from "./runtime-logs/index.ts";
 export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
+  provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
   type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
@@ -1316,15 +1318,6 @@ function requireDedicatedNativeSupport(
     }
     throw new DedicatedOpenClawSandboxError();
   }
-}
-
-/** Whether the Sandbox Driver can provision dedicated native OpenClaw: all three facets. */
-function provisionsDedicatedOpenClaw(sandbox: SandboxDriver | undefined): boolean {
-  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
-  return (
-    sandbox?.provisionHarness !== undefined &&
-    requiredFacets.every((facet) => sandbox.facets.includes(facet))
-  );
 }
 
 function validRepositorySelector(value: unknown): value is string {

@@ -2055,7 +2055,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   // The disabled option explains itself instead of claiming Dedicated is supported.
   const harnessHint = page.locator("#agent-harness-hint");
-  assert.match(await harnessHint.textContent(), /Embedded execution only; choose Codex/);
+  assert.match(await harnessHint.textContent(), /Embedded execution works only without a Sandbox/);
   assert.doesNotMatch(await harnessHint.textContent(), /supports Dedicated/);
   const modeHint = page.locator("#execution-mode-hint");
   assert.match(await modeHint.textContent(), /Dedicated OpenClaw is unavailable/);
