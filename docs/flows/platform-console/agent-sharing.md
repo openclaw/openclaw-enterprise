@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: "2026-10-05"
-last_updated_session: "authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10"
+updated: "2026-10-17"
+last_updated_session: "authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2"
 ---
 
 # Console Agent sharing and removal
@@ -53,9 +53,11 @@ the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
 sharing panel and leaves the other panels usable; a current `401` retains global
 session expiry. The catalog carries saved Configuration ID/generation, assignable roles, desired runtime state and optional active-revision role summaries. The panel displays configured and deployed permissions independently, including stopped and undeployed states. A failed role-catalog read clears role choices and retains removal.
-The [shared page cache](../platform-console.md#2-resolve-the-session-before-private-reads)
-compares failed and successful GET outcomes on Back; catalog recovery rebuilds
-the panel with current role choices.
+Sharing owns catalog return checks through `context.onRevalidate`. Catalog reads
+use `rereadOnResume` and skip the generic GET cache, so an unavailable optional
+Compute capability cannot discard unrelated drafts or live logs. An unfinished
+Sharing read forces a rebuild. Completed panels refresh their role choices in
+place, clear consent when the catalog changes, and retain catalog-independent removal.
 
 ### 2. Serialize Role and binding writes
 
@@ -64,7 +66,7 @@ the panel with current role choices.
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
 that response does it find or create the exact Agent read/use Role and
-bind it to the selected Agent with the chosen runtime role and the reviewed Configuration precondition. Policy readback does not silently refresh that precondition; only explicit catalog refresh replaces the reviewed policy. The panel rejects a subject that is not a `prn_`
+bind it to the selected Agent with the chosen runtime role and the reviewed Configuration precondition. Policy readback does not silently refresh that precondition. Explicit refresh or a return check replaces the catalog; changed policy clears the person's consent. The panel rejects a subject that is not a `prn_`
 Principal ID, such as an email, before any request, and reports a `404` during a
 share as an unknown Principal ID. The server validates the supplied subject and
 resource on each write. When the person already has a runtime assignment, the panel preserves it and grants exact Agent read separately if missing. Confirmed progress survives later failure; unknown
@@ -108,6 +110,8 @@ The panel retains discovery grants and explains other possible access sources.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 19:30: Refresh Sharing's catalog through its own return check and clear changed-policy consent. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - da391ff75)
 
 - 2026-10-05 13:58: Trace saved Configuration role selection, stale-selection rejection and deployed permission previews. (authoring-run/80db88a0-8bf4-401d-b060-01f34cc3af10 - 76f9307b61ccb1c544257081d95b15a0ee893b92)
 

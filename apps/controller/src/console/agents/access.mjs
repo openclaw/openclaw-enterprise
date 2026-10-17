@@ -298,26 +298,42 @@ export function renderAgentAccess(context, agent) {
     return "OpenClaw uses the deployed permissions. Deploy saved Configuration changes to apply them.";
   }
 
-  async function readRuntimeRoles() {
+  async function requestRuntimeRoles() {
     try {
-      state.catalog = await context.request(
+      return await context.request(
         `${namespacePath(namespaceId)}/agents/${encodeURIComponent(agent.id)}/runtime-roles`,
+        { revalidate: false, rereadOnResume: true },
       );
-      state.catalogError =
-        state.catalog.roles.length === 0
-          ? "Configure gateway.roles in this Agent’s saved Configuration before assigning OpenClaw access."
-          : null;
     } catch (error) {
       if (error.status === 401 || error.name === "AbortError") {
         throw error;
       }
-      state.catalog = null;
+      return null;
+    }
+  }
+
+  function updateRuntimeRoles(catalog) {
+    if (JSON.stringify(catalog) !== JSON.stringify(state.catalog)) {
+      acknowledge.checked = false;
+    }
+    state.catalog = catalog;
+    if (catalog === null) {
       state.catalogError =
         "The configured OpenClaw role catalog is unavailable. Existing assignments can still be removed.";
+      return;
     }
+    state.catalogError =
+      catalog.roles.length === 0
+        ? "Configure gateway.roles in this Agent’s saved Configuration before assigning OpenClaw access."
+        : null;
+  }
+
+  async function readRuntimeRoles() {
+    const catalog = await requestRuntimeRoles();
     if (!context.isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
+    updateRuntimeRoles(catalog);
   }
 
   // OCC answers 400 naming /subjectId or /resourceId when the Principal cannot be bound in
@@ -586,6 +602,14 @@ export function renderAgentAccess(context, agent) {
       );
       acknowledge.checked = false;
     }, true);
+  });
+  // Catalog changes refresh Sharing without discarding unrelated Agent drafts or live logs.
+  context.onRevalidate?.(async () => {
+    if (state.pending) {
+      throw new Error("Sharing has an unfinished read.");
+    }
+    updateRuntimeRoles(await requestRuntimeRoles());
+    render();
   });
   render();
   void load();

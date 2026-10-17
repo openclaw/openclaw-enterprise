@@ -19,6 +19,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   apiRequests,
   detailUrl,
+  holdRequests,
   expectNoText,
   login,
   setSlackSelection,
@@ -3597,10 +3598,6 @@ test("Agent sharing before deployment rejects stale Configuration and previews s
     false,
   );
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
-  await waitForCondition(
-    () => panel.getByRole("button", { name: "Share Agent", exact: true }).isEnabled(),
-    "refreshed saved role catalog",
-  );
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
@@ -3725,10 +3722,11 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Catalog recovery", { ready: true });
+  const values = nativeRolesGateway(nativeValues("catalog-recovery"), fixture.origin);
   const agent = await fixture.createAgent(
     namespace.id,
     "Catalog recovery Agent",
-    nativeRolesGateway(nativeValues("catalog-recovery"), fixture.origin),
+    values,
   );
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
@@ -3788,11 +3786,42 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   await roles.locator('option[value="researcher"]').waitFor({ state: "attached" });
   assert.equal(await roles.isEnabled(), true);
-  assert.equal(await retained.evaluate((node) => node.isConnected), false);
+  assert.equal(await retained.evaluate((node) => node.isConnected), true);
   assert.equal(
     await panel.getByText(/The configured OpenClaw role catalog is unavailable/).count(),
     0,
   );
+  // A changed policy refreshes only Sharing and requires consent to its new permissions.
+  await roles.selectOption("researcher");
+  await panel.getByText("Selected role permissions", { exact: true }).click();
+  await panel.getByRole("checkbox").check();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  values.gateway.roles.definitions.researcher.scopes = ["operator.read"];
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+  await page.goBack();
+  await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
+  await roles.selectOption("researcher");
+  const permissions = panel.locator("details").first();
+  if (!(await permissions.evaluate((node) => node.open))) {
+    await panel.getByText("Selected role permissions", { exact: true }).click();
+  }
+  const preview = panel.locator("details pre").first();
+  assert.deepEqual(JSON.parse(await preview.innerText()).scopes, ["operator.read"]);
+  assert.equal(await panel.getByRole("checkbox").isChecked(), false);
+
+  // Leaving during the first catalog read must not retain a permanently pending panel.
+  const pendingCatalog = await holdRequests(t, page, `${fixture.origin}${catalogPath}`, {
+    once: true,
+  });
+  await page.reload();
+  await pendingCatalog.requested;
+  await page.getByRole("heading", { name: "Catalog recovery Agent", exact: true }).waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
+  pendingCatalog.release();
+  await page.goBack();
+  await waitForLiveControls(page, ["share-runtime-role"]);
 });
 test("Credentials preserves an existing OpenClaw credential source without offering Codex login", async (t) => {
   const fixture = await createConsoleAppFixture(t);

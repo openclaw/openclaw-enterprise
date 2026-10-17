@@ -796,6 +796,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
 
   await page.getByRole("button", { name: "View version v1" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === first.revision.id);
+  await page.getByText('"marker": "rev-one"').waitFor({ state: "attached" });
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
