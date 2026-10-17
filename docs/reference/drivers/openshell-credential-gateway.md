@@ -1,15 +1,16 @@
 # OpenShell Credential Gateway
 
-The OpenShell Credential Gateway stores OCC [credential sources](../credential-sources.md)
-as providers. Its supervisor substitutes credentials at the egress proxy, outside
-the Harness. It implements the
-[CredentialGatewayDriver contract](credential-gateway.md) and works only with the
-[OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
+The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
+as OpenShell providers. The supervisor substitutes credentials outside the Harness.
+Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `openshell`
 [Backend](../backends.md#openshell-gateway).
 
 **OpenShell remains unsupported for production.** Workload identity, writable state,
 authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
+
+[Protected static inference](../credential-sources/protected-inference.md)
+requires a separate authenticated counterpart.
 
 ## Configure the Driver
 

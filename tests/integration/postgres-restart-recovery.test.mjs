@@ -120,6 +120,7 @@ async function createQueueRevision(
     configuration_generation: 1,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: "compute-queue", implementation: "deterministic-queue" },
+    execution_admission: { version: 2, mode: "unprotected" },
     ...(repositoryCredentials === undefined
       ? {}
       : { repository_credentials: repositoryCredentials }),

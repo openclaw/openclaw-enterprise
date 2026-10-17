@@ -5,7 +5,11 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { ControllerWorker } from "../../apps/controller/src/worker.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -111,7 +115,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
           : {}),
         repositoryCredentials: {
           namespace: options.repositoryNamespace ?? "credentials",
-          podLabels: { app: "credentials" },
+          podLabels: options.repositoryPodLabels ?? { app: "credentials" },
           port: 8443,
         },
         ...(options.publicGithubRead === undefined
@@ -135,7 +139,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         gatewayNodeSelector: { "oce-role": "control-plane" },
       },
     },
-    { nodeEnrollment },
+    { nodeEnrollment, preparedRepositoryIngress: options.preparedRepositoryIngress },
   );
   // Fixture failures are final; skip the driver's API retry waits.
   driver.waitBeforeRetry = async () => {};
@@ -171,6 +175,7 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       secretDriverId: "kubernetes-secret",
     },
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: "principal-repository-material",
     createdAt: "2026-09-18T00:00:00.000Z",
     repositoryCredentials: {
@@ -694,6 +699,139 @@ test("Dedicated repository custody and networking belong only to Codex", async (
   assertGatewayIsolated(
     f.deployments().find((deployment) => deployment.metadata.name === gateway.metadata.name),
   );
+});
+
+async function preparedIngressFixture({ hostname, servicePort = 443, targetPort = 8443 } = {}) {
+  const worker = {
+    "app.kubernetes.io/name": "openclaw-enterprise",
+    "app.kubernetes.io/instance": "oce",
+    "app.kubernetes.io/component": "worker",
+  };
+  const f = await fixture("dedicated", undefined, {
+    preparedRepositoryIngress: true,
+    repositoryPodLabels: worker,
+  });
+  const name = "openclaw-enterprise-prepared-repository-ingress";
+  const metadata = { name, namespace: "credentials", uid: "policy-uid", resourceVersion: "1" };
+  const start = { podSelector: { matchLabels: worker }, policyTypes: ["Ingress"], ingress: [] };
+  const savePolicy = (spec) => f.save({ kind: "NetworkPolicy", metadata, spec });
+  savePolicy(start);
+  f.save({
+    kind: "Service",
+    metadata: {
+      namespace: "credentials",
+      name: "git",
+      ...(hostname === undefined
+        ? {}
+        : { annotations: { "openclaw.dev/repository-credentials-hostname": hostname } }),
+    },
+    spec: {
+      type: "ClusterIP",
+      selector: worker,
+      ports: [{ port: servicePort, targetPort, protocol: "TCP" }],
+    },
+  });
+  const networking = f.clients.networking;
+  const read = async () => (await networking.readNamespacedNetworkPolicy(metadata)).spec;
+  const prepare = (origin) =>
+    f.driver.prepareRevision(f.revision, f.context([runtimeBinding(undefined, undefined, origin)]));
+  return { f, worker, metadata, start, savePolicy, networking, read, prepare };
+}
+
+test("prepared Git admits only the dedicated Harness peer and retires it without evicting another Agent", async () => {
+  const { f, worker, metadata, savePolicy, networking, read, prepare } =
+    await preparedIngressFixture({
+      hostname: "git.credentials.svc.cluster.local",
+    });
+  const revision = f.revision;
+  assert.throws(
+    () => f.driver.validateRepositoryCredentials({ id: "openclaw", mode: "embedded" }),
+    /dedicated Compute-owned Codex Harness/,
+  );
+
+  const replace = networking.replaceNamespacedNetworkPolicy;
+  let writes = 0;
+  let other;
+  networking.replaceNamespacedNetworkPolicy = async (request) => {
+    if (request.name !== metadata.name) {
+      return replace(request);
+    }
+    const spec = structuredClone(request.body.spec);
+    if (++writes === 1) {
+      // Another Agent wins the update. Compute must preserve its exact peer on the conflict.
+      other = spec.ingress[0]._from[0];
+      other.podSelector.matchLabels["openclaw.dev/agent"] = "another-agent";
+      other.podSelector.matchLabels["openclaw.dev/revision"] = "another-revision";
+      metadata.resourceVersion = "2";
+      savePolicy(spec);
+      throw Object.assign(new Error("conflict"), { statusCode: 409 });
+    }
+    assert.equal(request.body.metadata.resourceVersion, metadata.resourceVersion);
+    metadata.resourceVersion = String(writes + 1);
+    savePolicy(spec);
+    if (writes === 2) {
+      throw new Error("lost policy response");
+    }
+    return networking.readNamespacedNetworkPolicy(metadata);
+  };
+  await assert.rejects(prepare(), /lost policy response/);
+  await prepare();
+  assert.equal(writes, 2, "a lost response must be resolved by observation, with no second grant");
+  f.markReady();
+  await f.driver.activateRevision(revision, f.context([runtimeBinding()]));
+  assert.equal(writes, 2);
+  const { ingress, ...destination } = await read();
+  assert.deepEqual(destination, { podSelector: { matchLabels: worker }, policyTypes: ["Ingress"] });
+  const expected = {
+    "openclaw.dev/agent": revision.agentId,
+    "openclaw.dev/namespace": revision.namespaceId,
+    "openclaw.dev/revision": revision.id,
+    "openclaw.dev/service-principal": revision.servicePrincipalId,
+    "openclaw.dev/workload-role": "agent",
+    "openclaw.dev/network-profile": "broad-egress-v1",
+  };
+  // Match both halves of Kubernetes' AND peer selector to the actual dedicated Pod template.
+  // This excludes gateways, sibling Agents, stale revisions and another Kubernetes namespace.
+  for (const [key, value] of Object.entries(expected)) {
+    assert.equal(f.consumer().spec.template.metadata.labels[key], value, key);
+  }
+  const peer = {
+    namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": f.namespace } },
+    podSelector: { matchLabels: expected },
+  };
+  const ports = [{ port: 8443, protocol: "TCP" }];
+  assert.deepEqual(ingress, [{ _from: [other, peer], ports }]);
+
+  f.observePods(() => f.setPods([]));
+  await f.driver.retireRevision(revision);
+  assert.deepEqual((await read()).ingress, [{ _from: [other], ports }]);
+
+  // Namespace retirement prunes the last peer. No peers must mean no rule, not an empty 'from'.
+  await f.driver.deleteNamespace({ id: revision.namespaceId, name: "Repository material tenant" });
+  assert.deepEqual((await read()).ingress, []);
+});
+
+test("prepared Git binds the session origin to the selected broker Service", async (t) => {
+  const custom = "git.credentials.svc.cluster.internal";
+  for (const scenario of [
+    { name: "custom cluster domain", hostname: custom, origin: custom, admitted: true },
+    { name: "foreign suffix", hostname: custom, origin: "git.credentials.svc.attacker.example" },
+    { name: "missing Service hostname", origin: custom },
+    { name: "wrong Service port", hostname: custom, origin: custom, servicePort: 444 },
+    { name: "wrong worker port", hostname: custom, origin: custom, targetPort: 9443 },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const { read, prepare, start } = await preparedIngressFixture(scenario);
+      const preparing = prepare(`https://${scenario.origin}`);
+      if (scenario.admitted) {
+        await preparing;
+        assert.equal((await read()).ingress[0]._from.length, 1);
+      } else {
+        await assert.rejects(preparing, /selected broker/);
+        assert.deepEqual(await read(), start, "a refused origin must not admit a broker peer");
+      }
+    });
+  }
 });
 
 test("Dedicated credential refresh preserves its enrolled workspace node", async () => {
@@ -1379,6 +1517,259 @@ test("enabling the reader cannot grant an already admitted revision during activ
   assert.equal(publicReaderPolicies(f).length, 0);
 });
 
+// An independently admitted unprotected revision selects the exact anonymous reader.
+async function publicReaderAdmission() {
+  const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
+  const { revision, driver } = f;
+  delete revision.repositoryCredentials;
+  revision.configuration.plugins.entries.codex.config.appServer.networkProxy = {
+    enabled: true,
+    domains: { [publicReader.address]: "allow" },
+  };
+  const admission = driver.admitRevision(revision);
+  assert.match(admission, /^public-github-read:v1:[a-f0-9]{64}$/);
+  return { f, revision, driver, admission };
+}
+
+test("protected execution cannot acquire the anonymous reader or use it as a fallback", async () => {
+  const { f } = await publicReaderAdmission();
+  const protectedRevision = {
+    ...f.revision,
+    executionAdmission: { version: 2, mode: "protected" },
+    egressPlan: { routes: [] },
+  };
+  assert.equal(f.driver.admitRevision(protectedRevision), undefined);
+  assert.throws(
+    () => pluginRuntimeSpecForRevision(protectedRevision, undefined, undefined, publicReader),
+    /public GitHub reader cannot be selected for protected execution/,
+  );
+  await assert.rejects(f.driver.prepareRevision(protectedRevision), /exact paired Compute release/);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  assert.equal(f.deployments().length, 0);
+});
+
+// Exercise Worker.process and the shipping Drivers. Only state, IAM decisions, the queue and
+// the Kubernetes transport are local fixtures; a successful prepare alone missed this cutover.
+test("the owning active reconcile withdraws its admitted reader across the Credential Proxy cutoff", async () => {
+  const { f, revision, driver, admission } = await publicReaderAdmission();
+  revision.compute.admission = admission;
+  const context = f.context(undefined);
+  await driver.prepareRevision(revision, context);
+  f.markReady();
+  await driver.activateRevision(revision, context);
+  const deployment = f.consumer();
+  const policy = publicReaderPolicies(f)[0];
+  assert.ok(policy.metadata.uid && deployment.metadata.uid);
+  f.setPods([workloadPod(deployment, f.namespace, "selected-agent")]);
+
+  driver.options.network.publicGithubRead = undefined;
+  driver.proxyDriver = new OpenShellCredentialProxyDriver(
+    { middlewareName: "oce-authority", authorityScope: "execution" },
+    {
+      id: "openshell-egress",
+      backend: { id: "test-gateway" },
+      sandbox: { harnessResource: () => assert.fail("must not use the protected Sandbox") },
+    },
+  );
+  assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
+
+  const legacy = structuredClone(revision);
+  delete legacy.executionAdmission;
+  const unselected = structuredClone(revision);
+  delete unselected.compute.admission;
+  const otherCompute = structuredClone(revision);
+  otherCompute.compute.id = "other-compute";
+  for (const unsupported of [legacy, unselected, otherCompute]) {
+    assert.equal(driver.rejectedExecutionWithdrawal(unsupported), undefined);
+    assert.throws(() => driver.validateExecutionAdmission(unsupported));
+  }
+
+  const { id: revisionId, namespaceId, agentId, servicePrincipalId } = revision;
+  const actorId = "authorized-actor";
+  const key = "agent_revision:" + revisionId + ":reconcile";
+  const claim = { idempotencyKey: key, namespaceId, agentId, revisionId, actorId, attemptCount: 1 };
+  const iam = {
+    id: "fixture-iam",
+    capability: "iam",
+    async authorize() {
+      return {
+        allowed: true,
+        reason: "authorized maintenance",
+        driverId: this.id,
+        evidence: {
+          identityId: actorId,
+          groupIds: [],
+          roleIds: [],
+          bindingIds: [],
+          restrictionIds: [],
+        },
+      };
+    },
+  };
+  const agent = {
+    id: agentId,
+    namespaceId,
+    servicePrincipalId,
+    activeRevisionId: revisionId,
+    desiredRuntimeState: "running",
+  };
+  const view = {
+    namespaces: { findNamespace: () => ({ id: namespaceId, status: "ready" }) },
+    agents: { findAgent: () => agent },
+    revisions: {
+      findRevision: () => structuredClone(revision),
+      listRevisionMetadata: () => [revision],
+    },
+    credentialSources: { listCredentialWithdrawals: () => [] },
+  };
+  const worker = new ControllerWorker({
+    pool: {},
+    mode: "production",
+    emit() {},
+    drivers: {
+      installation: { drivers: { iam, compute: driver } },
+      computeDriver: driver,
+      proxyDriver: driver.proxyDriver,
+      createIAMDriver: () => iam,
+    },
+  });
+  worker.installation = { id: "cutover-test" };
+  worker.state.loadNativeIAMState = () => ({
+    identities: [
+      { id: actorId },
+      { id: servicePrincipalId, kind: "service_principal", namespaceId, agentId },
+    ],
+  });
+  worker.state.read = (read) => read(view);
+  worker.queue.findWorkAttempt = () => undefined;
+  const queueWrites = [];
+  let ageMs = 100;
+  worker.queue.heartbeat = () => ({ ageMs });
+  const queue = {
+    heartbeat: () => claim,
+    defer: (_claim, result) => queueWrites.push(["defer", result.code]),
+    fail: (_claim, result) => queueWrites.push(["fail", result.code]),
+  };
+  worker.state.transactWithQueue = (update) => update(view, queue);
+
+  // A reconcile whose Agent principal no longer owns the revision has no withdrawal authority.
+  agent.servicePrincipalId = "other-principal";
+  f.apiCalls.length = 0;
+  worker.workOrigins.set(claim, performance.now() - ageMs);
+  await worker.process(claim);
+  assert.deepEqual(f.apiCalls, []);
+  assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
+  assert.equal(f.consumer().metadata.uid, deployment.metadata.uid);
+
+  agent.servicePrincipalId = servicePrincipalId;
+  // Losing the claim at the effect boundary must also leave the exact objects untouched.
+  const heartbeat = worker.queue.heartbeat;
+  worker.queue.heartbeat = () => undefined;
+  await assert.rejects(worker.process(claim), { name: "WorkClaimLostError" });
+  assert.deepEqual(f.apiCalls, []);
+  assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
+  worker.queue.heartbeat = heartbeat;
+
+  // The cutoff is not a convergence failure. Force a real incomplete Pod observation after
+  // closing the policy and UID-bound foreground deletion; even past the convergence deadline the live claim must defer.
+  ageMs = worker.convergenceTimeoutMs + 5000;
+  worker.workOrigins.set(claim, performance.now() - ageMs);
+  queueWrites.length = 0;
+  let deleted = false;
+  const remove = f.clients.apps.deleteNamespacedDeployment;
+  f.clients.apps.deleteNamespacedDeployment = async (request) => {
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.equal(request.body.preconditions.uid, deployment.metadata.uid);
+    assert.equal(request.body.propagationPolicy, "Foreground");
+    await remove(request);
+    deleted = true;
+  };
+  const listPods = f.clients.core.listNamespacedPod;
+  let podsExamined = false;
+  f.clients.core.listNamespacedPod = async (request) => {
+    const pods = (await listPods(request)).items;
+    assert.deepEqual(
+      pods.map(({ metadata }) => metadata.name),
+      ["selected-agent"],
+    );
+    podsExamined = true;
+    return { items: pods, metadata: { continue: "incomplete-observation" } };
+  };
+  await worker.process(claim);
+  assert.deepEqual(queueWrites, [["defer", "EXECUTION_ADMISSION_WITHDRAWAL_PENDING"]]);
+  assert.ok(deleted && podsExamined);
+
+  // A mere return of the peer confers no release. Reobserve the selected Pod gone, then fail the
+  // old release (never publish success or start another workload).
+  driver.options.network.publicGithubRead = publicReader;
+  f.clients.core.listNamespacedPod = listPods;
+  let terminationExamined = false;
+  f.observePods(() => {
+    assert.equal(publicReaderPolicies(f).length, 0);
+    assert.equal(f.consumer(), undefined);
+    f.setPods([]);
+    terminationExamined = true;
+  });
+  queueWrites.length = 0;
+  await worker.process(claim);
+  assert.ok(terminationExamined);
+  assert.deepEqual(queueWrites, [["fail", "EXECUTION_ADMISSION_WITHDRAWN"]]);
+  assert.equal(publicReaderPolicies(f).length, 0);
+  assert.equal(f.consumer(), undefined);
+  assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
+});
+
+test("API-admitted protected credential-free metadata projects no inference tools or anonymous reader", async (t) => {
+  const f = await staticEgressFixture(t, {
+    async admitSource({ app, agent, namespace, path, origin }) {
+      const { status, data: source } = await app.request("POST", path, {
+        body: {
+          name: "identity-only",
+          type: "credential-free-repository-metadata",
+          config: {
+            origin,
+            repository_id: "7311",
+            repository: "fixture/credential-free",
+            agent_id: agent.id,
+            authority: "execution",
+          },
+        },
+      });
+      assert.equal(status, 201);
+      const bound = await app.updateAgent(namespace.id, agent.id, {
+        configurationId: agent.configurationId,
+        harnessAuth: { method: "runtime" },
+        credentialSources: [{ sourceId: source.id }],
+      });
+      return { agent: bound, source };
+    },
+  });
+  const r = f.revision;
+  assert.deepEqual(r.executionAdmission, { version: 2, mode: "protected" });
+  assert.equal(r.egressPlan.routes[0].binding.grant.kind, "credential_free_repository_metadata");
+  const { driver: ordinary, admission } = await publicReaderAdmission();
+  const driver = new KubernetesComputeDriver(ordinary.options, {
+    sandboxDriver: f.sandboxDriver,
+    proxyDriver: f.egress,
+  });
+  // The production Compute release gate and the exact projection prepareRevisionWorkloads uses.
+  driver.validateRevisionExecution(r, { currentEgressInstallation: async () => f.installation });
+  assert.equal(driver.admitRevision(r), undefined);
+  const { runtime } = driver.pluginRuntimeSnapshot(r);
+  assert.equal(runtime.providerTools, "none");
+  assert.equal(runtime.egressEnrollment.inference, false);
+  assert.equal(runtime.publicGithubRead, undefined);
+  const borrowedReader = { ...r, compute: { ...r.compute, admission } };
+  assert.equal(driver.rejectedExecutionWithdrawal(borrowedReader), undefined);
+  assert.equal(driver.pluginRuntimeSnapshot(borrowedReader).runtime.publicGithubRead, undefined);
+  const unknown = structuredClone(r);
+  unknown.egressPlan.routes[0].binding.grant.kind = "not_an_admitted_grant";
+  assert.throws(
+    () => driver.pluginRuntimeSnapshot(unknown),
+    /Unsupported protected inference tool grant/,
+  );
+});
+
 test("withdrawing a selected reader narrows access and stops only its revision", async () => {
   for (const replacement of [undefined, { ...publicReader, podLabels: { app: "replacement" } }]) {
     const f = await fixture("dedicated", undefined, { publicGithubRead: publicReader });
@@ -1409,6 +1800,14 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     f.setPods([workloadPod(selected, f.namespace, "selected"), successorPod]);
     assert.equal(publicReaderPolicies(f).length, 1);
     f.driver.options.network.publicGithubRead = replacement;
+    // Selecting Credential Proxy cannot convert the old grant, or block withdrawal of its owned workload.
+    if (replacement !== undefined) {
+      f.driver.proxyDriver = { id: "selected-after-reader-admission" };
+      await assert.rejects(
+        f.driver.prepareRevision(successor, context),
+        /exact paired Compute release/,
+      );
+    }
     const deleteDeployment = f.clients.apps.deleteNamespacedDeployment;
     const readDeployment = f.clients.apps.readNamespacedDeployment;
     let deleting = false;

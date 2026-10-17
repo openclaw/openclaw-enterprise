@@ -88,6 +88,7 @@ test(
         ),
     );
     assert.ok(clientModules.includes("drivers/repo/github/credentials/client/router.js"));
+    assert.ok(clientModules.includes("drivers/repo/github/credentials/client/draft-pr.js"));
     assert.ok(clientModules.includes("drivers/repo/github/credentials/client/hook-dispatch.js"));
     assert.equal(
       (await lstat(join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push")))
@@ -519,6 +520,7 @@ test("credential artifact builder rejects dependencies outside its emitted closu
     clientEntry,
     join(emitted, "drivers/repo/github/credentials/client/operator.js"),
     join(emitted, "drivers/repo/github/credentials/client/git-helper.js"),
+    join(emitted, "drivers/repo/github/credentials/client/draft-pr.js"),
     join(emitted, "drivers/repo/github/credentials/client/native-git.js"),
     join(emitted, "drivers/repo/github/credentials/client/hook-dispatch.js"),
     join(emitted, "drivers/repo/github/credentials/client/router.js"),

@@ -92,9 +92,22 @@ export class DeletionRetryOwnedError extends AuthorizationDeniedError {
  * remaining distinguishable from explicit denials for HTTP and audit handling.
  */
 export class DependencyUnavailableError extends AuthorizationDeniedError {
-  constructor(message = "A required platform dependency is unavailable.") {
+  /** Fixed Driver-owned request diagnostics; never copy supplier text or request values here. */
+  readonly requestDiagnostic?: {
+    readonly method: string;
+    readonly grpcStatus: number;
+    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+  };
+
+  constructor(
+    message = "A required platform dependency is unavailable.",
+    requestDiagnostic?: NonNullable<DependencyUnavailableError["requestDiagnostic"]>,
+  ) {
     super(message);
     this.name = "DependencyUnavailableError";
+    if (requestDiagnostic !== undefined) {
+      this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
+    }
   }
 }
 
@@ -827,12 +840,28 @@ export class ActivationFailedError extends Error {
  * with `code`. The message stays in the controller; status shows a fixed text.
  */
 export class SandboxRevisionUnsupportedError extends Error {
-  readonly code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED" | "SANDBOX_HARNESS_UNSUPPORTED";
+  readonly code:
+    | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
+    | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/** The selected Sandbox cannot authenticate the required recipient of repository credentials. */
+export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUnsupportedError {
+  static readonly description =
+    "OpenShell cannot verify the recipient required for repository session delivery. Select a Compute-owned Harness to use repository credentials.";
+
+  constructor() {
+    super(
+      "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+      SandboxRepositoryRecipientUnverifiedError.description,
+    );
   }
 }
 

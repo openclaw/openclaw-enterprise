@@ -288,6 +288,7 @@ message ProviderMutationReceipt {
   string provider = 3;
   string workspace = 4;
   ProviderMutationKind kind = 5;
+  ProviderDesiredIdentity desired = 6;
 }
 
 enum ProviderProfileCategory {
@@ -375,7 +376,10 @@ message ProviderReadinessStatus {
   ProviderMutationReceipt receipt = 1;
   ProviderReadinessState state = 2;
   ProviderReadinessReason reason = 3;
+  ProviderReadinessObservation observed = 4;
   string network_instance_id = 5;
+  google.protobuf.Timestamp observed_time = 106;
+  google.protobuf.Timestamp evaluated_time = 107;
 }
 
 enum ProviderReadinessState {
@@ -645,4 +649,29 @@ message ExecSandboxEvent {
     ExecSandboxStderr stderr = 2;
     ExecSandboxExit exit = 3;
   }
+}
+
+// Desired and installed identities from the released readiness contract.
+message ProviderDesiredIdentity {
+  string sandbox_id = 1;
+  string sandbox = 2;
+  string attachment_epoch = 3;
+  string provider_id = 4;
+  uint64 provider_resource_version = 5;
+  uint64 provider_env_revision = 6;
+  uint64 config_revision = 7;
+  string policy_hash = 8;
+}
+message ProviderReadinessObservation {
+  string session_id = 1;
+  uint64 sequence = 2;
+  string attachment_epoch = 3;
+  uint64 provider_env_revision = 4;
+  uint64 config_revision = 5;
+  string policy_hash = 6;
+  bool credentials_installed = 7;
+  bool policy_active = 8;
+  bool launch_environment_installed = 9;
+  string process_instance_id = 10;
+  ProviderReadinessReason reason = 11;
 }

@@ -54,6 +54,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
   tenant,
@@ -7208,6 +7209,7 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg-native-approvers",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -7867,6 +7869,7 @@ test("native channel providers require Secret bindings and project them only to 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -8990,6 +8993,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     harnessAuth: apiKeyAuth,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: "service-principal-embedded-recovery",
     createdAt: tenant.createdAt,
   };
@@ -10856,6 +10860,7 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     namespaceId: tenant.id,
     agentId: "agent-foreign",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -11603,6 +11608,110 @@ test("provider Harness requires its assigned network profile before readiness an
   }
 });
 
+test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
+  const provider = await harnessTlsFixture(t);
+  const execution = await harnessTlsFixture(t);
+  for (const crossCluster of [false, true]) {
+    const configured = crossCluster
+      ? twoClusterOptions()
+      : routedOptions({
+          runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        });
+    configured.network.providerHarness = {
+      namespace: "provider",
+      podLabels: { app: "provider" },
+      address: "10.43.0.50",
+      port: 8443,
+    };
+    if (crossCluster) {
+      configured.executionCluster.caBundle = execution.caBundle;
+    }
+    const driver = new KubernetesComputeDriver(configured);
+    const revision = routedRevision(driver);
+    const target = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
+    const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+    const configuration = driver.gatewayConfiguration(revision, "node", target);
+    const endpoint = {
+      url: "wss://harness.example.test:8443/",
+      tls: { caBundle: provider.caBundle },
+    };
+    const render = (value) =>
+      driver.deployment(
+        `gateway-${digest(revision.agentId)}`,
+        ownership,
+        target,
+        configured.images.gateway,
+        "gateway-account",
+        "gateway",
+        {},
+        "info",
+        configuration,
+        false,
+        undefined,
+        undefined,
+        [],
+        [],
+        undefined,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        value,
+      );
+    const writes = [];
+    driver.apiClients = Promise.resolve({
+      core: {
+        async readNamespacedConfigMap() {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        },
+        async patchNamespacedConfigMap({ body }) {
+          writes.push(body);
+        },
+      },
+    });
+    await driver.reconcileHarnessTrust(revision, endpoint, target);
+    assert.deepEqual(writes[0].data, {
+      "ca-bundle.pem": provider.caBundle + (crossCluster ? "\n" + execution.caBundle : ""),
+    });
+    const pod = render(endpoint).spec.template.spec;
+    const roots = pod.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS");
+    assert.deepEqual(roots, [
+      { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" },
+    ]);
+    const system = render({ url: endpoint.url }).spec.template.spec;
+    assert.equal(
+      system.volumes.some(({ name }) => name === "harness-trust"),
+      false,
+    );
+    assert.deepEqual(
+      system.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+      crossCluster
+        ? [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/execution-ca.pem" }]
+        : [],
+    );
+    for (const tls of [
+      { caBundle: "" },
+      { caBundle: "not a certificate" },
+      { caBundle: provider.cert },
+      { caBundle: provider.caBundle + provider.key },
+      { caBundle: provider.caBundle, privateKey: provider.key },
+      { caBundlePath: provider.rootCertificatePath },
+    ]) {
+      assert.throws(() => render({ url: endpoint.url, tls }), /TLS trust/);
+      const before = writes.length;
+      await assert.rejects(
+        driver.reconcileHarnessTrust(revision, { url: endpoint.url, tls }, target),
+        /TLS trust/,
+      );
+      assert.equal(writes.length, before, "invalid trust must fail before any ConfigMap write");
+    }
+    assert.throws(
+      () => render({ ...endpoint, url: "ws://harness.example.test:8443/" }),
+      /TLS trust requires a WSS endpoint/,
+    );
+  }
+});
+
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
   const fixture = providerReadinessFixture();
   fixture.driver.waitBeforeRetry = async () => {};
@@ -11759,6 +11868,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     namespaceId: tenant.id,
     agentId: "agent-a",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -14250,7 +14360,8 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
 // Finding 860: retiring the last OpenShell revision left the workspace-node pair
 // (supervisor egress to the Gateway, Gateway ingress from supervisors) in the namespace.
 for (const stopped of [false, true]) {
-  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async () => {
+  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async (t) => {
+    const tls = await harnessTlsFixture(t);
     const cleanupCalls = [];
     const driver = new KubernetesComputeDriver(
       options({
@@ -14339,6 +14450,32 @@ for (const stopped of [false, true]) {
     );
     save(sibling);
 
+    const trustName = `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    const trust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        trustName,
+        { ...ownership, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(trust);
+    const siblingTrust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
+        { ...ownership, agentId: "agent-sibling", revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(siblingTrust);
+
     const deleted = [];
     const missing = (kind, name) =>
       Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
@@ -14394,6 +14531,12 @@ for (const stopped of [false, true]) {
 
     await driver.retireRevision(revision);
     assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(
+      objects.has(key("ConfigMap", trustName)),
+      false,
+      "retirement removes exact public trust",
+    );
+    assert.deepEqual(objects.get(key("ConfigMap", siblingTrust.metadata.name)), siblingTrust);
     assert.equal(objects.has(key("Deployment", gatewayName)), false);
     for (const name of policyNames) {
       assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);

@@ -533,6 +533,7 @@ export function createWorkerRevisionFixtures(
         configurationId: owner.configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
+        executionAdmission: { version: 2, mode: "unprotected" },
         harness: approvedHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(plugins === undefined ? {} : { plugins }),

@@ -383,12 +383,24 @@ export const CreateCredentialSourceBody = Type.Object(
 
 export const UpdateCredentialSourceBody = Type.Object(
   {
+    adoption: Type.Optional(
+      Type.Literal("live", {
+        description:
+          "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+      }),
+    ),
+    authorityScope: Type.Optional(
+      Type.Literal("execution", {
+        description:
+          "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+      }),
+    ),
     secrets: Type.Optional(CredentialSourceSecrets),
   },
   {
     additionalProperties: false,
     description:
-      "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+      "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
   },
 );
 

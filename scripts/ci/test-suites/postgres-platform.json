@@ -29,7 +29,14 @@
     "tests/integration/postgres-connection-auth.test.mjs",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
-    "tests/integration/postgres-transaction-commit.test.mjs"
+    "tests/integration/postgres-transaction-commit.test.mjs",
+    "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+    "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-github-git-use.test.mjs",
+    "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+    "tests/integration/postgres-egress-send-receipts.test.mjs",
+    "tests/integration/postgres-protected-credential-free.test.mjs"
   ],
   "files": [
     {
@@ -242,6 +249,53 @@
       "path": "tests/integration/postgres-github-recovery-replacement.test.mjs",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "expectedTests": [
+        "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
+        "current proof preserves caller SQL limits and restores them in its unit",
+        "signed PostgreSQL dispatch uses one shared connection for current material proof",
+        "concurrent signed checks drain the shared single-connection pool",
+        "before-send bounds a real PostgreSQL lock wait and refuses late permission",
+        "before-send refuses expired material and an elapsed signed deadline",
+        "before-send refuses displaced material and accepts renewed material",
+        "before-send refuses a rejected prepared selection",
+        "before-send refuses a withdrawn prepared family"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
+      "expectedTests": [
+        "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+      "expectedTests": [
+        "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-static-egress.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-egress-send-receipts.test.mjs",
+      "expectedTests": [
+        "PostgreSQL send receipts survive owner loss and fence exact static versions",
+        "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",
+        "lost pre-send acknowledgment leaves possible evidence, never a retry verdict",
+        "closed outcomes, exact bindings, and concurrent duplicates preserve their original verdict"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-protected-credential-free.test.mjs",
+      "expectedTests": [
+        "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
       ]
     }
   ]

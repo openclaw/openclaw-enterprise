@@ -68,6 +68,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     configurationId: `configuration-${agentId}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       {
         gateway: { mode: "local" },

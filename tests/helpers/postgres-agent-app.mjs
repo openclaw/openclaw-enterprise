@@ -24,7 +24,7 @@ const adminPassword = "postgres-development-password";
 const origin = "http://127.0.0.1";
 
 // Bootstraps the shared development Installation once per database; later suites reuse it.
-async function ensureBootstrap(t, { label, authSecret }) {
+export async function ensurePostgresAgentBootstrap(t, { label, authSecret }) {
   const observer = new pg.Pool({ connectionString: databaseUrl, max: 2 });
   t.after(() => observer.end());
   if ((await new PostgresPlatformState(observer).loadInstallation()) !== undefined) {
@@ -62,10 +62,17 @@ async function ensureBootstrap(t, { label, authSecret }) {
  */
 export async function createPostgresAgentApp(
   t,
-  { label, authSecret, createAuditSink = (persisted) => persisted, appOptions },
+  {
+    label,
+    authSecret,
+    createAuditSink = (persisted) => persisted,
+    appOptions,
+    transportDatabaseUrl = databaseUrl,
+    poolOptions = {},
+  },
 ) {
-  await ensureBootstrap(t, { label, authSecret });
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
+  await ensurePostgresAgentBootstrap(t, { label, authSecret });
+  const pool = new pg.Pool({ connectionString: transportDatabaseUrl, max: 6, ...poolOptions });
   t.after(() => pool.end());
   const state = new PostgresPlatformState(pool);
   const installation = await state.loadInstallation();

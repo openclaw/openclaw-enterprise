@@ -6,7 +6,10 @@ import { createControlledClock } from "../fixtures/repository-credentials/clock.
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  GrpcOpenShellGatewayClient,
+  OpenShellAdmissionLimitError,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
@@ -582,6 +585,7 @@ revisionTest(
           revision: 1,
           backendId: null,
           configuration: {},
+          executionAdmission: first.executionAdmission,
           servicePrincipalId: malformedAdmission.servicePrincipalId,
           createdAt: new Date().toISOString(),
         }),
@@ -606,6 +610,7 @@ revisionTest(
             configuration_id: malformedAdmission.configurationId,
             configuration_kind: "agent",
             configuration_generation: 1,
+            execution_admission: first.executionAdmission,
             harness: { id: "incomplete" },
           }),
         ],
@@ -1386,6 +1391,205 @@ revisionTest(
 );
 
 test(
+  "the revision worker logs closed diagnostics from genuine OpenShell gRPC failures",
+  requiresPostgres,
+  async (context) => {
+    const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+    const grpc = require("@grpc/grpc-js");
+    const loader = require("@grpc/proto-loader");
+    const proto = await loader.load(
+      new URL("../fixtures/openshell-v0.1.4-wire.proto", import.meta.url).pathname,
+      { keepCase: true, enums: String },
+    );
+    const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+    const secret = `synthetic-reflected-${randomUUID()}`;
+    const cases = [
+      { prefix: "policy contains unsafe content: ", category: "POLICY_SAFETY" },
+      { prefix: "policy middleware validation failed: ", category: "POLICY_MIDDLEWARE_VALIDATION" },
+      { prefix: "unrecognized supplier validation: ", category: "UNKNOWN" },
+      // Similar or embedded strings must not claim a supplier validation stage.
+      { prefix: "reflected policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: " policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: "Policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: "policy contains unsafe content:", category: "UNKNOWN" },
+      {
+        prefix: "policy contains unsafe content: ",
+        status: grpc.status.INTERNAL,
+        category: "UNKNOWN",
+      },
+      { prefix: "policy contains unsafe content: ", method: "Health", category: "UNKNOWN" },
+    ].map((scenario, index) => ({
+      name: `diagnostic-${index}`,
+      method: "CreateSandbox",
+      status: grpc.status.INVALID_ARGUMENT,
+      ...scenario,
+    }));
+    const calls = [];
+    const reflected = [];
+    const server = new grpc.Server();
+    let client;
+    let fixture;
+    context.after(async () => {
+      try {
+        await fixture?.stop();
+      } finally {
+        client?.close();
+        server.forceShutdown();
+      }
+    });
+    server.addService(OpenShell.service, {
+      CreateSandbox(call, callback) {
+        const scenario = cases.find(({ name }) => name === call.request.name);
+        calls.push(scenario.name);
+        reflected.push(call.request.annotations["fixture-reflection"]);
+        // Reflect request material over the real wire. The production client, worker and
+        // logger must discard it, even though it has no recognizable credential shape.
+        callback({
+          code: scenario.status,
+          details: scenario.prefix + call.request.annotations["fixture-reflection"],
+        });
+      },
+      Health(_call, callback) {
+        const scenario = cases.find(({ method }) => method === "Health");
+        calls.push(scenario.name);
+        callback({ code: scenario.status, details: scenario.prefix + secret });
+      },
+    });
+    const port = await new Promise((resolve, reject) =>
+      server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+    fixture = await setup(context, { maxAttempts: 1 });
+    const admitted = new Map();
+    for (const scenario of cases) {
+      const { owner, candidate } = await fixture.admitInitialRevision(scenario.name);
+      admitted.set(candidate.id, { ...scenario, owner, candidate });
+    }
+    const events = [];
+    const lines = [];
+    const requestFailures = [];
+    const emit = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            lines.push(
+              ...String(chunk)
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => JSON.parse(line)),
+            );
+            return true;
+          },
+        },
+      }),
+    );
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const scenario = admitted.get(revision.id);
+          if (scenario !== undefined) {
+            // The fixture Compute boundary uses the real client; no error or worker method
+            // is patched. PostgreSQL dispatch, retry accounting and log emission are real.
+            const signal = currentComputeAbortSignal();
+            assert.ok(signal, "the worker must own the Compute cancellation signal");
+            try {
+              if (scenario.method === "Health") {
+                await client.health(signal);
+              } else {
+                await client.createSandbox(
+                  {
+                    name: scenario.name,
+                    workspace: "diagnostic-workspace",
+                    requestId: revision.id.slice("rev_".length),
+                    labels: {},
+                    annotations: { "fixture-reflection": secret },
+                    spec: { template: { image: "fixture.invalid/diagnostic:never-started" } },
+                    serviceExposures: [],
+                  },
+                  signal,
+                );
+              }
+            } catch (error) {
+              requestFailures.push(error);
+              throw error;
+            }
+          }
+          return fixture.compute.prepareRevision(revision);
+        },
+      },
+      {
+        emit(event) {
+          events.push(event);
+          emit(event);
+        },
+      },
+    );
+    for (const { owner, candidate, method, status, category } of admitted.values()) {
+      await fixture.work(candidate, "failed_permanent");
+      await completion(
+        events,
+        "the gRPC failure's completion",
+        (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+      );
+      const [line] = lines.filter(
+        (entry) => entry.event === "worker.completed" && entry.revisionId === candidate.id,
+      );
+      assert.ok(line);
+      assert.deepEqual(
+        {
+          method: line.method,
+          grpcStatus: line.grpcStatus,
+          validationCategory: line.validationCategory,
+        },
+        { method, grpcStatus: status, validationCategory: category },
+      );
+      // A one-attempt fixture becomes terminal by exhaustion; the classification itself
+      // still asks the queue to retry and never makes all INVALID_ARGUMENT errors permanent.
+      assert.equal(line.outcome, "retry");
+      assert.equal(line.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(line.cause, "DependencyUnavailableError");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    }
+    await fixture.stop();
+    assert.deepEqual(calls.sort(), cases.map(({ name }) => name).sort());
+    assert.deepEqual(
+      reflected,
+      cases.filter(({ method }) => method === "CreateSandbox").map(() => secret),
+    );
+    // HTTP dependency logging also emits this message: sanitizing only worker fields
+    // would still expose reflected values there.
+    assert.deepEqual(
+      requestFailures.map(({ message }) => message).sort(),
+      cases
+        .map(({ method, status }) => `OpenShell ${method} failed with gRPC status ${status}.`)
+        .sort(),
+    );
+    for (const output of [JSON.stringify(events), JSON.stringify(lines)]) {
+      assert.equal(output.includes(secret), false);
+      for (const { prefix } of cases) {
+        assert.equal(output.includes(prefix), false);
+      }
+      for (const field of [
+        "details",
+        "request",
+        "spec",
+        "annotations",
+        "stack",
+        "requestDiagnostic",
+      ]) {
+        assert.equal(output.includes(`"${field}":`), false);
+      }
+    }
+  },
+);
+
+test(
   "the revision worker emits bounded Driver diagnostics for failed Compute preparation",
   requiresPostgres,
   async (context) => {
@@ -1444,6 +1648,7 @@ test(
       computeDriverId: fixture.compute.id,
       code: "KUBERNETES_API_REJECTED",
       step: "gateway_deployment",
+      candidatePreparationReached: true,
       errorClass: "KubernetesApiError",
       message: "The Kubernetes API rejected revision preparation.",
       status: 422,

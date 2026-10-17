@@ -49,6 +49,29 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
     {
+      name: "protected profile without enrollment refuses before any native process",
+      protectedInference: "missing",
+      native: [],
+    },
+    {
+      name: "protected probe retains zero retry settings despite ignoring user config",
+      protectedInference: "signed",
+      events: completedTurn(),
+      expect: ready,
+    },
+    {
+      name: "protected probe timeout never starts a second business request",
+      protectedInference: "signed",
+      native: [login(), probe([], timedOut, 30000)],
+      expect: probeTimeout,
+    },
+    {
+      name: "protected probe refuses an unexpected native stream retry",
+      protectedInference: "signed",
+      events: completedTurn(recoveredStreamError),
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }),
+    },
+    {
       name: "provider PAT placeholder uses native auth storage before the model probe",
       providerPat: true,
       events: completedTurn(),
@@ -419,7 +442,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   ];
   for (const scenario of scenarios) {
     await t.test(scenario.name, (t) => {
-      checkCodexStartup(t, scenario);
+      return checkCodexStartup(t, scenario);
     });
   }
 });

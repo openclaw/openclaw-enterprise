@@ -42,7 +42,10 @@
     "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
     "runtime-image-fixture": "./test-suites/runtime-image-fixture.json",
     "qa-matrix": "./test-suites/qa-matrix.json",
-    "keycloak-oidc": "./test-suites/keycloak-oidc.json"
+    "keycloak-oidc": "./test-suites/keycloak-oidc.json",
+    "egress-connected": "./test-suites/egress-connected.json",
+    "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
   },
   "groups": {
     "ci": [
@@ -103,7 +106,8 @@
       "k3d-observability-demo",
       "keycloak-oidc",
       "qa-matrix",
-      "dev-up-k3d"
+      "dev-up-k3d",
+      "skipper-prepared-git-installed"
     ]
   }
 }

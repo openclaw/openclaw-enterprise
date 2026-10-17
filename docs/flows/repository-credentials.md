@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
 updated: 2026-10-15
-last_updated_session: authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb
+last_updated_session: authoring-run/3af8b480-048d-4e5e-a05c-f5a92f357ccd
 ---
 
 # Repository credential service flow
@@ -219,20 +219,15 @@ deadline. Acceptance, reuse, dispatch and authentication honor the earlier deadl
 cleanup retains separate expiry and callback drainage. Wall-clock changes cannot
 shorten custody or restart use lifetime.
 
-`apps/controller/src/drivers/repo/github/credentials/driver.ts:createGitHubDriver`
-composes acquisition and capture through
-`apps/controller/src/drivers/repo/github/credentials/driver/acquisition.ts:createCredentialAcquisition`,
-authentication through
-`apps/controller/src/drivers/repo/github/credentials/driver/access.ts:createCredentialAuthentication`,
-retirement through
-`apps/controller/src/drivers/repo/github/credentials/driver/retirement.ts:createCredentialRetirement`,
-and session-bound plans, credentials and original outcomes through
-`apps/controller/src/drivers/repo/github/credentials/driver/state.ts:createGitHubDriverState`.
-Acquisition observes and captures material inside the transport response callback
-through `apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts:observeAcquisitionResponse`.
-Its pure `classifyAcquisitionResponse` checks status, scope and usable lifetime;
-acquisition then rechecks admission synchronously before accepting the original
-credential. Rejected material retains its cleanup owner.
+`apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts:observeAcquisitionResponse`
+captures a uniquely identified root token before validating status, scope and
+usable lifetime. Invalid UTF-8, malformed JSON or any duplicate member name
+disqualifies the response as evidence. With duplicate permission fields, retain
+the token only for cleanup. With duplicate root token fields, never guess which
+token to revoke, even if the values match. Recheck admission synchronously before
+accepting a credential. Repository and permissions must match exactly; optional
+`repository_selection` must be `selected`.
+
 Its bounded credential transport,
 `apps/controller/src/drivers/repo/github/credentials/provider-transport.ts:createProviderTransport`,
 uses `apps/controller/src/drivers/repo/github/credentials/provider-transport/request.ts:sendProviderRequest`
@@ -277,6 +272,13 @@ Informational nested labels, milestones, repository metadata and human content
 remain unchanged. Transport applies
 `apps/controller/src/drivers/repo/credentials/transport/response-headers.ts:safeResponseHeaders`
 before writing response headers to the client.
+
+For bounded `metadata-read`, the [response policy](../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+requires HTTP 200 and the exact repository ID and full name. After stream end,
+[transport](../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
+rejects actual trailers (a declaration alone is not one), enforces byte limits
+before and after rewriting, then releases configured `{ id, full_name }` with
+fixed JSON and no-store headers. Streamed responses cannot make that guarantee.
 
 After successful input, upstream failure before response headers stops upstream
 I/O, then sends fixed `502 exchange-uncertain` after settlement. Cancellation,
@@ -364,9 +366,12 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-15 20:51: Document accompanying separation of token custody from ambiguous response evidence. (authoring-run/3af8b480-048d-4e5e-a05c-f5a92f357ccd - 53c4297eb1e0894042a1698609c3e672aef2c97b)
+
 - 2026-10-15 04:44: Bound upload-pack streaming separately while retaining exchange and credential fencing. (authoring-run/35418147-f92b-4808-96cf-a6db4d91f2bb - 00bbc7cd976ab7be317ce1e0a9d36ad72ce10567)
 
 - 2026-10-14 12:23: Document prompt rejection of oversized private-socket replies. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
+- 2026-10-15 04:05: Project closed metadata reads and reject actual trailers before protected metadata release. (authoring-run/ec233aef-e8c7-46e0-b7ca-d1e180dd99aa - 0647e70303cd583ed64286f0ae11c1fa1896ac6a)
 
 - 2026-10-13 07:40: Past its window, a sweep fences a refused admission's reservation again and forgets it once the fence commits. (fix-1196-1197)
 

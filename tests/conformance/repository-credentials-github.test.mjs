@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer as createNetServer } from "node:net";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
 import {
   createGitHubDriverFactory,
   createGitHubKeyOwner,
@@ -618,12 +620,31 @@ test("refused and cancelled observations remain independently captured and token
   let mode = "surplus";
   const fixture = await startGitHubFixture(t, {
     clock: providerClock,
+    encodeIssueResponse(packet) {
+      const encoded = JSON.stringify(packet);
+      // Raw duplicate members must survive serialization and arrive on the wire.
+      return mode === "duplicate-permissions"
+        ? encoded.replace('"permissions":{', '"permissions":{"contents":"admin",')
+        : encoded;
+    },
     issueResponse({ status, body }) {
       if (mode === "surplus") {
         return {
           status,
           body: { ...body, permissions: { ...body.permissions, administration: "write" } },
         };
+      }
+      if (mode === "surplus-repository") {
+        const repositories = [...body.repositories, { id: 74, full_name: "Fixture/Other" }];
+        return { status, body: { ...body, repositories } };
+      }
+      if (mode === "absent-expiry") {
+        const { expires_at: _expiresAt, ...unverifiable } = body;
+        return { status, body: unverifiable };
+      }
+      if (mode === "offset-expiry") {
+        // Equivalent instant, but not the UTC Z form the classifier requires.
+        return { status, body: { ...body, expires_at: body.expires_at.replace(/Z$/, "+00:00") } };
       }
       if (mode === "missing-checks") {
         const { checks: _checks, ...permissions } = body.permissions;
@@ -660,7 +681,11 @@ test("refused and cancelled observations remain independently captured and token
     trustedEndpoints: { apiOrigin: fixture.origin, gitOrigin: fixture.origin, ca: fixture.tls.ca },
   });
   for (const { name, selected, expected } of [
+    { name: "duplicate permissions", selected: "duplicate-permissions", expected: "uncertain" },
     { name: "surplus permissions", selected: "surplus", expected: "rejected" },
+    { name: "widened repository scope", selected: "surplus-repository", expected: "rejected" },
+    { name: "absent provider expiry", selected: "absent-expiry", expected: "rejected" },
+    { name: "offset-form provider expiry", selected: "offset-expiry", expected: "rejected" },
     { name: "missing checks permission", selected: "missing-checks", expected: "rejected" },
     { name: "provider refusal", selected: "refused", expected: "reauthorization-required" },
     { name: "insufficient lifetime", selected: "short", expected: "rejected" },
@@ -683,6 +708,11 @@ test("refused and cancelled observations remain independently captured and token
         360000,
       );
       assert.equal(result.kind, expected);
+      if (selected === "surplus-repository") {
+        assert.equal(result.code, "scope-mismatch");
+      } else if (selected === "absent-expiry" || selected === "offset-expiry") {
+        assert.equal(result.code, "invalid-response");
+      }
       assert.equal(owned.records.size, 1);
       await owned.driver.settle(result);
       const [credential] = owned.records.keys();
@@ -884,4 +914,44 @@ test("retirement uncertainty retains real custody after non-204 replies and lost
       assert.deepEqual(fixture.errors, []);
     });
   }
+});
+
+test("installation response parsing separates unique root custody from unambiguous evidence", () => {
+  const cases = [
+    ['{"token":"owned","permissions":{"contents":"read"}}', "owned", true],
+    ['{"token":"owned","permissions":{"contents":"write","contents":"read"}}', "owned", false],
+    ['{"token":"owned","permissions":{},"permissions":{}}', "owned", false],
+    ['{"token":"owned","unknown":1,"unknown":2}', "owned", false],
+    ['{"token":"owned","nested":{"token":"a","token":"b"}}', "owned", false],
+    ['{"token":"owned","nested":[{"token":"a","token":"b"}]}', "owned", false],
+    ['{"token":"owned","token":"owned"}', undefined, false],
+    [String.raw`{"token":"owned","to\u006ben":"other"}`, undefined, false],
+    ['{"token":"owned","nested":{"token":"other"}}', "owned", true],
+    ['{"token":""}', undefined, true],
+    ['{"nested":{"token":"other"}}', undefined, true],
+    ['[{"token":"owned"}]', undefined, false],
+    ["null", undefined, false],
+    ['"owned"', undefined, false],
+    ['{"token":"owned",', undefined, false],
+    [
+      Buffer.concat([
+        Buffer.from('{"token":"owned","unknown":"'),
+        Buffer.from([0xff]),
+        Buffer.from('"}'),
+      ]),
+      undefined,
+      false,
+    ],
+  ];
+  for (const [input, token, usable] of cases) {
+    const parsed = parseInstallationTokenResponse(Buffer.from(input));
+    assert.equal(parsed.token, token);
+    assert.equal(parsed.packet !== undefined, usable);
+  }
+  // The rehomed strict consumer still rejects decoded duplicates at any depth.
+  assert.throws(
+    () => parseUnambiguousJson(String.raw`{"a":[{"x":1,"\u0078":2}]}`),
+    /Ambiguous JSON/,
+  );
+  assert.deepEqual(parseUnambiguousJson('{"a":{"x":1},"b":{"x":2}}'), { a: { x: 1 }, b: { x: 2 } });
 });

@@ -466,6 +466,7 @@ test(
         implementation: compute.implementation,
       },
       plugins: codexPluginRevisionState(pluginId),
+      executionAdmission: { version: 2, mode: "unprotected" },
       harnessAuth: { method: "runtime" },
       servicePrincipalId: owner.servicePrincipalId,
       createdAt: new Date().toISOString(),

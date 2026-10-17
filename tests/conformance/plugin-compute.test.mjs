@@ -144,6 +144,7 @@ function revision(overrides = {}) {
   delete native.gateway.auth;
   return {
     id: "revision-plugin-compute-1",
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: agent.id,
     revision: 1,

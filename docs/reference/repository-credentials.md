@@ -4,11 +4,14 @@ Repository bindings grant bounded Git HTTPS and GitHub API access. OCC freezes
 grants into a revision; the worker prepares material. The credential service
 retains App keys, JWTs and installation tokens. Agents receive gateway bearers,
 client configuration and CA trust. Start with the
-[operator guide](../guides/repository-credentials.md).
+[operator guide](../guides/repository-credentials.md). For a dedicated Agent
+using one repository and an exact review branch, see
+[native Git with a prepared credential](repository-credentials/prepared-native-git.md).
+In that profile the worker, not the repository service, holds the App signing key.
 
 Kubernetes supports embedded OpenClaw (`api_key`) or dedicated Codex (API key or
-ChatGPT service account), without a Sandbox Driver; other combinations reject
-repository-bearing revisions. Helm's `Recreate` strategy prevents overlapping
+ChatGPT service account), without a Sandbox Driver. Unsupported Sandbox
+combinations reject repository-bearing revisions. Helm's `Recreate` strategy prevents overlapping
 worker/credential-service owners.
 
 Only the consumer receives repository and model credentials; dedicated Slack
@@ -278,32 +281,31 @@ cleanup material counts against session capacity and shutdown's
 
 ## GitHub response data
 
+[Protected metadata](../flows/repository-credentials.md#5-deliver-an-outcome-and-release-ownership)
+requires verified identity and no actual trailers before releasing `{ id, full_name }`.
+Joined OpenShell enforcement still needs proof.
+
 Bounded REST JSON responses omit `temp_clone_token` from the repository object,
 its `parent` and `source` relationships, and pull-request `head.repo` and
 `base.repo`. GraphQL selecting `tempCloneToken` gets 400.
 
-Gateway rewriting covers only validated pagination links and explicitly followed
-resource fields that pass origin, repository, route and profile checks. Native
-`/repositories/<id>` URLs must match the configured repository ID and become its
-admitted `/repos/OWNER/REPO` route. Issue collection pagination accepts bounded
-`after` and `before` cursors; direct requests to repository-ID routes remain
-unsupported. Other links, human text and unrelated metadata remain unchanged.
+Rewrite only validated pagination and followed links passing origin, repository,
+route and profile checks. Translate `/repositories/<id>` only for the configured
+ID, to its admitted `/repos/OWNER/REPO` route. Pagination accepts bounded `after`
+and `before`; direct ID-route requests remain unsupported. Preserve other links,
+human text and unrelated metadata.
 
 ## Client routing and limits
 
-Ordinary Git uses `/usr/bin/git`, which owns commands, identity, hooks, aliases,
-remotes, push URLs, worktrees and native user settings. The client neither parses
-Git arguments nor creates a temporary HOME. The shared Git/gh executor preserves
-numeric exit codes; signal termination returns `128 + signal number`, including
-130 for SIGINT and 143 for SIGTERM.
+`/usr/bin/git` owns commands, identity, hooks, aliases, remotes and worktrees.
+OCE neither parses its arguments nor replaces HOME. Git and gh preserve exit
+codes; a signal returns `128 + signal number`.
 
-For each generation, native preparation validates public manifest/session metadata,
-identities, paths and file custody, then writes private aggregate `gitconfig`
-without reading bearers or admitting sessions. Kubernetes runs it through the
-private subPath after material copying; both init steps gate startup. Each
-canonical HTTPS host maps to one gateway origin; conflicting origins fail
-preparation. Pins cannot change an already-chosen connection origin. Same-origin
-public CA inputs must agree.
+Preparation validates generation, manifest, session metadata, paths and file custody,
+then writes private `gitconfig` without reading bearers or admitting sessions.
+Kubernetes gates startup on copying material and preparing its private subPath.
+Each HTTPS host maps to one gateway origin, with consistent CA trust;
+a pin cannot change an origin already selected.
 
 A host-prefix rewrite preserves owner/repository casing and an optional terminal
 `.git`. It also routes unadmitted repositories on that host to the gateway, where
@@ -330,10 +332,9 @@ bearer; gateway closure can deny use earlier. Local commands skip the helper,
 so they continue after expiry or with stale pins. Generation
 pinning does not promise a command-wide snapshot across arbitrary subprocesses.
 
-Native configuration can override these defaults, and additional helpers or
-stores can retain credentials. The installed helper's `store` and `erase` are
-inert. There is no whole-command preflight, and the client never retries an
-uncertain mutation to obtain success.
+Native settings override these defaults; other helpers can retain credentials.
+Our helper ignores `store` and `erase`. There is no command-wide preflight or
+automatic retry of an uncertain mutation.
 
 The API launcher requires GitHub CLI **2.100.0**, `GH_HOST=github.com`, a gateway
 hostname with verified TLS, and HTTPS port 443. Its private `hosts.yml` uses the

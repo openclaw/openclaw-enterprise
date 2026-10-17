@@ -142,6 +142,10 @@ bootstrap:
     fileName: initial-admin-service-key.json
 
 backend:
+  openshell:
+    # Mount a dedicated administrator mTLS Secret only in API and worker.
+    # Keys: ca.crt, tls.crt, tls.key. Configure the Backend paths separately.
+    clientSecretName: ""
   chatgpt:
     enabled: false
     secretName: occ-chatgpt-admin
@@ -152,6 +156,8 @@ backend:
 
 repositoryCredentials:
   enabled: false
+  # prepared-git uses the worker-owned socket and does not mount an App key in the broker.
+  authority: github-app
   image: ""
   # Internal HTTPS Service name. Fresh installs default to git. Upgrades must
   # set this explicitly to the current Service name until repository sessions
@@ -171,12 +177,17 @@ repositoryCredentials:
   serviceConfigKey: config.json
   appKeySecretName: ""
   appKeyKey: private-key.pem
+  # Prepared Git: only the worker mounts the App key and this 32-byte custody.key.
+  preparedCustodySecretName: ""
+  # Optional public ca.crt for a private issuer and Git origin, in worker and broker.
+  preparedProviderCaConfigMapName: ""
   tlsSecretName: ""
   # Public trust only. May share a Secret with database.caSecretName and
   # gatewayRouting.caSecretName, never with a credential Secret.
   publicCaSecretName: ""
   publicCaKey: ca.crt
   upstreamCidrs: []
+  upstreamPort: 443
 
 # Anonymous reads of known public GitHub repositories, for ordinary dedicated
 # Codex Agents whose authored proxy allows the exact Service IP. No GitHub App or token required.
@@ -312,7 +323,49 @@ resources:
     memory: 512Mi
 
 worker:
+  # Set to 0 to install the API and run initialization before starting the worker.
+  replicaCount: 1
   pollIntervalMs: 250
   leaseDurationMs: 5000
   maxAttempts: 5
   convergenceTimeoutMs: 900000
+
+# Optional credential authority listener owned by the single API process.
+# The Installation Credential Proxy authority must use the same port and file paths.
+egressAuthority:
+  enabled: false
+  port: 9444
+  tlsSecretName: ""
+  issuerSecretName: ""
+  # Only public.pem is projected from the Gateway's issuer Secret.
+  # Every client requires both namespaceSelector and podSelector.matchLabels.
+  clients: []
+
+# Optional request-phase Git middleware listener in the worker.
+# Requires repositoryCredentials.authority: prepared-git and matching Installation
+# drivers.repo.openShell configuration. Only public issuer material is mounted.
+openshellGit:
+  enabled: false
+  port: 8445
+  tlsSecretName: ""
+  issuerPublicKeyConfigMapName: ""
+  # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
+  clients: []
+
+# Optional OCE custody for explicitly enrolled, Agent-scoped GitHub metadata reads.
+# In the Installation's drivers.credential_proxy.configuration.preparedGitHub set
+# custodyKeyPath: /etc/openclaw/prepared-github/custody.key. Supply a dedicated
+# Secret with exactly 32 random binary bytes at custody.key, keep it stable across
+# API and worker restarts, and protect its backup separately from the database.
+# The issuer's App key belongs to an OCC Secret, never to this Secret or Helm values.
+preparedGitHub:
+  custodySecretName: ""
+  # Operator-maintained, exact api.github.com IPv4 destinations for issue/retire.
+  issuerCidrs: []
+  issuerPort: 443
+  # Optional public ca.crt for an explicitly configured private HTTPS issuer.
+  issuerCaConfigMapName: ""
+
+# Closed OpenShell canary only: operator-owned Namespace, no initialization Job.
+# Bind the existing OCE Namespace ID and independently observed Kubernetes UID.
+preprovisionedNamespace: {}

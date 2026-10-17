@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -18,6 +19,7 @@ import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/compos
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
@@ -45,6 +47,147 @@ async function fixture(t, configuration = installation()) {
   await writeFile(path, JSON.stringify(configuration), "utf8");
   return path;
 }
+
+function credentialProxyInstallation() {
+  const configuration = installation();
+  configuration.backend = [
+    {
+      id: "openshell",
+      type: "openshell",
+      configuration: {
+        endpoint: "https://openshell.example.test:8080",
+        auth: { mode: "bearerTokenFile", path: "/etc/openclaw/openshell/token" },
+      },
+      drivers: {
+        sandbox: "openshell-sandbox",
+        credential_gateway: "openshell-credentials",
+        credential_proxy: "openshell-egress",
+      },
+    },
+  ];
+  configuration.drivers.sandbox = {
+    id: "openshell-sandbox",
+    configuration: {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "inference",
+            endpoints: [{ host: "provider.example.test", ports: [443] }],
+            binaries: [{ path: "/usr/bin/model-client" }],
+          },
+        ],
+      },
+    },
+  };
+  configuration.drivers.credential_gateway = {
+    id: "openshell-credentials",
+    configuration: { binaries: ["/usr/bin/model-client"] },
+  };
+  configuration.drivers.credential_proxy = {
+    id: "openshell-egress",
+    configuration: {
+      middlewareName: "oce-authority",
+      authorityScope: "execution",
+      authority: {
+        host: "127.0.0.1",
+        port: 9444,
+        certificatePath: "/etc/openclaw/egress/tls/tls.crt",
+        privateKeyPath: "/etc/openclaw/egress/tls/tls.key",
+        issuerPublicKeyPath: "/etc/openclaw/egress/issuer/issuer.pub",
+        issuer: "openshell-gateway:openshell-gateway",
+        audience: "oce-egress",
+        keyId: "current",
+      },
+    },
+  };
+  return configuration;
+}
+
+test("Credential Proxy startup preserves the selection and refuses retired keys", async (t) => {
+  const configuration = credentialProxyInstallation();
+  const path = await fixture(t, configuration);
+  const load = () =>
+    loadInstallationConfiguration({
+      mode: "development",
+      environment: { OCC_CONFIG_PATH: path },
+    });
+  // This is real startup composition; no gateway connection or listener is started.
+  const loaded = await load();
+  assert.equal(loaded.proxyDriver.capability, "credential_proxy");
+  assert.equal(loaded.proxyDriver.id, "openshell-egress");
+  assert.equal(loaded.installation.drivers.credential_proxy.id, loaded.proxyDriver.id);
+  assert.equal(loaded.installation.backend[0].drivers.credential_proxy, loaded.proxyDriver.id);
+  assert.equal(loaded.egressAuthority.port, 9444);
+
+  for (const [member, selected] of [
+    [true, false],
+    [false, true],
+    [false, false],
+    [true, true],
+  ]) {
+    await t.test(
+      `Credential Proxy: Backend member=${member}, Installation selection=${selected}`,
+      async () => {
+        const candidate = structuredClone(configuration);
+        if (!member) {
+          delete candidate.backend[0].drivers.credential_proxy;
+        }
+        if (!selected) {
+          delete candidate.drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(candidate));
+
+        // Direct OCC composition must enforce the same membership rule as Installation startup.
+        const validateSelection = () =>
+          validateSelectedBackendDrivers(candidate.backend, {
+            sandbox: loaded.sandboxDriver,
+            credential_gateway: loaded.credentialGatewayDriver,
+            ...(selected ? { credential_proxy: loaded.proxyDriver } : {}),
+          });
+        if (member !== selected) {
+          await assert.rejects(
+            load(),
+            /credential_proxy must match the selected drivers\.credential_proxy\.id/,
+          );
+          assert.throws(validateSelection, /Credential Proxy Driver/i);
+        } else {
+          assert.equal(
+            (await load()).proxyDriver?.id,
+            selected ? loaded.proxyDriver.id : undefined,
+          );
+          validateSelection();
+        }
+      },
+    );
+  }
+
+  for (const boundary of ["installation", "backend"]) {
+    for (const scenario of ["retired only", "both", "null retired"]) {
+      await t.test(`${boundary}: ${scenario}`, async () => {
+        const invalid = structuredClone(configuration);
+        const drivers = boundary === "installation" ? invalid.drivers : invalid.backend[0].drivers;
+        // Even a null retired key must not silently disable or override protection.
+        drivers.conduit = scenario === "null retired" ? null : drivers.credential_proxy;
+        if (scenario !== "both") {
+          delete drivers.credential_proxy;
+        }
+        await writeFile(path, JSON.stringify(invalid));
+        await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
+      });
+    }
+  }
+});
 
 test("Installation startup validates the optional external observability URL", async (t) => {
   const configuration = installation();
@@ -551,6 +694,30 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
   }
 });
 
+test("public CA loading rejects repeated malformed certificates without stalling", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-public-ca-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "ca.pem");
+  await writeFile(
+    path,
+    "-----BEGIN CERTIFICATE-----\nA-----END CERTIFICATE-----\n".repeat(32) + "!",
+    { mode: 0o644 },
+  );
+  // A separate process keeps a pathological parser from blocking the test runner indefinitely.
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      'import { loadPublicCa } from "./apps/controller/src/composition/repository-credentials/public-ca.ts"; await loadPublicCa(process.argv[1]).catch((error) => console.log(error.message));',
+      path,
+    ],
+    { encoding: "utf8", timeout: 3000 },
+  );
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  assert.equal(result.stdout.trim(), "invalid-public-ca");
+});
+
 test("startup loads singleton Installation YAML and validates Drivers before construction", async (t) => {
   const path = await fixture(t);
   const drivers = await loadInstallationConfiguration({
@@ -747,6 +914,7 @@ test("production embedded replacements preserve their active Service across fail
     configurationId: `cfg_production-${harness.mode}-cutover`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration(harness.id, "gpt-4.1"),
       "info",
@@ -1521,4 +1689,212 @@ test("API and worker name a Preset file failure in their startup error code", as
     assert.equal(workerDiagnostic.message, undefined);
     assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
   }
+});
+
+test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
+  const { gatewayRouting, digest } = await import("../helpers/kubernetes-routed-scenarios.mjs");
+  const controllerRequire = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  );
+  const { KubernetesObjectApi } = controllerRequire("@kubernetes/client-node");
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.sandbox.configuration.gateway.operatorNamespaceLabels = {
+    "openshell.ai/openclaw-workspace": "true",
+  };
+  configuration.drivers.sandbox.configuration.gateway.operatorWorkspaceResources = [
+    {
+      apiVersion: "v1",
+      kind: "ServiceAccount",
+      metadata: { name: "sandbox" },
+      automountServiceAccountToken: false,
+    },
+  ];
+  const approvedWorkspacePolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: "workspace-deny" },
+    spec: { podSelector: {}, policyTypes: ["Ingress"] },
+  };
+  configuration.drivers.sandbox.configuration.gateway.networkPolicyResources = [
+    approvedWorkspacePolicy,
+  ];
+  const compute = configuration.drivers.compute.configuration;
+  const id = "ns_closed_binding_test";
+  const name = kubernetesNamespaceName(id);
+  const uid = "19fc773a-b474-499e-9406-ba18ee701689";
+  compute.gatewayRouting = gatewayRouting;
+  delete compute.network.gatewayClients;
+  const environment = {
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_PREPROVISIONED_NAMESPACE: JSON.stringify({ namespaceId: id, uid }),
+  };
+  const drivers = await loadInstallationConfiguration({
+    mode: "production",
+    environment,
+    createOpenShellBackend: (definition) => ({
+      id: definition.id,
+      drivers: definition.drivers,
+      client: {
+        clientForNamespace: () => ({
+          health: async () => {},
+          getWorkspace: async () => ({
+            name,
+            phase: 1,
+            labels: {
+              "app.kubernetes.io/managed-by": "openclaw-enterprise",
+              "openclaw.dev/namespace-id": id,
+            },
+          }),
+        }),
+      },
+    }),
+  });
+  const { computeDriver: driver, configurationDriver, secretDriver } = drivers;
+  const ns = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    status: { phase: "Active" },
+    metadata: {
+      name,
+      uid,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openshell.ai/openclaw-workspace": "true",
+        "openclaw.dev/namespace": id,
+        "openclaw.dev/gateway-namespace": id,
+        "openclaw-enterprise.io/gateway": digest(
+          gatewayRouting.gatewayNamespace + "/" + gatewayRouting.gatewayName,
+        ),
+        ...Object.fromEntries(
+          ["enforce", "audit", "warn"].map((x) => [
+            "pod-security.kubernetes.io/" + x,
+            "restricted",
+          ]),
+        ),
+      },
+      annotations: {
+        "openclaw.dev/namespace-id": id,
+        "openclaw.dev/namespace-lifecycle": "preprovisioned",
+      },
+    },
+  };
+  let observed = structuredClone(ns);
+  const reads = [];
+  const writes = [];
+  const readNamespace = async (query) => {
+    assert.deepEqual(query, { name });
+    reads.push(name);
+    return observed;
+  };
+  const absent = async (q) => {
+    assert.equal(q.namespace, name);
+    throw Object.assign(new Error("not found"), { code: 404 });
+  };
+  const write = async (q) => {
+    assert.equal(q.namespace, name);
+    assert.equal(q.body.metadata.annotations["openclaw.dev/namespace-id"], id);
+    writes.push(q.body.kind + "/" + q.name);
+    return q.body;
+  };
+  // Namespace API is GET of this name only. A list, adoption, or delete has no implementation.
+  const core = {
+    readNamespace,
+    readNamespacedResourceQuota: absent,
+    patchNamespacedResourceQuota: write,
+    readNamespacedLimitRange: absent,
+    patchNamespacedLimitRange: write,
+  };
+  const account = {
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    automountServiceAccountToken: false,
+    metadata: {
+      name: "sandbox",
+      namespace: name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": id,
+      },
+      annotations: { "openclaw.dev/namespace-id": id },
+    },
+  };
+  const workspacePolicy = {
+    ...approvedWorkspacePolicy,
+    metadata: { ...account.metadata, name: "workspace-deny" },
+  };
+  let policies = [workspacePolicy];
+  const objects = Object.create(KubernetesObjectApi.prototype);
+  objects.read = async (ref) =>
+    ref.kind === "Namespace" ? observed : ref.kind === "NetworkPolicy" ? workspacePolicy : account;
+  objects.patch = async () => {
+    throw Error("unexpected OpenShell Kubernetes write");
+  };
+  driver.apiClients = Promise.resolve({
+    objects,
+    version: { getCode: async () => ({ gitVersion: "v1.35.0" }) },
+    core,
+    networking: {
+      listNamespacedNetworkPolicy: async (q) => (
+        assert.equal(q.namespace, name),
+        { items: policies }
+      ),
+      readNamespacedNetworkPolicy: absent,
+      patchNamespacedNetworkPolicy: write,
+    },
+  });
+  await driver.preflight();
+  await configurationDriver.controlNamespace(core, id);
+  await secretDriver.readyNamespace(core, id);
+  assert.equal(reads.length, 3);
+
+  const tenant = { id };
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, true);
+  assert.ok(writes.includes("ResourceQuota/openclaw-quota"));
+  assert.ok(writes.includes("NetworkPolicy/default-deny"));
+
+  const ownedPolicy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { ...account.metadata, name: "unexpected-allow" },
+    spec: { podSelector: {}, policyTypes: ["Egress"], egress: [{}] },
+  };
+  writes.length = 0;
+  policies = [ownedPolicy];
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.deepEqual(writes, []);
+  policies = [{ ...ownedPolicy, metadata: { ...ownedPolicy.metadata, name: "default-deny" } }];
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  assert.deepEqual(writes, []);
+  policies = [workspacePolicy];
+
+  account.automountServiceAccountToken = true;
+  assert.equal((await driver.ensureNamespace(tenant)).namespaceReady, false);
+  account.automountServiceAccountToken = false;
+  writes.length = 0;
+  const before = reads.length;
+  for (const request of [{ id: id + "_other" }, { id, existingNamespace: name }]) {
+    const result = await driver.ensureNamespace(request);
+    assert.equal(result.failure, "permanent");
+    assert.equal(result.namespaceReady, false);
+  }
+  assert.equal((await driver.deleteNamespace(tenant)).namespaceDeleted, false);
+  assert.equal(reads.length, before);
+  for (const corrupt of [
+    (x) => (x.metadata.uid = uid + "replaced"),
+    (x) => (x.metadata.annotations["openclaw.dev/namespace-id"] += "_foreign"),
+    (x) => delete x.metadata.annotations["openclaw.dev/namespace-lifecycle"],
+    (x) => (x.metadata.labels["pod-security.kubernetes.io/enforce"] = "privileged"),
+    (x) => delete x.metadata.labels["openclaw-enterprise.io/gateway"],
+    (x) => delete x.metadata.labels["openclaw.dev/gateway-namespace"],
+    (x) => (x.metadata.deletionTimestamp = new Date().toISOString()),
+  ]) {
+    observed = structuredClone(ns);
+    corrupt(observed);
+    const result = await driver.ensureNamespace(tenant);
+    assert.equal(result.failure, "permanent");
+    assert.equal(result.namespaceReady, false);
+  }
+  await assert.rejects(configurationDriver.controlNamespace(core, id));
+  await assert.rejects(secretDriver.readyNamespace(core, id));
+  assert.deepEqual(writes, []);
 });

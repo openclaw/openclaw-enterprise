@@ -1,3 +1,17 @@
+import type { OpenShellGitRuntime } from "../../egress-proxy/openshell-git-runtime.ts";
+import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
+import {
+  assertExecutionAdmission,
+  preparedGitHubSourceFromRoute,
+  preparedGitHubProviderRef,
+} from "@openclaw-enterprise/contracts";
+import {
+  harnessEgressEnrollment,
+  COMPUTE_RELEASE_PUBLIC_KEY,
+  computeReleasePublicKey,
+  signComputeExecutionRelease,
+} from "../egress-enrollment.ts";
+import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import {
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
@@ -10,10 +24,19 @@ import {
   isNonEmptyString,
   numericErrorStatus,
   readCappedBody,
+  publicCaBundle,
   sha256Hex,
   splitModelRef,
 } from "@openclaw-enterprise/utils";
-import { createHash, randomBytes, timingSafeEqual, X509Certificate } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  generateKeyPairSync,
+  randomBytes,
+  timingSafeEqual,
+  X509Certificate,
+  type KeyObject,
+} from "node:crypto";
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
@@ -34,6 +57,7 @@ import type {
   V1ConfigMap,
   V1EnvVar,
   V1NetworkPolicyPeer,
+  V1NetworkPolicySpec,
   V1ObjectMeta,
   V1DeleteOptions,
   V1ResourceRequirements,
@@ -65,6 +89,8 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
+  EgressInstallation,
+  ProxyRevisionContext,
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
@@ -113,6 +139,7 @@ import {
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
   requireOpenClawRoster,
@@ -214,6 +241,10 @@ import {
   type RepositoryMaterialSpec,
   type ResolvedRepositoryMaterialSpec,
 } from "./repository-material.ts";
+import {
+  reconcilePreparedRepositoryIngress,
+  type PreparedRepositoryIngressOwner,
+} from "./repository-compute-ingress.ts";
 import {
   RepositoryMaterialStore,
   completeKubernetesList,
@@ -1012,6 +1043,14 @@ function prepareHarnessAuth(
     harness.mode === "dedicated" &&
     (harness.id === "codex" || harness.id === "openclaw")
   ) {
+    // Protected egress supplies material only to the supervisor. A nonsecret marker lets
+    // ordinary model clients construct their request; the authority replaces its header.
+    if (resolvedAuth.source.egress !== undefined) {
+      environment.push({
+        name: harnessModelAuthentication(configuration).environmentName,
+        value: "oce-protected-egress",
+      });
+    }
     // The paired Sandbox supplies the credential environment; no Secret is projected here.
     if (harness.id === "codex") {
       environment.push({ name: "CODEX_LOGIN_MODE", value: resolvedAuth.loginMode });
@@ -1054,6 +1093,9 @@ const CONFIGURATION_DIRECTORY = "/etc/openclaw";
 const WRITABLE_CONFIGURATION_PATH = "/home/node/.openclaw/openclaw.json";
 const CONFIGURATION_DOCUMENT = "openclaw.json";
 const CONFIGURATION_VOLUME = "openclaw-configuration";
+const HARNESS_TRUST_VOLUME = "harness-trust";
+const HARNESS_TRUST_DIRECTORY = "/etc/openclaw-harness-trust";
+const HARNESS_TRUST_FILE = "ca-bundle.pem";
 const PLUGIN_RUNTIME_VOLUME = "openclaw-plugin-runtime";
 export const PLUGIN_RUNTIME_STATUS_PORT = 18_791;
 const PLUGIN_RUNTIME_STATUS_PATH = "/openclaw/plugin-runtime/status";
@@ -1717,6 +1759,24 @@ function providerHarnessUrl(
       "SandboxDriver Harness native hook credential directory must be outside the workspace.",
     );
   }
+  if (endpoint.tls !== undefined) {
+    if (
+      url.protocol !== "wss:" ||
+      asRecord(endpoint.tls) === undefined ||
+      Object.keys(endpoint.tls).some((key) => key !== "caBundle")
+    ) {
+      throw new ConfigurationFailure(
+        "SandboxDriver TLS trust requires a WSS endpoint and only a public CA bundle.",
+      );
+    }
+    try {
+      publicCaBundle(endpoint.tls.caBundle);
+    } catch {
+      throw new ConfigurationFailure(
+        "SandboxDriver TLS trust must contain only valid PEM CA certificates.",
+      );
+    }
+  }
   return url;
 }
 
@@ -2049,6 +2109,93 @@ export function kubernetesGatewayNamespaceName(namespaceId: string): string {
   return `oce-gateways-${sha256Hex(required(namespaceId, "Platform Namespace ID"), 24)}`;
 }
 
+/**
+ * A single operator-provisioned Namespace, pinned after bootstrap by its server UID.
+ * This is installation input, never a tenant-selected placement or an adoption path.
+ */
+export class PreprovisionedKubernetesNamespace {
+  readonly namespaceId: string;
+  readonly name: string;
+  private readonly uid: string;
+  private readonly gateway: string;
+
+  readonly operatorPolicies: readonly { readonly name: string; readonly spec: unknown }[];
+
+  constructor(
+    binding: string,
+    routing: KubernetesGatewayRoutingOptions,
+    policies: readonly Readonly<Record<string, unknown>>[] = [],
+  ) {
+    const { namespaceId, uid } = JSON.parse(binding);
+    if (
+      typeof namespaceId !== "string" ||
+      !/^ns_[a-zA-Z0-9_-]{1,60}$/.test(namespaceId) ||
+      typeof uid !== "string" ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(uid)
+    ) {
+      throw new ConfigurationFailure(
+        "A preprovisioned Namespace requires its exact OCE ID and Kubernetes UID.",
+      );
+    }
+    this.namespaceId = namespaceId;
+    this.name = kubernetesNamespaceName(namespaceId);
+    this.uid = uid;
+    this.operatorPolicies = Object.freeze(
+      policies.map((policy) => {
+        const metadata = asRecord(policy.metadata);
+        if (
+          policy.apiVersion !== "networking.k8s.io/v1" ||
+          !isNonEmptyString(metadata?.name) ||
+          (metadata.namespace !== undefined && metadata.namespace !== this.name) ||
+          !asRecord(policy.spec)
+        ) {
+          throw new ConfigurationFailure(
+            "Operator network policy must target this bound Namespace and declare its spec.",
+          );
+        }
+        return Object.freeze({ name: metadata.name, spec: structuredClone(policy.spec) });
+      }),
+    );
+    this.gateway = sha256Hex(`${routing.gatewayNamespace}/${routing.gatewayName}`, 12);
+    Object.freeze(this);
+  }
+
+  async read(client: CoreV1Api, namespaceId: string): Promise<{ readonly name: string }> {
+    if (namespaceId !== this.namespaceId) {
+      throw new OwnershipFailure(
+        "This Installation is bound to a different preprovisioned Namespace.",
+      );
+    }
+    const observed = await client.readNamespace({ name: this.name });
+    this.verify(observed);
+    return { name: this.name };
+  }
+
+  verify(observed: { metadata?: V1ObjectMeta; status?: { phase?: unknown } }): void {
+    const { metadata: m, status } = observed;
+    const labels = m?.labels ?? {};
+    if (
+      m?.name !== this.name ||
+      m.uid !== this.uid ||
+      m.deletionTimestamp !== undefined ||
+      status?.phase !== "Active" ||
+      m.annotations?.["openclaw.dev/namespace-lifecycle"] !== "preprovisioned" ||
+      m.annotations["openclaw.dev/namespace-id"] !== this.namespaceId ||
+      labels["app.kubernetes.io/managed-by"] !== MANAGER ||
+      labels["openclaw.dev/namespace"] !== this.namespaceId ||
+      labels["openclaw.dev/gateway-namespace"] !== this.namespaceId ||
+      labels[GATEWAY_MEMBERSHIP_LABEL] !== this.gateway ||
+      ["enforce", "audit", "warn"].some(
+        (mode) => labels[`pod-security.kubernetes.io/${mode}`] !== "restricted",
+      )
+    ) {
+      throw new OwnershipFailure(
+        "Preprovisioned Kubernetes Namespace identity, ownership, gateway membership, Pod Security or lifecycle does not match the Installation.",
+      );
+    }
+  }
+}
+
 /** Resolve the exact-owned storage target: shared tenant or two-cluster control namespace. */
 export async function resolveKubernetesControlNamespace(
   client: CoreV1Api,
@@ -2099,6 +2246,11 @@ function verifiedKubernetesNamespace(
   ) {
     throw new OwnershipFailure(
       `Refusing an unowned Kubernetes namespace for tenant ${namespaceId}.`,
+    );
+  }
+  if (annotations["openclaw.dev/namespace-lifecycle"] === "preprovisioned") {
+    throw new OwnershipFailure(
+      "This preprovisioned Namespace requires an explicit Installation binding.",
     );
   }
   const external = annotations["openclaw.dev/namespace-lifecycle"] === "external";
@@ -3034,7 +3186,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   });
   private readonly options: KubernetesComputeDriverOptions;
   private readonly sandboxDriver: SandboxDriver | undefined;
+  private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
+  private readonly preparedRepositoryIngress: boolean;
+  private readonly openShellGit: OpenShellGitRuntime | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
+  private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
   // How long, in total across passes, preparation may wait for one setup's node to pair.
   private workspaceNodePairingWaitMs = WORKSPACE_NODE_PAIRING_WAIT_MS;
@@ -3407,7 +3563,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly implementation?: string;
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
+      readonly preparedRepositoryIngress?: true;
+      readonly openShellGit?: OpenShellGitRuntime;
+      readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
+      readonly proxyDriver?: CredentialProxyDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
     } = {},
@@ -3423,12 +3583,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
       this.requiresAgentRuntimeCredentials = true;
     }
     this.sandboxDriver = selection.sandboxDriver;
+    this.preprovisionedNamespace = selection.preprovisionedNamespace;
+    if (this.preprovisionedNamespace && options.executionCluster) {
+      throw new ConfigurationFailure(
+        "A preprovisioned Namespace requires single-cluster Kubernetes execution.",
+      );
+    }
+    this.preparedRepositoryIngress = selection.preparedRepositoryIngress === true;
+    this.openShellGit = selection.openShellGit;
     if (selection.credentialGatewayDriver !== undefined && selection.sandboxDriver === undefined) {
       throw new ConfigurationFailure(
         "The Credential Gateway Driver requires a paired Sandbox Driver.",
       );
     }
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
+    this.proxyDriver = selection.proxyDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -3472,46 +3641,51 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const observedVersion = kubernetesVersion(
         (await reachable(() => clients.version.getCode())).gitVersion,
       );
-      let continuation: string | undefined;
-      do {
-        const namespaces = await reachable(() =>
-          clients.core.listNamespace({
-            limit: this.options.executionCluster === undefined ? 100 : 1,
-            ...(continuation === undefined ? {} : { _continue: continuation }),
-            ...(this.options.executionCluster === undefined
-              ? { labelSelector: "openclaw.dev/gateway-namespace" }
-              : {}),
-            timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
-          }),
-        );
-        if (!Array.isArray(namespaces.items)) {
-          throw new Error(
-            "The authenticated Kubernetes Namespace preflight returned invalid data.",
+      if (this.preprovisionedNamespace) {
+        const binding = this.preprovisionedNamespace;
+        await this.request(() => binding.read(clients.core, binding.namespaceId));
+      } else {
+        let continuation: string | undefined;
+        do {
+          const namespaces = await reachable(() =>
+            clients.core.listNamespace({
+              limit: this.options.executionCluster === undefined ? 100 : 1,
+              ...(continuation === undefined ? {} : { _continue: continuation }),
+              ...(this.options.executionCluster === undefined
+                ? { labelSelector: "openclaw.dev/gateway-namespace" }
+                : {}),
+              timeoutSeconds: Math.ceil(REQUEST_TIMEOUT_MS / 1000),
+            }),
           );
-        }
-        if (this.options.executionCluster === undefined) {
-          for (const namespace of namespaces.items) {
-            const metadata = namespace.metadata;
-            const namespaceId = metadata?.labels?.["openclaw.dev/gateway-namespace"];
-            if (
-              isNonEmptyString(namespaceId) &&
-              metadata?.name === kubernetesGatewayNamespaceName(namespaceId) &&
-              metadata.labels?.["openclaw.dev/namespace"] === undefined
-            ) {
-              throw new ConfigurationFailure(
-                "Existing split-layout Gateway storage prevents this single-cluster upgrade. " +
-                  "Keep the previous controller version and adopt each storage namespace as " +
-                  "its tenant namespace first (scripts/split-layout-adopt.mjs). See the " +
-                  "Kubernetes Compute upgrade requirements.",
-              );
+          if (!Array.isArray(namespaces.items)) {
+            throw new Error(
+              "The authenticated Kubernetes Namespace preflight returned invalid data.",
+            );
+          }
+          if (this.options.executionCluster === undefined) {
+            for (const namespace of namespaces.items) {
+              const metadata = namespace.metadata;
+              const namespaceId = metadata?.labels?.["openclaw.dev/gateway-namespace"];
+              if (
+                isNonEmptyString(namespaceId) &&
+                metadata?.name === kubernetesGatewayNamespaceName(namespaceId) &&
+                metadata.labels?.["openclaw.dev/namespace"] === undefined
+              ) {
+                throw new ConfigurationFailure(
+                  "Existing split-layout Gateway storage prevents this single-cluster upgrade. " +
+                    "Keep the previous controller version and adopt each storage namespace as " +
+                    "its tenant namespace first (scripts/split-layout-adopt.mjs). See the " +
+                    "Kubernetes Compute upgrade requirements.",
+                );
+              }
             }
           }
-        }
-        continuation =
-          this.options.executionCluster === undefined
-            ? namespaces.metadata?._continue || undefined
-            : undefined;
-      } while (continuation !== undefined);
+          continuation =
+            this.options.executionCluster === undefined
+              ? namespaces.metadata?._continue || undefined
+              : undefined;
+        } while (continuation !== undefined);
+      }
       if (versionIsOlder(observedVersion.parts, MINIMUM_KUBERNETES_VERSION_PARTS)) {
         warnings.push({
           code: "KUBERNETES_VERSION_BELOW_MINIMUM",
@@ -3677,6 +3851,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (
+      this.openShellGit &&
+      this.sandboxDriver?.implementation === "openshell" &&
+      this.options.runtime &&
+      (sandboxDriverId === undefined || sandboxDriverId === this.sandboxDriver.id)
+    ) {
+      return;
+    }
+    // Repository authority is admitted before a session can be prepared or delivered.
+    if (this.sandboxDriver?.implementation === "openshell") {
+      throw new SandboxRepositoryRecipientUnverifiedError();
+    }
+    if (
       this.options.runtime === undefined ||
       this.options.network.repositoryCredentials === undefined ||
       sandboxDriverId !== undefined ||
@@ -3694,11 +3880,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
   ): void {
     this.validateRepositoryCredentialSupport(sandboxDriverId);
     if (!(
-      (harness.id === "openclaw" && harness.mode === "embedded") ||
+      (!this.preparedRepositoryIngress &&
+        !this.openShellGit &&
+        harness.id === "openclaw" &&
+        harness.mode === "embedded") ||
       (harness.id === "codex" && harness.mode === "dedicated")
     )) {
       throw new ConfigurationFailure(
-        "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
+        this.preparedRepositoryIngress
+          ? "Prepared repository credentials require a dedicated Compute-owned Codex Harness."
+          : "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
       );
     }
   }
@@ -3788,7 +3979,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       : native
         ? "Dedicated OpenClaw"
         : "Dedicated Codex";
-    requireHarnessAuthMethod(kubernetesHarnessAuthMethods(topology), auth.method);
+    const protectedWithoutCredential =
+      codex && auth.method === "runtime" && this.proxyDriver !== undefined;
+    if (!protectedWithoutCredential) {
+      requireHarnessAuthMethod(kubernetesHarnessAuthMethods(topology), auth.method);
+    }
     if (
       isServiceAccountHarnessAuth(auth) &&
       (auth.credential.kind !== "access_token" ||
@@ -4789,17 +4984,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     try {
       const ownership = { namespaceId: namespace.id };
       const selection = namespace.existingNamespace;
-      const placement =
-        selection === undefined
-          ? await this.resolveNamespace(namespace.id)
-          : { name: { name: selection, plane: "execution" as const }, external: true };
+      const placement = await this.resolveNamespace(namespace.id, selection);
       const { name, external: externallyManaged } = placement;
       if (externallyManaged && selection === undefined) {
         throw new OwnershipFailure(
           `Existing Kubernetes namespace ${name.name} was not explicitly selected.`,
         );
       }
-      if (!externallyManaged) {
+      if (!externallyManaged && !this.preprovisionedNamespace) {
         const desired = this.manifest("v1", "Namespace", name.name, ownership);
         desired.metadata.labels = {
           ...desired.metadata.labels,
@@ -4836,6 +5028,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (externallyManaged) {
         await this.verifyExistingNetworkPolicies(name, ownership);
         await this.claimExistingNamespace(observed, ownership);
+      } else if (this.preprovisionedNamespace) {
+        await this.verifyExistingNetworkPolicies(name, ownership);
       }
       await this.prepareNamespaceInfrastructure(ownership, name);
       if (!(await this.ensureGatewayNamespace(ownership))) {
@@ -5041,13 +5235,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const result = { namespaceId: namespace.id, namespaceDeleted: false };
     try {
       const clients = await this.clients("execution");
-      const { name, external } =
-        namespace.existingNamespace === undefined
-          ? await this.resolveNamespace(namespace.id)
-          : {
-              name: { name: namespace.existingNamespace, plane: "execution" as const },
-              external: true,
-            };
+      if (this.preprovisionedNamespace) {
+        throw new OwnershipFailure(
+          "The operator retains the preprovisioned Namespace and owns its teardown.",
+        );
+      }
+      const { name, external } = await this.resolveNamespace(
+        namespace.id,
+        namespace.existingNamespace,
+      );
       const ownership = { namespaceId: namespace.id };
       const existing = await this.getNamespace(name);
       if (
@@ -5079,6 +5275,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       await this.lifecycle.beforeNamespaceDelete(namespace);
+      await this.reconcileRepositoryIngress({ namespace: name.name, namespaceId: namespace.id });
       if (this.sandboxDriver !== undefined) {
         await this.sandboxDriver.cleanup(await this.sandboxNamespaceContext(namespace, name));
       }
@@ -5236,6 +5433,114 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionAdmission(revision);
+    const plan = revision.egressPlan;
+    if (plan === undefined && this.proxyDriver === undefined) {
+      return;
+    }
+    const sandbox = this.sandboxDriver;
+    if (
+      plan === undefined ||
+      this.options.runtime === undefined ||
+      this.proxyDriver?.implementation !== "openshell" ||
+      this.proxyDriver.id !== plan.egressDriverId ||
+      sandbox?.implementation !== "openshell" ||
+      sandbox.id !== plan.sandboxDriverId ||
+      !sandbox.provisionHarness ||
+      !sandbox.enrollHarness ||
+      !sandbox.harnessEndpoint ||
+      !sandbox.harnessStatus
+    ) {
+      throw new DependencyUnavailableError(
+        "Protected execution is unavailable without its exact paired Compute release.",
+      );
+    }
+  }
+
+  private validateRevisionExecution(
+    revision: AgentRevision,
+    context?: ComputeRevisionContext,
+  ): void {
+    this.validateExecutionAdmission(revision);
+    const plan = revision.egressPlan;
+    if (!plan) {
+      return;
+    }
+    const execution = plan.execution;
+    if (
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      revision.sandboxDriverId !== plan.sandboxDriverId ||
+      !context?.currentEgressInstallation ||
+      execution.agentId !== revision.agentId ||
+      execution.revisionId !== revision.id ||
+      execution.namespaceId !== revision.namespaceId ||
+      execution.servicePrincipalId !== revision.servicePrincipalId ||
+      plan.routes.some((route) => !isDeepStrictEqual(route.binding.execution, execution)) ||
+      (!harnessEgressEnrollment(plan).inference
+        ? revision.harnessAuth.method !== "runtime"
+        : revision.harnessAuth.method !== "credential_source")
+    ) {
+      throw new DependencyUnavailableError(
+        "Protected Compute release requires its dedicated Harness and current admitted installation.",
+      );
+    }
+  }
+
+  rejectedExecutionWithdrawal(
+    revision: Readonly<AgentRevision>,
+  ): (() => Promise<void>) | undefined {
+    // Only the selected Credential Proxy cutoff of an admitted ordinary reader qualifies. In particular,
+    // a pre-cutoff row without durable execution admission belongs to its original release.
+    try {
+      assertExecutionAdmission(revision);
+    } catch {
+      return undefined;
+    }
+    if (
+      this.proxyDriver === undefined ||
+      revision.executionAdmission.mode !== "unprotected" ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      revision.harness.id !== "codex" ||
+      revision.harness.mode !== "dedicated" ||
+      !this.hasPublicGithubReadAdmission(revision)
+    ) {
+      return undefined;
+    }
+    // A restored peer cannot undo the release refusal or leave an interrupted withdrawal open.
+    // This operation can only close this revision's grant; it never enters preparation.
+    return async () => {
+      const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+      const observed = await this.getNamespace(namespace);
+      if (observed === undefined || observed.status?.phase !== "Active") {
+        throw new DependencyUnavailableError("The AgentRevision Namespace is unavailable.");
+      }
+      this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
+      await this.withdrawAdmittedPublicGithubRead(revision, namespace);
+    };
+  }
+
+  private validateExecutionOrWithdrawPublicGithubRead(
+    revision: AgentRevision,
+    context: ComputeRevisionContext | undefined,
+  ): "validated" | "withdraw-public-reader" {
+    assertExecutionAdmission(revision);
+    // A newly selected Credential Proxy cannot prevent withdrawal of the old reader's own grant.
+    if (
+      revision.executionAdmission.mode === "unprotected" &&
+      this.hasPublicGithubReadAdmission(revision) &&
+      this.publicGithubReadForRevision(revision) === undefined
+    ) {
+      return "withdraw-public-reader";
+    }
+    this.validateRevisionExecution(revision, context);
+    return "validated";
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
@@ -5251,6 +5556,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
     this.lifecycleStarted = true;
     const result = {
       namespaceId: revision.namespaceId,
@@ -5278,10 +5584,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
-    if (
-      this.hasPublicGithubReadAdmission(revision) &&
-      this.publicGithubReadForRevision(revision) === undefined
-    ) {
+    if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
       if (observed === undefined) {
@@ -5292,6 +5595,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         return result;
       }
       await this.revokeUnavailablePublicGithubRead(revision, namespace);
+      // If the peer was restored while withdrawal was pending, revalidate before release.
+      this.validateRevisionExecution(revision, context);
     }
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
@@ -5559,6 +5864,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ),
       harnessAuth.credentialSource?.config.base_url,
     );
+    if (repositoryMaterial !== undefined) {
+      await this.prepareRevisionStage("repository_material", () =>
+        this.reconcileRepositoryIngress(
+          { namespace: namespace.name, namespaceId: revision.namespaceId, revision },
+          repositoryMaterial,
+        ),
+      );
+    }
     const hasEnabledPluginSelections =
       pluginRuntime !== undefined &&
       Object.values(pluginRuntime.runtime.selections).some((selection) => selection.enabled);
@@ -5761,6 +6074,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         environment: Record<string, string>,
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
+        await this.prepareRevisionStage("gateway_config_map", () =>
+          this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace),
+        );
         await this.prepareRevisionStage("gateway_channel_network_policy", () =>
           this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
         );
@@ -5956,7 +6272,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         pluginRuntime,
         [],
         workspaceSetup,
-        repositoryConsumer?.role === "agent" ? repositoryMaterial : undefined,
+        repositoryConsumer?.role === "agent" && sandboxDriver === undefined
+          ? repositoryMaterial
+          : undefined,
         nativeRuntime,
         undefined,
         sandboxDriver?.provisionHarness !== undefined,
@@ -5998,7 +6316,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const sources = [
           ...(harnessAuth.credentialSource === undefined ? [] : [harnessAuth.credentialSource]),
           ...credentialSources,
-        ];
+        ].filter((source) => source.egress === undefined);
         const credentialContext =
           sources.length === 0
             ? undefined
@@ -6023,6 +6341,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "The Credential Gateway must attach each bound source exactly once.",
           );
         }
+        const egressContext =
+          revision.egressPlan === undefined
+            ? undefined
+            : {
+                namespace: sandboxContext.namespace,
+                revision,
+                plan: revision.egressPlan,
+                signal: sandboxContext.signal,
+              };
+        if (
+          egressContext !== undefined &&
+          (this.proxyDriver?.id !== revision.egressPlan!.egressDriverId ||
+            context?.recordEgressInstallation === undefined ||
+            sandboxDriver.enrollHarness === undefined)
+        ) {
+          throw new DependencyUnavailableError(
+            "The admitted protected egress composition is unavailable.",
+          );
+        }
+        const proxyWiring =
+          egressContext === undefined
+            ? undefined
+            : await this.proxyDriver!.configureRevision(egressContext);
         const renderedRequirements = this.harnessRequirementsFromDeployment(
           agentDeployment,
           harnessAuth.loginMode,
@@ -6031,11 +6372,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxWorkloadFiles(pluginRuntime),
           workspaceSetup,
         );
+        const releaseKey =
+          proxyWiring === undefined
+            ? undefined
+            : await this.executionReleaseKey(
+                revision,
+                await this.controlNamespace(revision.namespaceId),
+              );
         const requirements = {
           ...renderedRequirements,
+          ...(proxyWiring === undefined ? {} : { proxyWiring }),
           environment: [
             ...renderedRequirements.environment,
-            ...this.credentialSourceEnvironment(revision, attachments),
+            ...this.credentialSourceEnvironment(
+              revision,
+              attachments,
+              harnessAuth.credentialSource,
+            ),
+            ...(proxyWiring === undefined
+              ? []
+              : [
+                  // Bind enrollment to the immutable admitted revision.
+                  { name: "OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID", value: revision.id },
+                  { name: COMPUTE_RELEASE_PUBLIC_KEY, value: computeReleasePublicKey(releaseKey!) },
+                ]),
           ],
         };
         const sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
@@ -6046,6 +6406,47 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }),
         );
         this.verifySandboxResourceRef(sandbox, revision, namespace);
+        if (egressContext !== undefined) {
+          if (sandbox.proxyWiring === undefined) {
+            throw new DependencyUnavailableError(
+              "The paired Sandbox returned no exact protected egress configuration.",
+            );
+          }
+          const installed = await this.proxyDriver!.wiringStatus(
+            egressContext,
+            sandbox.proxyWiring,
+          );
+          if (installed === undefined || !(await this.preparedEgressReady(egressContext))) {
+            return incomplete();
+          }
+          await context!.recordEgressInstallation!(installed);
+          if (!(await this.proxyDriver!.verifyInstallation(egressContext, installed))) {
+            return incomplete();
+          }
+          const transportToken = await this.prepareRevisionStage("harness_auth", () =>
+            this.sandboxTransportTokenText(revision),
+          );
+          await this.prepareRevisionStage("sandbox_provision", () =>
+            sandboxDriver.enrollHarness!(
+              {
+                ...sandboxContext,
+                revision,
+                requirements,
+                transportToken,
+              },
+              installed,
+              async (startupId) => {
+                const committed = await this.verifiedReleaseInstallation(
+                  egressContext,
+                  context!,
+                  installed,
+                );
+                this.operationSignal().throwIfAborted();
+                return signComputeExecutionRelease(releaseKey!, startupId, committed);
+              },
+            ),
+          );
+        }
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
           // now: admit that supervisor before waiting for its workspace node.
@@ -6303,6 +6704,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<void> {
+    const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
     if (
       revision.compute.id !== this.id ||
       revision.compute.implementation !== this.implementation ||
@@ -6311,10 +6713,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
     }
-    if (
-      this.hasPublicGithubReadAdmission(revision) &&
-      this.publicGithubReadForRevision(revision) === undefined
-    ) {
+    if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
       if (observed === undefined || observed.status?.phase !== "Active") {
@@ -6322,6 +6721,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       this.verifyNamespaceOwnership(observed, { namespaceId: revision.namespaceId }, external);
       await this.revokeUnavailablePublicGithubRead(revision, namespace);
+      // If the peer was restored while withdrawal was pending, revalidate before release.
+      this.validateRevisionExecution(revision, context);
     }
     const materialInput = this.repositoryMaterialInput(revision, context);
     const repositoryConsumer =
@@ -6514,6 +6915,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ),
       harnessAuth.credentialSource?.config.base_url,
     );
+    if (repositoryMaterial !== undefined) {
+      await this.reconcileRepositoryIngress(
+        { namespace: namespace.name, namespaceId: revision.namespaceId, revision },
+        repositoryMaterial,
+      );
+    }
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const configuration = this.gatewayConfiguration(
       admittedRevision,
@@ -6556,7 +6963,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         pluginRuntime,
         [],
         workspaceSetup,
-        repositoryMaterial,
+        sandboxDriver === undefined ? repositoryMaterial : undefined,
         nativeRuntime,
         undefined,
         sandboxDriver?.provisionHarness !== undefined,
@@ -6635,6 +7042,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
           this.sandboxNamespaceForRevision(revision, namespace),
           namespace,
         );
+        if (revision.egressPlan !== undefined) {
+          await this.verifiedReleaseInstallation(
+            {
+              namespace: sandboxContext.namespace,
+              signal: sandboxContext.signal,
+              revision,
+              plan: revision.egressPlan,
+            },
+            context!,
+          );
+        }
         providerEndpoint = await sandboxDriver.harnessEndpoint({
           ...sandboxContext,
           revision,
@@ -6681,6 +7099,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       gatewayOwnership,
     );
+    await this.reconcileHarnessTrust(revision, providerEndpoint, gatewayNamespace);
     await this.reconcile(
       this.deployment(
         gatewayName,
@@ -6983,6 +7402,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
       external,
     );
     const sandboxNamespace = this.sandboxNamespaceForRevision(revision, namespace);
+    if (revision.egressPlan !== undefined && source.egress !== undefined) {
+      const egress = this.proxyDriver;
+      if (egress?.id !== revision.egressPlan.egressDriverId) {
+        throw new DependencyUnavailableError("The protected egress cleanup owner is unavailable.");
+      }
+      const binding = revision.egressPlan.routes.find(
+        (route) => route.binding.source.source.id === source.id,
+      )?.binding.binding;
+      if (!binding) {
+        throw new OwnershipFailure("The protected source has no admitted binding.");
+      }
+      const removed = await egress.withdrawBinding(
+        {
+          namespace: sandboxNamespace,
+          revision,
+          plan: revision.egressPlan,
+          signal: AbortSignal.timeout(30_000),
+        },
+        binding,
+      );
+      return { sourceId: source.id, state: removed ? "revoked" : "pending" };
+    }
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
     const status = await this.requireCredentialGateway().withdraw({
@@ -7411,6 +7852,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     await this.deleteOwnedNamespacedResource(
       "ConfigMap",
+      this.harnessTrustName(revision.agentId, revision.id),
+      this.pluginRuntimeOwnership(revision),
+      gatewayNamespace,
+    );
+    await this.deleteOwnedNamespacedResource(
+      "ConfigMap",
       `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       { namespaceId: revision.namespaceId, agentId: revision.agentId },
       gatewayNamespace,
@@ -7427,6 +7874,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
         this.pluginRuntimeOwnership(revision),
         gatewayNamespace,
+      );
+    }
+    if (revision.egressPlan !== undefined) {
+      await this.deleteOwnedNamespacedResource(
+        "Secret",
+        this.executionReleaseSecretName(revision),
+        this.pluginRuntimeOwnership(revision),
+        await this.controlNamespace(revision.namespaceId),
       );
     }
     for (const name of [
@@ -7731,6 +8186,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): RepositoryMaterialSpec | undefined {
+    if (this.openShellGit && revision.repositoryCredentials !== undefined) {
+      this.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
+      // The worker transfers prepared material directly to OpenShell. No broker bearer,
+      // installation token or App key is projected into this Sandbox.
+      return undefined;
+    }
     const spec = repositoryMaterialSpec(revision, context?.repositoryCredentials);
     if (spec !== undefined) {
       this.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
@@ -7749,6 +8210,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
       name: `agent-${suffix}-rev-${sha256Hex(revision.id, 12)}`,
       owner: { ...owner, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
     };
+  }
+
+  private async reconcileRepositoryIngress(
+    owner: PreparedRepositoryIngressOwner,
+    material?: ResolvedRepositoryMaterialSpec,
+  ): Promise<void> {
+    if (!this.preparedRepositoryIngress) {
+      return;
+    }
+    const clients = await this.clients("execution");
+    const broker = this.options.network.repositoryCredentials!;
+    const origin = material && repositoryCredentialBrokerOriginFromMaterial(material);
+    // Reads and the optimistic write use the normal deadline, with no automatic mutation retries.
+    await this.request(
+      () =>
+        reconcilePreparedRepositoryIngress({
+          clients,
+          broker,
+          owner,
+          ...(origin && { brokerHostname: origin.hostname }),
+        }),
+      { mutating: true },
+    );
   }
 
   private async repositoryMaterialStore(
@@ -7926,6 +8410,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
+    await this.reconcileRepositoryIngress({
+      namespace: namespace.name,
+      namespaceId: revision.namespaceId,
+      revision,
+    });
     const owner = {
       namespaceId: revision.namespaceId,
       agentId: revision.agentId,
@@ -7944,11 +8433,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   private async resolveNamespace(
     namespaceId: string,
+    selection?: string,
   ): Promise<{ readonly name: KubernetesNamespaceAddress; readonly external: boolean }> {
+    const binding = this.preprovisionedNamespace;
+    if (selection !== undefined) {
+      if (binding) {
+        throw new OwnershipFailure(
+          "Tenant-selected placement is disabled for a preprovisioned Namespace.",
+        );
+      }
+      return { name: { name: selection, plane: "execution" }, external: true };
+    }
     const clients = await this.clients("execution");
-    const resolved = await this.request(() =>
-      resolveKubernetesNamespace(clients.core, namespaceId),
-    );
+    const resolved = binding
+      ? { ...(await this.request(() => binding.read(clients.core, namespaceId))), external: false }
+      : await this.request(() => resolveKubernetesNamespace(clients.core, namespaceId));
     return { ...resolved, name: { name: resolved.name, plane: "execution" } };
   }
 
@@ -8510,6 +9009,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `The existing Kubernetes namespace ${namespace.name} returned invalid NetworkPolicies.`,
       );
     }
+    // This is the sealed Namespace initialization gate. If later reconciliation sees
+    // Agent-specific policies, stop rather than infer their authority from labels.
+    const approved = new Map<string, unknown>();
+    if (this.preprovisionedNamespace) {
+      for (const policy of this.networkPolicies(ownership, namespace)) {
+        approved.set(policy.metadata.name, policy.spec);
+      }
+      for (const policy of this.preprovisionedNamespace.operatorPolicies) {
+        if (approved.has(policy.name)) {
+          throw new OwnershipFailure("Operator NetworkPolicy name duplicates an admitted policy.");
+        }
+        approved.set(policy.name, policy.spec);
+      }
+    }
     for (const item of observed.items) {
       const policy = asRecord(item);
       const metadata = asRecord(policy?.metadata);
@@ -8523,6 +9036,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
       ) {
         throw new OwnershipFailure(
           `The existing Kubernetes namespace ${namespace.name} returned an invalid NetworkPolicy.`,
+        );
+      }
+      if (
+        this.preprovisionedNamespace &&
+        (!approved.has(metadata.name) ||
+          !isDeepStrictEqual(
+            networkPolicySpecToJson(policy.spec as V1NetworkPolicySpec | undefined),
+            approved.get(metadata.name),
+          ))
+      ) {
+        throw new OwnershipFailure(
+          "The sealed Namespace contains an undeclared or changed NetworkPolicy.",
         );
       }
       try {
@@ -8706,13 +9231,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async resolveSandboxNamespace(namespace: Readonly<Namespace>): Promise<Readonly<Namespace>> {
-    const placement =
-      namespace.existingNamespace === undefined
-        ? await this.resolveNamespace(namespace.id)
-        : {
-            name: { name: namespace.existingNamespace, plane: "execution" as const },
-            external: true,
-          };
+    const placement = await this.resolveNamespace(namespace.id, namespace.existingNamespace);
     if (placement.external && namespace.existingNamespace === undefined) {
       throw new OwnershipFailure(
         `Existing Kubernetes namespace ${placement.name.name} was not explicitly selected.`,
@@ -9503,12 +10022,30 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private credentialSourceEnvironment(
     revision: AgentRevision,
     attachments: readonly CredentialSourceAttachment[],
+    source?: Readonly<CredentialSource>,
   ): readonly SandboxEnvironmentVariable[] {
     if (revision.harnessAuth.method !== "credential_source") {
       return [];
     }
     const sourceId = revision.harnessAuth.sourceId;
     const attachment = attachments.find((entry) => entry.sourceId === sourceId);
+    // Protected sources belong to the Credential Proxy, never the legacy Gateway.
+    if (source?.egress !== undefined) {
+      if (
+        source.id !== sourceId ||
+        revision.executionAdmission.mode !== "protected" ||
+        revision.harnessAuth.loginMode !== "api_key" ||
+        attachment !== undefined ||
+        !revision.egressPlan?.routes.some((route) =>
+          isDeepStrictEqual(route.binding.source, source.egress!.key),
+        )
+      ) {
+        throw new OwnershipFailure(
+          "Protected Harness authentication does not match its admitted source.",
+        );
+      }
+      return [];
+    }
     if (attachment === undefined) {
       throw new ConfigurationFailure(
         "The Credential Gateway did not attach the Harness authentication source.",
@@ -10839,6 +11376,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ownership: Ownership,
     external: boolean,
   ): void {
+    if (this.preprovisionedNamespace) {
+      if (external || ownership.namespaceId !== this.preprovisionedNamespace.namespaceId) {
+        throw new OwnershipFailure("The preprovisioned Namespace is not bound to this tenant.");
+      }
+      this.preprovisionedNamespace.verify(namespace);
+      return;
+    }
     const observed = verifiedKubernetesNamespace(namespace.metadata, ownership.namespaceId);
     if (observed.external !== external) {
       throw new OwnershipFailure(
@@ -12115,6 +12659,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     const reader = this.options.network.publicGithubRead;
     if (
       reader === undefined ||
+      revision.executionAdmission.mode !== "unprotected" ||
       this.options.runtime === undefined ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
@@ -12168,43 +12713,50 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       this.hasPublicGithubReadAdmission(revision) &&
       this.publicGithubReadForRevision(revision) === undefined
     ) {
-      // Removing the grant first prevents new connections, but a CNI may retain existing ones.
-      await this.deleteOwnedNamespacedResource(
-        "NetworkPolicy",
-        this.publicGithubReadNetworkPolicyName(revision),
-        this.pluginRuntimeOwnership(revision),
-        namespace,
-      );
-      // Admission is issued only to a Compute-owned Harness; current Sandbox
-      // configuration may have changed since that immutable decision.
-      await this.deleteRevisionAgentDeployment(revision, namespace, {
-        waitForRemoval: true,
-        owner: "admitted-public-reader",
-      });
-      await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
-      if (
-        (await this.getOwned(
-          "Deployment",
-          `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
-          namespace,
-          this.pluginRuntimeOwnership(revision),
-        )) !== undefined
-      ) {
-        throw new DependencyUnavailableError("The withdrawn AgentRevision workload reappeared.");
-      }
-      if (
-        (await this.getOwned(
-          "NetworkPolicy",
-          this.publicGithubReadNetworkPolicyName(revision),
-          namespace,
-          this.pluginRuntimeOwnership(revision),
-        )) !== undefined
-      ) {
-        throw new DependencyUnavailableError("The withdrawn reader policy reappeared.");
-      }
+      await this.withdrawAdmittedPublicGithubRead(revision, namespace);
       throw new ConfigurationFailure(
         "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.",
       );
+    }
+  }
+
+  private async withdrawAdmittedPublicGithubRead(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    // Removing the grant first prevents new connections, but a CNI may retain existing ones.
+    await this.deleteOwnedNamespacedResource(
+      "NetworkPolicy",
+      this.publicGithubReadNetworkPolicyName(revision),
+      this.pluginRuntimeOwnership(revision),
+      namespace,
+    );
+    // Admission is issued only to a Compute-owned Harness; current Sandbox
+    // configuration may have changed since that immutable decision.
+    await this.deleteRevisionAgentDeployment(revision, namespace, {
+      waitForRemoval: true,
+      owner: "admitted-public-reader",
+    });
+    await this.waitForRevisionPodsToTerminate(revision, namespace, "agent");
+    if (
+      (await this.getOwned(
+        "Deployment",
+        `agent-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
+        namespace,
+        this.pluginRuntimeOwnership(revision),
+      )) !== undefined
+    ) {
+      throw new DependencyUnavailableError("The withdrawn AgentRevision workload reappeared.");
+    }
+    if (
+      (await this.getOwned(
+        "NetworkPolicy",
+        this.publicGithubReadNetworkPolicyName(revision),
+        namespace,
+        this.pluginRuntimeOwnership(revision),
+      )) !== undefined
+    ) {
+      throw new DependencyUnavailableError("The withdrawn reader policy reappeared.");
     }
   }
 
@@ -13125,7 +13677,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
     ];
     const repositoryEgress =
-      revision.repositoryCredentials === undefined
+      revision.repositoryCredentials === undefined || this.openShellGit !== undefined
         ? []
         : [
             {
@@ -13314,7 +13866,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ) {
         throw new OwnershipFailure("Harness credential source does not match the admitted source.");
       }
-    } else {
+    } else if (
+      auth.method !== "runtime" ||
+      !revision.egressPlan ||
+      harnessEgressEnrollment(revision.egressPlan).inference
+    ) {
       if (
         !isServiceAccountHarnessAuth(auth) ||
         !isDeepStrictEqual(auth, revision.harnessAuth) ||
@@ -13325,7 +13881,15 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         );
       }
     }
-    const prepared = prepareHarnessAuth(revision.harness, auth, revision.configuration);
+    const prepared: PreparedHarnessAuth =
+      auth.method === "runtime" &&
+      revision.egressPlan &&
+      !harnessEgressEnrollment(revision.egressPlan).inference
+        ? {
+            loginMode: "runtime",
+            environment: [{ name: "CODEX_LOGIN_MODE", value: "protected-no-inference" }],
+          }
+        : prepareHarnessAuth(revision.harness, auth, revision.configuration);
     const native = harnessModelAuthentication(revision.configuration);
     return {
       ...prepared,
@@ -13523,6 +14087,125 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
+  /** The release signer is revision-owned in the control plane and is never projected into a workload. */
+  private async executionReleaseKey(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<KeyObject> {
+    const name = this.executionReleaseSecretName(revision);
+    const ownership = this.pluginRuntimeOwnership(revision);
+    try {
+      let observed = await this.getOwned("Secret", name, namespace, ownership);
+      if (!observed) {
+        const key = generateKeyPairSync("ed25519").privateKey.export({
+          type: "pkcs8",
+          format: "der",
+        });
+        const clients = await this.clients(namespace.plane);
+        await this.request(
+          () =>
+            clients.core.createNamespacedSecret({
+              namespace: namespace.name,
+              body: {
+                ...this.manifest("v1", "Secret", name, ownership, namespace),
+                immutable: true,
+                type: "Opaque",
+                data: { signer: key.toString("base64") },
+              },
+            }),
+          { mutating: true },
+        );
+        observed = await this.getOwned("Secret", name, namespace, ownership);
+      }
+      if (
+        observed?.immutable !== true ||
+        !observed.metadata.uid ||
+        observed.metadata.deletionTimestamp ||
+        !observed.data?.signer
+      ) {
+        throw new Error("Incomplete Compute execution release key.");
+      }
+      const key = createPrivateKey({
+        key: Buffer.from(observed.data.signer, "base64"),
+        format: "der",
+        type: "pkcs8",
+      });
+      if (key.asymmetricKeyType !== "ed25519") {
+        throw new Error("Invalid Compute execution release key.");
+      }
+      return key;
+    } catch (error) {
+      this.operationSignal().throwIfAborted();
+      throw privateWriteFailure("Compute execution release key is unavailable.", error);
+    }
+  }
+
+  private executionReleaseSecretName(revision: AgentRevision): string {
+    return `compute-release-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`;
+  }
+
+  /** Cold/expired is pending for an ordinary later observation, never a request to prepare material. */
+  private async preparedEgressReady(egress: ProxyRevisionContext): Promise<boolean> {
+    for (const route of egress.plan.routes) {
+      if (route.binding.grant.kind !== "github_repository_metadata") {
+        continue;
+      }
+      const control = this.proxyDriver!.sourceControl;
+      const lifecycle = control.preparedGitHub;
+      const source = preparedGitHubSourceFromRoute(route, control);
+      if (
+        !source ||
+        !lifecycle ||
+        !isDeepStrictEqual(source.key.provider, preparedGitHubProviderRef)
+      ) {
+        throw new DependencyUnavailableError(
+          "Compute requires the exact prepared GitHub metadata lifecycle owner.",
+        );
+      }
+      // Bound even an owner whose observation ignores cancellation. No retry in this pass.
+      const signal = AbortSignal.any([egress.signal, AbortSignal.timeout(3_000)]);
+      let interrupted: () => void;
+      const promise = new Promise<boolean>((resolve) => {
+        interrupted = () => resolve(false);
+        signal.addEventListener("abort", interrupted, { once: true });
+      });
+      try {
+        egress.signal.throwIfAborted();
+        const ready = await Promise.race([promise, lifecycle.ready(source, signal)]);
+        egress.signal.throwIfAborted();
+        if (ready !== true || signal.aborted) {
+          return false;
+        }
+      } finally {
+        signal.removeEventListener("abort", interrupted!);
+      }
+    }
+    return true;
+  }
+
+  private async verifiedReleaseInstallation(
+    egress: ProxyRevisionContext,
+    context: ComputeRevisionContext,
+    observed?: EgressInstallation,
+  ): Promise<EgressInstallation> {
+    const current = await context.currentEgressInstallation!();
+    if (
+      !current ||
+      !isDeepStrictEqual(current.plan, egress.plan) ||
+      (observed &&
+        (observed.sandboxId !== current.sandboxId ||
+          !isDeepStrictEqual(current.sender, observed.sender) ||
+          !isDeepStrictEqual(current.enforcement, observed.enforcement))) ||
+      !(await this.proxyDriver!.verifyInstallation(egress, current)) ||
+      !(await this.preparedEgressReady(egress))
+    ) {
+      throw new DependencyUnavailableError(
+        "Compute release requires the exact current committed installation.",
+      );
+    }
+    return current;
+  }
+
   private async sandboxTransportVerifier(
     revision: AgentRevision,
   ): Promise<SandboxEnvironmentVariable> {
@@ -13684,6 +14367,52 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
   }
 
+  private harnessTrustName(agentId: string, revisionId: string): string {
+    return `harness-trust-${sha256Hex(agentId, 12)}-rev-${sha256Hex(revisionId, 12)}`;
+  }
+
+  private async reconcileHarnessTrust(
+    revision: AgentRevision,
+    endpoint: SandboxHarnessEndpoint | undefined,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    if (endpoint?.tls === undefined) {
+      return;
+    }
+    const network = this.options.network.providerHarness;
+    if (network === undefined) {
+      throw new ConfigurationFailure(
+        "SandboxDriver Harness endpoint requires an exact provider network route.",
+      );
+    }
+    providerHarnessUrl(endpoint, network, this.sandboxDriver?.harnessHome ?? HARNESS_HOME);
+    // The endpoint arrives after the configuration snapshot. Keep its public
+    // trust separately revision-owned and immutable; drift requires a new revision.
+    const ownership = this.pluginRuntimeOwnership(revision);
+    await this.reconcile(
+      {
+        ...this.manifest(
+          "v1",
+          "ConfigMap",
+          this.harnessTrustName(revision.agentId, revision.id),
+          ownership,
+          namespace,
+        ),
+        immutable: true,
+        data: {
+          [HARNESS_TRUST_FILE]: [
+            publicCaBundle(endpoint.tls.caBundle),
+            this.options.executionCluster?.caBundle,
+          ]
+            .filter((bundle) => bundle !== undefined)
+            .join("\n"),
+        },
+      },
+      ownership,
+      namespace,
+    );
+  }
+
   private deployment(
     name: string,
     ownership: Ownership,
@@ -13775,6 +14504,33 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       pluginRuntime?.runtime.kind === "codex" && !embedded
         ? pluginRuntime.runtime.publicGithubRead
         : undefined;
+    if (providerEndpoint?.tls !== undefined) {
+      if (role !== "gateway" || !dedicated || configuration === undefined) {
+        throw new ConfigurationFailure(
+          "SandboxDriver TLS trust belongs only to its dedicated Agent Gateway.",
+        );
+      }
+      volumes.push({
+        name: HARNESS_TRUST_VOLUME,
+        configMap: {
+          name: this.harnessTrustName(
+            required(ownership.agentId, "Harness trust Agent ID"),
+            configuration.revisionId,
+          ),
+          items: [{ key: HARNESS_TRUST_FILE, path: HARNESS_TRUST_FILE }],
+          optional: false,
+        },
+      });
+      volumeMounts.push({
+        name: HARNESS_TRUST_VOLUME,
+        mountPath: HARNESS_TRUST_DIRECTORY,
+        readOnly: true,
+      });
+      variables.push({
+        name: "NODE_EXTRA_CA_CERTS",
+        value: `${HARNESS_TRUST_DIRECTORY}/${HARNESS_TRUST_FILE}`,
+      });
+    }
     const initContainers = privateHome
       ? [
           this.privateStateInitContainer(
@@ -14235,7 +14991,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           name: "OPENCLAW_PEER_PLUGIN_STATUS_URL",
           value: `https://${this.options.executionCluster.harnessRouting.hostname}${this.harnessRoutePath(ownership)}/plugin-status`,
         });
-        if (this.options.executionCluster.caBundle !== undefined) {
+        if (
+          this.options.executionCluster.caBundle !== undefined &&
+          providerEndpoint?.tls === undefined
+        ) {
           variables.push({
             name: "NODE_EXTRA_CA_CERTS",
             value: `${configuration?.usesWritableNativeAdminConfig ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,

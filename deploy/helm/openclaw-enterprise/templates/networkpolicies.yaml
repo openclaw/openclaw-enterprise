@@ -261,6 +261,7 @@ spec:
 {{- end }}
 
 {{- if .Values.repositoryCredentials.enabled }}
+{{- if eq .Values.repositoryCredentials.authority "github-app" }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -302,6 +303,7 @@ spec:
       ports:
         - protocol: TCP
           port: 8443
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -322,7 +324,11 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: 443
+          {{- $port := int .Values.repositoryCredentials.upstreamPort }}
+          {{- if and (ne $port 443) (or (ne .Values.repositoryCredentials.authority "prepared-git") (lt $port 1024) (gt $port 65535)) }}
+          {{- fail "repositoryCredentials.upstreamPort must be 443 or a private prepared Git provider port" }}
+          {{- end }}
+          port: {{ $port }}
 {{- end }}
 
 {{- if .Values.executionCluster.enabled }}
@@ -350,4 +356,30 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.executionCluster.apiPort }}
+{{- end }}
+{{- if .Values.preparedGitHub.custodySecretName }}
+{{- if not .Values.preparedGitHub.issuerCidrs }}{{ fail "preparedGitHub.issuerCidrs requires exact GitHub API IPv4 destinations" }}{{ end }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort) | atoi }}
+{{- if gt $port 65535 }}{{ fail "preparedGitHub.issuerPort must be a TCP port from 1 to 65535" }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-prepared-github-issuer-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    matchExpressions:
+      - {key: app.kubernetes.io/component, operator: In, values: [api, worker]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.preparedGitHub.issuerCidrs }}
+        {{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString .)) }}{{ fail "preparedGitHub.issuerCidrs entries must be explicit IPv4 /32 hosts" }}{{ end }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: {{ $port }}}
 {{- end }}

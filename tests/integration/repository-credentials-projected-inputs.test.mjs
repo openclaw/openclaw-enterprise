@@ -172,6 +172,55 @@ test("projected service inputs become owned private files accepted by the real l
   restarted.close();
 });
 
+test("prepared projection loads without an App key and refuses an authority mismatch", async (t) => {
+  const f = await fixture(t);
+  f.options.authority = "prepared-git";
+  await project(join(f.options.registryFile, ".."), "..prepared-registry", {
+    "registry.json": JSON.stringify({
+      ...f.registry,
+      repositories: f.registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: repository.namespaces.map((policy) => ({
+          ...policy,
+          transport: "git-only",
+          pushRefAllowlist: ["refs/heads/agent-work"],
+        })),
+      })),
+    }),
+  });
+  const backend = {
+    kind: "github-prepared-git-registry",
+    backendId: f.options.backendId,
+    registryFile: f.options.registryFile,
+  };
+  // The mounted generation contains only the service configuration and TLS.
+  await project(f.options.inputsDirectory, "..prepared", {
+    "config.json": JSON.stringify({ ...f.config, backend }),
+    "tls.crt": f.values["tls.crt"],
+    "tls.key": f.values["tls.key"],
+  });
+  const loaded = await f.prepare();
+  assert.equal(loaded.authority, "github-prepared-git-registry");
+  assert.equal(loaded.repositoryDescriptions, undefined);
+  assert.equal(loaded.config.gateway.controlSocket, f.options.controlSocket);
+  loaded.close();
+  assert.deepEqual((await readdir(f.options.privateDirectory)).sort(), [
+    "config.json",
+    "registry.json",
+    "tls.crt",
+    "tls.key",
+  ]);
+  const copied = JSON.parse(
+    await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
+  );
+  assert.equal(Object.hasOwn(copied.backend, "privateKeyFile"), false);
+  f.options.authority = "github-app";
+  await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
+  f.options.authority = "prepared-git";
+  await project(f.options.inputsDirectory, "..wrong-authority", f.values);
+  await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
+});
+
 test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {
   const f = await fixture(t);
   const gateway = { ...f.config.gateway };

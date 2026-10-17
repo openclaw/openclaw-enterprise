@@ -1,3 +1,4 @@
+{{- if not .Values.preprovisionedNamespace }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -86,3 +87,4 @@ spec:
               mountPath: {{ .Values.database.caMountPath | quote }}
               readOnly: true
             {{- end }}
+{{- end }}

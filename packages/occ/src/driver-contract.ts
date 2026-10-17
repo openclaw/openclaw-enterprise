@@ -5,6 +5,7 @@ import type {
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
 import { DRIVER_CAPABILITIES, SANDBOX_FACETS } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
   "afterNamespacePrepared",
@@ -48,7 +49,39 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       ["create", "update", "delete", "resolve"].every(
         (operation) => typeof candidate[operation] === "function",
       ) &&
-      (candidate.withValue === undefined || typeof candidate.withValue === "function")
+      (candidate.withValue === undefined || typeof candidate.withValue === "function") &&
+      (candidate.readCredentialInput === undefined ||
+        typeof candidate.readCredentialInput === "function")
+    );
+  }
+  if (driver.capability === "credential_proxy") {
+    const control = asRecord(candidate.sourceControl);
+    return (
+      control !== undefined &&
+      typeof control.assertAvailable === "function" &&
+      Array.isArray(control.providers) &&
+      control.providers.length > 0 &&
+      control.providers.every((value) => {
+        const provider = asRecord(value);
+        return (
+          provider !== undefined &&
+          [
+            "normalizeConfig",
+            "normalizeGrant",
+            "routes",
+            "classify",
+            "inject",
+            "protectResponse",
+          ].every((operation) => typeof provider[operation] === "function")
+        );
+      }) &&
+      [
+        "configureRevision",
+        "wiringStatus",
+        "verifyInstallation",
+        "withdrawBinding",
+        "removeRevision",
+      ].every((operation) => typeof candidate[operation] === "function")
     );
   }
   if (driver.capability === "credential_gateway") {

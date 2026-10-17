@@ -1,6 +1,13 @@
+import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  invoke as invokeMiddleware,
+  token as supervisorToken,
+} from "../helpers/openshell-online-wire.mjs";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -47,6 +54,7 @@ import {
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -639,12 +647,12 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
   delete undeclared.backend[0].configuration.insecureTransport;
   await assert.rejects(
     load(undeclared),
-    /requires TLS with bearerTokenFile authentication, or insecureTransport: network-policy/,
+    /requires TLS with bearerTokenFile or mtls authentication, or insecureTransport: network-policy/,
   );
   // TLS alone is not enough; the gateway must also authenticate OCC.
   const tlsOnly = sandboxInstallation();
   tlsOnly.backend[0].configuration = { endpoint: "https://openshell-gateway.openshell.svc:8080" };
-  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
+  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile or mtls authentication/);
 
   const protectedTransport = sandboxInstallation();
   protectedTransport.backend[0].configuration = {
@@ -662,7 +670,7 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
   protectedTransport.backend[0].configuration.operatorTls = operatorTls;
   await load(protectedTransport);
   tlsOnly.backend[0].configuration.operatorTls = operatorTls;
-  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
+  await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile or mtls authentication/);
 
   for (const invalid of [
     { certificatePath: operatorTls.certificatePath },
@@ -679,6 +687,29 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
   // The declaration is only for unprotected transport, so it cannot mask a protected setup.
   protectedTransport.backend[0].configuration.insecureTransport = "network-policy";
   await assert.rejects(load(protectedTransport), /insecureTransport is only for unprotected/);
+
+  const mtls = sandboxInstallation();
+  mtls.backend[0].configuration = {
+    endpoint: "https://openshell-gateway.openshell.svc:8080",
+    auth: {
+      mode: "mtls",
+      certificatePath: "/etc/openclaw/openshell/tls.crt",
+      privateKeyPath: "/etc/openclaw/openshell/tls.key",
+    },
+  };
+  await load(mtls);
+  for (const change of [
+    { privateKeyPath: undefined },
+    { certificatePath: "relative.crt" },
+    { path: "/unexpected" },
+  ]) {
+    const invalid = structuredClone(mtls);
+    Object.assign(invalid.backend[0].configuration.auth, change);
+    await assert.rejects(load(invalid), /configuration.auth/);
+  }
+  mtls.backend[0].configuration.endpoint = "http://openshell-gateway.openshell.svc:8080";
+  mtls.backend[0].configuration.insecureTransport = "network-policy";
+  await assert.rejects(load(mtls), /mtls requires HTTPS/);
 
   // Every gateway call's deadline stays within the registration fence.
   const slow = sandboxInstallation();
@@ -1450,6 +1481,87 @@ test("OpenShell rejects projected Agent identity before gateway mutation", async
     return true;
   });
   assert.deepEqual(gatewayClient.calls, []);
+});
+
+test("OpenShell Harness endpoints expose only the Backend public CA", async (t) => {
+  const tls = await harnessTlsFixture(t);
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.getService = async () => ({
+    targetPort: 8080,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "https://harness.example.test:8080/",
+    url: "https://harness.example.test:8080/",
+  });
+  const endpoint = async (rootCertificatePath) => {
+    const backend = backendFor(gatewayClient);
+    backend.client = new OpenShellGateway(
+      {
+        endpoint: "https://gateway.example.test:8080/",
+        // Endpoint trust never reads or exports administrator authentication.
+        auth: { mode: "bearerTokenFile", path: join(tls.directory, "not-readable-admin-token") },
+        ...(rootCertificatePath === undefined ? {} : { rootCertificatePath }),
+      },
+      { gatewayClient },
+    );
+    const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend,
+    });
+    const { context, revision, requirements } = runtimeSandboxFixture(driver);
+    return driver.harnessEndpoint({ ...context, revision, requirements });
+  };
+  assert.deepEqual(await endpoint(tls.rootCertificatePath), {
+    url: "wss://harness.example.test:8080/",
+    workspaceRoot: "/sandbox/enterprise",
+    codexPermissionProfile: ":danger-full-access",
+    tls: { caBundle: tls.caBundle },
+  });
+  assert.equal((await endpoint()).tls, undefined, "unconfigured roots keep system trust");
+  const invalidRoot = join(tls.directory, "invalid-root.pem");
+  const begin = "-----BEGIN CERTIFICATE-----";
+  const end = "-----END CERTIFICATE-----";
+  for (const content of [
+    "",
+    tls.cert,
+    tls.caBundle + tls.key,
+    `${begin}\ninvalid\n${end}`,
+    `garbage\n${tls.caBundle}`,
+    `${tls.caBundle}\ngarbage`,
+    `${begin}\n${tls.caBundle}`,
+    `${tls.caBundle}\n${end}`,
+    // A valid first CA must not hide a malformed or unterminated second block.
+    `${tls.caBundle}\n${begin.repeat(1000)}`,
+    begin.repeat(1000),
+  ]) {
+    await writeFile(invalidRoot, content);
+    await assert.rejects(endpoint(invalidRoot), /readable public PEM CA certificate bundle/);
+  }
+  // Rotation bundles preserve canonical PEM, accepting whitespace and CRLF.
+  await writeFile(
+    invalidRoot,
+    ` \t\r\n${tls.caBundle.replaceAll("\n", "\r\n")}\n${tls.caBundle}\t`,
+  );
+  assert.equal((await endpoint(invalidRoot)).tls.caBundle, tls.caBundle + tls.caBundle);
+
+  // Bound this synchronous-parser regression in a child: a test timeout cannot interrupt ReDoS.
+  const parserUrl = new URL("../../packages/utils/src/tls.ts", import.meta.url).href;
+  const repeatedMarkers = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      `import assert from "node:assert/strict";
+       import { publicCaBundle } from ${JSON.stringify(parserUrl)};
+       assert.throws(() => publicCaBundle(${JSON.stringify(begin)}.repeat(100_000)),
+         /TLS trust must contain only PEM CA certificates/);`,
+    ],
+    { encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(repeatedMarkers.error, undefined, "unterminated CA markers must reject promptly");
+  assert.equal(repeatedMarkers.status, 0, repeatedMarkers.stderr);
+  await assert.rejects(endpoint("relative-ca.pem"), /absolute path/);
+  await assert.rejects(endpoint(join(tls.directory, "missing-root.pem")), /readable public PEM CA/);
 });
 
 test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async () => {
@@ -2326,7 +2438,7 @@ test("OpenShell rejects unsupported or foreign Codex runtime providers before Sa
           selections: { slack: { enabled: true } },
         }),
       },
-      expected: /does not yet support selected plugins or repository credentials/,
+      expected: /does not yet support selected plugins/,
     },
     {
       name: "foreign provider collision",
@@ -3742,6 +3854,56 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
   }
 });
 
+test("installation refuses OpenShell repository credentials before reading session or provider inputs", async (t) => {
+  const configuration = sandboxInstallation();
+  const id = "repository-credentials";
+  configuration.backend.push({
+    id: "github-primary",
+    type: "github",
+    configuration: { registryPath: "/absent/repositories.json" },
+    drivers: { repo: id },
+  });
+  configuration.drivers.repo = {
+    id,
+    configuration: {
+      controlSocket: "/absent/control.sock",
+      publicCaPath: "/absent/ca.pem",
+      sessionDurationSeconds: 600,
+    },
+    preparedGitHub: {
+      custodyKeyPath: "/absent/custody",
+      privateKeyPath: "/absent/app-key.pem",
+    },
+  };
+  await assert.rejects(loadInstallationFile(t, configuration), {
+    code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+  });
+});
+
+test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {
+  const gateway = workspaceGatewayClient();
+  const driver = openShellDriver(gateway);
+  const refusal = { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" };
+  let releases = 0;
+  for (const select of [
+    ({ revision }) => (revision.repositoryCredentials = {}),
+    ({ requirements }) => (requirements.repositorySession = {}),
+    ({ requirements: { environment } }) =>
+      environment.push({ name: "OPENCLAW_REPOSITORY_ENROLLMENT", value: "{}" }),
+  ]) {
+    const { context, revision, requirements } = runtimeSandboxFixture(driver);
+    const input = { ...context, revision, requirements };
+    select(input);
+    await assert.rejects(driver.provisionHarness(input), refusal);
+    await assert.rejects(
+      driver.enrollHarness(input, {}, () => releases++),
+      refusal,
+    );
+    assert.equal(releases, 0);
+    assert.deepEqual(gateway.calls, []);
+  }
+});
+
 // These cases invoke the production Driver over controlled Kubernetes/Gateway
 // transports. They prove cleanup selection, fencing and completion ordering, not
 // Kubernetes garbage collection, filesystem isolation, or live Pod termination.
@@ -4060,3 +4222,637 @@ test("OpenShell preparer cleanup preserves retryable work on cancellation and tr
     });
   }
 });
+
+test("OpenShell verifies operator NetworkPolicy from actual KubernetesObjectApi deserialization", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  const policy = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: { name: "operator-ingress" },
+    spec: {
+      podSelector: { matchLabels: { app: "sandbox" } },
+      policyTypes: ["Ingress"],
+      ingress: [
+        {
+          from: [{ podSelector: { matchLabels: { app: "worker" } } }],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ],
+    },
+  };
+  configuration.gateway.networkPolicyResources = [policy];
+  const gatewayClient = workspaceGatewayClient();
+  const driver = new OpenShellSandboxDriver(configuration, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+    operatorOwnedKubernetesResources: true,
+  });
+  const context = namespaceContext();
+  const api = new KubernetesObjectApi();
+  const metadata = {
+    ...policy.metadata,
+    namespace: context.namespace.name,
+    labels: {
+      "app.kubernetes.io/managed-by": "openclaw-enterprise",
+      "openclaw.dev/namespace": context.namespace.id,
+    },
+    annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+  };
+  let wire = { ...structuredClone(policy), metadata };
+  // Replace transport only: read() still resolves the resource and processes the SDK response.
+  api.apiVersionResourceCache = {
+    v1: { resources: [{ name: "namespaces", kind: "Namespace", namespaced: false }] },
+    "networking.k8s.io/v1": {
+      resources: [{ name: "networkpolicies", kind: "NetworkPolicy", namespaced: true }],
+    },
+  };
+  const { createConfiguration, ServerConfiguration } = controllerRequire("@kubernetes/client-node");
+  api.configuration = createConfiguration({
+    baseServer: new ServerConfiguration("http://127.0.0.1:9", {}),
+  });
+  api.requestPromise = async (request) => {
+    const value = request.getUrl().includes("/networkpolicies/")
+      ? wire
+      : { apiVersion: "v1", kind: "Namespace", metadata: { name: context.namespace.name } };
+    return api.processResponse({
+      httpStatusCode: 200,
+      headers: { "content-type": "application/json" },
+      body: { text: async () => JSON.stringify(value) },
+    });
+  };
+  context.kubernetes = api;
+  const observed = await api.read(wire);
+  assert.ok(observed.spec.ingress[0]._from);
+  assert.equal(observed.spec.ingress[0].from, undefined);
+  await driver.ensureNamespace(context);
+  assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
+  for (const mutate of [
+    (value) => {
+      value.spec.ingress[0].from = [{}];
+    },
+    (value) => {
+      value.spec.ingress[0].ports[0].port = 9090;
+    },
+  ]) {
+    wire = { ...structuredClone(policy), metadata };
+    mutate(wire);
+    await assert.rejects(
+      driver.ensureNamespace(context),
+      /Operator workspace resource does not match/,
+    );
+  }
+
+  // Configuration is a wire manifest: an SDK-only alias must not be repaired into a match.
+  wire = { ...structuredClone(policy), metadata };
+  const malformed = structuredClone(configuration);
+  const rule = malformed.gateway.networkPolicyResources[0].spec.ingress[0];
+  rule._from = rule.from;
+  delete rule.from;
+  const malformedDriver = new OpenShellSandboxDriver(malformed, {
+    id: "openshell-sandbox",
+    implementation: "openshell",
+    backend: backendFor(gatewayClient),
+    operatorOwnedKubernetesResources: true,
+  });
+  await assert.rejects(
+    malformedDriver.ensureNamespace(context),
+    /Operator workspace resource does not match/,
+  );
+});
+
+for (const kind of ["Role", "RoleBinding"]) {
+  test(`OpenShell verifies operator ${kind} from actual KubernetesObjectApi deserialization`, async () => {
+    const context = namespaceContext();
+    const role = {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "Role",
+      metadata: { name: "workspace-reader" },
+      rules: [{ apiGroups: [""], resources: ["pods"], verbs: ["get"] }],
+    };
+    const binding = {
+      apiVersion: "rbac.authorization.k8s.io/v1",
+      kind: "RoleBinding",
+      metadata: { name: "workspace-reader" },
+      roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: role.metadata.name },
+      subjects: [
+        { kind: "ServiceAccount", name: "openshell-sandbox", namespace: context.namespace.name },
+      ],
+    };
+    const resource = kind === "Role" ? role : binding;
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    configuration.gateway.operatorWorkspaceResources = [resource];
+    const gatewayClient = workspaceGatewayClient();
+    const driver = new OpenShellSandboxDriver(configuration, {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      backend: backendFor(gatewayClient),
+      operatorOwnedKubernetesResources: true,
+    });
+    const metadata = {
+      ...resource.metadata,
+      namespace: context.namespace.name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/namespace": context.namespace.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": context.namespace.id },
+    };
+    let wire = { ...structuredClone(resource), metadata };
+    let addUnknown = false;
+    const { createConfiguration, ServerConfiguration, V1PolicyRule, RbacV1Subject } =
+      controllerRequire("@kubernetes/client-node");
+    const api = new KubernetesObjectApi(
+      createConfiguration({
+        baseServer: new ServerConfiguration("http://127.0.0.1:9", {}),
+      }),
+    );
+    api.apiVersionResourceCache = {
+      v1: { resources: [{ name: "namespaces", kind: "Namespace", namespaced: false }] },
+      "rbac.authorization.k8s.io/v1": {
+        resources: [
+          { name: "roles", kind: "Role", namespaced: true },
+          { name: "rolebindings", kind: "RoleBinding", namespaced: true },
+        ],
+      },
+    };
+    // Keep read() and SDK deserialization real; only replace the HTTP transport.
+    api.requestPromise = async (request) => {
+      const isResource = request.getUrl().includes("/rbac.authorization.k8s.io/");
+      const observed = await api.processResponse({
+        httpStatusCode: 200,
+        headers: { "content-type": "application/json" },
+        body: {
+          text: async () =>
+            JSON.stringify(
+              isResource
+                ? wire
+                : {
+                    apiVersion: "v1",
+                    kind: "Namespace",
+                    metadata: { name: context.namespace.name },
+                  },
+            ),
+        },
+      });
+      if (isResource && addUnknown) {
+        // Preserve future/extension fields that reach the comparison boundary.
+        (kind === "Role" ? observed.rules[0] : observed.subjects[0]).unexpected = true;
+      }
+      return observed;
+    };
+    context.kubernetes = api;
+    const observed = await api.read(wire);
+    assert.ok(
+      kind === "Role"
+        ? observed.rules[0] instanceof V1PolicyRule
+        : observed.subjects[0] instanceof RbacV1Subject,
+    );
+    await driver.ensureNamespace(context);
+    assert.equal(callCount(gatewayClient, "createWorkspace"), 1);
+
+    // Every increase or change in RBAC authority must fail before Gateway access.
+    const mutations =
+      kind === "Role"
+        ? [
+            (value) => {
+              value.rules[0].verbs.push("delete");
+            },
+            (value) => {
+              value.rules[0].resources.push("secrets");
+            },
+            (value) => {
+              value.rules.push({ apiGroups: [""], resources: ["secrets"], verbs: ["get"] });
+            },
+          ]
+        : [
+            (value) => {
+              value.subjects[0].name = "different-account";
+            },
+            (value) => {
+              value.subjects.push({
+                kind: "ServiceAccount",
+                name: "extra-account",
+                namespace: context.namespace.name,
+              });
+            },
+            (value) => {
+              value.roleRef.name = "different-role";
+            },
+          ];
+    const callsBeforeRefusals = gatewayClient.calls.length;
+    for (const mutate of mutations) {
+      wire = { ...structuredClone(resource), metadata };
+      mutate(wire);
+      await assert.rejects(
+        driver.ensureNamespace(context),
+        /Operator workspace resource does not match/,
+      );
+    }
+    wire = { ...structuredClone(resource), metadata };
+    addUnknown = true;
+    await assert.rejects(
+      driver.ensureNamespace(context),
+      /Operator workspace resource does not match/,
+    );
+    assert.equal(gatewayClient.calls.length, callsBeforeRefusals);
+    assert.deepEqual(configuration.gateway.operatorWorkspaceResources, [resource]);
+  });
+}
+
+// Production configuration and Sandbox provisioning, with controlled gateway observations.
+// This proves the join and fail-closed lifecycle, not an installed stock supervisor or GitHub.
+test(
+  "configured OpenShell Git boots without material and authorizes only the observed live generation",
+  { timeout: 30000 },
+  async (t) => {
+    const tls = await harnessTlsFixture(t);
+    const keys = generateKeyPairSync("ed25519");
+    const publicKeyPath = join(tls.directory, "gateway-public.pem");
+    await writeFile(publicKeyPath, keys.publicKey.export({ type: "spki", format: "pem" }));
+    const { loadYaml } = controllerRequire("@kubernetes/client-node");
+    const fragment = loadYaml(
+      await readFile(
+        new URL(
+          "../../deploy/examples/repository-credentials/openshell.fragment.yaml",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const configuration = sandboxInstallation();
+    configuration.drivers.compute.configuration.network.providerHarness = {
+      namespace: "openshell-system",
+      podLabels: { app: "openshell-gateway" },
+      address: "10.43.0.50",
+      port: 8080,
+    };
+    configuration.backend[0].configuration = {
+      endpoint: "https://gateway.example.test:8443",
+      auth: { mode: "bearerTokenFile", path: "/unused/operator-token" },
+    };
+    const registry = {
+      version: 1,
+      backendId: "github-primary",
+      providerInstanceId: "github-primary",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 3600,
+      repositories: [
+        {
+          repositoryRef: "source",
+          repositoryId: "42",
+          repository: "example/project",
+          namespaces: [
+            {
+              namespaceId: namespaceContext().namespace.id,
+              profiles: ["git-write"],
+              transport: "git-and-draft-pr",
+              pullRequestBase: "main",
+              pushRefAllowlist: ["refs/heads/review/task"],
+            },
+          ],
+        },
+      ],
+    };
+    const registryPath = join(tls.directory, "registry.json");
+    await writeFile(registryPath, JSON.stringify(registry));
+    configuration.backend.push({
+      id: "github-primary",
+      type: "github",
+      configuration: { registryPath },
+      drivers: { repo: "repository-credentials" },
+    });
+    configuration.drivers.repo = {
+      ...fragment.drivers.repo,
+      id: "repository-credentials",
+      configuration: {
+        controlSocket: join(tls.directory, "control.sock"),
+        publicCaPath: tls.rootCertificatePath,
+        sessionDurationSeconds: 600,
+      },
+    };
+    const port = await availablePort();
+    configuration.drivers.repo.openShell.authority = {
+      ...fragment.drivers.repo.openShell.authority,
+      host: "127.0.0.1",
+      port,
+      certificatePath: join(tls.directory, "server.pem"),
+      privateKeyPath: join(tls.directory, "server.key"),
+      issuerPublicKeyPath: publicKeyPath,
+      issuer: "https://gateway.example.test",
+      audience: "online-authorizer",
+      keyId: "gateway-key",
+    };
+    const gateway = workspaceGatewayClient();
+    gateway.getGatewayInfo = async () => ({
+      extensions: [{ configured_name: "oce-prepared-git", kind: 4, protocol_major: 1 }],
+    });
+    const originalGetWorkspace = gateway.getWorkspace;
+    gateway.getWorkspace = async (name) => ({
+      ...(await originalGetWorkspace(name)),
+      name,
+      id: "workspace-id",
+    });
+    const originalImportProfile = gateway.importProviderProfile;
+    gateway.importProviderProfile = async (workspace, profile) => {
+      await originalImportProfile(workspace, profile);
+      const stored = gateway.profiles.get(profile.id);
+      stored.definition = {
+        inference_capable: false,
+        credentials: profile.credentials?.map((c) => ({
+          name: c.name,
+          env_vars: c.envVars,
+          required: c.required,
+          stable_placeholder: c.stablePlaceholder,
+          auth_style: c.authStyle,
+          header_name: c.headerName,
+        })),
+        binaries: profile.binaries?.map((path) => ({ path })),
+        endpoints: profile.endpoints?.map((endpoint) => ({
+          ...endpoint,
+          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+          access: "NETWORK_ACCESS_PRESET_READ_WRITE",
+        })),
+      };
+    };
+    const originalCreateProvider = gateway.createProvider;
+    gateway.createProvider = async (request) => {
+      const provider = await originalCreateProvider(request);
+      Object.assign(provider, {
+        id: request.name + "-id",
+        workspace: request.workspace,
+        profileWorkspace: request.workspace,
+      });
+      return provider;
+    };
+    let writes = 0;
+    gateway.updateProviderCredentialsConditionally = async (request, version) => {
+      const previous = gateway.providers.get(request.name);
+      assert.equal(previous.resourceVersion, version);
+      writes++;
+      const updated = { ...previous, resourceVersion: String(Number(version) + 1) };
+      gateway.providers.set(request.name, updated);
+      return updated;
+    };
+    const specCodec = controllerRequire("@grpc/proto-loader").loadSync(
+      fileURLToPath(
+        new URL(
+          "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+          import.meta.url,
+        ),
+      ),
+      { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+    )["openshell.v1.SandboxSpec"];
+    const sandboxes = new Map();
+    let created;
+    gateway.createSandbox = async (request) => {
+      created = request;
+      const sandbox = storedSandbox(request, {
+        spec: specCodec.deserialize(specCodec.serialize(request.spec)),
+        id: "sandbox-id",
+        phase: "SANDBOX_PHASE_READY",
+        restartCount: 0,
+      });
+      sandboxes.set(request.name, sandbox);
+      return sandbox;
+    };
+    gateway.getSandbox = async ({ name }) => sandboxes.get(name);
+    gateway.getService = async (_workspace, sandbox, service) =>
+      harnessService(sandbox, service, sandboxes.get(sandbox)?.serviceUrls[""]);
+    let installedVersion = "1";
+    let supervisor = "supervisor-one";
+    gateway.getSandboxProviderStatus = async (workspace, sandbox, provider) => {
+      const now = new Date().toISOString();
+      const desired = {
+        sandboxId: "sandbox-id",
+        sandbox,
+        providerId: provider + "-id",
+        providerResourceVersion: installedVersion,
+        attachmentEpoch: "epoch-one",
+        providerEnvRevision: installedVersion,
+        configRevision: "1",
+        policyHash: "policy-one",
+      };
+      return {
+        state: "PROVIDER_READINESS_STATE_READY",
+        evaluatedTime: now,
+        observedTime: now,
+        networkInstanceId: "network-one",
+        receipt: { workspace, provider, desired },
+        observed: {
+          ...desired,
+          sessionId: supervisor,
+          sequence: "1",
+          credentialsInstalled: true,
+          policyActive: true,
+          launchEnvironmentInstalled: true,
+          processInstanceId: "process-one",
+          reason: "",
+        },
+      };
+    };
+    const drivers = await loadInstallationFile(t, configuration, {
+      createOpenShellBackend: () => backendFor(gateway),
+    });
+    const runtime = drivers.openShellGit;
+    t.after(() => runtime.close());
+    assert.ok(runtime);
+    drivers.computeDriver.validateRepositoryCredentials(
+      { id: "codex", mode: "dedicated" },
+      drivers.sandboxDriver.id,
+    );
+    assert.throws(() =>
+      drivers.computeDriver.validateRepositoryCredentials(
+        { id: "openclaw", mode: "embedded" },
+        drivers.sandboxDriver.id,
+      ),
+    );
+    const { context, revision, requirements } = runtimeSandboxFixture(drivers.sandboxDriver);
+    const inferenceProvider = requirements.credentialAttachments[0].ref;
+    gateway.providers.set(inferenceProvider, {
+      name: inferenceProvider,
+      id: "inference-provider-id",
+      type: "inference-profile",
+      profileWorkspace: "inference-workspace",
+      config: {},
+      labels: {},
+      resourceVersion: "1",
+    });
+    gateway.profiles.set("inference-profile", {
+      id: "inference-profile",
+      resourceVersion: "1",
+      definition: {
+        credentials: [{ env_vars: ["MODEL_API_KEY"] }],
+        endpoints: [{ host: "api.openai.com", port: 443 }],
+      },
+    });
+    revision.repositoryCredentials = {
+      driver: { id: "repository-credentials", implementation: "github" },
+      deadlineWallMs: Date.now() + 600000,
+      bindings: [
+        resolveGitHubRepositoryBinding(registry, {
+          namespaceId: revision.namespaceId,
+          repositoryRef: "source",
+          profile: "git-write",
+        }),
+      ],
+    };
+    const networkRevision = routedRevision(drivers.computeDriver, {
+      sandboxDriverId: drivers.sandboxDriver.id,
+      repositoryCredentials: revision.repositoryCredentials,
+    });
+    assert.ok(
+      drivers.computeDriver.agentNetworkPolicies(networkRevision, {
+        name: context.namespace.name,
+        plane: "execution",
+      }).length > 0,
+      "OpenShell Git renders without a broker network peer",
+    );
+    await assert.rejects(
+      drivers.sandboxDriver.provisionHarness({ ...context, revision, requirements }),
+      /worker is unavailable/,
+    );
+    let material;
+    let approved = true;
+    let approvalCount = 0;
+    await runtime.start({
+      readOpenShellMaterial: async () => material,
+      authorizeOpenShellRequest: async () => {
+        approvalCount++;
+        return approved;
+      },
+    });
+    await drivers.sandboxDriver.provisionHarness({ ...context, revision, requirements });
+    assert.equal(writes, 0);
+    assert.equal(created.spec.restart_policy, "SANDBOX_RESTART_POLICY_NEVER");
+    assert.equal(created.spec.environment.GITHUB_TOKEN, undefined);
+    assert.equal(created.spec.environment.OPENCLAW_REPOSITORY_ENROLLMENT, undefined);
+    assert.equal(created.spec.environment.OCE_OPENSHELL_GIT_REPOSITORY, "example/project");
+    assert.ok(created.spec.providers.includes(inferenceProvider));
+    assert.deepEqual(
+      created.spec.policy.network_middlewares["oce-prepared-git"].endpoints.include,
+      ["github.com", "api.github.com"],
+    );
+    assert.equal(
+      created.spec.policy.network_policies["model-egress"].endpoints[0].host,
+      "api.openai.com",
+    );
+    const marker = "s" + "a".repeat(64) + "_GITHUB_TOKEN";
+    const credential = spawnSync("git", ["credential", "fill"], {
+      encoding: "utf8",
+      input: "protocol=https\nhost=github.com\npath=example/project.git\n\n",
+      env: {
+        ...process.env,
+        ...created.spec.environment,
+        HOME: tls.directory,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GITHUB_TOKEN: marker,
+      },
+    });
+    assert.equal(credential.status, 0, credential.stderr);
+    assert.match(credential.stdout, /username=x-access-token/);
+    assert.ok(credential.stdout.includes("password=" + marker));
+    const collisionConfiguration = structuredClone(configuration.drivers.sandbox.configuration);
+    collisionConfiguration.policy.networkPolicies.push({
+      name: "overlap",
+      endpoints: [{ host: "*.github.com", ports: [443] }],
+      binaries: [{ path: "/usr/bin/curl" }],
+    });
+    const collisionDriver = new OpenShellSandboxDriver(collisionConfiguration, {
+      id: drivers.sandboxDriver.id,
+      backend: backendFor(gateway),
+      openShellGit: runtime,
+    });
+    await assert.rejects(
+      collisionDriver.provisionHarness({ ...context, revision, requirements }),
+      /overlapping network policy/,
+    );
+
+    assert.equal(
+      created.spec.policy.network_middlewares["oce-prepared-git"].on_error,
+      "fail_closed",
+    );
+    assert.equal(created.spec.providers.filter((name) => name.startsWith("oce-git-")).length, 1);
+    const grpc = controllerRequire("@grpc/grpc-js");
+    const loader = controllerRequire("@grpc/proto-loader");
+    const definition = loader.loadSync(
+      fileURLToPath(
+        new URL(
+          "../../apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto",
+          import.meta.url,
+        ),
+      ),
+      { keepCase: true, longs: String, enums: Number, defaults: false, oneofs: true },
+    );
+    const Client =
+      grpc.loadPackageDefinition(definition).openshell.middleware.v1.SupervisorMiddleware;
+    const client = new Client(
+      `localhost:${port}`,
+      grpc.credentials.createSsl(Buffer.from(tls.caBundle)),
+    );
+    t.after(() => client.close());
+    const request = {
+      phase: 1,
+      middleware_name: "oce-prepared-git",
+      context: { sandbox_id: "sandbox-id", request_id: randomUUID(), workspace: created.workspace },
+      config: created.spec.policy.network_middlewares["oce-prepared-git"].config,
+      target: {
+        scheme: "https",
+        host: "github.com",
+        port: 443,
+        method: "GET",
+        path: "/example/project.git/info/refs",
+        query: "service=git-upload-pack",
+      },
+      headers: [],
+      body: Buffer.alloc(0),
+    };
+    const evaluate = async () =>
+      (
+        await invokeMiddleware(
+          client,
+          "EvaluateHttpRequest",
+          request,
+          supervisorToken(keys, "supervisor", "sandbox-id"),
+        )
+      ).decision;
+    assert.equal(await evaluate(), 2);
+    const grant = revision.repositoryCredentials.bindings[0].grant;
+    material = {
+      value: "synthetic-installation-token",
+      expiresAt: new Date(Date.now() + 300000).toISOString(),
+      preparationAttemptId: "attempt-one",
+      materialVersion: "material-one",
+      sessionId: "session-one",
+      ...grant,
+      repository: "example/project",
+      pushRef: "refs/heads/review/task",
+      pullRequestBase: "main",
+      apiOrigin: "https://api.github.com",
+    };
+    const until = async (check) => {
+      for (let n = 0; n < 100; n++) {
+        if (await check()) {
+          return;
+        }
+        await delay(50);
+      }
+      assert.fail("runtime condition did not converge");
+    };
+    await until(() => writes === 1);
+    assert.equal(await evaluate(), 2, "provider acceptance is not observed installation");
+    installedVersion = "2";
+    await until(async () => (await evaluate()) === 1);
+    assert.ok(approvalCount > 0);
+    approved = false;
+    assert.equal(await evaluate(), 2, "every request checks current owner authorization");
+    approved = true;
+    supervisor = "replacement-supervisor";
+    assert.equal(await evaluate(), 2);
+    supervisor = "supervisor-one";
+    assert.equal(await evaluate(), 2, "replacement permanently fences this admission");
+    assert.equal(writes, 1);
+  },
+);

@@ -461,6 +461,22 @@
                 "maxProperties": 32,
                 "type": "object"
               },
+              "egress": {
+                "additionalProperties": false,
+                "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+                "properties": {
+                  "adoption": {
+                    "anyOf": [
+                      { "const": "live", "type": "string" },
+                      { "const": "prepared", "type": "string" },
+                      { "const": "credential_free", "type": "string" }
+                    ]
+                  },
+                  "retention": { "const": "none", "type": "string" }
+                },
+                "required": ["adoption", "retention"],
+                "type": "object"
+              },
               "id": {
                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
@@ -523,7 +539,7 @@
               },
               "status": {
                 "additionalProperties": false,
-                "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
+                "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                 "properties": {
                   "reason": { "maxLength": 512, "type": "string" },
                   "refresh": {
@@ -23590,6 +23606,22 @@
                             "maxProperties": 32,
                             "type": "object"
                           },
+                          "egress": {
+                            "additionalProperties": false,
+                            "description": "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+                            "properties": {
+                              "adoption": {
+                                "anyOf": [
+                                  { "const": "live", "type": "string" },
+                                  { "const": "prepared", "type": "string" },
+                                  { "const": "credential_free", "type": "string" }
+                                ]
+                              },
+                              "retention": { "const": "none", "type": "string" }
+                            },
+                            "required": ["adoption", "retention"],
+                            "type": "object"
+                          },
                           "id": {
                             "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -23652,7 +23684,7 @@
                           },
                           "status": {
                             "additionalProperties": false,
-                            "description": "Live status reported by the selected Credential Gateway. It never contains credential values.",
+                            "description": "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
                             "properties": {
                               "reason": { "maxLength": 512, "type": "string" },
                               "refresh": {
@@ -24099,8 +24131,18 @@
             "application/json": {
               "schema": {
                 "additionalProperties": false,
-                "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+                "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
                 "properties": {
+                  "adoption": {
+                    "const": "live",
+                    "description": "Opt an unbound static source into protected live Secret reads. A legacy or narrower source also requires explicit authorityScope: execution. Requires source update and Secret operate permission.",
+                    "type": "string"
+                  },
+                  "authorityScope": {
+                    "const": "execution",
+                    "description": "Consent to every process in this dedicated execution using the constrained inference grant. An older executable-specific grant is never broadened by an upgrade or Secret change.",
+                    "type": "string"
+                  },
                   "secrets": {
                     "additionalProperties": {
                       "additionalProperties": false,
@@ -24128,7 +24170,7 @@
               }
             }
           },
-          "description": "Re-reads the source's Secret values, or those of replacement Secret references, and updates the Credential Gateway copy. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
+          "description": "For a legacy source, omitting adoption and authorityScope updates the Credential Gateway copy. To admit an unbound legacy or narrower source for protected per-operation reads, send adoption: live and authorityScope: execution together. Existing approvals never expand because of an upgrade or a Secret change. Already-admitted sources remain live. PATCH requires an unbound source. A refresh token field (`refresh_token` of `oauth2-refresh-token`) must reference a new Secret. Non-secret config is immutable.",
           "required": true
         },
         "responses": {

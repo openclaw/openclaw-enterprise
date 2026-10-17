@@ -92,7 +92,16 @@
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
-    "tests/conformance/url-authority.test.mjs"
+    "tests/conformance/url-authority.test.mjs",
+    "tests/integration/static-egress.test.mjs",
+    "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/integration/credential-free-online-grant.test.mjs",
+    "tests/integration/egress-enrollment.test.mjs",
+    "tests/conformance/kubernetes-prepared-repository.test.mjs",
+    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-prepared-github-metadata.test.mjs"
   ],
   "files": [
     {
@@ -177,7 +186,8 @@
       "path": "tests/conformance/kubernetes-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs"
+      "path": "tests/conformance/kubernetes-ownership.test.mjs",
+      "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
       "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
@@ -287,7 +297,10 @@
       "path": "tests/integration/json-body-depth.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-startup.test.mjs"
+      "path": "tests/integration/configuration-startup.test.mjs",
+      "expectedTests": [
+        "closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody"
+      ]
     },
     {
       "path": "tests/integration/console-api.test.mjs"
@@ -397,6 +410,53 @@
     },
     {
       "path": "tests/conformance/url-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/static-egress.test.mjs",
+      "expectedTests": [
+        "Responses output text assembled across parts and messages cannot reveal selected material",
+        "Responses assistant projections protect independent items and seeded deltas",
+        "Responses incremental text snapshots cannot reveal selected material",
+        "signed Responses Plan projections protect completed and response-wide streamed text"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-stock-online-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
+      "expectedTests": [
+        "signed stock Git RPC admits discovery, fetch and push, then honors live denial"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "expectedTests": [
+        "prepared Git static token and rotation use released fields without returning credentials or readiness",
+        "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
+        "prepared Git refuses stale, partial, mismatched and unavailable installation observations"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-free-online-grant.test.mjs",
+      "expectedTests": [
+        "signed stock request observes an OCC credential-free grant and its withdrawal",
+        "a signed stock request cannot carry a credential-free grant across revision replacement",
+        "a signed stock request loses a credential-free grant when OCC IAM access is removed",
+        "OCC cannot observe a live credential grant as credential-free metadata"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-enrollment.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-installation-exchange.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
     }
   ]
 }

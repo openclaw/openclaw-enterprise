@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-12"
-last_updated_session: authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e
+updated: "2026-10-16"
+last_updated_session: authoring-run/97826393-386f-4988-ace7-afc669f1922f
 ---
 
 # Agent repository credential flow
@@ -10,7 +10,11 @@ last_updated_session: authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e
 
 The Console lists approved repositories; admission saves selections and deployment
 freezes grants. Sessions reach embedded OpenClaw or dedicated Codex with compatible
-Harness authentication and no Sandbox Driver.
+Harness authentication and no Sandbox Driver. The opt-in
+[OpenShell path](../reference/repository-credentials/openshell-git.md) instead gives the
+sandbox a placeholder. The worker delivers prepared material to the observed provider; the
+signed request check uses the live grant and that material version without returning a token.
+An allowed draft creation remains a possible send, not proof GitHub created the pull request.
 See [service forwarding and retirement](repository-credentials.md) and
 [runtime qualification](../testing/repository-credentials.md).
 
@@ -221,7 +225,12 @@ Dedicated gateways lack repository material and repository-gateway egress.
 Both consumers trust CAs through `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and
 `NODE_EXTRA_CA_CERTS`; overrides fail.
 Compute grants consumer egress; Helm admits consumers through
-[credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Native preparation
+[credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
+For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
+`apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
+compares the admitted session's hostname with the broker Service hostname recorded by Helm and
+checks the Service's TLS port and worker selector before admitting the revision's ingress peer.
+A missing or mismatched binding refuses admission without widening the policy. Native preparation
 writes aggregate `gitconfig` without reading bearers. System Git includes
 `/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
@@ -262,6 +271,12 @@ API writes remain outside this [best-effort guardrail](../reference/repository-c
 routes supported `gh` commands using explicit targets or effective Git remotes.
 It pins generation, reference and session, selects private `gh` configuration
 and preserves HOME without mutating shared selection.
+
+For a prepared Git session with draft access,
+`apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts:createDraftPull`
+accepts explicit body text, bounds the serialized JSON body and sends it once to the
+selected broker. It cannot load a caller-selected body file. The helper records
+the operation ID before sending and returns only a matching draft receipt.
 
 `apps/controller/src/drivers/repo/github/credentials/profiles.ts` owns the exact
 Reader, Contributor and Collaborator permission maps. The GitHub route classifier
@@ -357,6 +372,8 @@ Ready Pods and commands do not prove live writes.
 
 ## Changelog
 
+- 2026-10-16 21:13: Restrict prepared Git draft body input to explicit text. (authoring-run/97826393-386f-4988-ace7-afc669f1922f - dac53babe2d0da06b39c5d6ec664fa0989191b11)
+- 2026-10-16 20:48: Bind prepared Git session origins to the Helm-owned broker Service before ingress admission. (authoring-run/c21f74f4-95aa-4ba6-878d-84586bd6ecb7 - d2200df9a89deb9500c94030d80b37e229483764)
 - 2026-10-12 07:39: Recovery fences a reserved receipt whose fence did not commit. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
 
 - 2026-10-03 16:30: Log a stuck repository cleanup's cause once and slow its rechecks with age. (fix-repo-cleanup-backoff)

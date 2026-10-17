@@ -26,6 +26,7 @@ interface ProjectedInputs {
   readonly controlSocket: string;
   readonly expectedOrigin: string;
   readonly backendId: string;
+  readonly authority?: "github-app" | "prepared-git";
 }
 
 async function realDirectory(path: string): Promise<void> {
@@ -175,8 +176,15 @@ export async function prepareProjectedInputs(
 ): Promise<LoadedConfiguration> {
   const contents = new Map<string, Buffer>();
   try {
+    const prepared = options.authority === "prepared-git";
+    if (options.authority !== undefined && options.authority !== "github-app" && !prepared) {
+      throw new Error("invalid-projected-inputs");
+    }
     const generation = await projectionGeneration(options.inputsDirectory);
     for (const [name, maximum] of Object.entries(inputLimits)) {
+      if (prepared && name === "private-key.pem") {
+        continue;
+      }
       contents.set(name, await readProjected(join(generation, name), maximum));
     }
     const registryGeneration = await projectionGeneration(dirname(options.registryFile));
@@ -194,7 +202,7 @@ export async function prepareProjectedInputs(
       gateway.publicOrigin !== options.expectedOrigin ||
       gateway.listen !== "0.0.0.0:8443" ||
       gateway.controlSocket !== options.controlSocket ||
-      backend.kind !== "github-app-registry" ||
+      backend.kind !== (prepared ? "github-prepared-git-registry" : "github-app-registry") ||
       backend.backendId !== options.backendId
     ) {
       throw new Error("invalid-projected-inputs");
@@ -202,7 +210,9 @@ export async function prepareProjectedInputs(
     validateProjectedTlsHost(contents.get("tls.crt")!, options.expectedOrigin);
     gateway.tlsCertFile = join(options.privateDirectory, "tls.crt");
     gateway.tlsKeyFile = join(options.privateDirectory, "tls.key");
-    backend.privateKeyFile = join(options.privateDirectory, "private-key.pem");
+    if (!prepared) {
+      backend.privateKeyFile = join(options.privateDirectory, "private-key.pem");
+    }
     backend.registryFile = join(options.privateDirectory, "registry.json");
     contents.get("config.json")!.fill(0);
     contents.set("config.json", Buffer.from(JSON.stringify(root)));
@@ -233,8 +243,10 @@ async function main(args: readonly string[]): Promise<void> {
   const check = args.includes("--check-config");
   const values = check ? args.filter((arg) => arg !== "--check-config") : args;
   if (
-    args.length !== (check ? 5 : 4) ||
-    values.length !== 4 ||
+    args.length !== values.length + (check ? 1 : 0) ||
+    (values.length !== 4 && values.length !== 6) ||
+    (values.length === 6 &&
+      (values[4] !== "--authority" || !["github-app", "prepared-git"].includes(values[5]!))) ||
     values[0] !== "--public-origin" ||
     !values[1] ||
     values[2] !== "--backend-id" ||
@@ -251,6 +263,7 @@ async function main(args: readonly string[]): Promise<void> {
       controlSocket,
       expectedOrigin: values[1],
       backendId: values[3],
+      authority: values[5] === "prepared-git" ? "prepared-git" : "github-app",
     },
     clock,
   );

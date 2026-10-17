@@ -41,6 +41,7 @@
     "tests/integration/ci-image-reconciliation.test.mjs",
     "tests/conformance/repository-runtime-material.test.mjs",
     "tests/integration/repository-credentials-server-timeout.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.mjs",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
@@ -99,7 +100,8 @@
     "tests/conformance/repository-material-expiry-probe.test.mjs",
     "tests/integration/container-promote.test.mjs",
     "tests/conformance/controller-stop-yields.test.mjs",
-    "tests/integration/dev-up-model-provider.test.mjs"
+    "tests/integration/dev-up-model-provider.test.mjs",
+    "tests/integration/egress-connected-preflight.test.mjs"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -344,6 +346,9 @@
       "path": "tests/integration/repository-credentials-config.test.mjs"
     },
     {
+      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+    },
+    {
       "path": "tests/integration/repository-credentials-http.test.mjs"
     },
     {
@@ -487,6 +492,17 @@
     },
     {
       "path": "tests/integration/dev-up-model-provider.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-connected-preflight.test.mjs",
+      "expectedTests": [
+        "connected database selection rejects missing, remote and redirected observers before effects",
+        "connected receipt observation preserves proto3 zero and uint64 precision",
+        "connected failed-turn observation rejects partial text without a completed message",
+        "connected adversarial wire carries split and nested-JSON material without raw reflection",
+        "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
+        "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
     }
   ]
 }

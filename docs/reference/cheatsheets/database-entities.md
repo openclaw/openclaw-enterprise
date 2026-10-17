@@ -62,6 +62,8 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
+`admitted_spec` includes the explicit v2
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
 - `namespace_id`
@@ -128,9 +130,37 @@ Stores credential sources registered with the selected Credential Gateway; the g
 - `name`
 - `type`
 - `config`
+- `egress` (optional admitted static source and versioned resolver references)
 - `driver_id`
 - `state`
 - `created_at`
+
+### `egress_installations`
+
+Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
+instance/configuration fingerprint to the exact admitted revision plan.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sandbox_id`
+- `namespace_id`, `agent_id`, `revision_id`
+- `installation`
+
+### `egress_send_receipts`
+
+Retains exact sender attempts and safe observations independently of final delivery proof.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sender_generation`, `instance_id`, `use_id`, `attempt_id`
+- `binding` (selected material evidence and original deadline)
+- `authorized_dispatch` (accepted execution, installation and custody, digests and send-start bound)
+- `outcome`, `observation`, `settled`, `feedback`
+
+### `egress_rejected_material`
+
+Fences a provider-rejected version independently of later authoritative rereads.
+
+- `namespace_id`, `secret_driver_id`
+- `material_id`, `material_version`
 
 ### `agent_credential_sources`
 

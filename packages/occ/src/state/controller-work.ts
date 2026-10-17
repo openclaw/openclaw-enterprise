@@ -2,7 +2,7 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
-import { ScopeViolationError } from "../errors.ts";
+import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
@@ -86,6 +86,11 @@ export function deploymentProgressForWork(
     case "DEPENDENCY_UNAVAILABLE":
       code = attempt.code;
       message = "A dependency was unavailable. The controller will retry.";
+      break;
+    case "EXECUTION_ADMISSION_WITHDRAWAL_PENDING":
+      code = attempt.code;
+      message =
+        "This version can no longer run with its admitted access. The controller will keep checking that access is closed and the workload has stopped.";
       break;
     case "REFUSED_CANDIDATE_STOP_PENDING":
       // The refusal is the code this deployment's `error` carries once the stop succeeds,
@@ -622,6 +627,8 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    case "EXECUTION_ADMISSION_WITHDRAWN":
+      return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":
       return "Deployment was superseded by a newer revision.";
     case "REVISION_STOPPED":
@@ -670,6 +677,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.";
     case "KUBERNETES_API_UNAVAILABLE":
       return "The Kubernetes API was still unavailable at the deployment deadline.";
+    case "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED":
+      return SandboxRepositoryRecipientUnverifiedError.description;
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
@@ -682,6 +691,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.";
     case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
+    case "EGRESS_PROVIDER_UNAVAILABLE":
+      return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an admin to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":

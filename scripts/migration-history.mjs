@@ -105,99 +105,36 @@ function requireReceiptsMatchEntries(receipts, entries) {
 }
 
 function classifyReceipts(receipts, manifest) {
-  const providerCompleted = manifest.compatibleLineages?.providerCompleted;
-  if (providerCompleted !== undefined && receipts.length >= providerCompleted.entries.length) {
-    const providerEntries = [
-      ...providerCompleted.entries,
-      ...manifest.entries.slice(providerCompleted.entries.length),
-    ];
-    if (receiptsMatchEntries(receipts, providerEntries)) {
-      if (receipts.length === manifest.entries.length) {
-        return "completed";
-      }
-      if (receipts.length === 32) {
-        return "backendTerminology";
-      }
-      if (receipts.length === 33) {
-        return "prePluginApprovers";
-      }
-      if (receipts.length === 34) {
-        return "preBrokerReceipts";
-      }
-      if (receipts.length === 36) {
-        return "preDeploymentProgress";
-      }
-      if (receipts.length === 35) {
-        return "preAgentDeletion";
-      }
-      if (receipts.length === 37) {
-        return "preHumanAuthentication";
-      }
-      if (receipts.length === 38) {
-        return "preAgentDeletionTakeover";
-      }
-      if (receipts.length === 39) {
-        return "preNamespaceDeletionTakeover";
-      }
-      if (receipts.length === 40) {
-        return "preRepositoryAccess";
-      }
-      if (receipts.length === 41) {
-        return "preRestrictionReadLogs";
-      }
-      if (receipts.length === 42) {
-        return "preOAuth";
-      }
-      if (receipts.length === 43) {
-        return "preCredentialWithdrawals";
-      }
-      if (receipts.length === 44) {
-        return "preBrokerReceiptFence";
-      }
-      if (receipts.length === 45) {
-        return "preModelProbeFailureCause";
-      }
-      if (receipts.length === 46) {
-        return "preProvisioningConfigurationRelease";
-      }
-      if (receipts.length === 47) {
-        return "preAdministratorCredentialSourceGrants";
-      }
-      if (receipts.length === 48) {
-        return "preCodexPatSources";
-      }
-      if (receipts.length === 49) {
-        return "preAgentCredentialSources";
-      }
-      if (receipts.length === 50) {
-        return "preCredentialWithdrawalRequester";
-      }
-      if (receipts.length === 51) {
-        return "preProvisioningDeploymentOutcome";
-      }
-      if (receipts.length === 52) {
-        return "preComputePreparationFailureEvidence";
-      }
-      if (receipts.length === 53) {
-        return "preCredentialSourcePat";
-      }
-      if (receipts.length === 54) {
-        return "preComputeRevisionAdmission";
-      }
-      if (receipts.length === 55) {
-        return "preHeldAuthenticationSession";
-      }
-      if (receipts.length === 56) {
-        return "preCanonicalHarnessAuth";
-      }
-      return "providerCompleted";
-    }
-    if (!receiptsMatchEntries(receipts, manifest.entries)) {
-      refuse("the applied receipts differ from canonical history");
-    }
-  } else {
-    requireReceiptsMatchEntries(receipts, manifest.entries);
+  const canonicalHarnessAuth = manifest.entries[56];
+  const staticEgress = manifest.entries[57];
+  const receipt = receipts[56];
+  if (
+    receipt !== undefined &&
+    receipt.hash === staticEgress.sha256 &&
+    Number(receipt.created_at) === canonicalHarnessAuth.when
+  ) {
+    // An experimental release installed static egress in main's Harness-auth slot.
+    // Refuse it explicitly; neither relabeling receipts nor skipping main's SQL is safe.
+    refuse(
+      "experimental 0057_static_egress occupies the canonical 0057_canonical_harness_auth slot; preserve that database with its matching release and use a fresh database for this release",
+    );
   }
+
+  const providerCompleted = manifest.compatibleLineages?.providerCompleted;
+  const providerCount = providerCompleted?.entries.length ?? 0;
+  const providerLineage =
+    providerCount > 0 &&
+    receipts.length >= providerCount &&
+    receiptsMatchEntries(receipts, [
+      ...providerCompleted.entries,
+      ...manifest.entries.slice(providerCount),
+    ]);
+  if (!providerLineage) {
+    requireReceiptsMatchEntries(receipts, manifest.entries);
+  } else if (receipts.length === providerCount) {
+    return "providerCompleted";
+  }
+  // The Provider and canonical lineages share every subsequent migration and catalog.
   if (receipts.length === 0) {
     return "empty";
   }
@@ -299,6 +236,30 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 56) {
     return "preCanonicalHarnessAuth";
+  }
+  if (receipts.length === 57) {
+    return "preStaticEgress";
+  }
+  if (receipts.length === 58) {
+    return "preSendReceipts";
+  }
+  if (receipts.length === 59) {
+    return "prePreparedGitHubCustody";
+  }
+  if (receipts.length === 60) {
+    return "prePreparedGitHubEgress";
+  }
+  if (receipts.length === 61) {
+    return "preCredentialFreeMetadata";
+  }
+  if (receipts.length === 62) {
+    return "preRevisionHarnessAuthShape";
+  }
+  if (receipts.length === 63) {
+    return "prePreparedRepositoryGit";
+  }
+  if (receipts.length === 64) {
+    return "prePreparedRepositoryDraftPulls";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

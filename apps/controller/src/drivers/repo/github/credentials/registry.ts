@@ -4,10 +4,16 @@ import type {
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
 import type { GitHubProfile } from "./types.ts";
-import { githubCapabilityPolicy, permissionsForProfile } from "./profiles.ts";
+import {
+  githubCapabilityPolicy,
+  draftPullCapabilityPolicy,
+  gitOnlyCapabilityPolicy,
+  permissionsForProfile,
+} from "./profiles.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
+  isWellFormedBranchRef,
 } from "../../credentials/client-contracts.ts";
 
 export const GITHUB_REPOSITORY_REGISTRY_MAX_BYTES = 256 * 1024;
@@ -20,6 +26,8 @@ export interface GitHubRepositoryRegistration {
     namespaceId: string;
     profiles: readonly GitHubProfile[];
     pushRefAllowlist?: readonly string[];
+    transport?: "git-only" | "git-and-draft-pr";
+    pullRequestBase?: string;
   }>[];
 }
 
@@ -117,7 +125,13 @@ export function validateGitHubRepositoryRegistry(
   const repositories = array(root.repositories, 1000).map((candidate) => {
     const entry = object(candidate, ["repositoryRef", "repositoryId", "repository", "namespaces"]);
     const namespaces = array(entry.namespaces, 128).map((candidatePolicy) => {
-      const policy = object(candidatePolicy, ["namespaceId", "profiles", "pushRefAllowlist"]);
+      const policy = object(candidatePolicy, [
+        "namespaceId",
+        "profiles",
+        "pushRefAllowlist",
+        "transport",
+        "pullRequestBase",
+      ]);
       const profiles = array(policy.profiles, 3).map(profile).sort();
       unique(profiles);
       let pushRefAllowlist: readonly string[] | undefined;
@@ -128,11 +142,43 @@ export function validateGitHubRepositoryRegistry(
           return invalid();
         }
       }
+      const { transport } = policy;
+      const draft = transport === "git-and-draft-pr";
+      const base = draft
+        ? text(policy.pullRequestBase, /^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,127}$/)
+        : undefined;
+      const head = pushRefAllowlist?.[0]?.slice("refs/heads/".length);
+      if (
+        draft
+          ? !head ||
+            head === base ||
+            head.includes("*") ||
+            pushRefAllowlist?.length !== 1 ||
+            !isWellFormedBranchRef("refs/heads/" + base) ||
+            [head, base!].some(
+              (branch) => branch.startsWith("refs/") || /^[a-f0-9]{40,64}$/i.test(branch),
+            )
+          : Object.hasOwn(policy, "pullRequestBase")
+      ) {
+        return invalid();
+      }
+      // An explicit empty list denies ref updates. Never turn a missing allowlist into an unrestricted push.
+      if (
+        transport !== undefined &&
+        ((transport !== "git-only" && !draft) ||
+          pushRefAllowlist === undefined ||
+          profiles.length !== 1 ||
+          profiles[0] !== "git-write")
+      ) {
+        return invalid();
+      }
       namespaceRows += 1;
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
+        ...(transport === undefined ? {} : { transport }),
+        ...(base === undefined ? {} : { pullRequestBase: base }),
       });
     });
     unique(namespaces.map((policy) => policy.namespaceId));
@@ -198,8 +244,22 @@ export function resolveGitHubRepositoryBinding(
           ? {}
           : { pushRefAllowlist: policy.pushRefAllowlist }),
         profile: selectedProfile,
-        permissions: permissionsForProfile(selectedProfile),
-        capabilityPolicy: githubCapabilityPolicy,
+        ...(policy.pullRequestBase === undefined
+          ? {}
+          : { pullRequestBase: policy.pullRequestBase }),
+        permissions: permissionsForProfile(
+          policy.transport === "git-only"
+            ? "git-ref-write"
+            : policy.transport === "git-and-draft-pr"
+              ? "git-ref-draft-pr"
+              : selectedProfile,
+        ),
+        capabilityPolicy:
+          policy.transport === "git-only"
+            ? gitOnlyCapabilityPolicy
+            : policy.transport === "git-and-draft-pr"
+              ? draftPullCapabilityPolicy
+              : githubCapabilityPolicy,
       }),
     )
     .digest("hex");

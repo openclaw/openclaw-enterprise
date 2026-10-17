@@ -16,7 +16,11 @@ import {
   reuseRequestDispatcher,
 } from "../../apps/controller/src/drivers/kubernetes/client.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  withComputeAbortSignal,
+  withComputeOperationDeadline,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 function selfSignedCertificate(directory, name, subjectAltName) {
@@ -637,8 +641,13 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
     [{ method: "POST", body: namespace }],
   );
 
-  const held = withComputeAbortSignal(cancel.signal, () =>
-    core.readNamespace({ name: "held" }),
+  // Re-scoping for a peer operation must retain the enclosing owner's cancellation.
+  const held = withComputeOperationDeadline(
+    { signal: cancel.signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() },
+    () =>
+      withComputeAbortSignal(new AbortController().signal, () =>
+        core.readNamespace({ name: "held" }),
+      ),
   ).then(
     () => "answered",
     (error) => error.name,
@@ -647,4 +656,52 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
     await Promise.race([held, delay(3_000, "still pending", { ref: false })]),
     "AbortError",
   );
+});
+
+test("Kubernetes dispatch retains the parent deadline through child and per-attempt scopes", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let requests = 0;
+  const api = await recordingApiServer(directory, (_request, response) => {
+    requests++;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ metadata: { name: "tenant" } }));
+  });
+  t.after(() => api.close());
+  const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
+    await writeTokenKubeconfig(directory, api),
+    (message) => new Error(message),
+  );
+  const core = new sdk.CoreV1Api(clientConfiguration);
+  const signal = new AbortController().signal;
+  const deadline = Date.now() + 20_000;
+  const timeout = new Error("request timed out");
+  const failures = {
+    cancelled: (error) => error,
+    failed: (error) => error,
+    timedOut: () => timeout,
+  };
+  await assert.rejects(
+    withComputeOperationDeadline({ signal, deadlineAt: new Date(deadline).toISOString() }, () =>
+      withComputeOperationDeadline(
+        { signal, deadlineAt: new Date(deadline + 60_000).toISOString() },
+        () =>
+          kubernetesRequest(() => {
+            // Only wall time advances after attempt setup. No timeout callback has run,
+            // so the actual SDK HTTP dispatch must enforce the enclosing absolute bound.
+            t.mock.method(Date, "now", () => deadline);
+            return core.readNamespace({ name: "tenant" });
+          }, failures),
+      ),
+    ),
+    { name: "TimeoutError" },
+  );
+  t.mock.restoreAll();
+  await assert.rejects(
+    withComputeOperationDeadline({ signal, deadlineAt: "invalid" }, () =>
+      core.readNamespace({ name: "tenant" }),
+    ),
+    { name: "TimeoutError" },
+  );
+  assert.equal(requests, 0, "expired or invalid lifetimes never reach the Kubernetes API");
 });

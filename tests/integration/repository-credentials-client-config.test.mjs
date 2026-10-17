@@ -709,6 +709,27 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   refused(await invoke(alias));
 });
 
+async function loopbackBrokerTunnel(t, fixture) {
+  // Preserve the service's canonical HTTPS origin while tunneling stock Git to
+  // its ephemeral loopback listener. TLS, authentication and Git RPC remain real.
+  const proxy = createHttpServer();
+  proxy.on("connect", (request, socket, head) => {
+    if (request.url !== "localhost:443") {
+      socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+      return;
+    }
+    const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    socket.on("error", () => upstream.destroy());
+    socket.on("close", () => upstream.destroy());
+    upstream.on("error", () => socket.destroy());
+  });
+  return (await listen(t, proxy)).replace("https:", "http:");
+}
+
 test(
   "native push policy protects every destination and preserves common-directory hooks",
   { timeout: 120000 },
@@ -741,24 +762,7 @@ test(
       })),
     );
     const work = await temporaryDirectory(t);
-    // Preserve the service's canonical HTTPS origin while tunneling stock Git to
-    // its ephemeral loopback listener. TLS, authentication and Git RPC remain real.
-    const proxy = createHttpServer();
-    proxy.on("connect", (request, socket, head) => {
-      if (request.url !== "localhost:443") {
-        socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
-        return;
-      }
-      const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
-        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-        upstream.write(head);
-        socket.pipe(upstream).pipe(socket);
-      });
-      socket.on("error", () => upstream.destroy());
-      socket.on("close", () => upstream.destroy());
-      upstream.on("error", () => socket.destroy());
-    });
-    const proxyOrigin = (await listen(t, proxy)).replace("https:", "http:");
+    const proxyOrigin = await loopbackBrokerTunnel(t, fixture);
     const env = gitEnvironment(material.root, { https_proxy: proxyOrigin });
     const invoke = (args, options = {}) =>
       run("/usr/bin/git", args, { env, cwd: work, ...options });

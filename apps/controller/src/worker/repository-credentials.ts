@@ -251,6 +251,33 @@ export class RepositoryCredentialLifecycle {
     return Object.freeze(prepared);
   }
 
+  /** An observation, not a lease: the broker still authorizes each later Git exchange. */
+  async verifyRelease(
+    claim: ClaimedWork,
+    revision: Revision,
+    binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
+  ): Promise<void> {
+    await this.authorizedTransaction(claim, revision, async ({ repositorySessions }) => {
+      const receipt = await repositorySessions.findBrokerReceiptBySession(binding.sessionId);
+      const attempt = receipt && (await repositorySessions.findAttempt(receipt.admissionId));
+      if (
+        receipt?.state !== "active" ||
+        receipt.sessionId !== binding.sessionId ||
+        receipt.deadlineWallMs !== binding.deadlineWallMs ||
+        binding.deadlineWallMs <= Date.now() ||
+        attempt?.phase !== "open" ||
+        attempt.liveRevisionId !== revision.id ||
+        attempt.namespaceId !== revision.namespaceId ||
+        attempt.agentId !== revision.agentId ||
+        attempt.brokerProtocol !== 1 ||
+        attempt.repositoryRef !== binding.repositoryRef ||
+        attempt.sessionId !== binding.sessionId
+      ) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_SESSION_NO_LONGER_CURRENT");
+      }
+    });
+  }
+
   async repair(
     claim: ClaimedWork,
     revision: Revision,

@@ -150,6 +150,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
+{{- with $binding := .Values.preprovisionedNamespace -}}
+{{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
+{{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
+{{- end -}}
+{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.github.enabled $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
+{{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, egress or OpenShell Git authority, disposable password operator and no external login or native admin" -}}
+{{- end -}}
+{{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
 {{- range $domain := $googleLists.allowedDomains -}}
 {{- $name := lower (regexReplaceAll "\\x{0130}" (regexReplaceAll $jsTrim (toString $domain) "") "i\u0307") -}}
@@ -459,6 +467,15 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
+{{- if not (has $credentials.authority (list "github-app" "prepared-git")) -}}
+{{- fail "repositoryCredentials.authority must be github-app or prepared-git" -}}
+{{- end -}}
+{{- if not $credentials.appKeySecretName -}}{{- fail "repositoryCredentials.appKeySecretName is required when enabled" -}}{{- end -}}
+{{- if not $credentials.appKeyKey -}}{{- fail "repositoryCredentials.appKeyKey is required when enabled" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.appKeyKey" "value" $credentials.appKeyKey) -}}
+{{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
+{{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
+{{- end -}}
 {{- include "openclaw.validateImageReference" (dict "label" "repositoryCredentials.image" "image" $credentials.image) -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
 {{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}
@@ -490,10 +507,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if gt (len $hostname) 253 -}}
 {{- fail "repository credential broker hostname must not exceed 253 characters" -}}
 {{- end -}}
-{{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
+{{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
-{{- range $label, $key := dict "repositoryCredentials.registryKey" $credentials.registryKey "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.appKeyKey" $credentials.appKeyKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
+{{- range $label, $key := dict "repositoryCredentials.registryKey" $credentials.registryKey "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
 {{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
 {{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $credentials.registryConfigMapName) -}}
@@ -591,6 +608,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. Each name must also be a Kubernetes resource name, so a malformed one fails here rather than when Kubernetes refuses the Pod or leaves it waiting for a Secret that cannot exist (finding 1066). */ -}}
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
+{{- $roles = append $roles (list "backend.openshell.clientSecretName" .Values.backend.openshell.clientSecretName) -}}
+{{- if .Values.egressAuthority.enabled -}}
+{{- $roles = concat $roles (list (list "egressAuthority.tlsSecretName" .Values.egressAuthority.tlsSecretName) (list "egressAuthority.issuerSecretName" .Values.egressAuthority.issuerSecretName)) -}}
+{{- end -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- $roles = append $roles (list "openshellGit.tlsSecretName" .Values.openshellGit.tlsSecretName) -}}
+{{- end -}}
+{{- if .Values.preparedGitHub.custodySecretName -}}
+{{- if not .Values.egressAuthority.enabled -}}{{- fail "preparedGitHub custody requires egressAuthority.enabled" -}}{{- end -}}
+{{- $roles = append $roles (list "preparedGitHub.custodySecretName" .Values.preparedGitHub.custodySecretName) -}}
+{{- end -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
@@ -609,6 +637,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
+{{- if eq .Values.repositoryCredentials.authority "prepared-git" -}}
+{{- $roles = append $roles (list "repositoryCredentials.preparedCustodySecretName" .Values.repositoryCredentials.preparedCustodySecretName) -}}
+{{- end -}}
 {{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
 {{- $roles = append $roles (list "repositoryCredentials.publicCaSecretName" .Values.repositoryCredentials.publicCaSecretName "ca") -}}
 {{- end -}}

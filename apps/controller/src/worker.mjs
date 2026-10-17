@@ -1,10 +1,12 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
+import { startPreparedGitHubGitOwner } from "./backends/repository-credentials/prepared-git-owner.ts";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
+  readPublicCaBundle,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
@@ -96,6 +98,9 @@ let metricsPool;
 let metricsListener;
 let metricsClosing;
 let receiptServer;
+let preparedRepositoryGit;
+let preparedGitHub;
+let openShellGit;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -153,6 +158,29 @@ try {
       ...drivers.repositoryReceipt,
       state: new PostgresPlatformState(pool),
     });
+    if (drivers.preparedRepositoryGit) {
+      const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+      preparedRepositoryGit = await startPreparedGitHubGitOwner({
+        ...drivers.repositoryReceipt,
+        ...owner,
+        ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+        pool,
+        registry: drivers.repositoryRegistry,
+        report: (code) => emitOccLogEvent(logger, { event: "worker.error", code }),
+      });
+    }
+  }
+  openShellGit = drivers?.openShellGit;
+  if (openShellGit) {
+    if (!preparedRepositoryGit) {
+      throw new Error("OpenShell Git requires its live prepared GitHub owner.");
+    }
+    await openShellGit.start(preparedRepositoryGit, () =>
+      emitOccLogEvent(logger, {
+        event: "worker.error",
+        code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
+      }),
+    );
   }
   let metrics;
   if (metricsSettings !== undefined) {
@@ -190,7 +218,10 @@ try {
             writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
+  preparedGitHub = drivers?.preparedGitHub;
+  await preparedGitHub?.connect(pool);
   await worker.start();
+  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
 
   let closing = false;
   async function shutdown() {
@@ -204,11 +235,14 @@ try {
       }
       try {
         try {
+          await openShellGit?.close();
+          await preparedRepositoryGit?.close();
           await receiptServer?.close();
         } finally {
           await closeMetrics();
         }
       } finally {
+        await preparedGitHub?.close();
         await worker.stop();
       }
       process.exitCode = 0;
@@ -220,6 +254,9 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
+  await preparedGitHub?.close().catch(() => {});
+  await openShellGit?.close().catch(() => {});
+  await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
   if (readinessPath !== undefined) {

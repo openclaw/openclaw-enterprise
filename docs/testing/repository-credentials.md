@@ -56,6 +56,20 @@ node --test tests/integration/repository-credentials-client-config.test.mjs \
   tests/integration/repository-credentials-router.test.mjs
 ```
 
+### Protected repository metadata reads
+
+`checks-baseline-2` runs the [metadata response test](../../tests/integration/protected-repository-metadata-read.test.mjs)
+with the real route policy, upstream sender, and a loopback TLS origin. An independent
+socket observer captures the decrypted request and the origin response through EOF.
+Two client processes read through FIN and receive only the configured repository identity.
+
+The test refuses changed routes and GET bodies before they reach the origin.
+On a successful read it strips synthetic credentials reflected in headers and body.
+A forbidden final trailer yields the exact `exchange-uncertain` response, while
+ordinary reads still accept benign trailers. The dispatch gate is a fixture.
+For authenticated sibling execution, joined authorization, and the response OpenShell
+actually delivers, use the [installed custody qualification](protected-repository-custody.md).
+
 ## Verify Agent admission and durable ownership
 
 Build before running the source and materialization checks:

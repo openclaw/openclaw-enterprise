@@ -4,8 +4,9 @@ import type { RepositoryBackendFactory, Clock } from "../../credentials/backend-
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 
 export type GitHubProfile = "git-read" | "git-write" | "git-full";
-/** Internal scope used only by the repository metadata lookup. */
-export type GitHubTokenProfile = GitHubProfile | "metadata-read";
+/** The last two scopes are internal; neither is accepted as a user-selected access profile. */
+export type GitHubTokenProfile =
+  GitHubProfile | "metadata-read" | "git-ref-write" | "git-ref-draft-pr";
 interface GitHubConfigurationBase {
   readonly providerInstanceId: string;
   readonly configVersion: string;

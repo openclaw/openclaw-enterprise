@@ -1,3 +1,13 @@
+import type { PreparedGitHubCurrentProof } from "@openclaw-enterprise/contracts";
+import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
+import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
+import { isDeepStrictEqual } from "node:util";
+import type {
+  ProtectedEgressSource,
+  EgressInstallation,
+  EgressMaterialEvidence,
+} from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
@@ -354,6 +364,17 @@ export interface SecretRepository extends SecretReadRepository {
 }
 
 export interface CredentialSourceReadRepository {
+  isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
+  findEgressInstallation(
+    senderId: string,
+    sandboxId: string,
+  ): Promise<Readonly<EgressInstallation> | undefined>;
+
+  findRevisionEgressInstallation(
+    namespaceId: string,
+    revisionId: string,
+  ): Promise<Readonly<EgressInstallation> | undefined>;
+
   findCredentialSource(
     namespaceId: string,
     credentialSourceId: string,
@@ -373,6 +394,15 @@ export interface CredentialSourceReadRepository {
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
+  rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
+  recordEgressInstallation(installation: EgressInstallation): Promise<void>;
+  admitEgressSource(
+    namespaceId: string,
+    sourceId: string,
+    expectedGeneration: number,
+    egress: ProtectedEgressSource,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+
   lockCredentialSource(
     namespaceId: string,
     credentialSourceId: string,
@@ -753,6 +783,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
 }
 
 function assertAdmittedAgentRevision(revision: AgentRevision): void {
+  assertExecutionAdmission(revision);
   if (
     (revision.backendId !== null && !isBackendId(revision.backendId)) ||
     !/^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
@@ -905,6 +936,8 @@ export interface PlatformReadView {
 }
 
 export interface PlatformUnitOfWork extends PlatformReadView {
+  readonly preparedGitHubProof: PreparedGitHubCurrentProof;
+  readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
@@ -957,6 +990,7 @@ interface IAMSubjectSource {
 }
 
 interface PlatformSnapshot {
+  readonly egressSendReceipts: Map<string, StoredSendReceipt>;
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
@@ -964,6 +998,8 @@ interface PlatformSnapshot {
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
   readonly credentialWithdrawals: Map<string, Readonly<CredentialWithdrawal>>;
+  readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
+  readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
   readonly agents: Map<string, Readonly<Agent>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
@@ -1026,6 +1062,11 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     ),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
+    egressRejected: new Set(snapshot.egressRejected),
+    egressSendReceipts: new Map(snapshot.egressSendReceipts),
+    egressInstallations: new Map(
+      Array.from(snapshot.egressInstallations, ([key, value]) => [key, immutableCopy(value)]),
+    ),
     credentialWithdrawals: new Map(
       Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
         key,
@@ -1213,8 +1254,109 @@ function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function validEgressRef(value: unknown): boolean {
+  if (!isPlainRecord(value)) {
+    return false;
+  }
+  return (
+    Object.keys(value).length === 2 &&
+    typeof value.id === "string" &&
+    value.id.length >= 1 &&
+    value.id.length <= 200 &&
+    typeof value.generation === "number" &&
+    /^[1-9][0-9]{0,14}$/.test(String(value.generation))
+  );
+}
+
+/** Mirrors egress_source_is_valid; static and prepared sources each have a closed admitted shape. */
+function assertProtectedEgressSource(
+  value: ProtectedEgressSource,
+  namespaceId: string,
+  sourceId: string,
+): void {
+  const key = value?.key;
+  const common =
+    isPlainRecord(value) &&
+    isPlainRecord(key) &&
+    Object.keys(key).length === 5 &&
+    /^ins_[0-9a-f-]{36}$/.test(key.installationId) &&
+    key.namespaceId === namespaceId &&
+    key.source?.id === sourceId &&
+    [key.source, key.backend, key.provider, value.sender, value.resolver].every(validEgressRef);
+  if (value.adoption === "credential_free") {
+    const { grant } = value;
+    if (
+      !common ||
+      key.provider.id !== "credential-free-repository-metadata" ||
+      key.provider.generation !== 1 ||
+      Object.keys(value).length !== 8 ||
+      value.schemaVersion !== 3 ||
+      value.retention !== "none" ||
+      Object.keys(grant).length !== 5 ||
+      grant.kind !== "credential_free_repository_metadata" ||
+      grant.profile !== "metadata-read" ||
+      !/^[1-9]\d*$/.test(grant.repositoryId) ||
+      !Number.isSafeInteger(Number(grant.repositoryId)) ||
+      !/^[a-zA-Z\d_-]+\/[a-zA-Z\d_.-]+$/.test(grant.repository) ||
+      /\/(?:\.|\.)$/.test(grant.repository) ||
+      !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+      !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin)
+    ) {
+      throw new ScopeViolationError("The credential-free metadata schema or scope is invalid.");
+    }
+    return;
+  }
+  if (value.adoption === "prepared") {
+    const { grant } = value;
+    if (
+      !common ||
+      key.provider.id !== "github-app-metadata" ||
+      key.provider.generation !== 1 ||
+      Object.keys(value).length !== 8 ||
+      value.schemaVersion !== 2 ||
+      value.retention !== "none" ||
+      Object.keys(grant).length !== 7 ||
+      grant.kind !== "github_repository_metadata" ||
+      grant.profile !== "metadata-read" ||
+      ![grant.appId, grant.installationId, grant.repositoryId].every(
+        (id) => /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)),
+      ) ||
+      !/^[a-zA-Z\d_-]+\/[a-zA-Z\d_.-]+$/.test(grant.repository) ||
+      !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+      !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin)
+    ) {
+      throw new ScopeViolationError(
+        "The prepared GitHub metadata source schema or scope is invalid.",
+      );
+    }
+    return;
+  }
+  const secret = value?.secret;
+  if (
+    !common ||
+    Object.keys(value).length !== 9 ||
+    value.schemaVersion !== 1 ||
+    value.adoption !== "live" ||
+    value.retention !== "none" ||
+    typeof value.materialRefId !== "string" ||
+    value.materialRefId.length < 1 ||
+    value.materialRefId.length > 200 ||
+    !validEgressRef(value.secretDriver) ||
+    !isPlainRecord(secret) ||
+    Object.keys(secret).length !== 3 ||
+    secret.kind !== "secret" ||
+    secret.namespaceId !== namespaceId ||
+    !/^sec_[0-9a-f-]{36}$/.test(secret.id)
+  ) {
+    throw new ScopeViolationError("The protected source schema or scope is invalid.");
+  }
+}
+
 /** Mirrors the PostgreSQL credential source constraints for the in-memory adapter. */
 function assertCredentialSource(source: CredentialSource): void {
+  if (source.egress !== undefined) {
+    assertProtectedEgressSource(source.egress, source.namespaceId, source.id);
+  }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
   if (
@@ -1799,7 +1941,86 @@ function repositories(
     return found === undefined || !liveWithdrawal(found) ? undefined : immutableCopy(found);
   };
 
+  const materialKey = (evidence: EgressMaterialEvidence) =>
+    JSON.stringify([
+      evidence.source.namespaceId,
+      evidence.kind === "static" ? evidence.secretDriver.id : evidence.source.provider.id,
+      evidence.materialId,
+      evidence.materialVersion,
+    ]);
   const credentialSources: CredentialSourceRepository = {
+    isEgressMaterialRejected: async (evidence) =>
+      snapshot.egressRejected.has(materialKey(evidence)),
+    rejectEgressMaterial: async (evidence) => {
+      snapshot.egressRejected.add(materialKey(evidence));
+    },
+    findEgressInstallation: async (senderId, sandboxId) => {
+      const found = snapshot.egressInstallations.get(JSON.stringify([senderId, sandboxId]));
+      return found === undefined ||
+        !(
+          snapshot.revisions.get(
+            agentKey(found.plan.execution.namespaceId, found.plan.execution.agentId),
+          ) ?? []
+        ).some((revision) => revision.id === found.plan.execution.revisionId)
+        ? undefined
+        : immutableCopy(found);
+    },
+    findRevisionEgressInstallation: async (namespaceId, revisionId) =>
+      [...snapshot.egressInstallations.values()].find(
+        ({ plan: { execution } }) =>
+          execution.namespaceId === namespaceId && execution.revisionId === revisionId,
+      ),
+    recordEgressInstallation: async (installation) => {
+      const execution = installation.plan.execution;
+      const revision = (
+        snapshot.revisions.get(agentKey(execution.namespaceId, execution.agentId)) ?? []
+      ).find((item) => item.id === execution.revisionId);
+      if (!revision || !isDeepStrictEqual(revision.egressPlan, installation.plan)) {
+        throw new ScopeViolationError("Egress installation does not match an admitted revision.");
+      }
+      const key = JSON.stringify([installation.sender.id, installation.sandboxId]);
+      const prior = snapshot.egressInstallations.get(key);
+      if (
+        prior !== undefined &&
+        (!isDeepStrictEqual(prior.plan, installation.plan) ||
+          !isDeepStrictEqual(prior.sender, installation.sender) ||
+          !isDeepStrictEqual(prior.enforcement, installation.enforcement))
+      ) {
+        throw new ResourceStateConflictError("Egress execution identity is already bound.");
+      }
+      if (
+        Array.from(snapshot.egressInstallations.entries()).some(
+          ([otherKey, other]) =>
+            otherKey !== key &&
+            other.plan.execution.namespaceId === execution.namespaceId &&
+            other.plan.execution.revisionId === execution.revisionId,
+        )
+      ) {
+        throw new ResourceStateConflictError("Egress revision already has an installed execution.");
+      }
+      snapshot.egressInstallations.set(key, prior ?? immutableCopy(installation));
+    },
+    admitEgressSource: async (namespaceId, sourceId, expectedGeneration, egress) => {
+      const current = await findCredentialSource(namespaceId, sourceId);
+      if (
+        !current ||
+        current.state !== "ready" ||
+        (current.egress?.key.source.generation ?? 0) !== expectedGeneration
+      ) {
+        return undefined;
+      }
+      if (
+        egress.key.source.id !== sourceId ||
+        egress.key.namespaceId !== namespaceId ||
+        egress.key.source.generation !== expectedGeneration + 1
+      ) {
+        throw new ScopeViolationError("Egress source generation or scope is invalid.");
+      }
+      assertProtectedEgressSource(egress, namespaceId, sourceId);
+      const saved = immutableCopy({ ...current, egress });
+      snapshot.credentialSources.set(agentKey(namespaceId, sourceId), saved);
+      return saved;
+    },
     findCredentialSource,
     findCredentialWithdrawal,
     listCredentialWithdrawals: async (namespaceId, revisionId) =>
@@ -2910,6 +3131,8 @@ function repositories(
     revisions,
     iamPolicy,
     repositorySessions,
+    preparedGitHubProof: { current: async () => false },
+    egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
       findWithWork: provisioningAbsent,
@@ -3182,6 +3405,9 @@ export class InMemoryPlatformState implements PlatformStateStore {
     secrets: new Map(),
     credentialSources: new Map(),
     credentialWithdrawals: new Map(),
+    egressInstallations: new Map(),
+    egressRejected: new Set(),
+    egressSendReceipts: new Map(),
     serviceAccounts: new Map(),
     agents: new Map(),
     workspaceSetups: new Map(),

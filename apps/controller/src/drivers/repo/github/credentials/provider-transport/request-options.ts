@@ -1,4 +1,5 @@
 import type { RequestOptions } from "node:https";
+import { isGitHubWireCredential } from "../wire-credential.ts";
 import type { GitHubTokenProfile } from "../types.ts";
 import { permissionsForProfile } from "../profiles.ts";
 
@@ -54,7 +55,7 @@ export function providerRequestOptions(
   if (!scope || (operation !== "issue" && operation !== "revoke")) {
     throw new Error("invalid-provider-scope");
   }
-  if (typeof authorization !== "string" || !/^[\x21-\x7e]{1,16384}$/.test(authorization)) {
+  if (!isGitHubWireCredential(authorization)) {
     throw new Error("invalid-provider-credential");
   }
   const origin = new URL(scope.origin);

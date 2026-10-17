@@ -54,7 +54,8 @@
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
         "OpenShell delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",
-        "native initializer serializes retries and preserves later edits"
+        "native initializer serializes retries and preserves later edits",
+        "configured OpenShell Git boots without material and authorizes only the observed live generation"
       ]
     }
   ]

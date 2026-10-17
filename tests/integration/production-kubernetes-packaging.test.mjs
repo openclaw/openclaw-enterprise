@@ -1694,6 +1694,83 @@ test(
 );
 
 test(
+  "prepared Git broker Helm selection omits App credentials and preserves TLS/control",
+  tooling,
+  async () => {
+    const { stdout } = await render({
+      ...repositoryCredentialValues,
+      "repositoryCredentials.authority": "prepared-git",
+      "repositoryCredentials.clusterDomain": "cluster.internal",
+      "repositoryCredentials.preparedCustodySecretName": "test-git-custody",
+      "repositoryCredentials.preparedProviderCaConfigMapName": "test-git-provider-ca",
+    });
+    const objects = await resources(stdout);
+    assert.equal(
+      objects.some(
+        ({ kind, metadata }) =>
+          kind === "NetworkPolicy" &&
+          metadata.name === "openclaw-enterprise-repository-credentials-ingress",
+      ),
+      false,
+      "ordinary repository ingress would add its broad peer grant to the prepared broker",
+    );
+    const preparedIngress = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" &&
+        metadata.name === "openclaw-enterprise-prepared-repository-ingress",
+    );
+    assert.deepEqual(preparedIngress.spec.ingress, []);
+    const pod = objects.find(
+      (object) =>
+        object.kind === "Deployment" && object.metadata.name === "openclaw-enterprise-worker",
+    ).spec.template.spec;
+    const broker = pod.containers.find(({ name }) => name === "repository-credentials");
+    assert.deepEqual(broker.args.slice(-2), ["--authority", "prepared-git"]);
+    const service = objects.find(
+      ({ kind, metadata }) => kind === "Service" && metadata.name === "git",
+    );
+    const hostname = "git.openclaw-system.svc.cluster.internal";
+    assert.equal(
+      service.metadata.annotations["openclaw.dev/repository-credentials-hostname"],
+      hostname,
+    );
+    assert.equal(broker.args[broker.args.indexOf("--public-origin") + 1], `https://${hostname}`);
+    assert.deepEqual(service.spec.ports, [
+      { name: "https", port: 443, targetPort: 8443, protocol: "TCP" },
+    ]);
+    const owner = "prepared-repository-owner";
+    assert.deepEqual(
+      [...pod.containers, ...(pod.initContainers ?? [])]
+        .filter(({ volumeMounts }) => volumeMounts?.some(({ name }) => name === owner))
+        .map(({ name }) => name),
+      ["worker"],
+    );
+    assert.deepEqual(
+      pod.volumes
+        .find(({ name }) => name === owner)
+        .projected.sources.map(({ secret }) => secret.name),
+      [repositoryCredentialValues["repositoryCredentials.appKeySecretName"], "test-git-custody"],
+    );
+    assert.ok(broker.volumeMounts.some(({ name }) => name === "prepared-repository-ca"));
+    const inputs = pod.volumes.find(({ name }) => name === "repository-inputs");
+    assert.deepEqual(
+      inputs.projected.sources.map(({ secret }) => secret.name),
+      ["repository-config", "repository-tls"],
+    );
+    assert.ok(broker.volumeMounts.some(({ name }) => name === "repository-control"));
+    assert.ok(broker.volumeMounts.some(({ name }) => name === "repository-registry"));
+    assert.equal(
+      broker.volumeMounts.some(({ name }) => /issuer|app-key|custody/.test(name)),
+      false,
+    );
+    await assert.rejects(
+      render({ ...repositoryCredentialValues, "repositoryCredentials.authority": "unknown" }),
+      /authority must be github-app or prepared-git/,
+    );
+  },
+);
+
+test(
   "repository credential Helm packaging derives the broker origin from Service settings",
   tooling,
   async () => {
@@ -5411,5 +5488,273 @@ test(
       policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
       namespace,
     );
+  },
+);
+
+test(
+  "protected authority packaging confines keys and listener to the owning control plane",
+  tooling,
+  async () => {
+    const protectedValues = {
+      "backend.openshell.clientSecretName": "dedicated-openshell-admin",
+      "egressAuthority.enabled": "true",
+      "egressAuthority.tlsSecretName": "authority-server-tls",
+      "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+      "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+    };
+    const defaults = await resources((await render()).stdout);
+    assert.ok(
+      !defaults.some((object) => object.metadata?.name === "openclaw-enterprise-egress-authority"),
+    );
+    const issuerPolicyName = "openclaw-enterprise-prepared-github-issuer-egress";
+    assert.ok(!defaults.some((object) => object.metadata?.name === issuerPolicyName));
+    for (const workload of defaults.filter((object) => object.kind === "Deployment")) {
+      assert.ok(
+        !workload.spec.template.spec.volumes?.some(
+          ({ name }) => name.startsWith("egress-authority") || name === "openshell-client",
+        ),
+      );
+    }
+    const objects = await resources((await render(protectedValues)).stdout);
+    assert.ok(!objects.some((object) => object.metadata?.name === issuerPolicyName));
+    const service = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Service" && metadata.name === "openclaw-enterprise-egress-authority",
+    );
+    assert.equal(service.spec.type, "ClusterIP");
+    assert.equal(service.spec.selector["app.kubernetes.io/component"], "api");
+    assert.deepEqual(service.spec.ports, [
+      { name: "egress-tls", port: 9444, targetPort: "egress-tls" },
+    ]);
+    const ingress = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" &&
+        metadata.name === "openclaw-enterprise-egress-authority-ingress",
+    );
+    assert.equal(ingress.spec.podSelector.matchLabels["app.kubernetes.io/component"], "api");
+    assert.deepEqual(ingress.spec.ingress, [
+      {
+        from: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+            },
+            podSelector: { matchLabels: { app: "openshell-gateway" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 9444 }],
+      },
+    ]);
+    for (const component of ["api", "worker"]) {
+      const pod = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.name === `openclaw-enterprise-${component}`,
+      ).spec.template.spec;
+      const client = pod.volumes.find(({ name }) => name === "openshell-client");
+      assert.equal(client.secret.secretName, "dedicated-openshell-admin");
+      assert.deepEqual(client.secret.items.map(({ key }) => key).sort(), [
+        "ca.crt",
+        "tls.crt",
+        "tls.key",
+      ]);
+      const container = pod.containers.find(({ name }) => name === component);
+      assert.deepEqual(
+        container.volumeMounts.find(({ name }) => name === "openshell-client"),
+        { name: "openshell-client", mountPath: "/etc/openclaw/openshell", readOnly: true },
+      );
+      const issuer = pod.volumes.find(({ name }) => name === "egress-authority-issuer");
+      if (component === "api") {
+        assert.deepEqual(issuer.secret.items, [{ key: "public.pem", path: "issuer.pub" }]);
+        assert.equal(issuer.secret.secretName, "gateway-jwt-keys");
+        assert.equal(
+          pod.volumes.find(({ name }) => name === "egress-authority-tls").secret.secretName,
+          "authority-server-tls",
+        );
+        assert.ok(
+          container.ports.some(
+            ({ name, containerPort }) => name === "egress-tls" && containerPort === 9444,
+          ),
+        );
+      } else {
+        assert.equal(issuer, undefined);
+        assert.ok(!pod.volumes.some(({ name }) => name === "egress-authority-tls"));
+      }
+    }
+    // Initialization has only database/bootstrap duties; it never receives Gateway admin or issuer keys.
+    for (const job of objects.filter(({ kind }) => kind === "Job")) {
+      assert.ok(
+        !job.spec.template.spec.volumes?.some(
+          ({ name }) => name === "openshell-client" || name.startsWith("egress-authority"),
+        ),
+      );
+    }
+    for (const [override, diagnostic] of [
+      [{ "egressAuthority.tlsSecretName": "" }, /tlsSecretName is required/],
+      [{ "egressAuthority.issuerSecretName": "" }, /issuerSecretName is required/],
+      [{ "egressAuthority.clients": "null" }, /clients must select/],
+      [{ "egressAuthority.clients[0].podSelector": "null" }, /podSelector.matchLabels/],
+      [{ "egressAuthority.port": "8080" }, /distinct TCP port/],
+      [{ "egressAuthority.port": "65536" }, /distinct TCP port/],
+      [
+        { "backend.openshell.clientSecretName": "authority-server-tls" },
+        /egressAuthority.tlsSecretName must name a dedicated Secret.*backend.openshell.clientSecretName/,
+      ],
+      [
+        { "egressAuthority.issuerSecretName": "authority-server-tls" },
+        /egressAuthority.issuerSecretName must name a dedicated Secret.*egressAuthority.tlsSecretName/,
+      ],
+    ]) {
+      await assert.rejects(render({ ...protectedValues, ...override }), diagnostic);
+    }
+
+    const prepared = {
+      ...protectedValues,
+      "preparedGitHub.custodySecretName": "prepared-github-custody",
+      "preparedGitHub.issuerCidrs[0]": "192.0.2.19/32",
+    };
+    // Kubernetes interprets a null NetworkPolicyPort.port as every TCP port to this peer.
+    const portKey = "preparedGitHub.issuerPort";
+    for (const invalid of [null, "", "https", 0, 65536]) {
+      await assert.rejects(
+        render({ ...prepared, [portKey]: invalid }),
+        /preparedGitHub.issuerPort must be/,
+      );
+    }
+    for (const override of [{}, { [portKey]: 10443 }]) {
+      const rendered = await resources((await render({ ...prepared, ...override })).stdout);
+      const { spec } = rendered.find(({ metadata }) => metadata?.name === issuerPolicyName);
+      assert.deepEqual(spec.egress, [
+        {
+          to: [{ ipBlock: { cidr: "192.0.2.19/32" } }],
+          ports: [{ protocol: "TCP", port: override[portKey] ?? 443 }],
+        },
+      ]);
+    }
+  },
+);
+
+test(
+  "OpenShell Git packaging exposes only the worker to selected supervisors",
+  tooling,
+  async () => {
+    const selected = {
+      ...repositoryCredentialValues,
+      "repositoryCredentials.authority": "prepared-git",
+      "repositoryCredentials.preparedCustodySecretName": "git-custody",
+      "openshellGit.enabled": "true",
+      "openshellGit.tlsSecretName": "openshell-git-tls",
+      "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+      "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+        "openshell-system",
+      "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+    };
+    const defaults = await resources((await render()).stdout);
+    assert.ok(!defaults.some(({ metadata }) => metadata?.name?.includes("openshell-git")));
+    const objects = await resources((await render(selected)).stdout);
+    const service = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Service" && metadata.name === "openclaw-enterprise-openshell-git",
+    );
+    assert.equal(service.spec.type, "ClusterIP");
+    assert.equal(service.spec.selector["app.kubernetes.io/component"], "worker");
+    assert.deepEqual(service.spec.ports, [
+      { name: "openshell-git", port: 8445, targetPort: "openshell-git", protocol: "TCP" },
+    ]);
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name === "openclaw-enterprise-openshell-git-ingress",
+    );
+    assert.equal(policy.spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
+    assert.deepEqual(policy.spec.ingress, [
+      {
+        from: [
+          {
+            namespaceSelector: {
+              matchLabels: { "kubernetes.io/metadata.name": "openshell-system" },
+            },
+            podSelector: { matchLabels: { app: "openshell-supervisor" } },
+          },
+        ],
+        ports: [{ protocol: "TCP", port: 8445 }],
+      },
+    ]);
+    for (const object of objects.filter(({ kind }) => ["Deployment", "Job"].includes(kind))) {
+      const pod = object.spec.template.spec;
+      const volume = pod.volumes?.find(({ name }) => name === "openshell-git");
+      if (object.metadata.name !== "openclaw-enterprise-worker") {
+        assert.equal(volume, undefined);
+        continue;
+      }
+      assert.equal(volume.projected.defaultMode, 0o440);
+      assert.deepEqual(volume.projected.sources, [
+        {
+          secret: {
+            name: "openshell-git-tls",
+            items: [
+              { key: "tls.crt", path: "tls.crt" },
+              { key: "tls.key", path: "tls.key" },
+            ],
+          },
+        },
+        {
+          configMap: {
+            name: "openshell-gateway-public",
+            items: [{ key: "gateway-public.pem", path: "gateway-public.pem" }],
+          },
+        },
+      ]);
+      const worker = pod.initContainers.find(({ name }) => name === "worker");
+      assert.deepEqual(
+        worker.volumeMounts.find(({ name }) => name === "openshell-git"),
+        { name: "openshell-git", mountPath: "/etc/openclaw/openshell-git", readOnly: true },
+      );
+      assert.ok(
+        worker.ports.some(
+          ({ name, containerPort }) => name === "openshell-git" && containerPort === 8445,
+        ),
+      );
+      // The sidecar must not acquire the middleware TLS private key through this projection.
+      for (const container of pod.containers.filter(({ name }) => name !== "worker")) {
+        assert.ok(!container.volumeMounts?.some(({ name }) => name === "openshell-git"));
+      }
+    }
+    const sealed = await resources(
+      (
+        await render({
+          ...selected,
+          ...gatewayRoutingValues,
+          "preprovisionedNamespace.namespaceId": "ns_fixture",
+          "preprovisionedNamespace.uid": "11111111-2222-3333-4444-555555555555",
+        })
+      ).stdout,
+    );
+    const namespaceRules = sealed.flatMap(({ kind, rules }) =>
+      kind === "ClusterRole" ? rules.filter((rule) => rule.resources?.includes("namespaces")) : [],
+    );
+    assert.equal(namespaceRules.length, 2, "named namespace access for API and worker");
+    for (const rule of namespaceRules) {
+      assert.deepEqual(rule.verbs, ["get"]);
+      assert.equal(rule.resourceNames.length, 1);
+    }
+    assert.ok(!sealed.some(({ kind }) => kind === "Job"), "do not bootstrap a sealed installation");
+    for (const [override, diagnostic] of [
+      [{ "repositoryCredentials.authority": "github-app" }, /authority prepared-git/],
+      [{ "openshellGit.tlsSecretName": "" }, /openshellGit.tlsSecretName is required/],
+      [
+        { "openshellGit.issuerPublicKeyConfigMapName": "" },
+        /issuerPublicKeyConfigMapName is required/,
+      ],
+      [{ "openshellGit.clients": "null" }, /select trusted supervisor callers/],
+      [{ "openshellGit.clients[0].podSelector": "null" }, /podSelector.matchLabels/],
+      [{ "openshellGit.clients[0].namespaceSelector": "null" }, /namespaceSelector.matchLabels/],
+      [{ "openshellGit.port": "8443" }, /distinct from repository/],
+      [{ "openshellGit.port": "65536" }, /unprivileged TCP port/],
+      [{ "openshellGit.port": "8445.5" }, /positive safe integer/],
+      [{ "openshellGit.tlsSecretName": "repository-app-key" }, /must name a dedicated Secret/],
+    ]) {
+      await assert.rejects(render({ ...selected, ...override }), diagnostic);
+    }
   },
 );

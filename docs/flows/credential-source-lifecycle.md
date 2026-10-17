@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-16
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+last_updated_session: authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272
 ---
 
 # Credential source lifecycle Flow
@@ -12,6 +12,11 @@ OCC authorizes sources and stores metadata/references; OpenShell holds values.
 Admission freezes identity; workers pass live sources to Compute.
 See [refresh](credential-source-refresh.md) and
 [Sandbox provisioning](openshell-sandbox-provisioning.md).
+
+[Protected sources](credential-source-egress.md) admit versioned Secret references,
+skip gateway copies and require explicit migration while unbound. Protected revisions
+refuse legacy attachments. [OpenShell-owned Codex OAuth](credential-source-refresh.md#device-authorization-and-configuration)
+uses the paired Credential Gateway and Refresh Drivers with `credential_proxy` unselected.
 
 ## Entry Points
 
@@ -263,33 +268,22 @@ or refused waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
 maintenance.
 
-A withdrawal that finds no Sandbox records `revoked`, yet a create OpenShell
-accepted before its worker lost the claim can land later with the source. So
-every preparation, and every pass of a Harness-withdrawn revision,
-rechecks `revoked` rows
-(`apps/controller/src/worker.ts:recheckRevokedCredentialSources`): the OpenShell
-Driver detaches the provider again only if `SandboxSpec.providers` lists it.
+An absent Sandbox counts as revoked, but a previously accepted create can still land.
+`recheckRevokedCredentialSources` rechecks every preparation and withdrawn-Harness pass;
+OpenShell detaches again only if `SandboxSpec.providers` still lists the provider.
 
 ## Debugging and Verification
 
-- `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog,
-  grants, lifecycle, compensation/recovery, audit and revision admission with
-  an in-process gateway double.
-- `node --test tests/integration/credential-source-api.test.mjs` exercises
-  Fastify/IAM/OCC/OpenShell Driver validation, deletion recovery, profile isolation
-  and endpoint lifecycle. Gateway storage and Compute placement are doubles,
-  not runtime proof.
-- `node --test tests/conformance/openshell-gateway-wire.test.mjs` checks the
-  provider, profile, update, detach, and recheck RPCs against the pinned `v0.1.4`
-  wire fixture.
-- The credential withdrawal cases in
-  `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
-  and worker against PostgreSQL with a Compute double: retries, outages, replays,
-  refusals, maintenance, denials, other revisions, lost grants, and late creates.
-- The [real OpenShell suite](../testing/openshell.md#openshell-sandbox) registers
-  the selected PAT/API-key source through the production API, reads live status,
-  updates it, and withdraws tool and model sources. The echo service stops
-  receiving the tool token; the next model turn fails.
+- [OCC conformance](../../tests/conformance/credential-source-occ.test.mjs) exercises grants,
+  recovery and revision admission with a gateway double.
+- [API integration](../../tests/integration/credential-source-api.test.mjs) covers Fastify,
+  IAM, OCC and the OpenShell Driver; storage and Compute are doubles.
+- [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.mjs) checks provider,
+  profile, update, detach and recheck RPCs against the `v0.1.4` fixture.
+- [Worker integration](../../tests/integration/postgres-worker-agent-revision.test.mjs)
+  exercises withdrawals, retries, replays and late creates with PostgreSQL and a Compute double.
+- [Real OpenShell cases](../testing/openshell.md#openshell-sandbox) register, inspect, update
+  and withdraw PAT or API-key sources; the tool token disappears and the next model turn fails.
 - A source stuck in `deleting` returns `503` on delete until the gateway is
   reachable; `GET` shows its live `status`.
 - Worker reason codes `CREDENTIAL_GATEWAY_MISMATCH` and
@@ -313,6 +307,8 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from protected source admission. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 

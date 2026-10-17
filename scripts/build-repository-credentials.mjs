@@ -131,7 +131,7 @@ const service = clientOnly
     ]);
 const client = await closure(
   "client",
-  ["launch", "operator", "git-helper", "native-git", "router", "hook-dispatch"].map(
+  ["launch", "operator", "git-helper", "native-git", "draft-pr", "router", "hook-dispatch"].map(
     (name) => `drivers/repo/github/credentials/client/${name}.js`,
   ),
 );

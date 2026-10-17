@@ -1,7 +1,7 @@
 ---
 created: 2026-09-18
-updated: "2026-10-04"
-last_updated_session: "cody/01a0e42f-3192-76d1-89b6-4bec0cb00e64"
+updated: "2026-10-16"
+last_updated_session: "authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461"
 ---
 
 # Repository credential configuration flow
@@ -40,16 +40,18 @@ graph TD
   Ancestors -->|unsafe owner, mode or symlink| Reject["<b>Reject configuration</b><br/>No provider call"]
   Ancestors -->|trusted path| File["<b>Open protected file</b><br/>Bound size and identity"]
   File -->|changed or invalid| Reject
-  File -->|valid JSON| Material["<b>Load App key and TLS</b><br/>Repeat protected reads"]
+  File -->|valid JSON| Backend["<b>Validate backend and registry</b><br/>Require compatible policy"]
+  Backend -->|incompatible policy| Reject
+  Backend -->|compatible| Material["<b>Load selected authority and TLS</b><br/>Repeat protected reads"]
   Material -->|invalid material| Reject
-  Material -->|validated| Owner["<b>Construct key owner</b><br/>Freeze configuration"]
+  Material -->|validated| Owner["<b>Construct selected owner</b><br/>Freeze configuration"]
   Owner -->|configuration check| Summary["<b>Return safe summary</b><br/>Close owned material"]
   Owner -->|service startup| Service["<b>Service composition</b><br/>Own material lifetime"]
   classDef input fill:#F1EEF5,stroke:#A091AD,color:#3A3243,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef blocked fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Input,Projection,Expected input
-  class Snapshot,Ancestors,File,Material,Owner,Summary,Service operation
+  class Snapshot,Ancestors,File,Backend,Material,Owner,Summary,Service operation
   class Reject blocked
 ```
 
@@ -115,6 +117,11 @@ Composition validates the service policy and selects either one GitHub repositor
 or the canonical registry, together with its App identity and key path.
 `composition/repository-credentials/registry.ts` owns registry file I/O;
 `drivers/repo/github/credentials/registry.ts` owns pure GitHub policy validation.
+`apps/controller/src/drivers/repo/github/credentials/registry-factory.ts:validateGitHubAppRepositoryRegistry`
+rejects a `git-only` declaration when the request-time `github-app-registry`
+backend is selected, before composition reads the signing key. That declaration
+requires `github-prepared-git-registry`, whose broker uses a prepared credential
+owner instead of constructing a signing-key owner.
 Public projected registry reads retain their own generation/symlink rules;
 they do not weaken protected-secret descriptor validation. That
 validated selection determines the factory after protected reads load the App
@@ -169,6 +176,8 @@ startup validation, not live GitHub behavior or platform integration.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 19:18: Record prepared-only registry rejection on the request-time App backend. (authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461 - 6c8adb9779d6819a4d4794c8754d7b6017aba89a)
 
 - 2026-10-04 08:00: Add the development-only GitHub token authority branch, its process flag, and the authority summary. (gh-token-impl - github-token-authority)
 

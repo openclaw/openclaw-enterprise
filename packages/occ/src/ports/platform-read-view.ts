@@ -34,6 +34,9 @@ export function createPlatformReadView(
       "listReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "findCredentialWithdrawal",

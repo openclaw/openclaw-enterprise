@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-14
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-16
+last_updated_session: authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272
 ---
 
 # Credential source refresh Flow
@@ -17,6 +17,16 @@ OCC calls the refresh role again only to update material, force a rotation,
 read status, or delete the source. This flow covers those calls; the
 [credential source lifecycle flow](credential-source-lifecycle.md) owns
 binding, admission, dispatch, and withdrawal, which are the same for every type.
+
+In the [Codex device flow](#device-authorization-and-configuration), OpenShell keeps the
+refresh grant and its successors. The Harness receives a stable placeholder and account
+metadata; a separate operator connection can retrieve an access token for authorized
+discovery. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+
+[OCE-prepared GitHub credentials](#6-oce-prepared-github-core) have a different owner.
+An OCE worker prepares a repository-scoped installation token in the background.
+[Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
+can use an eligible, committed token but cannot trigger issuance.
 
 ## Entry Points
 
@@ -214,7 +224,57 @@ RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses a
 out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
 the record `deleting` for retry.
 
+### 6. OCE-prepared GitHub core
+
+`apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
+
+A background worker can prepare one admitted GitHub App grant without traffic
+from an Agent. The owner commits an `issuing` attempt before retrieving the exact
+signing key version, then checks the family, owner epoch and that attempt again
+before calling GitHub. It reuses the existing signer and installation-token
+exchange. This is the [OCE-owned GitHub preparation option](../../specs/rfcs/0021-egress-proxy-credential-lifecycle/protocol.md#prepare-and-renew-credentials).
+
+GitHub issuance cannot be atomic with local storage. The owner verifies the exact
+returned repository, rights and provider expiry. The publication transaction
+rechecks the fence and remaining validity, then commits the token with its own
+opaque material version. A late, invalid or ambiguous result stays quarantined
+across owner changes. If storage loses a token before commit, the recorded attempt
+still blocks replay. Recovery and cleanup need an explicit owner.
+
+The shared response parser identifies custody separately from scope evidence
+(see [response capture](repository-credentials.md#4-reserve-acquire-and-dispatch)).
+Ambiguous fields quarantine a uniquely identified token for cleanup. Repeated
+root token keys leave no candidate to revoke automatically; the retained intent
+blocks replay and requires explicit recovery.
+
+The trusted Resolver gets only a read port. It can receive still-eligible
+committed material during renewal. Cold, expired or differently admitted material
+returns `not_ready`, including when validity runs out during the read. The
+Resolver must authorize both access and the actual send.
+
+The optional PostgreSQL lifecycle joins the family transaction, encrypted custody,
+and retained attempts. The API and worker need the same dedicated 32-byte custody
+key across restarts. Only the worker prepares material. The Installation owns the
+HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
+expired read cannot start an exchange, and uncertain issuance blocks another attempt.
+
+`apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
+clears the previous committed buffer and token buffers still on the publication
+draft in `finally`, even if the callback, sealing or SQL publication fails. Callers
+own their detached warm reads. Clearing a local buffer does not revoke a provider token.
+
 ## Debugging and Verification
+
+- `node --test tests/integration/repository-credentials-github-prepared.test.mjs`
+  exercises producer → transaction commit → warm consumer over loopback HTTPS,
+  with a generated App key and actual JWT signature verification. It covers
+  renewal overlap, duplicate attempts, latest-admission fences, rejected provider
+  scope/expiry, cancellation, and transaction failures before/after commit.
+  Its serializable in-memory fixture reconnects owners to shared committed state;
+  it is not production durability, process-crash, live-provider, installed-runtime,
+  cluster or regular Agent workflow proof.
+  `postgres-prepared-github-lifecycle.test.mjs` exercises the durable lifecycle,
+  signed protected exchange, issuer rotation, withdrawal and quarantine over loopback.
 
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
   `recoveryAction` explain the last mint without exposing a token.
@@ -239,6 +299,8 @@ the record `deleting` for retry.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from background GitHub App preparation. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
 - 2026-10-14 23:26: Restore issuer redirect refusal in all three moved device-login requests. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 6f0b9180125f80d9e490d77656d4919c574d5004)
 

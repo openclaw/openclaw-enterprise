@@ -513,16 +513,15 @@ ${nativeCommands}`;
     assert.equal(branchResponse.status, 200, "model task must push its branch");
     const commitSha = branchResponse.data.object.sha;
     const { data: commit } = await observe("GET", `commits/${commitSha}`);
-    assert.deepEqual(
-      commit.parents.map((p) => p.sha),
-      [baseSha],
-    );
-    assert.deepEqual(
-      commit.files.map((value) => ({ filename: value.filename, status: value.status })),
-      [{ filename: file, status: "added" }],
-    );
     const { data: remoteFile } = await observe("GET", `contents/${file}?ref=${commitSha}`);
-    assert.equal(Buffer.from(remoteFile.content, "base64").toString("utf8"), content);
+    assertNativeRepositoryCommit({
+      baseSha,
+      parents: commit.parents.map((p) => p.sha),
+      file,
+      files: commit.files.map((value) => ({ filename: value.filename, status: value.status })),
+      content,
+      observedContent: Buffer.from(remoteFile.content, "base64").toString("utf8"),
+    });
     const { data: pulls } = await observe(
       "GET",
       `pulls?state=all&head=${encodeURIComponent(repository.split("/")[0] + ":" + branch)}&per_page=100`,
@@ -632,4 +631,18 @@ ${nativeCommands}`;
     });
   }
   return remoteEvidence;
+}
+
+/** Compare the commit received independently of the Agent's own checkout and reply. */
+export function assertNativeRepositoryCommit({
+  baseSha,
+  parents,
+  file,
+  files,
+  content,
+  observedContent,
+}) {
+  assert.deepEqual(parents, [baseSha]);
+  assert.deepEqual(files, [{ filename: file, status: "added" }]);
+  assert.equal(observedContent, content);
 }

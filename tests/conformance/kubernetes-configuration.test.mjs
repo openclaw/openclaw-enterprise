@@ -37,7 +37,7 @@ const configuration = {
     secrets: {
       providers: { teamstore: { source: "store" } },
       defaults: { store: "teamstore" },
-      egressProxy: { enabled: true },
+      credential_proxy: { enabled: true },
     },
     agents: { defaults: { sandbox: { mode: "all" } } },
     plugins: { entries: { example: { config: { enabled: true, retries: 3, tags: [null] } } } },

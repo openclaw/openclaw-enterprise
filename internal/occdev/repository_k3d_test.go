@@ -111,4 +111,31 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
 		t.Fatal("a policy targeting another Namespace was accepted")
 	}
+
+	policy["namespaceId"] = developmentNamespacePlaceholder
+	runner.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = "0"
+	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] = "172.17.0.1"
+	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_PROVIDER_ORIGIN"] = "https://172.17.0.1:8443"
+	for name, value := range map[string]string{"upstream-cidrs.json": `["172.17.0.1/32"]`, "issuer-ca.crt": "test public CA"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeRegistry()
+	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
+		t.Fatal("generic Git transport unexpectedly accepted")
+	}
+	policy["transport"], policy["profiles"], policy["pushRefAllowlist"] = "git-only", []string{"git-write"}, []string{"refs/heads/review/skipper"}
+	writeRegistry()
+	if _, err := runner.loadDevelopmentRepositoryInputs("openshell"); err == nil {
+		t.Fatal("must not select OpenShell for Compute-owned qualification")
+	}
+	inputs, err := runner.loadDevelopmentRepositoryInputs("none")
+	if err != nil || inputs.preparedPort != 8443 {
+		t.Fatalf("expected exact private qualified Git origin: %v", err)
+	}
+	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] = "172.17.0.2"
+	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
+		t.Fatal("unexpected Git issuer host accepted")
+	}
 }

@@ -198,7 +198,39 @@ test(
 
     const sqlFiles = (await readdir(outputDirectory)).filter((name) => name.endsWith(".sql"));
     assert.equal(sqlFiles.length, 1, "Generation must produce one initial SQL migration.");
-    assert.ok((await readFile(join(outputDirectory, sqlFiles[0]), "utf8")).trim().length > 0);
+    const sql = await readFile(join(outputDirectory, sqlFiles[0]), "utf8");
+    // Compare constraints as PostgreSQL actually parsed them. Execute Drizzle's generated
+    // table DDL verbatim except for its destination; the fixture has the authored migrations.
+    const client = new pg.Client({ connectionString: fixture.migrationUrl });
+    await client.connect();
+    try {
+      for (const [table, constraint] of [
+        ["egress_send_receipts", "egress_send_receipts_check_17"],
+        ["agent_revisions", "agent_revisions_admitted_snapshot"],
+      ]) {
+        const create = `CREATE TABLE "occ"."${table}"`;
+        const ddl = sql
+          .split("--> statement-breakpoint")
+          .find((statement) => statement.includes(create));
+        assert.ok(ddl, `Generated SQL must include ${table}`);
+        // Redirect both the CREATE and any schema-qualified references to that table.
+        const temporaryDdl = ddl
+          .replace(create, `CREATE TEMP TABLE "${table}"`)
+          .replaceAll(`"occ"."${table}".`, `"${table}".`);
+        await client.query(temporaryDdl);
+        const checks = await client.query(
+          `SELECT pg_get_constraintdef(oid) AS definition
+             FROM pg_constraint
+            WHERE conname = $1 AND conrelid IN ($2::regclass, $3::regclass)`,
+          [constraint, `pg_temp.${table}`, `occ.${table}`],
+        );
+        assert.equal(checks.rowCount, 2, `Both tables must have ${constraint}`);
+        assert.equal(checks.rows[0].definition, checks.rows[1].definition);
+      }
+    } finally {
+      await client.end();
+    }
+
     const metadataDirectory = join(outputDirectory, "meta");
     const snapshots = (await readdir(metadataDirectory)).filter((name) =>
       name.endsWith("_snapshot.json"),
@@ -1055,7 +1087,7 @@ const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").
   (text) => JSON.parse(text).scripts,
 );
 
-async function runHistoryMigration(db, mode = "development", checkOnly = false) {
+async function runHistoryMigration(db, mode = "development", checkOnly = false, refusal) {
   const script = (await migrationScripts)[
     mode === "production" ? "db:migrate:production" : "db:migrate"
   ];
@@ -1083,6 +1115,9 @@ async function runHistoryMigration(db, mode = "development", checkOnly = false) 
   } catch (error) {
     const output = `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
     if (error.code === 1 && output.includes('"code":"MIGRATION_HISTORY_UNSUPPORTED"')) {
+      if (refusal !== undefined) {
+        assert.match(output, refusal);
+      }
       return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
     }
     if (error.code === 1 && output.includes('"code":"MIGRATION_FAILED"')) {
@@ -1124,14 +1159,14 @@ async function historySnapshot(db) {
   };
 }
 
-async function assertHistoryRefused(db) {
+async function assertHistoryRefused(db, refusal) {
   const before = await historySnapshot(db);
   for (const [mode, checkOnly] of [
     ["development", true],
     ["development", false],
     ["production", false],
   ]) {
-    assert.deepEqual(await runHistoryMigration(db, mode, checkOnly), {
+    assert.deepEqual(await runHistoryMigration(db, mode, checkOnly, refusal), {
       ok: false,
       code: "MIGRATION_HISTORY_UNSUPPORTED",
     });
@@ -1204,7 +1239,10 @@ function receiptsMatchEntries(receipts, entries) {
   );
 }
 
-async function seedCanonicalData(db, { preset = false } = {}) {
+async function seedCanonicalData(
+  db,
+  { preset = false, computeAdmission = false, executionAdmission = false } = {},
+) {
   const installation = `ins_${randomUUID()}`;
   const namespace = `ns_${randomUUID()}`;
   const configuration = `cfg_${randomUUID()}`;
@@ -1248,7 +1286,14 @@ async function seedCanonicalData(db, { preset = false } = {}) {
           draft_spec: {},
           harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
           harness_auth: { method: "runtime" },
-          compute: { id: "kubernetes", implementation: "test" },
+          ...(executionAdmission
+            ? { execution_admission: { version: 2, mode: "unprotected" } }
+            : {}),
+          compute: {
+            id: "kubernetes",
+            implementation: "test",
+            ...(computeAdmission ? { admission: `public-github-read:v1:${"a".repeat(64)}` } : {}),
+          },
         },
       ],
     );
@@ -1637,10 +1682,22 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preStaticEgress"],
+      [58, "preSendReceipts"],
+      [59, "prePreparedGitHubCustody"],
+      [60, "prePreparedGitHubEgress"],
+      [61, "preCredentialFreeMetadata"],
+      [62, "preRevisionHarnessAuthShape"],
+      [63, "prePreparedRepositoryGit"],
+      [64, "prePreparedRepositoryDraftPulls"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
-        await seedCanonicalData(db, { preset: prefix >= 25 });
+        await seedCanonicalData(db, {
+          preset: prefix >= 25,
+          computeAdmission: prefix >= 55,
+          executionAdmission: prefix >= 58,
+        });
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", true), {
@@ -1651,7 +1708,7 @@ test(
         await assertCompletedHistory(db, receipts);
         assert.deepEqual(await canonicalData(db), before);
         await assertUpgradedAuthentication(db);
-        if (prefix === 55) {
+        if (prefix === 57) {
           const upgradedReceipts = await historyReceipts(db.migrator);
           const sessions = await db.app.query("SELECT count(*)::integer AS count FROM occ.session");
           child.diagnostic(
@@ -1699,15 +1756,22 @@ test(
       loginMode: "chatgptAuthTokens",
     };
     let revisionNumber = 2;
+    let executionAdmission = {};
     const insertSnapshot = (auth) =>
       db.app.query(
         `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
          SELECT $2,namespace_id,agent_id,$3,
-           jsonb_set(admitted_spec,'{harness_auth}',$4::jsonb) || '{"sandbox_driver_id":"external-sandbox"}'::jsonb,
+           jsonb_set(admitted_spec,'{harness_auth}',$4::jsonb) || '{"sandbox_driver_id":"external-sandbox"}'::jsonb || $5::jsonb,
            backend_id,now()
          FROM occ.agent_revisions WHERE namespace_id=$1 AND revision_number=1
          RETURNING admitted_spec->'harness_auth' AS auth`,
-        [namespaceId, `rev_${randomUUID()}`, revisionNumber++, JSON.stringify(auth)],
+        [
+          namespaceId,
+          `rev_${randomUUID()}`,
+          revisionNumber++,
+          JSON.stringify(auth),
+          executionAdmission,
+        ],
       );
     const invalidSnapshot = (error) =>
       error.code === "23514" && error.constraint === "agent_revisions_admitted_snapshot";
@@ -1765,6 +1829,7 @@ test(
       history: "preCanonicalHarnessAuth",
     });
     await assertCompletedHistory(db, receipts);
+    executionAdmission = { execution_admission: { version: 2, mode: "unprotected" } };
     assert.deepEqual((await insertSnapshot(binding)).rows, [{ auth: binding }]);
     const apiKey = { ...binding, loginMode: "api_key" };
     assert.deepEqual((await insertSnapshot(apiKey)).rows, [{ auth: apiKey }]);
@@ -2024,6 +2089,14 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preStaticEgress"],
+      [58, "preSendReceipts"],
+      [59, "prePreparedGitHubCustody"],
+      [60, "prePreparedGitHubEgress"],
+      [61, "preCredentialFreeMetadata"],
+      [62, "preRevisionHarnessAuthShape"],
+      [63, "prePreparedRepositoryGit"],
+      [64, "prePreparedRepositoryDraftPulls"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2109,11 +2182,23 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
+      [57, "preStaticEgress"],
+      [58, "preSendReceipts"],
+      [59, "prePreparedGitHubCustody"],
+      [60, "prePreparedGitHubEgress"],
+      [61, "preCredentialFreeMetadata"],
+      [62, "preRevisionHarnessAuthShape"],
+      [63, "prePreparedRepositoryGit"],
+      [64, "prePreparedRepositoryDraftPulls"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
         if (prefix) {
-          await seedCanonicalData(db, { preset: prefix >= 25 });
+          await seedCanonicalData(db, {
+            preset: prefix >= 25,
+            computeAdmission: prefix >= 55,
+            executionAdmission: prefix >= 58,
+          });
         }
         const before = await historySnapshot(db);
         const data = prefix ? await canonicalData(db) : undefined;
@@ -2123,6 +2208,10 @@ test(
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
         const rollbackTag = [
+          [64, "GRANT"],
+          [62, "ALTER TABLE"],
+          [61, "CREATE FUNCTION"],
+          [57, "GRANT"],
           [56, "CREATE FUNCTION"],
           [55, "CREATE TRIGGER"],
           [54, "ALTER TABLE"],
@@ -2201,6 +2290,11 @@ test(
         "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES(repeat('f',64),9999999999999)",
       ],
       ["catalog-object", 25, "CREATE TABLE occ.unexplained(id integer)"],
+      [
+        "draft-pull-privilege",
+        65,
+        "GRANT DELETE ON occ.prepared_repository_draft_pulls TO occ_app",
+      ],
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
     ];
     for (const [label, prefix, sql] of cases) {
@@ -2212,6 +2306,31 @@ test(
         await assertHistoryRefused(db);
       });
     }
+    void context.test(
+      "experimental static egress at canonical Harness-auth slot 0057",
+      async (child) => {
+        const db = await historyDatabase(child, fixture, "experimentalegress");
+        // Install the old branch's complete SQL and real Drizzle receipts, omitting main's
+        // 0057 and shifting only the unpublished migrations back to their experimental slots.
+        const entries = [
+          ...manifest.entries.slice(0, 56),
+          ...manifest.entries.slice(57).map((entry) => ({
+            ...entry,
+            idx: entry.idx - 1,
+            when: entry.when - 1,
+          })),
+        ];
+        await installCanonicalPrefix(db, entries.length, { entries });
+        await seedCanonicalData(db, {
+          preset: true,
+          computeAdmission: true,
+          executionAdmission: true,
+        });
+        const data = await canonicalData(db);
+        await assertHistoryRefused(db, /experimental 0057_static_egress .*use a fresh database/);
+        assert.deepEqual(await canonicalData(db), data);
+      },
+    );
     void context.test("published premerge credential history", async (child) => {
       const db = await historyDatabase(child, fixture, "premerge");
       const journal = JSON.parse(

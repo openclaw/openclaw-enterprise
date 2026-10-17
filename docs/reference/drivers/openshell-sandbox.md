@@ -65,14 +65,12 @@ creation are deferred; `exec` runs inside the selected Harness sandbox.
 
 ## Configuration
 
-Select `drivers.sandbox` in trusted Installation YAML. OpenShell requires the
-bundled Kubernetes Compute Driver; installed Compute Drivers fail startup.
-Select an [`openshell` Backend](../backends.md#openshell-gateway) whose
-`drivers.sandbox` matches this ID and its
-[Credential Gateway](openshell-credential-gateway.md#configure-the-driver) member.
-The Backend owns connections; Sandbox configuration rejects `endpoint`,
-`scheme`, `serviceName`, `port`, `auth`, `requestTimeoutMs`, and
-`rootCertificatePath` in `gateway`.
+Select `drivers.sandbox` in Installation YAML with bundled Kubernetes Compute;
+installed Compute Drivers fail startup. Its [`openshell` Backend](../backends.md#openshell-gateway)
+must match this ID and the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver).
+Backend `rootCertificatePath` supplies public CA trust for the Agent Gateway's WSS
+endpoint. Sandbox `gateway` rejects connection fields: `endpoint`, `scheme`,
+`serviceName`, `port`, `auth`, `requestTimeoutMs`, and `rootCertificatePath`.
 
 ```yaml
 drivers:

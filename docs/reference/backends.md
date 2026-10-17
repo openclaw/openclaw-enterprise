@@ -163,8 +163,10 @@ Its closed `configuration` accepts:
   hosts in the gateway's namespace only when OCE knows it: from a bare or
   `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
-- `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
-  an absolute path.
+- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
+  `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
+  mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
+  Service HTTP/WebSocket requests retain their separate scoped bearer identity.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
@@ -177,7 +179,8 @@ Its closed `configuration` accepts:
   separate certificate-only channel to the same gateway, using the same server
   CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
-  bearer-token authentication, and rejected otherwise. It declares that
+  bearer/mTLS authentication, and rejected otherwise. It cannot enable plaintext
+  mTLS. It declares that
   NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
@@ -196,6 +199,22 @@ clients separately per resolved endpoint. The API and worker each construct it,
 so mount their required credential files there, never in the Harness or Agent
 Gateway. Restart these processes after rotating an operator certificate to replace
 cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+
+Optional `drivers.credential_proxy` selects the paired
+[protected egress adapter](credential-sources/protected-inference.md). It requires an
+authenticated HTTPS gateway and the credential-access protocol. Released OpenShell
+`v0.1.4` supports OAuth refresh and operator `GetProviderCredentials`, but lacks
+the protected credential-access and loaded-enforcement contract. The protected
+counterpart has that contract, not the OAuth export RPC. Select and verify the
+deployed capability; the combined client schema is not a supplier capability claim.
+Protected revision admission refuses legacy credential attachments.
+
+For native OpenShell mTLS, a verified client certificate's CN becomes the User
+subject and OU values become roles. Without an OIDC administrator role configured,
+an authenticated User has platform administrator authority. Treat the dedicated
+client CA and every certificate it signs as administrator credentials. Keep the
+client key in the trusted control plane, never an Agent or Sandbox. With OIDC
+configured, its administrator-role check still applies; mTLS does not bypass it.
 
 ## Driver and client contract
 

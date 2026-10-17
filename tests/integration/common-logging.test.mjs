@@ -270,6 +270,8 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
     message: "ordinary diagnostic text must not enter operational logs",
     secret: "sk-proj-secret-value-that-must-not-log",
     error: "Bearer token-that-must-not-log",
+    grpcStatus: "3",
+    validationCategory: "arbitrary-supplier-category",
   });
   emitOccLogEvent(logger, {
     event: "installation.bootstrap-failed",
@@ -296,6 +298,8 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(Object.hasOwn(output.lines[0], "error"), false);
   assert.equal(Object.hasOwn(output.lines[0], "message"), false);
   assert.equal(Object.hasOwn(output.lines[0], "secret"), false);
+  assert.equal(Object.hasOwn(output.lines[0], "grpcStatus"), false);
+  assert.equal(Object.hasOwn(output.lines[0], "validationCategory"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
   assert.equal(JSON.stringify(output.lines).includes("arbitrary"), false);
 });
@@ -319,6 +323,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     computeDriverId: "compute-kubernetes",
     code: "KUBERNETES_API_REJECTED",
     step: "gateway_deployment",
+    candidatePreparationReached: false,
     errorClass: "KubernetesApiError",
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
@@ -327,6 +332,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     event: "worker.compute-prepare-failed",
     code: "KUBERNETES_PREPARATION_FAILED",
     step: "sandbox_provision",
+    candidatePreparationReached: "token-that-must-not-log",
     message: "Bearer token-that-must-not-log",
   });
 
@@ -346,11 +352,13 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     computeDriverId: "compute-kubernetes",
     code: "KUBERNETES_API_REJECTED",
     step: "gateway_deployment",
+    candidatePreparationReached: false,
     errorClass: "KubernetesApiError",
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
   });
   assert.equal(Object.hasOwn(output.lines[1], "message"), false);
+  assert.equal(Object.hasOwn(output.lines[1], "candidatePreparationReached"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
 });
 
@@ -580,7 +588,13 @@ test("worker emitter reports health at debug and failures at error", () => {
     activationMs: 80,
     elapsedMs: 2900,
   });
-  emit({ event: "worker.error", code: "CLAIM_LOST" });
+  emit({
+    event: "worker.error",
+    code: "DEPENDENCY_UNAVAILABLE",
+    method: "CreateSandbox",
+    grpcStatus: 3,
+    validationCategory: "UNKNOWN",
+  });
   // A graceful shutdown that aborts a pass is no failure (finding 1040).
   emit({
     event: "worker.pass-interrupted",
@@ -601,6 +615,10 @@ test("worker emitter reports health at debug and failures at error", () => {
     ],
   );
   assert.equal(output.lines.at(-1).cause, "WorkerStopping");
+  const failure = output.lines.find((line) => line.event === "worker.error");
+  assert.equal(failure.method, "CreateSandbox");
+  assert.equal(failure.grpcStatus, 3);
+  assert.equal(failure.validationCategory, "UNKNOWN");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);

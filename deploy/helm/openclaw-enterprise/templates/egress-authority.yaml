@@ -1,0 +1,51 @@
+{{- if .Values.egressAuthority.enabled }}
+{{- $authority := .Values.egressAuthority }}
+{{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
+{{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.issuerSecretName" "value" (required "egressAuthority.issuerSecretName is required" $authority.issuerSecretName)) }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.port" "value" $authority.port) | int }}
+{{- if or (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
+{{- fail "egressAuthority.port must be a distinct TCP port from 1 to 65535" }}
+{{- end }}
+{{- if not $authority.clients }}
+{{- fail "egressAuthority.clients must select trusted callers" }}
+{{- end }}
+{{- range $authority.clients }}
+{{- if or (not .namespaceSelector) (and (not .namespaceSelector.matchLabels) (not .namespaceSelector.matchExpressions)) (not .podSelector) (not .podSelector.matchLabels) }}
+{{- fail "egressAuthority.clients require namespaceSelector and podSelector.matchLabels" }}
+{{- end }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-enterprise-egress-authority
+  labels:
+    {{- include "openclaw.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: openclaw-enterprise
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/component: api
+  ports:
+    - name: egress-tls
+      port: {{ $port }}
+      targetPort: egress-tls
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-egress-authority-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        {{- toYaml $authority.clients | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $port }}
+{{- end }}

@@ -7,7 +7,10 @@
     {
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
       "expectedTests": [
+        "Canonical migration commands preserve main data and serialize fresh/repeat runners",
+        "Canonical migration refuses unexplained histories before mutation",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+        "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",
         "Migration rejects legacy active_runtime state without changing persisted rows",
         "Migration rejects legacy harness_revision state without changing persisted rows",

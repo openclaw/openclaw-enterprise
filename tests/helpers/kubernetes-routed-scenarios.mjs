@@ -91,6 +91,7 @@ export function routedOptions(overrides = {}) {
 export function routedRevision(driver, overrides = {}) {
   return {
     id: "revision-routed-1",
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: "agent-routed",
     revision: 1,

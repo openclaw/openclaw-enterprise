@@ -189,6 +189,10 @@
                     "label": "Credential Withdrawal"
                   },
                   {
+                    "page": "reference/credential-sources/protected-inference",
+                    "label": "Protected Inference"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -385,6 +389,14 @@
                       {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
+                      },
+                      {
+                        "page": "reference/repository-credentials/prepared-native-git",
+                        "label": "Native Git with a Prepared Credential"
+                      },
+                      {
+                        "page": "reference/repository-credentials/openshell-git",
+                        "label": "OpenShell Git"
                       },
                       {
                         "page": "reference/public-github-reads",
@@ -932,6 +944,8 @@
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/local-openshell-images",
+              "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -1000,7 +1014,10 @@
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "flows/credential-source-egress",
+              "testing/static-egress",
+              "testing/protected-repository-custody"
             ]
           }
         ]

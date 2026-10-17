@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type {
@@ -478,10 +479,17 @@ export class SshComputeDriver implements ComputeDriver {
     }
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     this.lifecycleStarted = true;
     this.validateWorkloadRevision(revision, context);
     const result = await this.revisionOperation("prepare-revision", revision, undefined, context);
@@ -494,6 +502,7 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
+    assertExecutionReleaseAllowed(revision);
     this.lifecycleStarted = true;
     this.validateWorkloadRevision(revision, context);
 

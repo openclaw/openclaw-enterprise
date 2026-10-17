@@ -105,6 +105,68 @@ test("protected startup accepts RSA/TLS files without provider calls and rejects
     ...summary,
     authority: "github-app-registry",
   });
+  // Prepared production composition must work with no App key or live worker.
+  // check-config validates policy/TLS, without issuing or obtaining a credential.
+  const prepared = {
+    ...bound,
+    backend: {
+      kind: "github-prepared-git-registry",
+      backendId: "github-provider",
+      registryFile,
+    },
+  };
+  const preparedRegistry = {
+    ...registry,
+    repositories: registry.repositories.map((repository) => ({
+      ...repository,
+      namespaces: [
+        {
+          namespaceId: "namespace-a",
+          profiles: ["git-write"],
+          transport: "git-only",
+          pushRefAllowlist: ["refs/heads/agent-work"],
+        },
+      ],
+    })),
+  };
+  await writeFile(registryFile, JSON.stringify(preparedRegistry));
+  // A prepared-only registry cannot select the request-time App signer.
+  await assert.rejects(checkConfiguration(file), { message: "invalid-configuration" });
+  await rename(key, `${key}.unused`);
+  await save(prepared);
+  assert.deepEqual(await checkConfiguration(file), {
+    ...summary,
+    authority: "github-prepared-git-registry",
+  });
+  const { loadConfiguration } =
+    await import("../../apps/controller/src/composition/repository-credentials/config.ts");
+  const { createSystemClock } =
+    await import("../../apps/controller/src/drivers/repo/credentials/clock.ts");
+  const loaded = await loadConfiguration(file, createSystemClock());
+  try {
+    assert.equal(loaded.repositoryDescriptions, undefined);
+    assert.throws(() => loaded.factory.resolve("git-write"), /BOUND_SESSION_REQUIRED/);
+  } finally {
+    loaded.close();
+  }
+  for (const backend of [
+    { ...prepared.backend, privateKeyFile: key },
+    { ...prepared.backend, issuer: "https://issuer.example" },
+    { ...prepared.backend, socketPath: "relative.sock" },
+    { ...prepared.backend, socketPath: join(controlDirectory, "control.sock") },
+    { ...prepared.backend, socketPath: join(controlDirectory, "receipt.sock") },
+    { ...prepared.backend, socketPath: `/run/${"s".repeat(104)}.sock` },
+  ]) {
+    await save({ ...prepared, backend });
+    await assert.rejects(checkConfiguration(file), { message: "invalid-configuration" });
+  }
+  await save({
+    ...prepared,
+    backend: { ...prepared.backend, socketPath: join(controlDirectory, "custom.sock") },
+  });
+  assert.equal((await checkConfiguration(file)).authority, "github-prepared-git-registry");
+  await rename(`${key}.unused`, key);
+  await writeFile(registryFile, JSON.stringify(registry));
   for (const invalid of [
     { ...bound, backend: { ...bound.backend, backendId: "another-provider" } },
     { ...bound, backend: { ...bound.backend, appId: "12345" } },

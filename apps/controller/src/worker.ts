@@ -1,3 +1,6 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
+import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
+import { isDeepStrictEqual } from "node:util";
 import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
@@ -51,7 +54,9 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  DependencyUnavailableError,
   SandboxRevisionUnsupportedError,
+  SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
   TransientDependencyError,
   WorkClaimLostError,
@@ -132,6 +137,7 @@ export interface ControllerWorkerOptions {
   readonly computeDriver?: ComputeDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly proxyDriver?: CredentialProxyDriver;
   readonly pollIntervalMs?: number;
   readonly leaseDurationMs?: number;
   readonly maxAttempts?: number;
@@ -253,14 +259,17 @@ function causeStatusLogFields(error: object): {
 /**
  * Log fields that say which dependency failed and why, without provider text:
  * a transient dependency names itself and a closed reason; any other failure
- * gives only its error class. Either adds the HTTP status of an SDK error, its
- * own or its cause's, and the Status reason a cause keeps.
+ * gives its error class and any fixed Driver request diagnostic. Other errors add
+ * the HTTP status of an SDK error, its own or its cause's, and the Status reason a cause keeps.
  */
 function revisionFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
   readonly status?: number;
   readonly reason?: string;
+  readonly method?: string;
+  readonly grpcStatus?: number;
+  readonly validationCategory?: string;
 } {
   if (error instanceof TransientDependencyError) {
     return { dependency: error.dependency, cause: error.reason, ...causeStatusLogFields(error) };
@@ -276,6 +285,10 @@ function revisionFailureLogFields(error: unknown): {
             LOGGED_ERROR_NAME.test(candidate),
         );
   const errorClass = name ?? "Error";
+  if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
+    const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
+    return { cause: errorClass, method, grpcStatus, validationCategory };
+  }
   // Kubernetes SDK errors carry the HTTP status in `code`.
   const status = loggedHttpStatus(record);
   if (status !== undefined) {
@@ -382,6 +395,8 @@ interface RevisionDispatchResult extends DispatchResult {
    * candidate serving with nothing left to stop it.
    */
   readonly refusedCandidate?: string;
+  /** A refused active release is terminal only after observing its admitted grant withdrawn. */
+  readonly rejectedExecutionWithdrawal?: "pending" | "withdrawn";
   /** How long the refused candidate's unfinished stop took; it lengthens the recheck. */
   readonly refusedStopMs?: number;
   /** That stop yielded to other Work; later rechecks do not count it as a failure. */
@@ -913,6 +928,7 @@ export class ControllerWorker {
   private provisioningController: OpenClawController | undefined;
   private readonly sandbox: SandboxDriver | undefined;
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
+  private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1038,6 +1054,7 @@ export class ControllerWorker {
     }
     this.sandbox = drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
+    this.proxyDriver = drivers?.proxyDriver ?? options.proxyDriver;
     if (
       (drivers?.installation.drivers.credential_gateway === undefined) !==
       (drivers?.credentialGatewayDriver === undefined)
@@ -1127,6 +1144,7 @@ export class ControllerWorker {
       this.configuration,
       this.sandbox,
       this.credentialGateway,
+      this.proxyDriver,
       this.iam,
       this.secretDriver,
       this.repoDriver,
@@ -1378,6 +1396,7 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
+      this.validateExecutionAdmission(revision);
       this.stoppedPredecessors.delete(revision.id);
     }
     await stage.call(this.compute, revision, context);
@@ -1518,8 +1537,12 @@ export class ControllerWorker {
     }
     try {
       this.compute.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
-    } catch {
-      throw new RepositoryCredentialAuthorityError("REPOSITORY_RUNTIME_UNSUPPORTED");
+    } catch (error) {
+      throw new RepositoryCredentialAuthorityError(
+        error instanceof SandboxRepositoryRecipientUnverifiedError
+          ? error.code
+          : "REPOSITORY_RUNTIME_UNSUPPORTED",
+      );
     }
   }
 
@@ -1528,6 +1551,7 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
+    this.validateExecutionAdmission(revision);
     const timing = this.deployTimings.get(claim.idempotencyKey);
     const started = Date.now();
     try {
@@ -1568,6 +1592,8 @@ export class ControllerWorker {
           computeDriverId: this.compute.id,
           code: diagnostic.code,
           step: diagnostic.stage,
+          // Includes renewing the claim before calling Compute. This does not say the Driver ran.
+          candidatePreparationReached: this.preparedThisPass === revision.id,
           ...(diagnostic.errorClass === undefined ? {} : { errorClass: diagnostic.errorClass }),
           ...(diagnostic.message === undefined ? {} : { message: diagnostic.message }),
           ...(diagnostic.status === undefined ? {} : { status: diagnostic.status }),
@@ -1675,7 +1701,12 @@ export class ControllerWorker {
     let prepared = context;
     if (revision.repositoryCredentials !== undefined) {
       const repositoryCredentials = await this.repositoryCredentials.prepare(claim, revision);
-      prepared = { ...context, repositoryCredentials };
+      prepared = {
+        ...context,
+        repositoryCredentials,
+        verifyRepositorySessionRelease: (binding) =>
+          this.repositoryCredentials.verifyRelease(claim, revision, binding),
+      };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
     }
@@ -1711,7 +1742,7 @@ export class ControllerWorker {
         prepared.repositoryCredentials,
         missing,
       );
-      prepared = { ...context, repositoryCredentials };
+      prepared = { ...prepared, repositoryCredentials };
       await this.assertRepositoryAuthority(claim, revision);
       this.repositoryCredentials.validate(revision);
       observation = await this.withClaimHeartbeat(claim, () =>
@@ -3625,6 +3656,12 @@ export class ControllerWorker {
       const secretContext = await this.resolveRevisionSecretContext(revision);
       if ("result" in secretContext) {
         if (agent.activeRevisionId === revision.id) {
+          if (
+            secretContext.result.code === "EXECUTION_ADMISSION_UNAVAILABLE" &&
+            (await this.withdrawRejectedActiveExecution(claim, revision))
+          ) {
+            return;
+          }
           await this.finalizeActiveRevision(claim, revision, secretContext.result.code);
         } else {
           await this.finalizeRevision(claim, secretContext.result);
@@ -4064,11 +4101,83 @@ export class ControllerWorker {
     });
   }
 
+  private async withdrawRejectedActiveExecution(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    // processRevision checked the exact revision, selected Compute, IAM and backend, and
+    // refused release. Only its own reconcile or maintenance claim can withdraw that grant.
+    const prefix = `agent_revision:${revision.id}:`;
+    const action = claim.idempotencyKey.slice(prefix.length);
+    if (
+      !claim.idempotencyKey.startsWith(prefix) ||
+      !/^(reconcile|maintenance:(0|[1-9][0-9]*))$/.test(action)
+    ) {
+      return false;
+    }
+    const withdraw = this.compute.rejectedExecutionWithdrawal?.(revision);
+    if (withdraw === undefined) {
+      return false;
+    }
+    let failureLogFields: Readonly<Record<string, string | number>> | undefined;
+    const withdrawal = await this.withClaimHeartbeat(claim, async () => {
+      const agent = await this.state.read((view) =>
+        view.agents.findAgent(revision.namespaceId, revision.agentId),
+      );
+      if (
+        agent?.activeRevisionId !== revision.id ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        agent.desiredRuntimeState !== "running"
+      ) {
+        return undefined;
+      }
+      try {
+        await withdraw();
+        return "withdrawn";
+      } catch (error) {
+        if (error instanceof WorkClaimLostError) {
+          throw error;
+        }
+        failureLogFields = revisionFailureLogFields(error);
+        return "pending";
+      }
+    });
+    if (withdrawal === undefined) {
+      return false;
+    }
+    await this.finalizeRevision(
+      claim,
+      {
+        outcome: withdrawal === "withdrawn" ? "permanent" : "pending",
+        code:
+          withdrawal === "withdrawn"
+            ? "EXECUTION_ADMISSION_WITHDRAWN"
+            : "EXECUTION_ADMISSION_WITHDRAWAL_PENDING",
+        rejectedExecutionWithdrawal: withdrawal,
+      },
+      failureLogFields,
+    );
+    return true;
+  }
+
+  private validateExecutionAdmission(revision: AgentRevision): void {
+    if (this.compute.validateExecutionAdmission === undefined) {
+      assertExecutionReleaseAllowed(revision);
+    } else {
+      this.compute.validateExecutionAdmission(revision);
+    }
+  }
+
   private async resolveRevisionSecretContext(
     revision: Readonly<AgentRevision>,
   ): Promise<
     { readonly context: ComputeRevisionContext } | { readonly result: RevisionDispatchResult }
   > {
+    try {
+      this.validateExecutionAdmission(revision);
+    } catch {
+      return { result: { outcome: "permanent", code: "EXECUTION_ADMISSION_UNAVAILABLE" } };
+    }
     const bindings = revisionSecretBindings(revision);
     if ("result" in bindings) {
       return { result: bindings.result };
@@ -4168,7 +4277,23 @@ export class ControllerWorker {
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
-      harnessAuth = { ...auth, source };
+      if (source.egress !== undefined) {
+        const control = this.proxyDriver?.sourceControl;
+        const provider = control?.providers.find((entry) =>
+          isDeepStrictEqual(entry.ref, source.egress!.key.provider),
+        );
+        if (!provider || !isDeepStrictEqual(control?.backend, source.egress.key.backend)) {
+          return { result: { outcome: "permanent", code: "EGRESS_PROVIDER_UNAVAILABLE" } };
+        }
+        // Provider defaults must reach the normal Harness too. In particular, a
+        // source with an omitted optional endpoint cannot escape its protected profile.
+        harnessAuth = {
+          ...auth,
+          source: { ...source, config: provider.normalizeConfig(source.config) },
+        };
+      } else {
+        harnessAuth = { ...auth, source };
+      }
     } else {
       harnessAuth = revision.harnessAuth;
     }
@@ -4217,6 +4342,40 @@ export class ControllerWorker {
     }
     return {
       context: {
+        ...(revision.egressPlan === undefined
+          ? {}
+          : {
+              recordEgressInstallation: async (installation) => {
+                if (!isDeepStrictEqual(installation.plan, revision.egressPlan)) {
+                  throw new Error("Egress receipt does not match the admitted revision.");
+                }
+                await this.state.transact((state) =>
+                  state.credentialSources.recordEgressInstallation(installation),
+                );
+              },
+              currentEgressInstallation: () =>
+                this.state.read(async (view) => {
+                  const { namespaceId, agentId, servicePrincipalId, id } = revision;
+                  const namespace = await view.namespaces.findNamespace(namespaceId);
+                  const agent = await view.agents.findAgent(namespaceId, agentId);
+                  const newest = (
+                    await view.revisions.listRevisionMetadata(namespaceId, agentId)
+                  ).at(-1);
+                  const current = await view.revisions.findRevision(namespaceId, agentId, id);
+                  if (
+                    namespace?.status !== "ready" ||
+                    agent?.status !== "active" ||
+                    agent.desiredRuntimeState !== "running" ||
+                    agent.servicePrincipalId !== servicePrincipalId ||
+                    newest?.id !== id ||
+                    current?.executionAdmission.mode !== "protected" ||
+                    !isDeepStrictEqual(current.egressPlan, revision.egressPlan)
+                  ) {
+                    return undefined;
+                  }
+                  return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
+                }),
+            }),
         secretEnvironment: Object.freeze(resolved),
         harnessAuth,
         ...(credentialSources.length === 0
@@ -4414,6 +4573,7 @@ export class ControllerWorker {
     const expired =
       result.outcome === "pending" &&
       result.refusedCandidate === undefined &&
+      result.rejectedExecutionWithdrawal !== "pending" &&
       !isStopYieldedCode(result.code) &&
       this.workAgeMs(claim) >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
@@ -4491,7 +4651,8 @@ export class ControllerWorker {
       heldFailureCode === undefined &&
       !expired &&
       resolved.cleanupFailedPreparation !== true &&
-      resolved.refusedCandidateStopped !== true
+      resolved.refusedCandidateStopped !== true &&
+      resolved.rejectedExecutionWithdrawal !== "withdrawn"
     ) {
       await this.stopRefusedCandidate(claim, resolved.code);
     }
@@ -4592,7 +4753,8 @@ export class ControllerWorker {
           isStopYieldedCode(resolved.code)
             ? { delayMs: this.stopYieldRecheckMs(claim) }
             : resolved.dependencyFailure !== undefined ||
-                REVISION_READINESS_CODES.has(resolved.code)
+                REVISION_READINESS_CODES.has(resolved.code) ||
+                resolved.rejectedExecutionWithdrawal === "pending"
               ? { delayMs: revisionReadinessRecheckMs(ageMs) }
               : {},
         );

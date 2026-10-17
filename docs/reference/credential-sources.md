@@ -18,6 +18,10 @@ experimental `codex-oauth` device login and the `oauth2-client-credentials` and
 OpenShell is not a supported production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 
+The optional [protected static inference path](credential-sources/protected-inference.md)
+uses request-bound live Secret resolution. Its limits and explicit opt-in for existing
+sources differ from the gateway-copy behavior described below.
+
 ## Register a source
 
 1. Wait for the Namespace to become `ready`.

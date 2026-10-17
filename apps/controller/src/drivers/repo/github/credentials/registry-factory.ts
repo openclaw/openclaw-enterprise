@@ -15,6 +15,22 @@ type RegistryFactoryOptions = Omit<GitHubFactoryOptions, "configuration" | "bind
 const identityKey = (binding: RepositoryCredentialGrantIdentity) =>
   JSON.stringify([binding.providerInstanceId, binding.repositoryId, binding.grantId]);
 
+/** Request-time GitHub App issuance cannot serve prepared-only Git grants. */
+export function validateGitHubAppRepositoryRegistry(
+  value: unknown,
+  expectedBackendId?: string,
+): GitHubRepositoryRegistry {
+  const registry = validateGitHubRepositoryRegistry(value, expectedBackendId);
+  if (
+    registry.repositories.some(({ namespaces }) =>
+      namespaces.some(({ transport }) => transport !== undefined),
+    )
+  ) {
+    throw new Error("invalid-configuration");
+  }
+  return registry;
+}
+
 /** Registry admission and routing share the same immutable configured repository set. */
 export function createGitHubRegistryDriverFactory(
   options: RegistryFactoryOptions,
@@ -23,7 +39,7 @@ export function createGitHubRegistryDriverFactory(
   if (options.authority?.kind !== "github-app") {
     throw new Error("invalid-configuration");
   }
-  const registry = validateGitHubRepositoryRegistry(options.registry);
+  const registry = validateGitHubAppRepositoryRegistry(options.registry);
   const grants = new Map<
     string,
     Readonly<{

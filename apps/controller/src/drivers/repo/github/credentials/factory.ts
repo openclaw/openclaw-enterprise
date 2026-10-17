@@ -10,7 +10,7 @@ import { createGrantResolver } from "./grants.ts";
 import { createTokenSource } from "./token-source.ts";
 import type { GitHubDriverFactory, GitHubFactoryOptions, GitHubTokenProfile } from "./types.ts";
 
-function endpoint(value: string): string {
+export function githubProviderOrigin(value: string): string {
   const url = new URL(value);
   if (url.protocol !== "https:" || url.origin !== value || url.username || url.password) {
     throw new Error("invalid-endpoint");
@@ -27,6 +27,13 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
       (options.metadataOnly || options.binding?.pushRefAllowlist !== undefined))
   ) {
     throw new Error("invalid-configuration");
+  }
+  if (
+    options.binding &&
+    (Object.hasOwn(options.binding, "transport") ||
+      ["git-ref-write", "git-ref-draft-pr"].includes(options.binding.profile))
+  ) {
+    throw new Error("invalid-binding");
   }
   const selectedBinding =
     options.binding &&
@@ -46,9 +53,13 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
       throw new Error("invalid-binding");
     }
   }
-  const apiOrigin = endpoint(options.trustedEndpoints?.apiOrigin ?? "https://api.github.com");
-  const gitOrigin = endpoint(options.trustedEndpoints?.gitOrigin ?? "https://github.com");
-  const gatewayOrigin = endpoint(options.gatewayOrigin);
+  const apiOrigin = githubProviderOrigin(
+    options.trustedEndpoints?.apiOrigin ?? "https://api.github.com",
+  );
+  const gitOrigin = githubProviderOrigin(
+    options.trustedEndpoints?.gitOrigin ?? "https://github.com",
+  );
+  const gatewayOrigin = githubProviderOrigin(options.gatewayOrigin);
   const source = createTokenSource(options.authority, {
     config,
     apiOrigin,
@@ -62,6 +73,7 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
     selectedBinding,
     ...(options.metadataOnly ? { metadataOnly: true } : {}),
   });
+  const { pushRefAllowlist } = source;
   const policy = (profile: GitHubTokenProfile) =>
     createRoutePolicy({
       repository: config.repository,
@@ -81,9 +93,7 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
             }
           : options.limits,
       graphql: source.graphql(profile),
-      ...(source.pushRefAllowlist === undefined
-        ? {}
-        : { pushRefAllowlist: source.pushRefAllowlist }),
+      ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
     });
   const unauthenticatedPolicy = policy("git-write");
   const authentication = createGatewayAuthentication({
@@ -98,10 +108,11 @@ export function createGitHubDriverFactory(options: GitHubFactoryOptions): GitHub
     ...authentication,
     create({ authority: input, custody, clock }): RepositoryBackend {
       const authority = Object.freeze({ ...input });
-      const { profile, grant } = grants.forAuthority(authority);
+      const admitted = grants.forAuthority(authority);
+      const { profile } = admitted;
       return createGitHubDriver({
         authority,
-        binding: grant.binding,
+        binding: admitted.grant.binding,
         custody,
         clock,
         routes: policy(profile),

@@ -1,3 +1,4 @@
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createPrivateKey } from "node:crypto";
 import { createSecureContext } from "node:tls";
 import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts";
@@ -24,9 +25,13 @@ import type {
   GitHubDriverFactory,
   GitHubTokenConfiguration,
 } from "../../drivers/repo/github/credentials/types.ts";
-import { createGitHubRegistryDriverFactory } from "../../drivers/repo/github/credentials/registry-factory.ts";
+import {
+  createGitHubRegistryDriverFactory,
+  validateGitHubAppRepositoryRegistry,
+} from "../../drivers/repo/github/credentials/registry-factory.ts";
 import { createProviderQueue } from "../../drivers/repo/credentials/provider-queue.ts";
 import { createGitHubRepositoryDescriptions } from "../../drivers/repo/github/credentials/descriptions.ts";
+import { loadPublicCa } from "./public-ca.ts";
 import { readProtectedFile } from "./protected-file.ts";
 
 interface AppKey {
@@ -34,6 +39,13 @@ interface AppKey {
   readonly privateKeyFile: string;
 }
 type SelectedBackend =
+  | {
+      readonly kind: "github-prepared-git-registry";
+      readonly registry: GitHubRepositoryRegistry;
+      readonly socketPath: string;
+      readonly gitOrigin?: string;
+      readonly apiOrigin?: string;
+    }
   | {
       readonly kind: "github-app-registry";
       readonly registry: GitHubRepositoryRegistry;
@@ -67,6 +79,7 @@ export async function loadConfiguration(
   let cert: Buffer | undefined;
   let tlsKey: Buffer | undefined;
   let owner: GitHubAuthority | undefined;
+  let upstreamCa: Buffer | undefined;
   try {
     raw = await readProtected(path, 262144);
     const input: unknown = JSON.parse(raw.toString("utf8"));
@@ -74,10 +87,22 @@ export async function loadConfiguration(
     const config = validateServiceConfig(root);
     const backendInput = record(root.backend);
     let selected: SelectedBackend;
-    if (backendInput.kind === "github-app-registry") {
+    if (
+      backendInput.kind === "github-app-registry" ||
+      backendInput.kind === "github-prepared-git-registry"
+    ) {
+      const prepared = backendInput.kind === "github-prepared-git-registry";
       if (
         Object.keys(backendInput).some(
-          (key) => !["kind", "backendId", "registryFile", "privateKeyFile"].includes(key),
+          (key) =>
+            ![
+              "kind",
+              "backendId",
+              "registryFile",
+              ...(prepared
+                ? ["socketPath", "gitOrigin", "apiOrigin", "gitCaFile"]
+                : ["privateKeyFile"]),
+            ].includes(key),
         )
       ) {
         throw new Error("invalid-configuration");
@@ -87,21 +112,52 @@ export async function loadConfiguration(
         GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
         false,
       );
-      const registry = validateGitHubRepositoryRegistry(
-        JSON.parse(registryBytes.toString("utf8")),
-        string(backendInput.backendId),
-      );
+      const registry = (
+        prepared ? validateGitHubRepositoryRegistry : validateGitHubAppRepositoryRegistry
+      )(JSON.parse(registryBytes.toString("utf8")), string(backendInput.backendId));
       if (config.sessionPolicy.maximumDurationSeconds > registry.maximumDurationSeconds) {
         throw new Error("invalid-configuration");
       }
-      selected = {
-        kind: "github-app-registry",
-        registry,
-        key: {
-          privateKeyFile: string(backendInput.privateKeyFile),
-          appId: registry.appId,
-        },
-      };
+      if (prepared) {
+        const socketPath =
+          backendInput.socketPath === undefined
+            ? join(dirname(config.gateway.controlSocket), "prepared-git-use.sock")
+            : string(backendInput.socketPath);
+        if (
+          !isAbsolute(socketPath) ||
+          resolve(socketPath) !== socketPath ||
+          Buffer.byteLength(socketPath) > 103 ||
+          socketPath === config.gateway.controlSocket ||
+          socketPath === join(dirname(config.gateway.controlSocket), "receipt.sock")
+        ) {
+          throw new Error("invalid-configuration");
+        }
+        // Optional private GitHub origin and its operator-mounted public CA.
+        // Neither value is accepted from repository clients or from a Git request.
+        const origin =
+          backendInput.gitOrigin === undefined ? {} : { gitOrigin: string(backendInput.gitOrigin) };
+        if (backendInput.gitCaFile !== undefined) {
+          upstreamCa = await loadPublicCa(string(backendInput.gitCaFile));
+        }
+        selected = {
+          kind: "github-prepared-git-registry",
+          registry,
+          socketPath,
+          ...origin,
+          ...(backendInput.apiOrigin === undefined
+            ? {}
+            : { apiOrigin: string(backendInput.apiOrigin) }),
+        };
+      } else {
+        selected = {
+          kind: "github-app-registry",
+          registry,
+          key: {
+            privateKeyFile: string(backendInput.privateKeyFile),
+            appId: registry.appId,
+          },
+        };
+      }
     } else {
       const configuration = validateGitHubConfiguration(backendInput);
       if (configuration.kind === "github-token") {
@@ -145,7 +201,7 @@ export async function loadConfiguration(
         throw new Error("invalid-configuration");
       }
       owner = createGitHubStaticTokenOwner({ token: token.subarray(0, length) });
-    } else {
+    } else if (selected.kind !== "github-prepared-git-registry") {
       pem = await readProtected(selected.key.privateKeyFile, config.limits.privateKeyBytes);
       keyOwner = createGitHubKeyOwner({
         privateKey: createPrivateKey(pem),
@@ -158,15 +214,28 @@ export async function loadConfiguration(
     tlsKey = await readProtected(string(gateway.tlsKeyFile), 65536);
     createSecureContext({ cert, key: tlsKey, minVersion: "TLSv1.2" });
     const factoryOptions = {
-      authority: owner,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,
       clock,
     };
-    let factory: GitHubDriverFactory;
+    let factory: LoadedConfiguration["factory"] &
+      Pick<GitHubDriverFactory, "trustedUpstreamOrigins">;
     switch (selected.kind) {
+      case "github-prepared-git-registry": {
+        const { createPreparedGitHubRegistryFactory } =
+          await import("../../drivers/repo/github/credentials/warm-registry-factory.ts");
+        factory = createPreparedGitHubRegistryFactory({
+          ...factoryOptions,
+          registry: selected.registry,
+          socketPath: selected.socketPath,
+          ...(selected.gitOrigin === undefined ? {} : { gitOrigin: selected.gitOrigin }),
+          ...(selected.apiOrigin === undefined ? {} : { apiOrigin: selected.apiOrigin }),
+        });
+        break;
+      }
       case "github-app-registry":
         factory = createGitHubRegistryDriverFactory({
+          authority: owner!,
           ...factoryOptions,
           registry: selected.registry,
           privateKeyFile: selected.key.privateKeyFile,
@@ -175,6 +244,7 @@ export async function loadConfiguration(
       case "github-app":
       case "github-token":
         factory = createGitHubDriverFactory({
+          authority: owner!,
           ...factoryOptions,
           configuration: selected.configuration,
         });
@@ -202,16 +272,18 @@ export async function loadConfiguration(
       providerQueue,
       ...(repositoryDescriptions === undefined ? {} : { repositoryDescriptions }),
       trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
-      ...(ownedAuthority.kind === "github-token"
+      ...(upstreamCa === undefined ? {} : { upstreamCa }),
+      ...(ownedAuthority?.kind === "github-token"
         ? { authority: "github-token-development" as const, tokenClass: ownedAuthority.tokenClass }
         : {
             authority:
-              selected.kind === "github-app-registry"
-                ? ("github-app-registry" as const)
+              selected.kind === "github-app-registry" ||
+              selected.kind === "github-prepared-git-registry"
+                ? selected.kind
                 : ("github-app" as const),
           }),
       close() {
-        ownedAuthority.close();
+        ownedAuthority?.close();
         ownedCert.fill(0);
         ownedTlsKey.fill(0);
       },

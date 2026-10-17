@@ -157,6 +157,7 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
+To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
 
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
 engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports

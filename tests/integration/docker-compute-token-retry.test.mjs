@@ -282,6 +282,7 @@ function revision(driver, owner) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration("codex", "gpt-4.1"),
       "info",

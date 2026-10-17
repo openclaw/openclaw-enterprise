@@ -448,6 +448,56 @@ test("credential source boundary rejects new raw capabilities in the real source
       "backends/repository-credentials/receipt-server.ts",
     ],
     [
+      "receipt handling no longer owns the raw listener or socket files",
+      'import { createServer } from "node:http";',
+      /unreviewed runtime import from node:http \(createServer\)/,
+      "backends/repository-credentials/receipt-server.ts",
+    ],
+    [
+      "the private socket owner cannot become an HTTP sender",
+      'import { request } from "node:http";',
+      /unreviewed runtime import from node:http \(request\)/,
+      "backends/repository-credentials/private-request-server.ts",
+    ],
+    [
+      "an unreviewed caller cannot open a private request listener",
+      'import { servePrivateRepositoryRequest } from "../../../backends/repository-credentials/private-request-server.js";',
+      /private-request-server.ts is not reviewed for/,
+    ],
+    [
+      "the broker use client cannot load the worker App and custody key owner",
+      'await import("../../../../backends/repository-credentials/prepared-git-owner.js");',
+      /prepared-git-owner.ts is not reviewed for/,
+      "drivers/repo/github/credentials/warm-use.ts",
+    ],
+    [
+      "credential code cannot bypass the prepared Git owner to use its store",
+      'import { PreparedRepositoryGitStore } from "../github/credentials/prepared-repository-git.js";',
+      /prepared-repository-git.ts is not reviewed for/,
+    ],
+    [
+      "credential code cannot acquire a prepared Git use outside its selected factory",
+      'import { authorizePreparedGitSend } from "../github/credentials/warm-use.js";',
+      /warm-use.ts is not reviewed for/,
+    ],
+    [
+      "the prepared use client cannot export its raw HTTP capability",
+      "export { request };",
+      /raw I\/O binding cannot be re-exported/,
+      "drivers/repo/github/credentials/warm-use.ts",
+    ],
+    [
+      "configuration cannot replace the public CA loader with an unbounded file read",
+      'import { readFile } from "node:fs/promises";',
+      /unreviewed runtime import from node:fs\/promises \(readFile\)/,
+      "composition/repository-credentials/config.ts",
+    ],
+    [
+      "an unreviewed caller cannot acquire the projected public CA reader",
+      'import { loadPublicCa } from "../../../composition/repository-credentials/public-ca.js";',
+      /public-ca.ts is not reviewed for/,
+    ],
+    [
       "registry loading cannot write files",
       'import { writeFile } from "node:fs/promises";',
       /unreviewed runtime import from node:fs\/promises/,

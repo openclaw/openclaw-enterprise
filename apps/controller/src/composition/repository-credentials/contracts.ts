@@ -1,4 +1,4 @@
-import type { RepositoryBackendFactory } from "../../drivers/repo/credentials/backend-contracts.ts";
+import type { RepositoryServiceFactory } from "../../drivers/repo/credentials/backend-contracts.ts";
 import type {
   ServiceConfig,
   RepositoryDescriptions,
@@ -10,12 +10,17 @@ import type { GitHubTokenClass } from "../../drivers/repo/github/credentials/typ
 export interface LoadedConfiguration {
   readonly config: ServiceConfig;
   readonly tls: TlsMaterial;
-  readonly factory: RepositoryBackendFactory;
+  readonly factory: RepositoryServiceFactory;
   readonly providerQueue?: ProviderQueue;
   readonly repositoryDescriptions?: RepositoryDescriptions;
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
+  readonly upstreamCa?: Uint8Array;
   /** Names the upstream authority; the token kind is development-only. */
-  readonly authority: "github-app" | "github-app-registry" | "github-token-development";
+  readonly authority:
+    | "github-app"
+    | "github-app-registry"
+    | "github-prepared-git-registry"
+    | "github-token-development";
   /** Present for the token authority only; derived from the token prefix, never secret. */
   readonly tokenClass?: GitHubTokenClass;
   close(): void;

@@ -1,3 +1,4 @@
+import { installEgressAuthority } from "./egress-authority.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -85,6 +86,9 @@ export async function composeProduction(config: ProductionConfig) {
     sandboxDriver,
     credentialGatewayDriver,
     credentialRefreshDriver,
+    proxyDriver,
+    egressAuthority,
+    preparedGitHub,
     pluginDriver,
     repoDriver,
     createIAMDriver,
@@ -285,6 +289,10 @@ export async function composeProduction(config: ProductionConfig) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
     }
+    if (proxyDriver !== undefined) {
+      controller.registerDriver(proxyDriver);
+      controller.selectDriver("credential_proxy", proxyDriver.id);
+    }
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
       controller.selectDriver("credential_gateway", credentialGatewayDriver.id);
@@ -364,15 +372,23 @@ export async function composeProduction(config: ProductionConfig) {
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    await preparedGitHub?.connect(pool);
+    if (proxyDriver !== undefined && egressAuthority !== undefined) {
+      await installEgressAuthority(app, controller, proxyDriver, egressAuthority);
+    }
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => state.close());
+    app.addHook("onClose", async () => {
+      await preparedGitHub?.close();
+      await state.close();
+    });
     phaseCompleted("routes");
     return app;
   } catch (error) {
+    await preparedGitHub?.close();
     await pool.end();
     throw error;
   }

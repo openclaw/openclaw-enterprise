@@ -14,7 +14,7 @@ import {
 // supplies CGI framing and a controlled provider authentication check.
 export async function startGitSmartHttpFixture(
   t,
-  { authorize = () => true, repository = "fixture/repository", tls } = {},
+  { authorize = () => true, repository = "fixture/repository", tls, observeRequest } = {},
 ) {
   tls ??= await createTlsMaterial(t);
   const directory = await temporaryDirectory(t, "repository-credentials-git-");
@@ -41,6 +41,7 @@ export async function startGitSmartHttpFixture(
   let disconnectPush = false;
   let heldFetch;
   const server = createServer(tls, (request, response) => {
+    observeRequest?.(request.method, request.url);
     if (!authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
       return;

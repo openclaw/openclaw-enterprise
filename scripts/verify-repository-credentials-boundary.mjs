@@ -22,6 +22,7 @@ const requiredEntrypoints = [
   "drivers/repo/github/credentials/client/native-git.ts",
   "drivers/repo/github/credentials/client/hook-dispatch.ts",
   "drivers/repo/github/credentials/client/router.ts",
+  "drivers/repo/github/credentials/client/draft-pr.ts",
 ];
 const clientDirectory = "drivers/repo/github/credentials/client/";
 const clientContracts = "drivers/repo/credentials/client-contracts.ts";
@@ -45,6 +46,12 @@ const reviewedImports = {
   "drivers/repo/github/public-read/server.ts": {
     "node:http": ["createServer"],
     "node:https": ["Agent", "get"],
+  },
+  // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
+  "drivers/repo/github/credentials/client/draft-pr.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:https": ["Agent", "request"],
+    "node:util": ["parseArgs"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
   "drivers/repo/github/credentials/client/config.ts": {
@@ -88,7 +95,8 @@ const reviewedImports = {
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "open"],
   },
-  "composition/repository-credentials/platform.ts": {
+  // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
+  "composition/repository-credentials/public-ca.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
     "node:tls": ["createSecureContext"],
@@ -105,6 +113,37 @@ const reviewedImports = {
     "node:fs/promises": ["open", "stat"],
   },
   "drivers/repo/github/credentials/registry.ts": { "node:crypto": ["createHash"] },
+  // The prepared owner reads only the Installation custody mount. The App issuer comes
+  // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
+  "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+    "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
+    "node:fs/promises": ["readFile"],
+    "node:util": ["isDeepStrictEqual"],
+    "@openclaw-enterprise/contracts": ["githubMetadataGrant"],
+  },
+  // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
+  "drivers/repo/github/credentials/prepared-postgres.ts": {
+    // Reuse the platform transaction's metadata predicates; no new material or I/O authority.
+    "@openclaw-enterprise/occ": ["preparedGitHubLive", "readPreparedGitHubMetadata"],
+    "node:crypto": ["createCipheriv", "createDecipheriv", "randomBytes", "randomUUID"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // Worker only: the Installation's read-only App and custody mounts, public key
+  // fingerprint, and preparation attempt ID. The broker has neither key mount.
+  "backends/repository-credentials/prepared-git-owner.ts": {
+    "node:crypto": ["createHash", "createPrivateKey", "createPublicKey", "randomUUID"],
+    "node:fs": ["constants"],
+    "node:fs/promises": ["open"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // One use of committed material via the private Unix socket; no preparation operation.
+  "drivers/repo/github/credentials/warm-use.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:http": ["request"],
+  },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/driver.ts": {
@@ -117,8 +156,8 @@ const reviewedImports = {
   // The broker journal client writes only nonsecret receipts over a local Unix socket.
   "drivers/repo/credentials/control.ts": { "node:crypto": ["randomUUID"] },
   "drivers/repo/credentials/receipt-client.ts": { "node:http": ["request"] },
-  // The worker owns the private journal socket; parent and socket identity are checked.
-  "backends/repository-credentials/receipt-server.ts": {
+  // Worker-private receipt and prepared-use sockets; parent and socket identity are checked.
+  "backends/repository-credentials/private-request-server.ts": {
     "node:http": ["createServer"],
     "node:fs/promises": ["chmod", "lstat", "mkdir", "realpath", "unlink"],
   },
@@ -131,6 +170,11 @@ const reviewedImports = {
   },
   "drivers/repo/credentials/sessions.ts": {
     "node:crypto": ["createHash", "randomBytes", "randomUUID"],
+  },
+  // Hash the selected Git request, including the bounded body after decompression.
+  "drivers/repo/credentials/transport/agent.ts": {
+    "node:crypto": ["createHash"],
+    "node:util": ["promisify"],
   },
   "drivers/repo/credentials/transport/request-headers.ts": {
     "node:http": ["validateHeaderName", "validateHeaderValue"],
@@ -146,7 +190,28 @@ const ordinaryBuiltins = new Set([
   "node:url",
   "node:zlib",
 ]);
-const senderConsumers = {
+// Restrict imports and re-exports inside scanned credential source. The worker
+// entrypoint is outside that source; packaging and runtime tests cover that boundary.
+const capabilityConsumers = {
+  "composition/repository-credentials/public-ca.ts": {
+    "composition/repository-credentials/config.ts": ["loadPublicCa"],
+    "composition/repository-credentials/platform.ts": ["loadPublicCa"],
+  },
+  "backends/repository-credentials/private-request-server.ts": {
+    "backends/repository-credentials/receipt-server.ts": ["servePrivateRepositoryRequest"],
+    "backends/repository-credentials/prepared-git-owner.ts": ["servePrivateRepositoryRequest"],
+  },
+  // Selected directly by worker.mjs; no runtime import from credential source is authorized.
+  "backends/repository-credentials/prepared-git-owner.ts": {},
+  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+    "backends/repository-credentials/prepared-git-owner.ts": ["PreparedRepositoryGitStore"],
+  },
+  "drivers/repo/github/credentials/warm-use.ts": {
+    "drivers/repo/github/credentials/warm-registry-factory.ts": ["authorizePreparedGitSend"],
+  },
+  "drivers/repo/credentials/transport/agent.ts": {
+    "drivers/repo/credentials/server.ts": ["createAgentHandler"],
+  },
   "drivers/repo/github/credentials/descriptions.ts": {
     "composition/repository-credentials/config.ts": ["createGitHubRepositoryDescriptions"],
   },
@@ -214,6 +279,13 @@ const reviewedProcessMembers = {
     "exitCode",
     "stderr",
   ],
+  "drivers/repo/github/credentials/client/draft-pr.ts": [
+    "argv",
+    "env",
+    "exitCode",
+    "stderr",
+    "stdout",
+  ],
   "drivers/repo/github/credentials/client/router.ts": ["argv", "env", "exitCode", "stderr"],
   "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/admission-probe.mjs": ["argv", "exitCode", "stderr", "stdout"],
@@ -231,7 +303,7 @@ const reviewedProcessMembers = {
   "repository-credentials.ts": ["argv", "exitCode", "stderr", "stdout"],
   "repository-credentials.mjs": ["exitCode", "stderr"],
   "drivers/repo/credentials/server.ts": ["getuid"],
-  "backends/repository-credentials/receipt-server.ts": ["getuid"],
+  "backends/repository-credentials/private-request-server.ts": ["getuid"],
 };
 const runtimeTypeScript = new Set([
   "TSAsExpression",
@@ -331,7 +403,7 @@ function inspectSource(path, root, sources, ast) {
     if (source.startsWith(".")) {
       const target = relativeSource(path, root, source, sources);
       const restricted =
-        senderConsumers[target] ||
+        capabilityConsumers[target] ||
         (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory)) ||
         (file === "repository-credentials.mjs" && source === "../dist/repository-credentials.js");
       if (!restricted) {
@@ -390,7 +462,7 @@ function inspectSource(path, root, sources, ast) {
       ) {
         deny(node, `client runtime cannot load service owner ${target}`);
       }
-      const consumers = senderConsumers[target];
+      const consumers = capabilityConsumers[target];
       if (
         consumers &&
         (kind !== "import" || !names.every((binding) => consumers[file]?.includes(binding)))

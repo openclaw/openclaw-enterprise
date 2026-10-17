@@ -83,7 +83,8 @@
         "private Envoy Gateway routing renders automatic CA and deterministic default hostnames",
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
         "production peer matchLabels keep the native Kubernetes map contract",
-        "Collector exporter ports preserve decimal meaning in Kubernetes YAML"
+        "Collector exporter ports preserve decimal meaning in Kubernetes YAML",
+        "OpenShell Git packaging exposes only the worker to selected supervisors"
       ]
     },
     {
