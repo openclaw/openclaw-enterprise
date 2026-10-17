@@ -533,7 +533,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (!isRecord(curated)) {
       return [];
     }
-    return array(curated.plugins).map(codexCatalogEntry);
+    return requiredArray(curated.plugins, "Codex catalog plugins").map(codexCatalogEntry);
   }
 
   function codexSummaryByNativeId(

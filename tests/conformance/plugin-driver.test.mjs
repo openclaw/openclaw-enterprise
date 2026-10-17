@@ -763,12 +763,22 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     (await listWith(codexCatalogFixture())).map((entry) => entry.id),
     [linearPluginId, calendarPluginId, thirdPluginId],
   );
+  for (const empty of [
+    { marketplaces: [] },
+    { marketplaces: [{ name: "another-marketplace", plugins: [] }] },
+    curated([]),
+  ]) {
+    assert.deepEqual(await listWith(empty), []);
+  }
   const malformed = {
     "null result": null,
     "array result": [],
     "string result": "catalog",
     "result without marketplaces": {},
     "null marketplaces": { marketplaces: null },
+    "curated marketplace without plugins": curated(undefined),
+    "null curated plugin list": curated(null),
+    "non-array curated plugin list": curated({}),
     "null plugin summary": curated([null]),
     "plugin without an ID": curated([{ remotePluginId: "linear" }]),
     "plugin from another marketplace": curated([
