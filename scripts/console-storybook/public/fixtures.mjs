@@ -685,7 +685,11 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (rule.status) {
-        return response(null, rule.status, rule.code, {}, rule.message, rule.details);
+        const failure = response(null, rule.status, rule.code, {}, rule.message, rule.details);
+        if (rule.retryAfter !== undefined) {
+          failure.headers.set("retry-after", String(rule.retryAfter));
+        }
+        return failure;
       }
       if (rule.data !== undefined) {
         return response(rule.data);

@@ -1106,6 +1106,54 @@ test("rate limits keep Follow and status automatic, but not a download made whil
   assert.equal(counts.download, 1);
 });
 
+// A rate-limited Refresh logs emptied the pane before its read, so only the error remained, and
+// "Try again in 1 second" stayed long after that second had passed (finding 1715).
+test("a rate-limited Refresh logs keeps the loaded lines and says when to try again", async (t) => {
+  const page = await logsBeforeRateLimit(t);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  const logError = page.locator(".log-error");
+  const outputStatus = page.locator(".log-output-status");
+  const shownStatus = await outputStatus.textContent();
+  assert.match(shownStatus, /^Showing /u);
+  let answer = rateLimitedResponse(7);
+  await page.route("**/runtime/logs?*", (route) =>
+    answer ? route.fulfill(answer) : route.fallback(),
+  );
+
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await waitForIdleFetches(page);
+  assert.equal(
+    await logError.textContent(),
+    `Too many requests. Try again in 7 seconds. Request ID: ${rateLimitRequestId}`,
+  );
+  assert.equal(await log.locator(".log-row").count(), 1);
+  await log.getByText("output before the rate limit").waitFor();
+  assert.equal(await outputStatus.textContent(), shownStatus);
+  await page.clock.runFor(6_999);
+  assert.match(await logError.textContent(), /Try again in 7 seconds\./u);
+  await page.clock.runFor(1);
+  assert.equal(
+    await logError.textContent(),
+    `Too many requests. You can try again now. Request ID: ${rateLimitRequestId}`,
+  );
+
+  // The next refresh replaces the kept lines with its own page.
+  answer = null;
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await waitForIdleFetches(page);
+  assert.equal(await logError.isHidden(), true);
+  assert.equal(await log.locator(".log-row").count(), 1);
+  await log.getByText("output before the rate limit").waitFor();
+
+  // A read for another selection still clears the lines first: they belong to the old one.
+  answer = rateLimitedResponse(3);
+  await page.getByLabel("Include debug").check();
+  await waitForIdleFetches(page);
+  assert.match(await logError.textContent(), /Try again in 3 seconds\./u);
+  assert.equal(await log.locator(".log-row").count(), 0);
+  assert.equal(await outputStatus.textContent(), "");
+});
+
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;

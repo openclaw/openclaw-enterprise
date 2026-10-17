@@ -259,6 +259,10 @@ export function renderAgentLogs(
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
+  // The log query (source, Pod, instance, level floor) whose lines the pane shows.
+  let shownSelection = null;
+  // Updates a manual read's "Try again in N seconds" once that wait has passed.
+  let retryHintTimer;
   // Set when a read is refused after this view showed output; Back rebuilds such a view.
   let outputRefused = false;
   let logsDenied = deniedLogViews.has(deniedKey);
@@ -318,6 +322,7 @@ export function renderAgentLogs(
   }
 
   function showLogError(text) {
+    clearTimeout(retryHintTimer);
     logError.hidden = text === null;
     logError.textContent = text ?? "";
   }
@@ -327,6 +332,13 @@ export function renderAgentLogs(
       return;
     }
     showLogError(withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error));
+    if (manualRead && error.status === 429 && error.retryAfterSeconds !== undefined) {
+      // A later error or a successful read replaces the text and cancels this (finding 1715).
+      // A view held for Back is updated too, so it never returns with a wait that has passed.
+      retryHintTimer = setTimeout(() => {
+        showLogError(withRequestId("Too many requests. You can try again now.", error));
+      }, error.retryAfterSeconds * 1000);
+    }
     if (error.status !== 403) {
       return;
     }
@@ -339,6 +351,7 @@ export function renderAgentLogs(
     cursor = null;
     pane.replaceChildren();
     rows = 0;
+    shownSelection = null;
     logStatus.textContent = "";
     applyFilters();
     setFollow(false);
@@ -712,17 +725,23 @@ export function renderAgentLogs(
       return;
     }
     reading = true;
-    if (restart) {
-      cursor = null;
-      pane.replaceChildren();
-      rows = 0;
-      logStatus.textContent = "Reading output…";
-    }
     const query = logQuery(source, pod);
+    const selection = query.toString();
+    // Refreshing the lines shown keeps them until the new page arrives, so a failed or
+    // rate-limited refresh leaves them in place (finding 1715). A refusal still clears them in
+    // showLogReadError, and another selection clears them here: they belong to the old one.
+    const keepShown = restart && selection === shownSelection;
+    const shownStatus = logStatus.textContent;
     if (restart) {
+      if (!keepShown) {
+        cursor = null;
+        pane.replaceChildren();
+        rows = 0;
+        shownSelection = null;
+      }
+      logStatus.textContent = "Reading output…";
       query.set("tailLines", String(TAIL_LINES));
-    }
-    if (cursor) {
+    } else if (cursor) {
       query.set("cursor", cursor);
     }
     let retryAfter = FOLLOW_POLL_MS;
@@ -733,6 +752,11 @@ export function renderAgentLogs(
       }
       showLogError(null);
       logsAllowed = true;
+      if (restart) {
+        pane.replaceChildren();
+        rows = 0;
+        shownSelection = selection;
+      }
       cursor = page.cursor;
       appendRecords(page.records);
       if (statusDenied) {
@@ -769,7 +793,7 @@ export function renderAgentLogs(
         return;
       }
       if (restart) {
-        logStatus.textContent = "";
+        logStatus.textContent = keepShown ? shownStatus : "";
       }
       showLogReadError(error, source, { manualRead: !following });
       if (error.status === 501) {

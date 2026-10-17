@@ -63,6 +63,7 @@ export const RuntimeLogsSlowTabClick = story("runtimeLogsSlowTabClick");
 export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
 export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
+export const RuntimeLogsRefreshRateLimited = story("runtimeLogsRefreshRateLimited");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
 export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
 export const RuntimeLogDownloadRefused = story("runtimeLogDownloadRefused");

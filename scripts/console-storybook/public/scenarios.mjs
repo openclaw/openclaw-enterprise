@@ -3808,6 +3808,27 @@ export const scenarios = {
       "While Following is still selected, choose Download. That action asks you to try again; the Console will not repeat the download.",
     ],
   },
+  runtimeLogsRefreshRateLimited: {
+    ...runtimeLogsPage,
+    name: "Rate-limited Refresh logs keeps the loaded lines",
+    rules: [
+      {
+        suffix: "/runtime/logs",
+        skip: 1,
+        status: 429,
+        code: "RUNTIME_LOGS_RATE_LIMITED",
+        retryAfter: 5,
+      },
+    ],
+    actions: [click("Refresh logs")],
+    description:
+      "The first page loads, then Refresh logs is rate limited with Retry-After: 5. The loaded lines and their Showing line stay; the message says when to try again.",
+    steps: [
+      "Check that the loaded log rows are still shown under 'Too many requests. Try again in 5 seconds.'",
+      "Wait 5 seconds. The message changes to 'Too many requests. You can try again now.' without another read.",
+      "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
+    ],
+  },
   runtimeLogsDenied: {
     group: "Pages/Agent detail",
     name: "Runtime logs without administer",
