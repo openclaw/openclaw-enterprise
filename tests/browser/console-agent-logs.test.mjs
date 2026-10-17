@@ -1211,6 +1211,41 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   assert.equal(await outputStatus.textContent(), "");
 });
 
+// A refresh keeps its lines until its page arrives, but only for the selection they belong to:
+// another source picked while that refresh is still reading clears them at once, before any read
+// for it lands (owner review of #2792).
+test("a source picked while a refresh reads clears the kept lines at once", async (t) => {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "gateway output")];
+  logs.computeDriver.state.harnessPod = { ready: true };
+  logs.computeDriver.state.harnessLines = [line(1, "agent output")];
+  const { page } = await openRetainedLogs(t, logs);
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  const outputStatus = page.locator(".log-output-status");
+  await log.getByText("gateway output").waitFor();
+  await page.locator("#runtime-log-source").selectOption("agent");
+  await log.getByText("agent output").waitFor();
+  await waitForIdleFetches(page);
+
+  const refresh = await holdRequests(t, page, "**/runtime/logs?*", { once: true });
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  try {
+    await refresh.requested;
+    // A refresh of the same source keeps the Agent line while it reads.
+    assert.equal(await log.getByText("agent output").count(), 1);
+    await page.locator("#runtime-log-source").selectOption("gateway");
+    // Checked while the refresh is still held: the Agent line is gone under the Gateway picker.
+    assert.equal(await log.locator(".log-row").count(), 0);
+    assert.equal(await outputStatus.textContent(), "Reading output…");
+  } finally {
+    refresh.release();
+  }
+  await log.getByText("gateway output").waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(await log.getByText("agent output").count(), 0);
+  assert.match(await outputStatus.textContent(), /^Showing gateway in /u);
+});
+
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;

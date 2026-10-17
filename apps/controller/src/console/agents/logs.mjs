@@ -323,6 +323,14 @@ export function renderAgentLogs(
     return query;
   }
 
+  function clearShownLines() {
+    cursor = null;
+    pane.replaceChildren();
+    rows = 0;
+    shownSelection = null;
+    applyFilters();
+  }
+
   function showLogError(text) {
     clearTimeout(retryHintTimer);
     logError.hidden = text === null;
@@ -718,6 +726,15 @@ export function renderAgentLogs(
     const pod = selectedPod();
     if (reading && restart) {
       restartPending = true;
+      // Lines kept for a refresh still in flight must not stay under another selection's
+      // picker while that read finishes: clear them now, as a restart for it would.
+      if (
+        shownSelection !== null &&
+        (!source || logQuery(source, pod).toString() !== shownSelection)
+      ) {
+        clearShownLines();
+        logStatus.textContent = "Reading output…";
+      }
       return;
     }
     if (!current() || reading || logsDenied || !readableSelection()) {
@@ -742,10 +759,7 @@ export function renderAgentLogs(
     };
     if (restart) {
       if (!keepShown) {
-        cursor = null;
-        pane.replaceChildren();
-        rows = 0;
-        shownSelection = null;
+        clearShownLines();
       }
       logStatus.textContent = "Reading output…";
       query.set("tailLines", String(TAIL_LINES));
