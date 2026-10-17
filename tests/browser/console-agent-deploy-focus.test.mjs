@@ -35,11 +35,12 @@ test("A reader who leaves the held heading during an admitted deployment is not 
   await page.evaluate(() => {
     const ids = new WeakMap();
     let next = 0;
-    const state = { trail: [], loadingShown: false, stopped: false };
+    const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
     const sample = () => {
       if (state.stopped) {
         return;
       }
+      state.frames += 1;
       const node = globalThis.document.activeElement;
       if (node && node !== globalThis.document.body && !ids.has(node)) {
         ids.set(node, ++next);
@@ -69,8 +70,10 @@ test("A reader who leaves the held heading during an admitted deployment is not 
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
   await page.evaluate(() => globalThis.document.activeElement?.blur());
   await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
-  // The loading page stands for a while with nothing taking focus.
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // The loading page stands with nothing taking focus: 18 sampled frames while the read is
+  // held (the page itself stays at least loadingMinimumMs).
+  const shown = await page.evaluate(() => globalThis.focusFrames.frames);
+  await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 18, shown);
   agentRead.release();
   await page.waitForURL(/revision=rev_/);
   await page.waitForFunction(

@@ -1230,7 +1230,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
       agentReads,
     "Refresh deployment did not reread the Agent",
   );
-  // The button returns from "Refreshing..." only after the reread Agent was applied.
+  // The button returns from "Refreshing…" only after the reread Agent was applied.
   await activity.getByRole("button", { name: "Refresh deployment", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
 });

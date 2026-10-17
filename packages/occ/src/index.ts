@@ -342,6 +342,7 @@ export {
   SandboxGatewayUnauthorizedError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
+  SandboxWorkspaceSetupRefusedError,
   ScopeViolationError,
   SecretBindingDriverError,
   ServiceAccountCredentialSecretExistsError,

@@ -139,6 +139,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
@@ -6142,9 +6143,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
           requirements,
           workspaceNodeEnrolled: nodeEnrolled,
         };
-        const sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
-          sandboxDriver.provisionHarness!(harnessContext),
-        );
+        let sandbox: SandboxResourceRef;
+        try {
+          sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
+            sandboxDriver.provisionHarness!(harnessContext),
+          );
+        } catch (error) {
+          if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {
+            throw error;
+          }
+          // The provider's private setup refused the workspace, which every retry repeats:
+          // the held failure the init container reports, so the deployment fails at once
+          // (finding 1708).
+          const runtimeFailure: RuntimeFailureEvidence = {
+            component: "agent",
+            check: "workspace-setup",
+            code: "WORKSPACE_SETUP_REFUSED",
+            checkedAt: new Date().toISOString(),
+          };
+          return { ...result, runtimeFailure };
+        }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only

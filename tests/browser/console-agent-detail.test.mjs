@@ -163,11 +163,49 @@ test("Agent detail separates the current version, viewed version, and latest dep
     name: "Run diagnostics for this version",
   });
   await idle.waitFor();
+  // Record what a screen reader hears from the panel: text added or changed inside a live
+  // region, where aria-live=off silences a subtree. The click once also changed the button to
+  // "Running diagnostics...", which the Agent view's live region announced beside the waiting
+  // status (finding 1698).
+  await page.evaluate(() => {
+    const announced = (node) => {
+      for (let el = node.nodeType === 1 ? node : node.parentElement; el; el = el.parentElement) {
+        const live = el.getAttribute("aria-live");
+        if (live) {
+          return live !== "off";
+        }
+        if (["status", "alert", "log"].includes(el.getAttribute("role"))) {
+          return true;
+        }
+      }
+      return false;
+    };
+    globalThis.diagnosticsAnnouncements = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const nodes = record.type === "characterData" ? [record.target] : [...record.addedNodes];
+        for (const node of nodes) {
+          const text = node.textContent.trim();
+          if (text && announced(node)) {
+            globalThis.diagnosticsAnnouncements.push(text);
+          }
+        }
+      }
+    }).observe(globalThis.document.querySelector(".version-diagnostics"), {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+  });
   await runDiagnostics.click();
   try {
     await diagnosticsRequest.requested;
     await waiting.waitFor();
     assert.equal(await idle.isVisible(), false);
+    assert.deepEqual(await page.evaluate(() => globalThis.diagnosticsAnnouncements), [
+      "Waiting for diagnostic results…",
+    ]);
+    assert.equal(await runDiagnostics.isDisabled(), true);
   } finally {
     diagnosticsRequest.release();
   }

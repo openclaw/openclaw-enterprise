@@ -858,6 +858,21 @@ export class SandboxRevisionUnsupportedError extends Error {
 }
 
 /**
+ * A Sandbox Driver's private workspace setup refused the revision's workspace (the setup
+ * runner's exit status 2): its files, setup record or runtime defaults disagree, so no retry
+ * can change it. Compute reports it as a held `WORKSPACE_SETUP_REFUSED` runtime failure, which
+ * fails the deployment at once, as for its own init container (finding 1708).
+ */
+export class SandboxWorkspaceSetupRefusedError extends Error {
+  readonly code = "WORKSPACE_SETUP_REFUSED";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
  * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
  * had just found the target: the target went between the two (a failed candidate retired by the
  * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps

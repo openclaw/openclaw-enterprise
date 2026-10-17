@@ -42,6 +42,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
+  SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   resolveConfiguredHarnessId,
@@ -1820,6 +1821,67 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.deepEqual(observations, []);
   assert.equal(withdrawals.length, 1);
+});
+
+// Finding 1708: a provider-owned Harness's private workspace setup that refuses the workspace
+// (the setup runner's exit status 2) refuses every retry the same way, so Compute reports the
+// held WORKSPACE_SETUP_REFUSED failure its own init container reports, and the deployment fails
+// at once instead of spending its retries.
+test("Kubernetes Sandbox provisioning fails a revision at once when the provider's workspace setup refuses", async () => {
+  const provisions = [];
+  let failure = new SandboxWorkspaceSetupRefusedError(
+    "OpenShell workspace initialization refused.",
+  );
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      throw failure;
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus() {
+      assert.fail("a refused setup is reported without a status read");
+    },
+    async withdrawHarnessExposure() {},
+  };
+  const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  const before = Date.now();
+  const refused = await prepare();
+  assert.equal(provisions.length, 1);
+  assert.equal(refused.ready, false);
+  assert.equal(refused.pendingReason, undefined);
+  const { checkedAt, ...evidence } = refused.runtimeFailure;
+  assert.deepEqual(evidence, {
+    component: "agent",
+    check: "workspace-setup",
+    code: "WORKSPACE_SETUP_REFUSED",
+  });
+  assert.ok(Date.parse(checkedAt) >= before - 1000, checkedAt);
+  // Any other provisioning failure, a setup that may pass on a retry included, keeps its path.
+  failure = new Error("OpenShell workspace initialization failed.");
+  await assert.rejects(prepare(), /OpenShell workspace initialization failed/);
+  assert.equal(provisions.length, 2);
 });
 
 // Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its

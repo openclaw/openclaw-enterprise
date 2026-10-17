@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   holdRequests,
   login,
@@ -12,6 +11,7 @@ import {
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Returning to the Agents list held the Agent page, inert, until the retained list had read
 // every row's /revisions and /deployments again: two reads per Agent, so the hold grew with the
@@ -45,9 +45,7 @@ function deploymentRecord(namespace, status) {
 // `newer` names the Agents (by index) with a second version deployed after the active one, so their
 // Latest deployment link differs from their Current version link.
 async function openTeamList(t, name, { newer = [] } = {}) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
     const label = `Team Agent ${String(index).padStart(2, "0")}`;
@@ -395,9 +393,7 @@ function measureReadingDelay(reading) {
 // never shown either way. A first visit's rows follow the same rule.
 for (const visit of ["a first visit", "a return"]) {
   test(`Rows read on ${visit} paint no "Reading deployment…" until the read is slow`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Quiet rows ${visit}`, { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Quiet rows ${visit}`);
     const agents = [];
     for (const label of ["Quiet Agent 1", "Quiet Agent 2", "Quiet Agent 3"]) {
       const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
@@ -457,9 +453,7 @@ for (const visit of ["a first visit", "a return"]) {
 // Opens a list of three Agents, leaves it for an Agent, and goes Back with every row's reread
 // held and the page clock paused, so the test decides when the rereads land.
 async function returnWithHeldRows(t, name) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (const label of ["Steady Agent 1", "Steady Agent 2", "Steady Agent 3"]) {
     const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));

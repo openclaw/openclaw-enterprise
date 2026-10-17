@@ -1058,7 +1058,7 @@ test("Deployment activity appears once with its recorded status, not as an empty
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await status.requested;
 
-  // The loading placeholder stays: no empty panel (disabled Refreshing... and "has not
+  // The loading placeholder stays: no empty panel (disabled Refreshing… and "has not
   // loaded") pushes the sharing panel and version tabs down before the status arrives.
   const activity = page.locator(".deployment-status");
   assert.equal(await activity.count(), 1);

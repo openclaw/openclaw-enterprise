@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,10 +29,7 @@ func TestRateLimitedErrorNamesTheRetryAfterDelay(t *testing.T) {
 			writer.WriteHeader(http.StatusTooManyRequests)
 			_, _ = writer.Write([]byte(test.body))
 		}))
-		keyFile := filepath.Join(t.TempDir(), "service-key.json")
-		if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-			t.Fatal(err)
-		}
+		keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 		var out bytes.Buffer
 		command := New(&out, &bytes.Buffer{})
 		command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", testNamespaceID, "agent", "list"})
