@@ -19,6 +19,21 @@ const deploymentProgressCodes = new Set([
   "LEASE_EXPIRED",
 ]);
 
+// The API can return other error codes or peer-supplied text. Report only these public categories.
+const runtimeFailureCodes = new Set([
+  "RUNTIME_AUTHENTICATION_FAILED",
+  "RUNTIME_CPU_STARVED",
+  "RUNTIME_MODEL_PROBE_TIMEOUT",
+  "RUNTIME_MODEL_PROBE_FAILED",
+]);
+
+export function assertNativeWorkNotFailed(response, expectation) {
+  if (response.status === "failed") {
+    const code = response.error?.code;
+    assert.fail(`${expectation}: ${runtimeFailureCodes.has(code) ? code : "unrecognized"}`);
+  }
+}
+
 const hasIdentifier = (value) => typeof value === "string" && value.length > 0;
 const observedStatus = (status) => (workStatuses.includes(status) ? status : "unknown");
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

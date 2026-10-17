@@ -15,6 +15,7 @@ import {
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertNativeWorkNotFailed,
   assertNativeWorkerProofInController,
   failNativeProvisioningDeadline,
   nativeFirstAgentProofTimeout,
@@ -401,6 +402,27 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   );
   const execCall = calls.find((args) => args[0] === "exec");
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
+});
+
+test("native terminal failures report only known public error codes", () => {
+  const expectation = "Guided native provisioning must succeed";
+  for (const [code, category] of [
+    ["RUNTIME_AUTHENTICATION_FAILED", "RUNTIME_AUTHENTICATION_FAILED"],
+    ["RUNTIME_CPU_STARVED", "RUNTIME_CPU_STARVED"],
+    ["RUNTIME_PRIVATE_SENTINEL", "unrecognized"],
+  ]) {
+    assert.throws(
+      () =>
+        assertNativeWorkNotFailed(
+          { status: "failed", error: { code, message: "private-message-sentinel" } },
+          expectation,
+        ),
+      { name: "AssertionError", message: `${expectation}: ${category}` },
+    );
+  }
+  for (const status of ["queued", "running", "succeeded"]) {
+    assertNativeWorkNotFailed({ status }, expectation);
+  }
 });
 
 test("the missed native handoff deadline reports only Pod readiness and fixed runtime output for its exact revision", async (t) => {
@@ -882,11 +904,7 @@ test(
           while (Date.now() < deadline) {
             nativeContext.signal.throwIfAborted();
             provisioned = await request("GET", provisioningPath);
-            assert.notEqual(
-              provisioned.status,
-              "failed",
-              "Guided native provisioning must succeed",
-            );
+            assertNativeWorkNotFailed(provisioned, "Guided native provisioning must succeed");
             if (provisioned.status === "succeeded") {
               assert.ok(provisioned.agentId && provisioned.revisionId);
               const nativePath = `${base}/agents/${provisioned.agentId}`;
@@ -894,9 +912,8 @@ test(
                 "GET",
                 `${nativePath}/deployments/${provisioned.revisionId}`,
               );
-              assert.notEqual(
-                deployment.status,
-                "failed",
+              assertNativeWorkNotFailed(
+                deployment,
                 "The admitted native revision must become ready",
               );
               nativeAgent = await request("GET", nativePath);
