@@ -115,7 +115,12 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   // app-server peer are fixtures. WebSocket message order, not a sleep, creates the boundary.
   const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+  const server = createServer();
+  const peer = new WebSocketServer({ noServer: true });
+  server.on("upgrade", (request, stream, head) => {
+    peer.handleUpgrade(request, stream, head, (socket) => peer.emit("connection", socket, stream));
+  });
+  server.listen(0, "127.0.0.1");
   t.after(() => server.close());
   await once(server, "listening");
 
@@ -140,6 +145,9 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
 
   for (const event of [
     "late result",
+    "foreign completion before turn ends",
+    "completion without turn ID",
+    "start without thread ID",
     "another start",
     "untracked completion",
     "duplicate start",
@@ -153,7 +161,7 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
     const turnId = "probe-turn";
     const nonce = "probe-command";
     const unexpected = event !== "late result" && event !== "expiry" && event !== "close";
-    server.once("connection", (socket) => {
+    peer.once("connection", (socket, stream) => {
       socket.on("message", (data) => {
         const { method, id } = JSON.parse(data);
         const send = (message) => socket.send(JSON.stringify(message));
@@ -172,6 +180,9 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         }
         assert.equal(method, "turn/start");
         const turn = { id: turnId, status: "inProgress" };
+        // Deliver the response and notifications in one write. The client can receive
+        // them in one socket read, before its turn/start await continuation runs.
+        stream.cork();
         send({ id, result: { turn } });
         const item = {
           id: "original",
@@ -181,6 +192,25 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
         };
         send({ method: "item/started", params: { threadId, turnId, item } });
         const extra = { ...item, id: "extra" };
+        const unbound = {
+          "foreign completion before turn ends": { turnId: "other-turn" },
+          "completion without turn ID": { turnId: undefined },
+          "start without thread ID": { threadId: undefined },
+        }[event];
+        if (unbound) {
+          // Even with the probe nonce, this event cannot establish what our command did.
+          const started = event === "start without thread ID";
+          const status = started ? {} : { status: "failed", exitCode: 77 };
+          send({
+            method: started ? "item/started" : "item/completed",
+            params: {
+              threadId,
+              turnId,
+              ...unbound,
+              item: { ...extra, ...status, command: nonce },
+            },
+          });
+        }
         if (event === "duplicate completion") {
           send({ method: "item/started", params: { threadId, turnId, item: extra } });
         }
@@ -188,10 +218,12 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           method: "turn/completed",
           params: { threadId, turn: { ...turn, status: "completed" } },
         });
+        stream.uncork();
+        const setupSucceeded = unexpected && !unbound;
         const terminal = {
           ...item,
-          status: unexpected ? "completed" : "failed",
-          exitCode: unexpected ? 0 : 23,
+          status: setupSucceeded ? "completed" : "failed",
+          exitCode: setupSucceeded ? 0 : 23,
         };
         const params = { threadId, turnId, item: terminal };
         const completed = (params) => send({ method: "item/completed", params });
@@ -212,6 +244,8 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
           });
         } else if (event === "close") {
           socket.close();
+        } else if (unbound) {
+          completed(params);
         } else if (unexpected) {
           // If the client loses evidence of the probe, the later successful setup
           // completion would make observeSandboxProbe eligible to request turn two.

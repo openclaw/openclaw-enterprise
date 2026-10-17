@@ -1195,8 +1195,10 @@ export function createOpenShellKubernetesFixture({
 
       function request(method, params = {}) {
         const id = nextId++;
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-        return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+        return new Promise((resolve, reject) => {
+          pending.set(id, { method, resolve, reject });
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        });
       }
 
       const socket = new WebSocket(appServerUrl, {
@@ -1226,12 +1228,11 @@ export function createOpenShellKubernetesFixture({
             throw new Error("OpenShell requires the Codex account to allow :danger-full-access.");
           }
           threadId = started.thread.id;
-          const { turn } = await request("turn/start", {
+          await request("turn/start", {
             threadId,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
             permissions: ":danger-full-access",
           });
-          turnId = turn.id;
         } catch (error) {
           fail(error);
         }
@@ -1245,8 +1246,13 @@ export function createOpenShellKubernetesFixture({
         const decline = message.id !== undefined && (
           method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
         );
-        const command = item?.type === "commandExecution" &&
+        const commandEvent = item?.type === "commandExecution" &&
+          (method === "item/started" || method === "item/completed");
+        const command = commandEvent && threadId && turnId &&
           params.threadId === threadId && params.turnId === turnId;
+        // Before the turn ends, an unbound command leaves the probe outcome unknown.
+        // Afterward we observe only the commands already outstanding on our turn.
+        if (!commandDeadline && commandEvent && !command) return unknownCommandOutcome();
         const starting = method === "item/started" && command;
         const ending = method === "item/completed" && command;
         if (commandDeadline) {
@@ -1273,12 +1279,18 @@ export function createOpenShellKubernetesFixture({
           socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { decision: "decline" } }));
           return;
         }
-        if (message.id !== undefined) {
+        if (message.id !== undefined && method === undefined) {
           const entry = pending.get(message.id);
           pending.delete(message.id);
           if (entry) {
-            if (message.error) entry.reject(new Error(message.error.message));
-            else entry.resolve(message.result);
+            if (message.error) return entry.reject(new Error(message.error.message));
+            if (entry.method === "turn/start") {
+              // Notifications can arrive in this socket read, before an await continuation runs.
+              const id = message.result?.turn?.id;
+              if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
+              turnId = id;
+            }
+            entry.resolve(message.result);
           }
         } else if (method === "item/completed") {
           if (item?.type === "agentMessage") assistant = item.text ?? "";
