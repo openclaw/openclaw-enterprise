@@ -346,7 +346,7 @@ test("repository metadata keeps joiners in words and emoji and subdivision flags
     ["trail\u200d end", "trail  end"],
     ["tags\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "tags      "],
     ["\u{1f3f4}\u{e0067}\u{e0062}\u{e007f}", "\u{1f3f4}   "], // no subdivision code
-    ["\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", "\u{1f3f4}      "], // not standard
+    ["\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", "\u{1f3f4}     "], // not standard
     [
       "\u{1f3f4}\u{e0067}\u{e0062}\u{e0061}\u{e0062}\u{e0063}\u{e0064}\u{e0065}\u{e007f}",
       "\u{1f3f4}        ",
