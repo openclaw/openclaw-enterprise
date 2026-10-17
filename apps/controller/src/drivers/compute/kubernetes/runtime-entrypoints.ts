@@ -1,8 +1,10 @@
+// A relative import, like the others here: CI image builds and the in-image supervisor proof
+// load this file from a checkout or copy with no workspace packages installed.
 import {
   RUNTIME_DIAGNOSTIC_CHECKS,
   RUNTIME_DIAGNOSTIC_CODES,
   RUNTIME_FAILURE_CHECKS,
-} from "@openclaw-enterprise/contracts";
+} from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";

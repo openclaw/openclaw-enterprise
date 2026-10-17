@@ -2109,7 +2109,7 @@ export {
   UNRECOGNIZED_RUNTIME_VALUE,
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
-} from "./runtime-failure.ts";
+} from "./runtime-failure.mjs";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";

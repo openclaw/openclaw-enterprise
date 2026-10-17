@@ -8,10 +8,10 @@
 export const UNRECOGNIZED_RUNTIME_VALUE = "UNRECOGNIZED";
 
 /** The runtime containers Compute names as a check's component. */
-export const RUNTIME_COMPONENTS: readonly string[] = Object.freeze(["agent", "gateway"]);
+export const RUNTIME_COMPONENTS = Object.freeze(["agent", "gateway"]);
 
 /** Codes a runtime entrypoint holds a startup failure with, or reports on a diagnostic check. */
-export const RUNTIME_DIAGNOSTIC_CODES: readonly string[] = Object.freeze([
+export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
   "LOGIN_FAILED",
   "MODEL_PROBE_FAILED",
   "MODEL_PROBE_TIMEOUT",
@@ -25,7 +25,7 @@ export const RUNTIME_DIAGNOSTIC_CODES: readonly string[] = Object.freeze([
 ]);
 
 /** The startup steps a runtime entrypoint holds a failure under. */
-export const RUNTIME_FAILURE_CHECKS: readonly string[] = Object.freeze([
+export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "login",
   "model-probe",
   "peer-bridge-record",
@@ -45,7 +45,7 @@ export const WORKSPACE_SETUP_FAILED = "WORKSPACE_SETUP_FAILED";
  * Slack channel checks, and Compute's own check for a runtime status it could not read. OCC's
  * own Sandbox check is not here: OCC adds it after it masks what Compute returned.
  */
-export const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[] = Object.freeze([
+export const RUNTIME_DIAGNOSTIC_CHECKS = Object.freeze([
   "configuration",
   "authentication",
   "connectivity",
@@ -53,7 +53,7 @@ export const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[] = Object.freeze([
 ]);
 
 /** The signals a `PROCESS_EXIT` cause may name, as `signal-<name>` (Linux, as Node names them). */
-export const PROCESS_EXIT_SIGNALS: readonly string[] = Object.freeze([
+export const PROCESS_EXIT_SIGNALS = Object.freeze([
   "SIGHUP",
   "SIGINT",
   "SIGQUIT",
@@ -93,7 +93,7 @@ export const PROCESS_EXIT_SIGNALS: readonly string[] = Object.freeze([
  * The system error codes a `PROCESS_EXIT` cause may name, as `error-<code>`: the Linux errno
  * names and libuv's own error names, as Node reports them.
  */
-export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
+export const PROCESS_EXIT_ERROR_CODES = Object.freeze([
   "E2BIG",
   "EACCES",
   "EADDRINUSE",

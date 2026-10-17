@@ -63,6 +63,7 @@ test(
       "apps/controller/src/drivers/compute/node-program.ts",
       "apps/controller/src/drivers/compute/runtime-startup.ts",
       "apps/controller/src/drivers/plugin/runtime-translator.ts",
+      "packages/contracts/src/runtime-failure.mjs",
     ];
     const files = await Promise.all(
       paths.map(async (path) => [

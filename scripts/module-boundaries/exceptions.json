@@ -150,6 +150,22 @@
       "removeWhen": "Replace the source asset mapping with a supported packaged browser entrypoint and update its consumers."
     },
     {
+      "rule": "cross-package-source",
+      "from": "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "to": "packages/contracts/src/runtime-failure.mjs",
+      "specifier": "../../../../../../packages/contracts/src/runtime-failure.mjs",
+      "kind": "import",
+      "typeOnly": false,
+      "bindings": [
+        "value:RUNTIME_DIAGNOSTIC_CHECKS",
+        "value:RUNTIME_DIAGNOSTIC_CODES",
+        "value:RUNTIME_FAILURE_CHECKS"
+      ],
+      "owner": "Kubernetes runtime programs",
+      "reason": "Image builds and the in-image supervisor proof load the runtime programs from a checkout or copy with no workspace packages installed, so they read the shared runtime failure vocabulary from its source.",
+      "removeWhen": "Image builds and the in-image proof resolve workspace packages, or the runtime programs are built into a bundle."
+    },
+    {
       "rule": "unresolved-local-import",
       "from": "apps/controller/src/console/agents/create.mjs",
       "to": "apps/controller/src/console/default-codex-preset.mjs",
