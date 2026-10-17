@@ -1,0 +1,261 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import {
+  holdRequests,
+  login,
+  nativeValues,
+  newPage,
+  persistedDeploymentError,
+} from "./console-agents-browser-helpers.mjs";
+
+// Returning to the Agents list held the Agent page, inert, until the retained list had read
+// every row's /revisions and /deployments again: two reads per Agent, so the hold grew with the
+// Namespace (283-517 ms for 12 Agents on oce-dogfood-b, finding 1644). The list now reveals once
+// its own reads revalidate, and the rows read their deployments again in place.
+const AGENTS = 12;
+const READING = "Reading deployment…";
+const activeView = '.content [aria-live="polite"]:not([inert])';
+const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
+const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
+
+// A deployment record read; the list shows its status and, for a failure, its error.
+function deploymentRecord(namespace, status) {
+  return {
+    json: {
+      data: {
+        namespaceId: namespace.id,
+        status,
+        error: status === "failed" ? persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED") : null,
+        warnings: [],
+        progress: null,
+      },
+      meta: { requestId: "req_test_list_return" },
+    },
+  };
+}
+
+async function openTeamList(t, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agents = [];
+  for (let index = 1; index <= AGENTS; index += 1) {
+    const label = `Team Agent ${String(index).padStart(2, "0")}`;
+    const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    agents.push({ ...agent, name: label, revisionId: revision.id });
+  }
+  const { page } = await newPage(t, fixture);
+  // The fixture runs no worker, so each deployment record is served as it would read once its
+  // deployment succeeded.
+  await page.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByRole("link", { name: agents[0].name }).waitFor();
+  // Every row's deployment has landed, so the list is reusable when the reader leaves.
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  return { fixture, namespace, agents, page };
+}
+
+// The text of each row's Latest deployment cell, by Agent name.
+const deploymentCells = (page) =>
+  page
+    .locator(activeView)
+    .evaluate((view) =>
+      Object.fromEntries(
+        [...view.querySelectorAll(".agent-table tbody tr")].map((row) => [
+          row.querySelector("td a").textContent,
+          row.querySelector(".agent-deployment").textContent,
+        ]),
+      ),
+    );
+
+// Records, after every DOM change, any deployment link or Agent link the active (revealed) view
+// shows, so a stale value painted for even one frame before a row's fresh read is caught.
+function recordRevealed() {
+  const document = globalThis.document;
+  const seen = { deploymentLinks: 0, agents: new Set() };
+  globalThis.__revealed = seen;
+  const record = () => {
+    const view = document.querySelector('.content [aria-live="polite"]:not([inert])');
+    const table = view?.querySelector(".agent-table");
+    if (!table) {
+      return;
+    }
+    seen.deploymentLinks = Math.max(
+      seen.deploymentLinks,
+      table.querySelectorAll(".agent-deployment a").length,
+    );
+    for (const link of table.querySelectorAll("tbody tr td:first-child a")) {
+      seen.agents.add(link.textContent);
+    }
+  };
+  globalThis.__revealedObserver?.disconnect();
+  globalThis.__revealedObserver = new globalThis.MutationObserver(record);
+  globalThis.__revealedObserver.observe(document, {
+    subtree: true,
+    childList: true,
+    characterData: true,
+    attributes: true,
+  });
+}
+const revealed = (page) =>
+  page.evaluate(() => ({
+    deploymentLinks: globalThis.__revealed.deploymentLinks,
+    agents: [...globalThis.__revealed.agents].sort(),
+  }));
+
+function tagView(page) {
+  return page.evaluate(() => {
+    globalThis.document.querySelector('.content [aria-live="polite"]').dataset.listTag = "kept";
+  });
+}
+const viewTag = (page) =>
+  page.evaluate(
+    () =>
+      globalThis.document.querySelector('.content [aria-live="polite"]')?.dataset.listTag ?? null,
+  );
+
+async function openAgent(page, agent) {
+  await page.locator(settledView).getByRole("link", { name: agent.name, exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("region", { name: "Agent state at a glance" })
+    .waitFor();
+}
+
+async function goBackToList(page, how) {
+  if (how === "Browser Back") {
+    await page.goBack();
+  } else {
+    await page.getByRole("link", { name: "Agents", exact: true }).click();
+  }
+}
+
+// Holds every row's deployment reads; only the Agents list's own reads may decide the reveal.
+async function holdRowReads(t, page, namespace) {
+  const revisions = await holdRequests(t, page, revisionsRead(namespace));
+  const deployments = await holdRequests(t, page, deploymentsRead(namespace), {
+    fulfill: deploymentRecord(namespace, "succeeded"),
+  });
+  return {
+    revisions,
+    release() {
+      revisions.release();
+      deployments.release();
+    },
+  };
+}
+
+for (const how of ["Browser Back", "Agents navigation"]) {
+  test(`${how} to a list of ${AGENTS} Agents reveals without waiting on row reads, then fills each row`, async (t) => {
+    const { namespace, agents, page } = await openTeamList(t, `Team return ${how}`);
+    const before = await deploymentCells(page);
+    assert.equal(Object.keys(before).length, AGENTS);
+    for (const text of Object.values(before)) {
+      assert.match(text, /^v1 · /);
+    }
+    await tagView(page);
+    const [opened, changed] = agents;
+    await openAgent(page, opened);
+
+    // Every row read is held, and one Agent's deployment failed while the reader was away.
+    const rows = await holdRowReads(t, page, namespace);
+    const failed = await holdRequests(
+      t,
+      page,
+      `**/namespaces/${namespace.id}/agents/${changed.id}/deployments/${changed.revisionId}`,
+      { fulfill: deploymentRecord(namespace, "failed") },
+    );
+    await page.evaluate(recordRevealed);
+    await goBackToList(page, how);
+
+    // The retained list is back and usable while every row read is still outstanding.
+    await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+    await rows.revisions.requested;
+    assert.equal(await viewTag(page), "kept", "the retained list was reused, not rebuilt");
+    assert.equal(
+      await page.locator(activeView).getByRole("link", { name: opened.name, exact: true }).count(),
+      1,
+    );
+    // No row presents the deployment it showed before leaving as current.
+    assert.deepEqual(
+      await deploymentCells(page),
+      Object.fromEntries(Object.keys(before).map((name) => [name, READING])),
+    );
+    assert.equal((await revealed(page)).deploymentLinks, 0, "no stale deployment was revealed");
+
+    // The rows fill in place from their fresh reads.
+    rows.release();
+    failed.release();
+    await page.getByText(READING).first().waitFor({ state: "detached" });
+    const after = await deploymentCells(page);
+    assert.match(after[changed.name], /^v1 · failed/);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(after).filter(([name]) => name !== changed.name)),
+      Object.fromEntries(Object.entries(before).filter(([name]) => name !== changed.name)),
+    );
+    assert.equal(await viewTag(page), "kept");
+  });
+}
+
+test("A return whose list read dropped an Agent never reveals that Agent, with row reads held", async (t) => {
+  const { namespace, agents, page } = await openTeamList(t, "Team return removed");
+  await tagView(page);
+  const [opened, removed] = agents;
+  await openAgent(page, opened);
+
+  const rows = await holdRowReads(t, page, namespace);
+  // The Agent was deleted while the reader was away: the fresh list read no longer has it.
+  await page.route(`**/namespaces/${namespace.id}/agents`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...body, data: body.data.filter((item) => item.id !== removed.id) },
+    });
+  });
+  await page.evaluate(recordRevealed);
+  await page.goBack();
+
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  await rows.revisions.requested;
+  assert.equal(await viewTag(page), null, "the list was rebuilt from the fresh read");
+  assert.equal(await page.getByRole("link", { name: removed.name, exact: true }).count(), 0);
+  const shown = await revealed(page);
+  assert.equal(shown.agents.includes(removed.name), false, "the removed Agent was never revealed");
+  assert.equal(shown.agents.length, AGENTS - 1);
+  rows.release();
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+});
+
+test("A return rereads only the rows the search shows", async (t) => {
+  const { namespace, agents, page } = await openTeamList(t, "Team return search");
+  const [, , target] = agents;
+  await page.getByRole("searchbox", { name: "Search Agents" }).fill(target.name);
+  await page.locator(settledView).getByRole("row").nth(1).waitFor();
+  assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), 1);
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  await tagView(page);
+  await openAgent(page, target);
+
+  const revisions = [];
+  page.on("request", (request) => {
+    if (/\/agents\/[^/]+\/revisions(\?|$)/.test(new URL(request.url()).pathname)) {
+      revisions.push(new URL(request.url()).pathname);
+    }
+  });
+  await goBackToList(page, "Browser Back");
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept");
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  assert.deepEqual(revisions, [`/namespaces/${namespace.id}/agents/${target.id}/revisions`]);
+});

@@ -57,12 +57,12 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-async function latestReadableRevision(context, path) {
+async function latestReadableRevision(context, path, options) {
   let cursor = null;
   do {
     const page = await context.request(
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
-      { includeMeta: true },
+      { ...options, includeMeta: true },
     );
     if (page.data.length > 0) {
       return page.data[0];
@@ -217,7 +217,71 @@ export function renderAgentList(context) {
       : []),
     rows,
   );
+  // Each row's latest deployment, read after the list paints. A return to a retained list
+  // revalidates only the list's own reads, so these never hold its reveal (finding 1644); the
+  // retained rows read them again in place instead.
+  const cells = new Map(); // The shown rows' deployment cells, each with its Agent.
+  function readDeployment(item) {
+    const agentPath = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}`;
+    return latestReadableRevision(context, `${agentPath}/revisions`, { revalidate: false }).then(
+      async (latest) => {
+        if (!latest) {
+          return null;
+        }
+        const status = await context.request(
+          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+          { revalidate: false },
+        );
+        return { revision: latest, status };
+      },
+    );
+  }
+  function showDeployment(item, deployment) {
+    if (!deployments.has(item.id)) {
+      deployments.set(item.id, readDeployment(item));
+    }
+    void deployments
+      .get(item.id)
+      .then((result) => {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (result === null) {
+          deployment.textContent = "No visible deployments";
+          return;
+        }
+        deployment.replaceChildren(
+          link(
+            `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
+            `agents/${item.id}?revision=${result.revision.id}`,
+            context,
+          ),
+        );
+        const neutral = neutralDeploymentOutcome(result.status);
+        const failure =
+          !neutral && result.status.status === "failed"
+            ? (result.status.error?.message ?? "Deployment failed.")
+            : null;
+        // A long failure fits one line; its title and the Agent page give the whole text.
+        deployment.append(
+          element(
+            "span",
+            {
+              className: "resource-id agent-deployment-note",
+              ...(failure ? { title: failure } : {}),
+            },
+            failure ??
+              (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
+          ),
+        );
+      })
+      .catch((error) => {
+        deployment.textContent =
+          error.status === 403 ? "Deployment access denied" : "Deployment unavailable";
+      });
+  }
   function render() {
+    cells.clear();
     const query = search.value.trim().toLowerCase();
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
@@ -262,62 +326,8 @@ export function renderAgentList(context) {
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
       const deployment = element("td", { className: "agent-deployment" }, "Reading deployment…");
-      if (!deployments.has(item.id)) {
-        deployments.set(
-          item.id,
-          latestReadableRevision(
-            context,
-            `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
-          ).then(async (latest) => {
-            if (!latest) {
-              return null;
-            }
-            const status = await context.request(
-              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
-            );
-            return { revision: latest, status };
-          }),
-        );
-      }
-      void deployments
-        .get(item.id)
-        .then((result) => {
-          if (!context.isCurrent()) {
-            return;
-          }
-          if (result === null) {
-            deployment.textContent = "No visible deployments";
-            return;
-          }
-          deployment.replaceChildren(
-            link(
-              `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
-              `agents/${item.id}?revision=${result.revision.id}`,
-              context,
-            ),
-          );
-          const neutral = neutralDeploymentOutcome(result.status);
-          const failure =
-            !neutral && result.status.status === "failed"
-              ? (result.status.error?.message ?? "Deployment failed.")
-              : null;
-          // A long failure fits one line; its title and the Agent page give the whole text.
-          deployment.append(
-            element(
-              "span",
-              {
-                className: "resource-id agent-deployment-note",
-                ...(failure ? { title: failure } : {}),
-              },
-              failure ??
-                (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
-            ),
-          );
-        })
-        .catch((error) => {
-          deployment.textContent =
-            error.status === 403 ? "Deployment access denied" : "Deployment unavailable";
-        });
+      cells.set(deployment, item);
+      showDeployment(item, deployment);
       body.append(
         element(
           "tr",
@@ -352,6 +362,15 @@ export function renderAgentList(context) {
     table.append(body);
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }
+  // A retained list is mounted without rereading its rows' deployments, so what they showed is
+  // not presented as current: each row reads its deployment again from "Reading deployment…".
+  context.onResume?.(() => {
+    deployments.clear();
+    for (const [deployment, item] of cells) {
+      deployment.replaceChildren("Reading deployment…");
+      showDeployment(item, deployment);
+    }
+  });
   search.addEventListener("input", render);
   render();
 }
