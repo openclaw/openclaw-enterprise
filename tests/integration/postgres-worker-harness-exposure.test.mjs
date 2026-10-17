@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { after } from "node:test";
+import test, { after } from "node:test";
+import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
@@ -11,7 +12,7 @@ import {
 // cases are in postgres-worker-agent-revision.test.mjs and its siblings; the lane runs the
 // revision files at once.
 
-const { cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
+const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
 // A Kubernetes Compute declares no maintenance interval, so a native OpenShell revision that
@@ -430,5 +431,255 @@ revisionTest(
     // Nothing was recorded stopped or removed.
     assert.equal((await fixture.currentAgent(stopped)).activeRevisionId, stopping.id);
     assert.equal((await fixture.currentAgent(deleted))?.activeRevisionId, deleting.id);
+  },
+);
+
+// Finding 1694: OpenShell also answers UNAUTHENTICATED while the controller's token file or the
+// gateway's signing keys are between refreshes. The refusal keeps its code but retries within
+// the attempt budget, on stops, deletions and deployments alike; a refusal that outlasts the
+// budget fails with the code and the worker logs the same guidance the deployment status shows.
+test(
+  "a stop, deletion or deployment refused as unauthenticated retries before failing with the code",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner: stopped, candidate: stopping } = await fixture.admitInitialRevision("stop-t");
+    const { owner: deleted, candidate: deleting } = await fixture.admitInitialRevision("delete-t");
+    const { owner: recovered, candidate: recovering } =
+      await fixture.admitInitialRevision("stop-r");
+    const { candidate: refusedDeploy } = await fixture.admitInitialRevision("deploy-t");
+    const { candidate: recoveredDeploy } = await fixture.admitInitialRevision("deploy-r");
+    // Refusals left per revision (every Compute call on it); Infinity never clears.
+    const refusals = new Map([
+      [refusedDeploy.id, Number.POSITIVE_INFINITY],
+      [recoveredDeploy.id, 1],
+    ]);
+    const refused = (revision) => {
+      const remaining = refusals.get(revision.id) ?? 0;
+      if (remaining > 0) {
+        refusals.set(revision.id, remaining - 1);
+        throw new SandboxGatewayUnauthorizedError(
+          `OpenShell refused the controller gateway identity in Workspace w, so Sandbox ${revision.id} cannot be confirmed removed.`,
+          { transient: true },
+        );
+      }
+    };
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          refused(revision);
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+        async stopRevision(revision) {
+          refused(revision);
+          return fixture.compute.stopRevision(revision);
+        },
+        async retireRevision(revision) {
+          refused(revision);
+          return fixture.compute.retireRevision(revision);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await Promise.all(
+      [stopping, deleting, recovering].map((candidate) => fixture.work(candidate, "succeeded")),
+    );
+    // Deployments: one refusal is retried and the second attempt activates; a persistent one
+    // spends the budget and fails with the code.
+    assert.equal((await fixture.work(recoveredDeploy, "succeeded", 30_000)).attempt_count, 2);
+    const failedDeploy = await fixture.work(refusedDeploy, "failed_permanent", 30_000);
+    assert.equal(failedDeploy.attempt_count, 2);
+    assert.equal(
+      (await fixture.workResult(refusedDeploy)).rows[0].reason_code,
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    // Stops and deletions: the same, on the Compute calls that confirm the Sandbox gone.
+    refusals.set(stopping.id, Number.POSITIVE_INFINITY);
+    refusals.set(deleting.id, Number.POSITIVE_INFINITY);
+    refusals.set(recovering.id, 1);
+    const stop = await fixture.requestStop(stopped);
+    const stopWork = await fixture.work(stop, "failed_permanent", 30_000);
+    assert.equal(stopWork.attempt_count, 2);
+    assert.equal(
+      (await fixture.workResult(stop)).rows[0].reason_code,
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    const deletion = await fixture.requestDeletion(deleted);
+    const deletionWork = await fixture.work(deletion, "failed_permanent", 30_000);
+    assert.equal(deletionWork.attempt_count, 2);
+    assert.equal(
+      (await fixture.workResult(deletion)).rows[0].reason_code,
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    const recovery = await fixture.requestStop(recovered);
+    assert.equal((await fixture.work(recovery, "succeeded", 30_000)).attempt_count, 2);
+    // Nothing was recorded stopped or removed for the refused ones; the recovered one stopped.
+    assert.equal((await fixture.currentAgent(stopped)).activeRevisionId, stopping.id);
+    assert.equal((await fixture.currentAgent(deleted))?.activeRevisionId, deleting.id);
+    assert.notEqual((await fixture.currentAgent(recovered)).activeRevisionId, recovering.id);
+    // The guidance is logged with the failed stop and deletion only, not with their retries.
+    const completed = events.filter(
+      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    const terminal = completed.filter(({ hint }) => hint !== undefined);
+    assert.deepEqual(
+      terminal.map(({ agentId }) => agentId).sort(),
+      [stopped.id, deleted.id].sort(),
+    );
+    for (const { hint } of terminal) {
+      assert.match(hint, /Restore the controller gateway identity's Workspace role/);
+    }
+    assert.ok(completed.length > terminal.length, "the first attempts were logged without it");
+  },
+);
+
+// Finding 1695: the sweep step ran only on passes after an empty claim, so a worker whose queue
+// is never empty never withdrew a second listed exposure (the first goes on the first pass).
+// It now also runs after every five claimed passes in a row.
+revisionTest(
+  "a saturated queue still gets a sweep step after five claimed passes",
+  async (fixture) => {
+    const sandboxDriverId = "native-sandbox";
+    const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
+    const native = { harness: nativeHarness, sandboxDriverId };
+    const { owner: served, candidate: active } = await fixture.admitInitialRevision("served", {
+      agent: { executionMode: "dedicated" },
+      revision: native,
+    });
+    const failed = await fixture.revision(served, 2, native);
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work
+     SET state = 'succeeded', reason_code = 'REVISION_ACTIVATED', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+      [active.idempotencyKey],
+    );
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work
+     SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+      [failed.idempotencyKey],
+    );
+    await fixture.observerPool.query(
+      "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
+      [served.id, active.id],
+    );
+    // Eight deployments queued before the worker starts keep every claim busy.
+    const busy = [];
+    for (let index = 0; index < 8; index += 1) {
+      busy.push((await fixture.admitInitialRevision(`busy-${index}`)).candidate);
+    }
+    const events = [];
+    const withdrawals = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async withdrawHarnessExposure(revision) {
+          withdrawals.push(revision.id);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await Promise.all(busy.map((candidate) => fixture.work(candidate, "succeeded")));
+    await waitFor("both listed exposures to be withdrawn", async () =>
+      withdrawals.length >= 2 ? true : undefined,
+    );
+    assert.deepEqual(new Set(withdrawals), new Set([active.id, failed.id]));
+    const indices = (name) => events.flatMap(({ event }, index) => (event === name ? [index] : []));
+    const completed = indices("worker.completed");
+    const withdrawn = indices("worker.harness-exposure-withdrawn");
+    assert.ok(completed.length >= 8, `claimed passes: ${completed.length}`);
+    // The first withdrawal is the start pass's; the second ran after five claimed passes, before
+    // the queue drained, not on the idle pass after it.
+    assert.ok(
+      withdrawn[0] < completed[0],
+      `first withdrawal at ${withdrawn[0]}, passes ${completed}`,
+    );
+    assert.ok(
+      withdrawn[1] > completed[4] && withdrawn[1] < completed[5],
+      `second withdrawal at ${withdrawn[1]}, passes ${completed}`,
+    );
+    assert.equal(indices("worker.harness-exposure-withdrawal-failed").length, 0);
+  },
+);
+
+// Finding 1696: a candidate retired between the sweep's read and its delete answers NOT_FOUND
+// on the delete. That is unconfirmed, not failed: the Driver reports it by code and the sweep
+// logs it apart, with the same bounded retry; the next attempt settles it through the Driver's
+// absence check.
+revisionTest(
+  "a target gone between the sweep's read and delete is logged unconfirmed",
+  async (fixture) => {
+    const sandboxDriverId = "native-sandbox";
+    const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
+    const native = { harness: nativeHarness, sandboxDriverId };
+    const { owner: served, candidate: active } = await fixture.admitInitialRevision("served", {
+      agent: { executionMode: "dedicated" },
+      revision: native,
+    });
+    const failed = await fixture.revision(served, 2, native);
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work
+     SET state = 'succeeded', reason_code = 'REVISION_ACTIVATED', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+      [active.idempotencyKey],
+    );
+    await fixture.observerPool.query(
+      `UPDATE occ.controller_work
+     SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+      [failed.idempotencyKey],
+    );
+    await fixture.observerPool.query(
+      "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
+      [served.id, active.id],
+    );
+    const events = [];
+    const withdrawals = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async withdrawHarnessExposure(revision) {
+          withdrawals.push(revision.id);
+          if (revision.id === failed.id) {
+            // What the OpenShell Sandbox Driver throws when DeleteService answers NOT_FOUND for a
+            // service GetService had just found.
+            throw Object.assign(
+              new Error(
+                "OpenShell DeleteService did not find the Sandbox, so the deletion is unconfirmed.",
+              ),
+              { code: "SANDBOX_DELETION_UNCONFIRMED" },
+            );
+          }
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    const named = (name) => events.filter(({ event }) => event === name);
+    await waitFor("both listed exposures to be attempted", async () =>
+      withdrawals.includes(active.id) && withdrawals.includes(failed.id) ? true : undefined,
+    );
+    await waitFor("the unconfirmed withdrawal to be logged", async () =>
+      named("worker.harness-exposure-withdrawal-unconfirmed").length > 0 ? true : undefined,
+    );
+    assert.deepEqual(named("worker.harness-exposure-withdrawal-unconfirmed"), [
+      {
+        event: "worker.harness-exposure-withdrawal-unconfirmed",
+        namespaceId: fixture.namespace.id,
+        agentId: served.id,
+        revisionId: failed.id,
+        code: "SANDBOX_DELETION_UNCONFIRMED",
+        attempt: 1,
+        outcome: "retry",
+      },
+    ]);
+    assert.deepEqual(named("worker.harness-exposure-withdrawal-failed"), []);
+    assert.deepEqual(
+      named("worker.harness-exposure-withdrawn").map(({ revisionId }) => revisionId),
+      [active.id],
+    );
+    // The retry waits for its backoff like a failure does.
+    assert.equal(withdrawals.filter((id) => id === failed.id).length, 1);
   },
 );

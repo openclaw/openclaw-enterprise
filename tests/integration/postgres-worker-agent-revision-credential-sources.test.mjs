@@ -892,7 +892,11 @@ test(
           return compute.withdrawCredentialSource(revision, source, signal);
         },
       },
-      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway, emit: (event) => events.push(event) },
+      {
+        convergenceTimeoutMs: 50,
+        transformDrivers: withCredentialGateway,
+        emit: (event) => events.push(event),
+      },
     );
     gateway.down = false;
     await fixture.work(active, "succeeded");
@@ -939,7 +943,9 @@ test(
     assert.equal(pending.lastReason, "SANDBOX_GATEWAY_UNAUTHORIZED");
     const terminal = events.filter(
       ({ event, code, hint }) =>
-        event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED" && hint !== undefined,
+        event === "worker.completed" &&
+        code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
+        hint !== undefined,
     );
     assert.equal(terminal.length, 1);
     assert.match(terminal[0].hint, /Restore the controller gateway identity's Workspace role/);
