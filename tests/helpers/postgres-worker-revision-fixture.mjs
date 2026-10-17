@@ -470,6 +470,7 @@ export function createWorkerRevisionFixtures(
       number,
       {
         harness,
+        sandboxDriverId,
         repositoryCredentials,
         actorId = actor.id,
         plugins,
@@ -535,6 +536,7 @@ export function createWorkerRevisionFixtures(
         configurationGeneration: 1,
         harness: approvedHarness,
         compute: { id: compute.id, implementation: compute.implementation },
+        ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
         ...(plugins === undefined ? {} : { plugins }),
         harnessAuth,
         ...(credentialSources.length === 0 ? {} : { credentialSources }),

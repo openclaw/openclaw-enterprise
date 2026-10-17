@@ -1,0 +1,469 @@
+diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
+index 38fc452..52902aa 100644
+--- a/src/gateway/server.required-placement-scopes.test.ts
++++ b/src/gateway/server.required-placement-scopes.test.ts
+@@ -115,196 +115,282 @@ test.each([false, true])(
+   },
+ );
+ 
+-test("required placement survives disconnect but stops setup when committed caller authority ends", async () => {
+-  const origin = "https://control.example.invalid";
+-  const admin = "admin@example.invalid";
+-  const writers = {
+-    disconnect: "disconnect@example.invalid",
+-    scope: "scope@example.invalid",
+-    profile: "profile@example.invalid",
+-  };
+-  const auth: GatewayAuthConfig = {
+-    mode: "trusted-proxy",
+-    identityScopes: {
+-      [admin]: ["operator.admin"],
+-      ...Object.fromEntries(
+-        Object.values(writers).map((email) => [email, ["operator.sessions.write"]]),
+-      ),
+-    },
+-    trustedProxy: {
+-      userHeader: "x-forwarded-user",
+-      requiredHeaders: ["x-forwarded-proto"],
+-      allowLoopback: true,
+-      allowUsers: [admin, ...Object.values(writers)],
+-    },
+-  };
+-  testState.gatewayAuth = auth;
+-  testState.gatewayControlUi = { allowedOrigins: [origin] };
+-  await writeConfigFile({
+-    gateway: { auth, trustedProxies: ["127.0.0.1"], controlUi: { allowedOrigins: [origin] } },
+-    cloudWorkers: {
+-      requiredProfile: "dedicated",
+-      profiles: {
+-        dedicated: { provider: "device", settings: { device: "paired", inference: "worker" } },
++test.each(["before acknowledgment", "after acknowledgment"] as const)(
++  "required placement survives disconnect %s but stops setup when committed caller authority ends",
++  async (timing) => {
++    const origin = "https://control.example.invalid";
++    const admin = "admin@example.invalid";
++    const writers = {
++      disconnect: "disconnect@example.invalid",
++      scope: "scope@example.invalid",
++      role: "role@example.invalid",
++      profile: "profile@example.invalid",
++    };
++    const auth: GatewayAuthConfig = {
++      mode: "trusted-proxy",
++      identityScopes: {
++        [admin]: ["operator.admin"],
++        ...Object.fromEntries(
++          Object.values(writers).map((email) => [email, ["operator.sessions.write"]]),
++        ),
++      },
++      trustedProxy: {
++        userHeader: "x-forwarded-user",
++        requiredHeaders: ["x-forwarded-proto"],
++        allowLoopback: true,
++        allowUsers: [admin, ...Object.values(writers)],
+       },
+-    },
+-  });
+-  vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
++    };
++    testState.gatewayAuth = auth;
++    testState.gatewayControlUi = { allowedOrigins: [origin] };
++    await writeConfigFile({
++      gateway: {
++        auth,
++        trustedProxies: ["127.0.0.1"],
++        controlUi: { allowedOrigins: [origin] },
++        roles: {
++          default: "owner",
++          definitions: {
++            owner: {
++              agents: ["main"],
++              scopes: ["operator.admin"],
++              sessions: { others: "write" },
++            },
++            denied: { agents: [], scopes: [], sessions: { others: "none" } },
++          },
++        },
++      },
++      cloudWorkers: {
++        requiredProfile: "dedicated",
++        profiles: {
++          dedicated: { provider: "device", settings: { device: "paired", inference: "worker" } },
++        },
++      },
++    });
++    vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
+ 
+-  // Observe the production service's provider-side setup entry points without replacing them.
+-  const setupCalls: string[] = [];
+-  const dispatchErrors: string[] = [];
+-  let dispatchSettled: Promise<unknown> | undefined;
+-  const createDispatch = placementDispatch.createWorkerPlacementDispatchService;
+-  vi.spyOn(placementDispatch, "createWorkerPlacementDispatchService").mockImplementation(
+-    (options) => {
+-      const service = createDispatch(options);
+-      const dispatch = service.dispatch;
+-      service.dispatch = (...args) => {
+-        const operation = dispatch(...args);
+-        dispatchSettled = operation.catch((error: unknown) => {
+-          dispatchErrors.push(String(error));
++    // Observe the production service's provider-side setup entry points without replacing them.
++    const setupCalls: string[] = [];
++    const dispatchErrors: string[] = [];
++    let dispatchSettled: Promise<unknown> | undefined;
++    let hold: { committed: Deferred; resume: Promise<void> } | undefined;
++    const createDispatch = placementDispatch.createWorkerPlacementDispatchService;
++    vi.spyOn(placementDispatch, "createWorkerPlacementDispatchService").mockImplementation(
++      (options) => {
++        const runLocalBarrier = options.runLocalBarrier;
++        const service = createDispatch({
++          ...options,
++          runLocalBarrier: async (params) => {
++            const placement = await runLocalBarrier(params);
++            const current = timing === "after acknowledgment" ? hold : undefined;
++            if (current && placement.state === "requested") {
++              hold = undefined;
++              current.committed.resolve();
++              await current.resume;
++            }
++            return placement;
++          },
+         });
+-        return operation;
++        const dispatch = service.dispatch;
++        service.dispatch = (...args) => {
++          const operation = dispatch(...args);
++          dispatchSettled = operation.catch((error: unknown) => {
++            dispatchErrors.push(
++              error instanceof Error ? (error.stack ?? error.message) : String(error),
++            );
++          });
++          return operation;
++        };
++        return service;
++      },
++    );
++    const createService = workerEnvironmentService.createWorkerEnvironmentService;
++    vi.spyOn(workerEnvironmentService, "createWorkerEnvironmentService").mockImplementation(
++      (options) => {
++        const service = createService(options);
++        const { prepareProjectIntent, createWithRequest } = service;
++        service.prepareProjectIntent = (...args) => {
++          setupCalls.push("prepareProjectIntent");
++          return prepareProjectIntent(...args);
++        };
++        service.createWithRequest = (...args) => {
++          setupCalls.push("createWithRequest");
++          return createWithRequest(...args);
++        };
++        return service;
++      },
++    );
++    // Hold dispatch after its durable requested commit. The requested acknowledgment is reported
++    // on resume, leaving the post-acknowledgment recheck as the only fence before setup I/O.
++    const startDispatch = placementDispatchStore.startWorkerPlacementDispatch;
++    vi.spyOn(placementDispatchStore, "startWorkerPlacementDispatch").mockImplementation(
++      async (...args) => {
++        const placement = await startDispatch(...args);
++        const current = timing === "before acknowledgment" ? hold : undefined;
++        if (current && placement.state === "requested") {
++          hold = undefined;
++          current.committed.resolve();
++          await current.resume;
++        }
++        return placement;
++      },
++    );
++    // The requested acknowledgment and the failed dispatch's final transition each publish once.
++    let settled: { remaining: number; done: Deferred } | undefined;
++    const emitSessionsChanged = sessionChangeEvent.emitSessionsChanged;
++    vi.spyOn(sessionChangeEvent, "emitSessionsChanged").mockImplementation((...args) => {
++      if (args[1].reason === "dispatch" && settled && --settled.remaining === 0) {
++        settled.done.resolve();
++      }
++      emitSessionsChanged(...args);
++    });
++
++    await withGatewayServer(async ({ port }) => {
++      const connect = async (email: string, scopes: string[]) => {
++        const ws = await openWs(port, {
++          origin,
++          "x-forwarded-user": email,
++          "x-forwarded-for": "203.0.113.50",
++          "x-forwarded-proto": "https",
++        });
++        const connected = await connectReq(ws, {
++          prePairDevice: true,
++          client: CONTROL_UI_CLIENT,
++          browserOrigin: origin,
++          skipDefaultAuth: true,
++          scopes,
++          deviceIdentityPath: path.join(temps.make("required-placement-"), "device.sqlite"),
++        });
++        expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
++        return ws;
+       };
+-      return service;
+-    },
+-  );
+-  const createService = workerEnvironmentService.createWorkerEnvironmentService;
+-  vi.spyOn(workerEnvironmentService, "createWorkerEnvironmentService").mockImplementation(
+-    (options) => {
+-      const service = createService(options);
+-      const { prepareProjectIntent, createWithRequest } = service;
+-      service.prepareProjectIntent = (...args) => {
+-        setupCalls.push("prepareProjectIntent");
+-        return prepareProjectIntent(...args);
++      const adminWs = await connect(admin, ["operator.admin"]);
++      const commitConfigPatch = async (patch: Record<string, unknown>) => {
++        const current = await rpcReq<{ hash: string }>(adminWs, "config.get", {});
++        expect(current.ok, JSON.stringify(current.error)).toBe(true);
++        const patched = await rpcReq(adminWs, "config.patch", {
++          baseHash: current.payload?.hash,
++          ...patch,
++        });
++        expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
+       };
+-      service.createWithRequest = (...args) => {
+-        setupCalls.push("createWithRequest");
+-        return createWithRequest(...args);
++      const createThenEndAuthority = async (
++        email: string,
++        endAuthority: (ws: WebSocket) => Promise<void>,
++        expectedSetupCalls: string[] = [],
++      ) => {
++        setupCalls.length = 0;
++        dispatchErrors.length = 0;
++        const ws = await connect(email, ["operator.sessions.write"]);
++        const committed = createDeferredCore();
++        const resume = createDeferredCore();
++        hold = { committed, resume: resume.promise };
++        settled = { remaining: 2, done: createDeferredCore() };
++        const sessionKey = `agent:main:required-source-${timing.replaceAll(" ", "-")}-${email.split("@")[0]}`;
++        const created = rpcReq(ws, "sessions.create", { key: sessionKey }).catch(
++          (error: unknown) => {
++            throw new Error(`${email}: sessions.create failed: ${String(error)}`, { cause: error });
++          },
++        );
++        void created.catch(() => {});
++        let phase = "waiting for requested placement";
++        try {
++          await Promise.race([
++            committed.promise,
++            created.then(() => {
++              if (timing === "before acknowledgment") {
++                throw new Error("sessions.create settled before its requested placement committed");
++              }
++            }),
++          ]);
++          if (timing === "after acknowledgment") {
++            const accepted = await created;
++            expect(accepted.ok, JSON.stringify(accepted.error)).toBe(true);
++            const published = await rpcReq<{ sessions: Array<{ key: string }> }>(
++              adminWs,
++              "sessions.list",
++              {},
++            );
++            expect(published.ok, JSON.stringify(published.error)).toBe(true);
++            expect(published.payload?.sessions.some((session) => session.key === sessionKey)).toBe(
++              true,
++            );
++          }
++          phase = "ending source authority";
++          await endAuthority(ws);
++        } catch (error) {
++          throw new Error(`${email}: ${phase}: ${String(error)}`, { cause: error });
++        } finally {
++          resume.resolve();
++        }
++        await settled.done.promise;
++        await dispatchSettled;
++        expect(setupCalls, dispatchErrors.join("; ")).toEqual(expectedSetupCalls);
++        if (expectedSetupCalls.length > 0) {
++          expect(dispatchErrors.at(-1)).toContain(
++            "device worker is not a paired node host: paired",
++          );
++        }
++        return { ws, created };
+       };
+-      return service;
+-    },
+-  );
+-  // Hold dispatch after its durable requested commit. The requested acknowledgment is reported
+-  // on resume, leaving the post-acknowledgment recheck as the only fence before setup I/O.
+-  let hold: { committed: Deferred; resume: Promise<void> } | undefined;
+-  const startDispatch = placementDispatchStore.startWorkerPlacementDispatch;
+-  vi.spyOn(placementDispatchStore, "startWorkerPlacementDispatch").mockImplementation(
+-    async (...args) => {
+-      const placement = await startDispatch(...args);
+-      const current = hold;
+-      hold = undefined;
+-      if (current && placement.state === "requested") {
+-        current.committed.resolve();
+-        await current.resume;
+-      }
+-      return placement;
+-    },
+-  );
+-  // The requested acknowledgment and the failed dispatch's final transition each publish once.
+-  let settled: { remaining: number; done: Deferred } | undefined;
+-  const emitSessionsChanged = sessionChangeEvent.emitSessionsChanged;
+-  vi.spyOn(sessionChangeEvent, "emitSessionsChanged").mockImplementation((...args) => {
+-    if (args[1].reason === "dispatch" && settled && --settled.remaining === 0) {
+-      settled.done.resolve();
+-    }
+-    emitSessionsChanged(...args);
+-  });
+-
+-  await withGatewayServer(async ({ port }) => {
+-    const connect = async (email: string, scopes: string[]) => {
+-      const ws = await openWs(port, {
+-        origin,
+-        "x-forwarded-user": email,
+-        "x-forwarded-for": "203.0.113.50",
+-        "x-forwarded-proto": "https",
+-      });
+-      const connected = await connectReq(ws, {
+-        prePairDevice: true,
+-        client: CONTROL_UI_CLIENT,
+-        browserOrigin: origin,
+-        skipDefaultAuth: true,
+-        scopes,
+-        deviceIdentityPath: path.join(temps.make("required-placement-"), "device.sqlite"),
+-      });
+-      expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
+-      return ws;
+-    };
+-    const adminWs = await connect(admin, ["operator.admin"]);
+-    const commitConfigPatch = async (patch: Record<string, unknown>) => {
+-      const current = await rpcReq<{ hash: string }>(adminWs, "config.get", {});
+-      expect(current.ok, JSON.stringify(current.error)).toBe(true);
+-      const patched = await rpcReq(adminWs, "config.patch", {
+-        baseHash: current.payload?.hash,
+-        ...patch,
+-      });
+-      expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
+-    };
+-    const createThenEndAuthority = async (
+-      email: string,
+-      endAuthority: (ws: WebSocket) => Promise<void>,
+-      expectedSetupCalls: string[] = [],
+-    ) => {
+-      setupCalls.length = 0;
+-      const ws = await connect(email, ["operator.sessions.write"]);
+-      const committed = createDeferredCore();
+-      const resume = createDeferredCore();
+-      hold = { committed, resume: resume.promise };
+-      settled = { remaining: 2, done: createDeferredCore() };
+-      const created = rpcReq(ws, "sessions.create", {});
+-      void created.catch(() => {});
+       try {
+-        await Promise.race([
+-          committed.promise,
+-          created.then(() => {
+-            throw new Error("sessions.create settled before its requested placement committed");
+-          }),
+-        ]);
+-        await endAuthority(ws);
+-      } finally {
+-        resume.resolve();
+-      }
+-      await settled.done.promise;
+-      await dispatchSettled;
+-      expect(setupCalls, dispatchErrors.join("; ")).toEqual(expectedSetupCalls);
+-      return { ws, created };
+-    };
+-    try {
+-      // Ordinary mutations retain accepted authority across reconnects. This offline
+-      // node reaches setup, then fails there; closing its socket must not revoke it.
+-      const disconnected = await createThenEndAuthority(
+-        writers.disconnect,
+-        async (ws) => {
+-          const closed = createDeferredCore();
+-          ws.once("close", () => closed.resolve());
+-          ws.close();
+-          await closed.promise;
+-        },
+-        ["prepareProjectIntent"],
+-      );
+-      await expect(disconnected.created).rejects.toThrow(/closed/);
++        // Ordinary mutations retain accepted authority across reconnects. Intent preparation
++        // succeeds, then the actual provider rejects this unpaired node instead of losing custody.
++        const disconnected = await createThenEndAuthority(
++          writers.disconnect,
++          async (ws) => {
++            const closed = createDeferredCore();
++            ws.once("close", () => closed.resolve());
++            ws.close();
++            await closed.promise;
++          },
++          ["prepareProjectIntent", "createWithRequest"],
++        );
++        if (timing === "before acknowledgment") {
++          await expect(disconnected.created).rejects.toThrow(/closed/);
++        }
+ 
+-      // A committed config patch removes the caller's operator scope.
+-      const revoked = await createThenEndAuthority(writers.scope, async () => {
+-        await commitConfigPatch({
+-          raw: JSON.stringify({ gateway: { auth: { identityScopes: { [writers.scope]: null } } } }),
+-          replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
++        // A committed config patch removes the caller's operator scope.
++        const revoked = await createThenEndAuthority(writers.scope, async () => {
++          await commitConfigPatch({
++            raw: JSON.stringify({
++              gateway: { auth: { identityScopes: { [writers.scope]: null } } },
++            }),
++            replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
++          });
+         });
+-      });
+-      await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
++        if (timing === "before acknowledgment") {
++          await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
++        }
+ 
+-      // A committed config patch removes the required profile while the caller stays connected.
+-      const unprofiled = await createThenEndAuthority(writers.profile, async () => {
+-        await commitConfigPatch({
+-          raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
++        // Restoring a profile assignment cannot revive its original accepted authority.
++        const reassigned = await createThenEndAuthority(writers.role, async (ws) => {
++          const self = await rpcReq<{ profile: { id: string } }>(ws, "users.self", {});
++          expect(self.ok, JSON.stringify(self.error)).toBe(true);
++          for (const role of ["denied", null]) {
++            const changed = await rpcReq(adminWs, "users.setRole", {
++              profileId: self.payload?.profile.id,
++              role,
++            });
++            expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
++          }
+         });
+-      });
+-      await unprofiled.created;
+-      expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
+-      unprofiled.ws.close();
+-    } finally {
+-      adminWs.close();
+-    }
+-  });
+-});
++        if (timing === "before acknowledgment") {
++          await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);
++        }
++
++        // A committed config patch removes the required profile while the caller stays connected.
++        const unprofiled = await createThenEndAuthority(writers.profile, async () => {
++          await commitConfigPatch({
++            raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
++          });
++        });
++        await unprofiled.created;
++        expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
++        unprofiled.ws.close();
++      } finally {
++        adminWs.close();
++      }
++    });
++  },
++);

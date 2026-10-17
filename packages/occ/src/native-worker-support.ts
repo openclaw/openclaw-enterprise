@@ -1,3 +1,5 @@
+import type { SandboxDriver, SandboxFacet } from "@openclaw-enterprise/contracts";
+
 /**
  * Whether the OpenClaw commit pinned in deploy/runtime/Dockerfile is qualified for
  * the complete dedicated native OpenClaw flow: required worker placement
@@ -9,7 +11,7 @@
  * tests/conformance/configuration-occ.test.mjs and the native worker notes in
  * docs/reference/harness-execution.md and deploy/runtime/README.md.
  */
-export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = false;
+export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = true;
 
 /**
  * Operator declaration in the Installation startup file (`runtime.nativeWorkerSupport`)
@@ -28,4 +30,17 @@ export function nativeWorkerSupportSource(
     return "pinned-runtime";
   }
   return declared;
+}
+
+/**
+ * Whether a Sandbox Driver can provision dedicated native OpenClaw: it provisions the Harness
+ * and has all three containment facets. Installation capabilities, admission and the Kubernetes
+ * Compute Driver share this one check.
+ */
+export function provisionsDedicatedOpenClaw(sandbox: SandboxDriver | undefined): boolean {
+  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
+  return (
+    sandbox?.provisionHarness !== undefined &&
+    requiredFacets.every((facet) => sandbox.facets.includes(facet))
+  );
 }

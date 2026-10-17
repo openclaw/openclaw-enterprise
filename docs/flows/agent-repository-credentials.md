@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-12"
-last_updated_session: authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e
+updated: "2026-10-17"
+last_updated_session: authoring-run/f538c999-f9bf-4549-ba36-19dca6101420
 ---
 
 # Agent repository credential flow
@@ -104,7 +104,10 @@ database checks concrete bindings. Only fresh, empty drafts permit the classifie
 outage. For up to 20 visible refs,
 `apps/controller/src/drivers/repo/github/credentials/descriptions.ts:createGitHubRepositoryDescriptions`
 fetches descriptions with repository-scoped, metadata-only tokens, sharing the
-provider queue and cleanup lifecycle. Missing metadata never blocks selection.
+provider queue and cleanup lifecycle. It bounds descriptions by Unicode code point; the Unix
+client and OCC apply the same 512-character limit. Controls and invisible or bidi characters
+become spaces, and the picker escapes any that arrive. Joiners inside words and emoji, and
+the England, Scotland and Wales flags, stay. Missing metadata never blocks selection.
 
 The form saves Configuration first and preserves it after known Agent rejections.
 Retries reuse it; repository retries require successful reload and nonempty
@@ -356,6 +359,12 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
+
+- 2026-10-17 05:00: Replace invisible and bidi characters in repository descriptions; escape them in the picker. (lows-1017g - 3a02bef00)
+
+- 2026-10-17 00:15: Preserve Unicode repository descriptions across truncation and discovery. (authoring-run/f538c999-f9bf-4549-ba36-19dca6101420 - 42fb0a90337209e28318765c1b537bc4f3623506)
 
 - 2026-10-12 07:39: Recovery fences a reserved receipt whose fence did not commit. (authoring-run/aee1dd2c-5ac0-4499-aaf6-a4c36928423e - b195e54e9b0ce98ead2b2306015a5209325e837b)
 

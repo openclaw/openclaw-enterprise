@@ -409,12 +409,10 @@ esac
   );
 });
 
-test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  // Image references are checked during argument validation, before any file,
-  // tool, or cluster access, so placeholder paths are enough here.
-  const required = [
+// Argument validation precedes file and cluster access. Keep the kubeconfig
+// absent so an accepted argument reaches a distinct, observable refusal.
+function validationArguments(directory, revision = "d".repeat(40)) {
+  return [
     "--kubeconfig",
     join(directory, "kubeconfig"),
     "--context",
@@ -428,10 +426,16 @@ test("production image upgrades refuse uppercase repository paths and bad digest
     "--installation",
     join(directory, "installation"),
     "--source-revision",
-    "d".repeat(40),
+    revision,
     "--evidence-dir",
     join(directory, "evidence"),
   ];
+}
+
+test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const required = validationArguments(directory);
   // Kubernetes rejects uppercase digest hex as InvalidImageName, so each image
   // flag must refuse it instead of failing later in a rollout. A digest is
   // exactly 64 hex characters.
@@ -487,24 +491,7 @@ test("production image upgrades give image references Kubernetes' verdict", asyn
   const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-references-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const kubeconfig = join(directory, "kubeconfig");
-  const required = [
-    "--kubeconfig",
-    kubeconfig,
-    "--context",
-    "fixture",
-    "--namespace",
-    "openclaw-system",
-    "--release",
-    "oce",
-    "--values",
-    join(directory, "values"),
-    "--installation",
-    join(directory, "installation"),
-    "--source-revision",
-    "d".repeat(40),
-    "--evidence-dir",
-    join(directory, "evidence"),
-  ];
+  const required = validationArguments(directory);
   const flags = ["--controller-image", "--broker-image", "--runtime-image"];
   for (const [index, [label, reference, problem]] of imageReferenceCases.entries()) {
     // Rotate the flag so every flag sees every kind of reference across the table.
@@ -543,26 +530,11 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
   }
   const options = { cwd: repository, env: { ...process.env, LANG: locale, LC_ALL: locale } };
   const argumentsFor = ({
-    revision = "d".repeat(40),
+    revision,
     timeout = "60",
     controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
   }) => [
-    "--kubeconfig",
-    join(directory, "kubeconfig"),
-    "--context",
-    "fixture",
-    "--namespace",
-    "openclaw-system",
-    "--release",
-    "oce",
-    "--values",
-    join(directory, "values"),
-    "--installation",
-    join(directory, "installation"),
-    "--source-revision",
-    revision,
-    "--evidence-dir",
-    join(directory, "evidence"),
+    ...validationArguments(directory, revision),
     "--timeout-seconds",
     timeout,
     "--controller-image",

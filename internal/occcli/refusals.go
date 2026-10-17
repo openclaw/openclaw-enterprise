@@ -119,7 +119,7 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 	}
 	switch apiErr.Message {
 	case admittedNamespaceRefusal:
-		namespace := occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		namespace := apiErr.ServiceKeyNamespace
 		if !keyNamespacePattern.MatchString(namespace) {
 			return "hint: this service key is scoped to one Namespace; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass that Namespace's ID with --namespace (or OCC_NAMESPACE), read it with \"occ namespace get ID\", or use an Installation-scoped key."
 		}

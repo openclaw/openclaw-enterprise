@@ -8,6 +8,47 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-13: shorthand observability IPv4 hosts are refused
+
+**What breaks.** An observability URL whose IPv4 host is not four decimal
+octets from 0 to 255, with no leading zeros, is refused. Shorthand, hex, a
+single integer, and leading zeros used to be stored as a different address
+(`192.168.1` became `192.168.0.1`; `2130706433` became `127.0.0.1`).
+
+**Who is affected.** Profiles with `controlPlane.observabilityUrl`, and
+Installations whose startup `observability.url` uses one of those spellings.
+A canonical host such as `192.168.1.1`, and any DNS name, still loads.
+
+**How to tell.** The profile reports `controlPlane.observabilityUrl IPv4 host
+must be four decimal octets from 0 to 255 with no leading zeros; other
+spellings parse as a different address.` API and worker startup log
+`OBSERVABILITY_URL_INVALID`.
+
+**Steps.** Write the four decimal octets you mean, then render or restart.
+
+## 2026-10-13: IP database hosts are verified against the certificate
+
+**What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS
+mode verifies the server (`sslmode=verify-full`; without `uselibpqcompat=true`
+also `prefer`, `require` and `verify-ca`; or `PGSSLMODE` set to one of those)
+now requires the server certificate to list that IP as an IP subjectAltName, as
+libpq does. Before, the check ran against the name `localhost`, so any
+certificate for `localhost` signed by the database CA was accepted.
+
+**Who is affected.** Installations that reach PostgreSQL by IP with a
+certificate issued only for DNS names. DNS hosts, Unix sockets,
+`sslmode=disable`, `no-verify`, and libpq-compatible `prefer`, `require` and
+`verify-ca` are unchanged.
+
+**How to tell.** The API logs `startup-error` and the worker logs
+`worker.startup-error`, both with code `DATABASE_TLS_CERTIFICATE_INVALID` and
+reason `ERR_TLS_CERT_ALTNAME_INVALID`. Bootstrap logs `PERSISTENCE_UNAVAILABLE`
+and the migrator `MIGRATION_FAILED`.
+
+**Steps.** Reissue the server certificate with `IP:<address>` in its
+subjectAltName, or connect by a DNS name the certificate carries, then restart
+the API and worker.
+
 ## 2026-10-13: more model credential header names and provider models lists
 
 **What breaks.** The 2026-10-12
@@ -60,8 +101,10 @@ settings. A later change applies the header rule to MCP server `headers`
 
 **Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
-A stored Configuration with such a user name or password does not deploy until
-it is edited.
+A stored Configuration with such a user name or password, or with a `baseUrl`,
+`api`, `models` or header name these rules refuse, does not deploy on any
+Compute until it is edited (since 2026-10-16): deployment answers `400` with
+the save's message.
 
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,

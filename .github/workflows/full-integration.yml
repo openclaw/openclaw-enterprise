@@ -145,10 +145,6 @@ jobs:
             title: k3d Plugin Status
             profile: k3d
             timeout: 45
-          - lane: k3d-fixture-oauth
-            title: k3d OAuth Bootstrap
-            profile: k3d
-            timeout: 45
           - lane: k3d-observability-demo
             title: Demo Observability Smoke
             profile: k3d
@@ -398,6 +394,7 @@ jobs:
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
       OCC_TEST_OPENSHELL_SECRET_PROJECTION: ${{ vars.OCC_TEST_OPENSHELL_SECRET_PROJECTION || '1' }}
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: ${{ vars.OCC_TEST_KUBERNETES_GATEWAY_IMAGE }}
@@ -553,7 +550,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-fixture-oauth", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform", "keycloak-oidc"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

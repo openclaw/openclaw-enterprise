@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { waitFor } from "./wait-for.mjs";
@@ -9,6 +10,26 @@ import { waitFor } from "./wait-for.mjs";
 // reading the event list once.
 export function completion(events, description, predicate) {
   return waitFor(description, async () => events.find(predicate));
+}
+
+// The database can say a work item ended before its worker.completed event arrives (finding
+// 1607). Wait for the work's first pass with `outcome`, check it is the last pass observed, and
+// return every pass of the work. A revision pass whose pointer commit lost a race logs the
+// retry it committed (`ACTIVE_REVISION_CHANGED`, finding 1611), so its later pass is the end.
+export async function completedPasses(events, work, outcome = "success") {
+  const ended = await completion(
+    events,
+    `work ${work.idempotencyKey} to end with outcome ${outcome}`,
+    (event) =>
+      event.event === "worker.completed" &&
+      event.workId === work.idempotencyKey &&
+      event.outcome === outcome,
+  );
+  const passes = events.filter(
+    ({ event, workId }) => event === "worker.completed" && workId === work.idempotencyKey,
+  );
+  assert.equal(passes.at(-1), ended);
+  return passes;
 }
 
 // Model the next cleanup interval without waiting an hour for the boundary

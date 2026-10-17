@@ -122,12 +122,6 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_TIMEOUT"],
     },
     {
-      name: "external SIGKILL is not a timeout or retried",
-      events: [],
-      result: { status: null, signal: "SIGKILL" },
-      expect: probeFailure({ kind: "PROCESS_EXIT", detail: "signal-SIGKILL" }),
-    },
-    {
       name: "malformed model output is not retried",
       events: [],
       result: { stdout: "not-json" },
@@ -290,12 +284,6 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       result: { status: 1 },
       expect: probeAuthenticationFailure,
     },
-    {
-      name: "provider server error is not an authentication failure",
-      events: [started, failedTurn("unexpected status 503 Service Unavailable")],
-      result: { status: 1 },
-      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
-    },
     // A provider usage limit, quota or 429 is rate_limit, not a generic error-event or
     // failed turn. The log line keeps the HTTP status and a known code, never the text.
     {
@@ -382,6 +370,39 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 400 }),
     },
     {
+      name: "a missing model is not retried",
+      events: [
+        started,
+        failedTurn(
+          'unexpected status 404 Not Found: {"error":{"code":"model_not_found","message":"no such model"}}',
+        ),
+      ],
+      result: { status: 1 },
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed" },
+        { status: 404, code: "model_not_found" },
+      ),
+    },
+    {
+      name: "a server error naming the credential is not retried",
+      events: [started, failedTurn("unexpected status 500: invalid api key for this server")],
+      result: { status: 1 },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 500 }),
+    },
+    {
+      name: "a rate limit with an overload marker is not retried",
+      events: [started, failedTurn("rate limit reached while servers are overloaded")],
+      result: { status: 1 },
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }),
+    },
+    {
+      // spawnSync kills a probe whose output overflows; that is not an outside kill.
+      name: "a probe killed for oversized output is not retried",
+      events: [],
+      result: { status: null, signal: "SIGKILL", error: { code: "ENOBUFS" } },
+      expect: probeFailure({ kind: "PROCESS_EXIT", detail: "error-ENOBUFS" }),
+    },
+    {
       name: "tool event despite completed assistant turn",
       events: completedTurn({
         type: "item.completed",
@@ -394,6 +415,526 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       events: completedTurn(),
       result: { status: 1 },
       expect: probeFailure({ kind: "PROCESS_EXIT", detail: "exit-1" }),
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, (t) => {
+      checkCodexStartup(t, scenario);
+    });
+  }
+});
+
+// Finding 1576: one provider 5xx or dropped stream must not fail a deployment for good.
+// A transient failure gets the single retry a model timeout gets, inside the same 61 s
+// budget; the held cause is the last attempt's, marked as retried.
+test("Codex runtime retries a transient startup model probe failure once", async (t) => {
+  const started = { type: "turn.started" };
+  const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
+  const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
+  const success = probe([started, assistant, completed]);
+  const failedWith = (message, elapsed) =>
+    probe([started, failedTurn(message)], { status: 1 }, undefined, elapsed);
+  const erroredWith = (message) => probe([started, errorEvent(message)], { status: 1 });
+  const killed = probe([], { status: null, signal: "SIGKILL" });
+  const recoveredNotice = errorEvent("Reconnecting... 1/3 stream disconnected before completion");
+  // Finding 1618: the pinned Codex build prints this for a provider it cannot connect to
+  // (refused, unresolvable or failed TLS alike) and keeps waiting until the probe times out.
+  // Finding 1621: only this exact text is transient; any other cause is held.
+  const networkWait = (cause = "Connection failed: error sending request") =>
+    errorEvent(`Reconnecting... waiting for network (${cause})`);
+  const unreachable = probe([started, networkWait(), networkWait()], timedOut, 30000);
+  // Each transient class, by the one marker that makes it transient.
+  const transient = [
+    [
+      "a provider 5xx",
+      failedWith("unexpected status 502: upstream"),
+      "turn-failed",
+      { status: 502 },
+    ],
+    [
+      "the lowest provider 5xx",
+      failedWith("unexpected status 500"),
+      "turn-failed",
+      { status: 500 },
+    ],
+    [
+      "a provider server error",
+      erroredWith('{"error":{"type":"server_error"}}'),
+      "error-event",
+      { code: "server_error" },
+    ],
+    [
+      "an overloaded provider",
+      erroredWith('{"error":{"type":"overloaded_error"}}'),
+      "error-event",
+      { code: "overloaded_error" },
+    ],
+    ["a model at capacity", failedWith("Selected model is at capacity."), "turn-failed"],
+    [
+      "provider high demand",
+      failedWith("We're currently experiencing high demand, which may cause temporary errors."),
+      "turn-failed",
+    ],
+    [
+      "a dropped stream",
+      failedWith("stream disconnected before completion: response ended early"),
+      "turn-failed",
+    ],
+    [
+      "a transport error",
+      erroredWith("error sending request for url (https://api.openai.com/v1/responses)"),
+      "error-event",
+    ],
+    ["a failed connection", erroredWith("connection refused"), "error-event"],
+    // Codex's HTTP client names no cause for a failed connection, so a DNS or TLS
+    // failure reported this way cannot be told from a transient one.
+    [
+      "a failed connection that names no cause",
+      erroredWith("Connection failed: error sending request"),
+      "error-event",
+    ],
+    [
+      "a DNS lookup that may recover",
+      failedWith(
+        "stream disconnected before completion: failed to lookup address information: Try again",
+      ),
+      "turn-failed",
+    ],
+    ["a broken pipe", erroredWith("broken pipe"), "error-event"],
+    ["a reset connection", erroredWith("Connection reset by peer (os error 104)"), "error-event"],
+    [
+      "a closed connection",
+      erroredWith("connection closed before message completed"),
+      "error-event",
+    ],
+    [
+      "a failed connection that names its cause",
+      erroredWith("Connection failed: tcp connect error"),
+      "error-event",
+    ],
+    ["an unreachable provider", unreachable, "error-event"],
+    ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
+    [
+      "a terminated probe",
+      probe([], { status: null, signal: "SIGTERM" }),
+      "signal-SIGTERM",
+      undefined,
+      "PROCESS_EXIT",
+    ],
+  ];
+  // Findings 1601 and 1602: each of these fails the same way again, even with a
+  // transient word in its text, so it is held at once without a second model call.
+  // The messages follow what the pinned Codex build prints for each failure.
+  const heldAtOnce = [
+    [
+      "a provider 404 that says overloaded",
+      failedWith(
+        "unexpected status 404 Not Found: overloaded, url: https://provider.example/v1/responses",
+      ),
+      "turn-failed",
+      { status: 404 },
+    ],
+    [
+      "a provider 402 with a server error body",
+      failedWith(
+        'unexpected status 402 Payment Required: {"error":{"type":"server_error"}}, url: https://provider.example/v1/responses',
+      ),
+      "turn-failed",
+      { status: 402, code: "server_error" },
+    ],
+    [
+      // Codex prints a 400 as its bare body, without the status.
+      "a provider 400 body that says overloaded",
+      failedWith(
+        '{"error":{"message":"the server is overloaded","type":"invalid_request_error","code":"server_error"}}',
+      ),
+      "turn-failed",
+      { code: "server_error" },
+    ],
+    [
+      "a content-filter stop",
+      failedWith(
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter",
+      ),
+      "turn-failed",
+    ],
+    [
+      "a rejected provider certificate",
+      erroredWith(
+        "stream disconnected before completion: invalid peer certificate: Other(OtherError(CaUsedAsEndEntity))",
+      ),
+      "error-event",
+    ],
+    [
+      "a provider host name that does not resolve",
+      erroredWith(
+        "stream disconnected before completion: failed to lookup address information: Name does not resolve",
+      ),
+      "error-event",
+    ],
+    [
+      "a provider host name with no address",
+      erroredWith(
+        "stream disconnected before completion: failed to lookup address information: Name has no usable address",
+      ),
+      "error-event",
+    ],
+    // The 4xx guard's bounds; a compatible endpoint may print the status.
+    [
+      "a provider 400 with its status that says overloaded",
+      failedWith(
+        "unexpected status 400 Bad Request: the server is overloaded, url: https://provider.example/v1/responses",
+      ),
+      "turn-failed",
+      { status: 400 },
+    ],
+    [
+      "the highest provider 4xx",
+      failedWith("unexpected status 499: overloaded"),
+      "turn-failed",
+      { status: 499 },
+    ],
+    // A credential marker vetoes a transient one, each on its own.
+    [
+      "a dropped stream naming auth",
+      erroredWith("stream disconnected before completion: auth token expired"),
+      "error-event",
+    ],
+    [
+      "a server error naming a forbidden request",
+      erroredWith("server_error: forbidden by the workspace policy"),
+      "error-event",
+      { code: "server_error" },
+    ],
+    [
+      "an overload naming a credential",
+      erroredWith("overloaded: the credential was revoked"),
+      "error-event",
+    ],
+    [
+      "a dropped stream naming a 403 without its status",
+      erroredWith("stream disconnected before completion: upstream answered 403"),
+      "error-event",
+    ],
+    [
+      "a dropped stream naming the API key in any case",
+      erroredWith("stream disconnected before completion: Incorrect API key provided"),
+      "error-event",
+    ],
+    // Only a network wait for a failed connection is transient; any other Reconnecting
+    // notice the recovered-stream rule refused is held, even with a transient cause. These
+    // are boundary shapes the pinned build does not print, so a looser match fails here.
+    [
+      "a network wait for a provider 503",
+      erroredWith("Reconnecting... waiting for network (unexpected status 503)"),
+      "error-event",
+      { status: 503 },
+    ],
+    [
+      "a network wait that does not start the notice",
+      erroredWith(`Error: ${networkWait().message}`),
+      "error-event",
+    ],
+    [
+      "a network wait with text after its cause",
+      erroredWith(`${networkWait().message} after 3 tries`),
+      "error-event",
+    ],
+    [
+      "a network wait for a failed connection naming a credential",
+      erroredWith(networkWait("Connection failed: invalid credential").message),
+      "error-event",
+    ],
+    // Finding 1621: a cause other than the pinned text may be permanent, so it is held.
+    ...[
+      "Connection failed: invalid URL, scheme is not http",
+      "Connection failed: builder error",
+      "Connection failed: error sending request for url (https://provider.example/v1/responses)",
+      "Connection failed: blocked by policy",
+    ].map((cause) => [
+      `a network wait for "${cause}"`,
+      erroredWith(networkWait(cause).message),
+      "error-event",
+    ]),
+  ];
+  const scenarios = [
+    ...heldAtOnce.map(([description, first, detail, provider]) => ({
+      name: `${description} is held at once, with no second probe`,
+      native: [login(), first],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail }, provider),
+    })),
+    ...transient.map(([description, first]) => ({
+      name: `${description} recovers on the second attempt`,
+      native: [login(), first, success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    })),
+    ...transient.map(([description, first, detail, provider, kind = "PROBE_STATUS"]) => ({
+      name: `${description} twice holds the second cause, marked as retried`,
+      native: [login(), first, first],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind, detail: `${detail}-attempt2` }, provider),
+      lastProbeCause: { kind, detail },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+    })),
+    {
+      name: "a deterministic second attempt holds its own cause, marked as retried",
+      native: [
+        login(),
+        failedWith("unexpected status 503"),
+        probe([started, { type: "item.completed", item: { type: "command_execution" } }]),
+      ],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event-attempt2" }),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "tool-event" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+    },
+    {
+      name: "a transient failure then a credential rejection is an authentication failure",
+      native: [
+        login(),
+        killed,
+        probe([started, failedTurn("unexpected status 401 Unauthorized: Incorrect API key")], {
+          status: 1,
+        }),
+      ],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
+      probeCodes: ["MODEL_PROBE_FAILED", "AUTHENTICATION_FAILED"],
+    },
+    // Within one attempt, a later deterministic failure vetoes an earlier transient one.
+    {
+      name: "a transient error then a tool event in the same attempt holds the tool event",
+      native: [
+        login(),
+        probe([
+          started,
+          errorEvent("unexpected status 503"),
+          { type: "item.completed", item: { type: "command_execution" } },
+        ]),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
+    },
+    {
+      name: "a transient error then a rate limit in the same attempt holds the rate limit",
+      native: [
+        login(),
+        probe(
+          [
+            started,
+            errorEvent("unexpected status 503"),
+            failedTurn("exceeded retry limit, last status: 429 Too Many Requests"),
+          ],
+          { status: 1 },
+        ),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "rate_limit" }, { status: 429 }),
+    },
+    {
+      name: "a transient error then a credential rejection in the same attempt is an authentication failure",
+      native: [
+        login(),
+        probe(
+          [
+            started,
+            errorEvent("unexpected status 503"),
+            failedTurn("unexpected status 401 Unauthorized: Incorrect API key"),
+          ],
+          { status: 1 },
+        ),
+      ],
+      expect: { ...probeFailure(), code: "AUTHENTICATION_FAILED" },
+    },
+    {
+      name: "a transient error then a completed reply in the same attempt is still retried",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 503"), assistant, completed]),
+        success,
+      ],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    },
+    // Finding 1622: Codex reconnects after a network wait on its own, so a wait inside the
+    // turn of an attempt that exits answered passes, like a recovered stream notice.
+    {
+      name: "network waits then a completed reply in the same attempt pass",
+      native: [login(), probe([started, networkWait(), networkWait(), assistant, completed])],
+      expect: ready,
+    },
+    ...[
+      ["a network wait before the turn", [networkWait(), started, assistant, completed]],
+      [
+        "a failed turn with the network wait text",
+        [started, failedTurn(networkWait().message), assistant, completed],
+        undefined,
+        "turn-failed",
+      ],
+      [
+        // A made-up shape: only an error event's own text is a network wait.
+        "a failed turn naming the network wait beside a transient error",
+        [
+          started,
+          { ...failedTurn("unexpected status 503"), message: networkWait().message },
+          assistant,
+          completed,
+        ],
+        undefined,
+        "turn-failed",
+      ],
+      [
+        "a network wait and a transient error",
+        [started, errorEvent("unexpected status 503"), networkWait(), assistant, completed],
+      ],
+      ["a network wait then a completed turn with no reply", [started, networkWait(), completed]],
+      [
+        "a network wait then a blank reply",
+        [
+          started,
+          networkWait(),
+          { type: "item.completed", item: { type: "agent_message", text: "  " } },
+          completed,
+        ],
+      ],
+      [
+        // A made-up shape: one turn reported complete twice is not an answer.
+        "a network wait then a turn completed twice",
+        [started, networkWait(), assistant, completed, completed],
+      ],
+      [
+        "a network wait then a reply after the turn",
+        [started, networkWait(), completed, assistant],
+      ],
+      [
+        "a network wait then a reply from a failed process",
+        [started, networkWait(), assistant, completed],
+        { status: 1 },
+      ],
+      [
+        // Held as the network wait, not as the kill that ended the process.
+        "a network wait then a reply from a terminated process",
+        [started, networkWait(), assistant, completed],
+        { status: null, signal: "SIGTERM" },
+      ],
+      [
+        "a network wait then a reply from a probe that overflowed its output",
+        [started, networkWait(), assistant, completed],
+        { error: { code: "ENOBUFS" } },
+      ],
+    ].map(([description, events, result, detail = "error-event"]) => ({
+      name: `${description} in one attempt is still retried`,
+      native: [login(), probe(events, result), success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+      probeCauses: [{ kind: "PROBE_STATUS", detail }, undefined],
+    })),
+    {
+      name: "two transient failures in one attempt still get one retry",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 502"), failedTurn("broken pipe")], {
+          status: 1,
+        }),
+        failedWith("unexpected status 503"),
+      ],
+      retryAfterMs: 1000,
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
+        { status: 503 },
+      ),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+      // The first attempt reports its first transient failure.
+      probeCauses: [
+        { kind: "PROBE_STATUS", detail: "error-event" },
+        { kind: "PROBE_STATUS", detail: "turn-failed" },
+      ],
+    },
+    {
+      name: "two transient failures then a tool event in one attempt hold the tool event",
+      native: [
+        login(),
+        probe([
+          started,
+          errorEvent("unexpected status 502"),
+          errorEvent("broken pipe"),
+          { type: "item.completed", item: { type: "command_execution" } },
+        ]),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "tool-event" }),
+    },
+    // A recovered stream notice is never a transient failure, before or after one.
+    ...[
+      ["before", [recoveredNotice, errorEvent("unexpected status 503")]],
+      ["after", [errorEvent("unexpected status 503"), recoveredNotice]],
+    ].map(([order, events]) => ({
+      name: `a recovered stream notice ${order} a transient error is still retried`,
+      native: [login(), probe([started, ...events, assistant, completed]), success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+      probeCauses: [{ kind: "PROBE_STATUS", detail: "error-event" }, undefined],
+    })),
+    {
+      name: "a transient failure then a timeout holds the timeout",
+      native: [login(), failedWith("unexpected status 503"), probe([], timedOut, 30000)],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
+    },
+    {
+      // The one retry is shared: a timeout spends it, so a transient failure after it holds.
+      name: "a timeout then a transient failure holds without a second retry",
+      native: [login(), probe([], timedOut, 30000), failedWith("unexpected status 503")],
+      retryAfterMs: 1000,
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: "turn-failed-attempt2" },
+        { status: 503 },
+      ),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      probeCodes: ["MODEL_PROBE_TIMEOUT", "MODEL_PROBE_FAILED"],
+    },
+    {
+      name: "a transient retry gets only the remaining budget",
+      native: [login(), failedWith("unexpected status 503", 40000), probe([], timedOut, 20000)],
+      retryAfterMs: 1000,
+      expect: { ...probeFailure(), code: "MODEL_PROBE_TIMEOUT" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_TIMEOUT"],
+    },
+    {
+      name: "a transient failure with no budget left for a retry holds at once",
+      native: [login(), failedWith("unexpected status 503", 60500)],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
+    },
+    {
+      // The retry waits one second, so exactly one second left is not enough.
+      name: "a transient failure with exactly the retry delay left holds at once",
+      native: [login(), failedWith("unexpected status 503", 60000)],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
+    },
+    {
+      // A transient event the attempt saw is its failure, even when the attempt then timed out.
+      name: "a transient error then a timeout in the same attempt is retried as transient",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 503")], timedOut, 30000),
+        success,
+      ],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    },
+    {
+      // Only a detail token is marked as retried; a cause with no detail keeps none.
+      name: "a wrapper error after a transient failure holds a cause with no detail",
+      // A non-string stdout makes the wrapper throw.
+      native: [login(), killed, probe([], { stdout: 1 })],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind: "WRAPPER_ERROR" }),
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
     },
   ];
   for (const scenario of scenarios) {

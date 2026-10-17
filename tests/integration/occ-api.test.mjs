@@ -689,7 +689,11 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
-  assert.deepEqual(singleton.data, installation);
+  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+  assert.deepEqual(singleton.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");
@@ -825,7 +829,7 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   assert.equal(auditEndpoint.status, 404);
 
   const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, installation);
+  assert.deepEqual(unchanged.data, { ...installation, capabilities: singleton.data.capabilities });
 });
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
@@ -2089,6 +2093,7 @@ test("OCC rejects Namespace lifecycle Role Permissions before any IAM Driver or 
   const permissiveDriver = {
     id: "iam-permissive-role-sink",
     capability: "iam",
+    namespacePolicyTransaction: "platform-unit-of-work",
     implementation: "occ-permission-isolation-test",
     async lookupIdentity(input) {
       return input.issuer === fixture.principal.issuer &&
@@ -2372,7 +2377,7 @@ test("Namespace IAM read routes serialize broad native policy without widening m
   assert.equal(broadBindingCreate.body.error.code, "INVALID_REQUEST");
 });
 
-test("Namespace IAM routes fail closed without policy management and roll back audit failures", async () => {
+test("Namespace IAM routes fail closed without policy management and roll back audit failures", async (t) => {
   const unsupportedFixture = await createInjectedFixture();
   const unsupported = {
     request: (method, path, options) =>
@@ -2427,6 +2432,80 @@ test("Namespace IAM routes fail closed without policy management and roll back a
       unit.iamPolicy.listRoles(unsupportedNamespace.id),
     ),
     [],
+  );
+
+  // A Driver must declare transaction participation before any policy write.
+  // Keep the real native implementation; omit only its optional capability declaration.
+  const transactionFixture = await createInjectedFixture();
+  const transactional = {
+    request: (method, path, options) =>
+      injectedRequest(transactionFixture.app, method, path, options),
+  };
+  await bootstrap(transactional);
+  const transactionNamespace = await createNamespace(transactional, "undeclared-iam-transaction");
+  const policyPath = `/namespaces/${transactionNamespace.id}/iam`;
+  const namespaceRole = await transactional.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "read", resourceKind: "namespace" }] },
+  });
+  assert.equal(namespaceRole.status, 201);
+  const unusedRole = await transactional.request("POST", `${policyPath}/roles`, {
+    body: { permissions: [{ action: "read", resourceKind: "agent" }] },
+  });
+  assert.equal(unusedRole.status, 201);
+  const binding = {
+    subjectKind: "identity",
+    subjectId: transactionFixture.principal.id,
+    roleId: namespaceRole.data.id,
+    resourceKind: "namespace",
+    resourceId: transactionNamespace.id,
+  };
+  const existingBinding = await transactional.request("POST", `${policyPath}/access-bindings`, {
+    body: binding,
+  });
+  assert.equal(existingBinding.status, 201);
+  const policy = () =>
+    transactionFixture.platformState.read(async (unit) => ({
+      roles: await unit.iamPolicy.listRoles(transactionNamespace.id),
+      bindings: await unit.iamPolicy.listAccessBindings(transactionNamespace.id),
+      principals: await unit.iamPolicy.listServicePrincipals(transactionNamespace.id),
+    }));
+  const before = await policy();
+  const undeclared = new NativeIAMDriver(
+    { loadNativeIAMState: async () => transactionFixture.state },
+    { id: "iam-without-declared-transaction" },
+  );
+  delete undeclared.namespacePolicyTransaction;
+  transactionFixture.controller.registerDriver(undeclared);
+  transactionFixture.controller.selectDriver("iam", undeclared.id);
+  assert.equal((await transactional.request("GET", `${policyPath}/roles`)).status, 200);
+  const refusedStatuses = [];
+  for (const [method, path, body] of [
+    ["POST", `${policyPath}/roles`, { permissions: [{ action: "read", resourceKind: "agent" }] }],
+    ["DELETE", `${policyPath}/roles/${unusedRole.data.id}`],
+    ["POST", `${policyPath}/access-bindings`, binding],
+    ["DELETE", `${policyPath}/access-bindings/${existingBinding.data.id}`],
+    ["POST", `${policyPath}/service-principals`, {}],
+  ]) {
+    const refused = await transactional.request(method, path, body === undefined ? {} : { body });
+    assert.equal(refused.status, 503, `${method} ${path}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    refusedStatuses.push(refused.status);
+    assert.deepEqual(await policy(), before);
+    const events = transactionFixture.auditSink.events;
+    assert.equal(
+      events.some(
+        (event) => event.requestId === refused.body.meta.requestId && event.kind === "mutation",
+      ),
+      false,
+    );
+  }
+  t.diagnostic(
+    JSON.stringify({
+      scenario: "transaction-capability-refusal",
+      statuses: refusedStatuses,
+      policyPreserved: true,
+      successAudit: 0,
+    }),
   );
 
   const rollbackFixture = await createInjectedFixture();
@@ -2751,7 +2830,12 @@ test("Installation API exposes Agent provisioning capabilities without configure
 
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
+  // Without a provisioning Sandbox Driver, dedicated OpenClaw cannot be admitted (finding 1608);
+  // without any Sandbox Driver, Embedded OpenClaw can (#2670). Bootstrap reports neither.
+  assert.deepEqual(installation.data.capabilities, {
+    ...bootstrapped.capabilities,
+    openclaw: { executionModes: ["embedded"] },
+  });
 
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);
@@ -2789,11 +2873,20 @@ test("Agent deployment status polls the admitted revision work with exact read a
     warnings: [],
     progress: { lastAttempt: null, nextAttemptAt: new Date(0).toISOString() },
   });
-  const runtimeFailure = {
-    component: "gateway",
-    check: "readyz",
+  // A provider-owned Harness serves its failure evidence from inside the Sandbox, so Agent code
+  // can answer in its place. Values outside the runtime's own vocabulary read back as
+  // UNRECOGNIZED, so the status and the Console never show what it wrote (finding 1660).
+  const servedRuntimeFailure = {
+    component: "sidecar",
+    check: "see.evil.example:443",
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "STARTUP_FAILED",
+  };
+  const runtimeFailure = {
+    ...servedRuntimeFailure,
+    component: "UNRECOGNIZED",
+    check: "UNRECOGNIZED",
+    code: "UNRECOGNIZED",
   };
   deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
     idempotencyKey: `agent_revision:${admitted.data.id}:reconcile`,
@@ -2806,7 +2899,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     attemptCount: 1,
     completedAt: new Date("2026-09-19T20:31:00.000Z"),
     reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-    resultData: { timeoutMs: 900_000, runtimeFailure },
+    resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
     createdAt: new Date(0),
     updatedAt: new Date("2026-09-19T20:31:00.000Z"),
   });
@@ -2863,6 +2956,39 @@ test("Agent deployment status polls the admitted revision work with exact read a
   assert.equal(readableDeployment.status, 200, JSON.stringify(readableDeployment.body));
   assert.equal(readableDeployment.data.status, "failed");
   assert.deepEqual(readableDeployment.data.error?.data?.runtimeFailure, runtimeFailure);
+  // Evidence in the runtime's own vocabulary reads back as recorded.
+  const knownRuntimeFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-09-19T20:30:00.000Z",
+    code: "NOT_CONFIGURED",
+  };
+  const deploymentWork = deploymentWorks.get(`agent_revision:${admitted.data.id}:reconcile`);
+  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    ...deploymentWork,
+    resultData: { timeoutMs: 900_000, runtimeFailure: knownRuntimeFailure },
+  });
+  const knownDeployment = await injectedRequest(readerApp, "GET", path);
+  assert.equal(knownDeployment.status, 200, JSON.stringify(knownDeployment.body));
+  assert.deepEqual(knownDeployment.data.error?.data?.runtimeFailure, knownRuntimeFailure);
+  // So does the evidence Kubernetes Compute builds from a failed initialize-workspace init
+  // container, whose code docs/flows/workspace-files.md names (finding 1675).
+  const workspaceSetupFailure = {
+    component: "agent",
+    check: "workspace-setup",
+    checkedAt: "2026-09-19T20:30:00.000Z",
+    code: "WORKSPACE_SETUP_FAILED",
+  };
+  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    ...deploymentWork,
+    resultData: { timeoutMs: 900_000, runtimeFailure: workspaceSetupFailure },
+  });
+  const workspaceSetupDeployment = await injectedRequest(readerApp, "GET", path);
+  assert.equal(workspaceSetupDeployment.status, 200, JSON.stringify(workspaceSetupDeployment.body));
+  assert.deepEqual(
+    workspaceSetupDeployment.data.error?.data?.runtimeFailure,
+    workspaceSetupFailure,
+  );
 
   fixture.state.roles.find(
     (role) => role.id === "role-deployment-status-reader",
