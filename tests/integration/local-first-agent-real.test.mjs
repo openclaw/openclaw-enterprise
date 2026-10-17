@@ -15,7 +15,9 @@ import {
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeWorkerProofInController,
+  failNativeProvisioningDeadline,
   nativeFirstAgentProofTimeout,
+  nativeProvisioningPath,
 } from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
 
@@ -291,13 +293,20 @@ async function readSecretResourceVersion({ stateDirectory, cluster, env, namespa
   );
 }
 
-async function requestLocalApi(origin, serviceKey, method, path, body) {
+async function requestLocalApi(
+  origin,
+  serviceKey,
+  method,
+  path,
+  body,
+  signal = AbortSignal.timeout(20_000),
+) {
   let response;
   try {
     response = await fetch(new URL(path, origin), {
       method,
       redirect: "error",
-      signal: AbortSignal.timeout(20_000),
+      signal,
       headers: {
         "x-api-key": serviceKey,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -647,8 +656,8 @@ test(
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution",
         { timeout: 16 * 60_000 + 2 * nativeFirstAgentProofTimeout + 30_000 },
         async (nativeContext) => {
-          const request = (method, path, body) =>
-            requestLocalApi(first.origin, serviceKey, method, path, body);
+          const request = (method, path, body, signal) =>
+            requestLocalApi(first.origin, serviceKey, method, path, body, signal);
           const configuration = createHarnessConfiguration("openclaw", expectedModel);
           const installation = await request("GET", "/installation");
           assert.equal(installation.capabilities?.nativeWorkers?.support, "pinned-runtime");
@@ -691,12 +700,16 @@ test(
             workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
           });
           const deadline = Date.now() + 8 * 60_000;
+          const provisioningPath = nativeProvisioningPath(
+            first.namespaceId,
+            submitted.provisioning,
+          );
           let provisioned;
           let deployment;
           let nativeAgent;
           while (Date.now() < deadline) {
             nativeContext.signal.throwIfAborted();
-            provisioned = await request("GET", submitted.provisioning.url);
+            provisioned = await request("GET", provisioningPath);
             assert.notEqual(
               provisioned.status,
               "failed",
@@ -725,6 +738,15 @@ test(
             await new Promise((resolve) =>
               setTimeout(resolve, Math.min(2_000, Math.max(1, deadline - Date.now()))),
             );
+          }
+          if (Date.now() >= deadline && provisioned?.status !== "succeeded") {
+            await failNativeProvisioningDeadline({
+              request,
+              provisioningPath,
+              provisioned,
+              namespaceId: first.namespaceId,
+              signal: nativeContext.signal,
+            });
           }
           assert.equal(provisioned?.status, "succeeded");
           assert.equal(deployment?.status, "succeeded");

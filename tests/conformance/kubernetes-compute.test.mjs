@@ -1217,6 +1217,9 @@ function dedicatedFirstDeployFixture({
         ...(role === "gateway" && state.gatewayWorkspaceNodeFailure !== undefined
           ? { workspaceNodeFailure: state.gatewayWorkspaceNodeFailure }
           : {}),
+        ...(role === "gateway" && state.gatewayRuntimeFailure !== undefined
+          ? { runtimeFailure: state.gatewayRuntimeFailure }
+          : {}),
       };
     }
     return {
@@ -2190,6 +2193,113 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   const unpaired = await prepare();
   assert.equal(unpaired.ready, false);
   assert.equal(unpaired.pendingReason, "WORKSPACE_NODE_PENDING");
+  state.connected = true;
+  const ready = await prepare();
+  assert.equal(ready.ready, true);
+  assert.equal(ready.pendingReason, undefined);
+});
+
+// A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
+// bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
+// ReplicaFailure condition onto the Deployment, which the driver reads.
+test("a pending dedicated deploy names a full Namespace Pod quota", async () => {
+  const {
+    state,
+    driver,
+    revision,
+    namespace,
+    gatewayName,
+    agentName,
+    read,
+    save,
+    prepare,
+    markReady,
+  } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  assert.equal((await prepare()).pendingReason, undefined);
+  const setConditions = (name, conditions) => {
+    const object = read("Deployment", name);
+    object.status = { ...object.status, conditions };
+    save(object);
+  };
+  const refusal = (requested, used = "pods=10", limited = "pods=10") =>
+    `pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: exceeded quota: openclaw-quota, requested: ${requested}, used: ${used}, limited: ${limited}`;
+  const failure = (message, overrides = {}) => ({
+    type: "ReplicaFailure",
+    status: "True",
+    reason: "FailedCreate",
+    message,
+    ...overrides,
+  });
+  const pendingReasonWith = async (name, conditions) => {
+    setConditions(name, conditions);
+    const observed = await prepare();
+    setConditions(name, []);
+    assert.equal(observed.ready, false);
+    return observed.pendingReason;
+  };
+  const quota = "NAMESPACE_POD_QUOTA_EXCEEDED";
+  for (const name of [agentName, gatewayName]) {
+    assert.equal(await pendingReasonWith(name, [failure(refusal("pods=1"))]), quota, name);
+  }
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      { type: "Available", status: "False", reason: "MinimumReplicasUnavailable" },
+      failure(
+        refusal("pods=1,requests.cpu=500m", "pods=10,requests.cpu=4", "pods=10,requests.cpu=4"),
+      ),
+    ]),
+    quota,
+  );
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("count/pods=1", "count/pods=10", "count/pods=10")),
+    ]),
+    quota,
+  );
+  // Only a refusal for want of Pods is a full Pod quota.
+  for (const conditions of [
+    [failure(refusal("requests.cpu=500m", "pods=4,requests.cpu=4", "pods=10,requests.cpu=4"))],
+    [failure(refusal("pods=1"), { status: "False" })],
+    [failure(refusal("pods=1"), { reason: "FailedDelete" })],
+    [failure(refusal("pods=1"), { type: "Progressing" })],
+    [failure(`pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: error looking up service account`)],
+    [failure(undefined)],
+  ]) {
+    assert.equal(await pendingReasonWith(agentName, conditions), undefined, inspect(conditions));
+  }
+  // A held runtime failure leads instead of any pending reason.
+  state.gatewayRuntimeFailure = {
+    component: "gateway",
+    check: "peer-bridge-record",
+    checkedAt: "2026-09-19T11:59:00.000Z",
+    code: "UNAVAILABLE",
+  };
+  setConditions(agentName, [failure(refusal("pods=1"))]);
+  const failed = await prepare();
+  assert.equal(failed.pendingReason, undefined);
+  assert.equal(failed.runtimeFailure?.code, "UNAVAILABLE");
+  setConditions(agentName, []);
+  state.gatewayRuntimeFailure = undefined;
+  // One unreadable Deployment does not hide the other's refusal.
+  setConditions(gatewayName, [failure(refusal("pods=1"))]);
+  const target = { name: namespace, plane: "execution" };
+  const gateway = {
+    name: gatewayName,
+    namespace: target,
+    ownership: { namespaceId: tenant.id, agentId: revision.agentId },
+  };
+  const foreign = { name: agentName, namespace: target, ownership: { namespaceId: "other" } };
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), true);
+  assert.equal(await driver.safePodQuotaObservation([foreign]), false);
+  setConditions(gatewayName, []);
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), false);
+  // A full quota names the wait before a Pod the scheduler cannot place.
+  state.unschedulableRole = "gateway";
+  assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  state.unschedulableRole = undefined;
+  markReady(agentName);
+  markReady(gatewayName);
   state.connected = true;
   const ready = await prepare();
   assert.equal(ready.ready, true);

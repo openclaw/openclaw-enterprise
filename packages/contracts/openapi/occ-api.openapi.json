@@ -10934,6 +10934,25 @@
                               "required": ["support"],
                               "type": "object"
                             },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime admit at Agent save and deploy. Empty when they admit none: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
                             "pluginDiscovery": {
                               "additionalProperties": false,
                               "properties": {
@@ -11259,6 +11278,25 @@
                                 }
                               },
                               "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime admit at Agent save and deploy. Empty when they admit none: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": ["executionModes"],
                               "type": "object"
                             },
                             "pluginDiscovery": {

@@ -732,6 +732,9 @@ export function installFixture(scenario, evidence) {
           ...(scenario.nativeWorkerSupport === false
             ? {}
             : { nativeWorkers: { support: scenario.nativeWorkerSupport ?? "pinned-runtime" } }),
+          ...(scenario.openclawExecutionModes === undefined
+            ? {}
+            : { openclaw: { executionModes: scenario.openclawExecutionModes } }),
           ...(scenario.credentialSourceTypes !== undefined
             ? { credentialSources: { types: scenario.credentialSourceTypes } }
             : {}),
@@ -1084,7 +1087,13 @@ export function installFixture(scenario, evidence) {
             namespaceId,
             agentId: saved.id,
             status: scenario.provisionedDeploymentStatus ?? "queued",
-            progress: initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued"),
+            progress:
+              scenario.provisionedDeploymentAttempt === undefined
+                ? initialDeploymentProgress(scenario.provisionedDeploymentStatus ?? "queued")
+                : {
+                    lastAttempt: { at: createdAt, ...scenario.provisionedDeploymentAttempt },
+                    nextAttemptAt: createdAt,
+                  },
             reads: scenario.provisionedDeploymentStatus === undefined ? 0 : undefined,
             error:
               scenario.provisionedDeploymentStatus !== "failed"

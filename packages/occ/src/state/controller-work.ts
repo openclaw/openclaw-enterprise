@@ -71,6 +71,12 @@ export function deploymentProgressForWork(
       message =
         "The cluster has no room for this Agent's Pods yet; they are waiting to be scheduled.";
       break;
+    case "NAMESPACE_POD_QUOTA_EXCEEDED":
+      // Fixed copy: never the quota's numbers or name (finding 1617).
+      code = attempt.code;
+      message =
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+      break;
     case "WORKSPACE_NODE_PENDING":
       code = attempt.code;
       message = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";

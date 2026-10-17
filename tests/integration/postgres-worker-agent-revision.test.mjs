@@ -1311,13 +1311,16 @@ revisionTest(
   async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
+    const overQuota = await fixture.agent("pending-pod-quota");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
+    const overQuotaRevision = await fixture.revision(overQuota, 1);
     // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
     // and still inside the 900-second deadline.
     const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
+      [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
     ]);
     const delays = new Map([
       [unscheduledRevision.idempotencyKey, []],
@@ -1369,6 +1372,12 @@ revisionTest(
     assert.deepEqual(await progress(unpaired, unpairedRevision), {
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
+    });
+    // Finding 1617: a full Namespace Pod quota is named, without its numbers.
+    assert.deepEqual(await progress(overQuota, overQuotaRevision), {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);

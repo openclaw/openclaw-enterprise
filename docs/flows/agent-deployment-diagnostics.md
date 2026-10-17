@@ -129,7 +129,9 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   means the runtime is holding that failure. Its Logs tab shows the remedy.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout or
-  a transient failure, and the second attempt failed that way.
+  a transient failure, and the second attempt failed that way. An unreachable
+  model provider is transient: each attempt waits out its 30-second limit, so
+  `error-event-attempt2` follows about a minute after the check starts.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
@@ -159,6 +161,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 02:30: Retry the dedicated Codex model check once when the model provider is unreachable. (lows-1017c, finding 1618)
 
 - 2026-10-14 15:27: Reject redirected status responses before reading their bodies. (authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4 - 8e916a6c)
 

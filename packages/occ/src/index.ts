@@ -94,7 +94,6 @@ import type {
   RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
-  SandboxFacet,
   SandboxHarnessLostCode,
   Secret,
   SecretBindings,
@@ -111,6 +110,7 @@ import type {
   HarnessAuthSnapshot,
 } from "@openclaw-enterprise/contracts";
 import {
+  HARNESS_EXECUTION_MODES,
   isName,
   NAME_RULE,
   normalizeInitialWorkspaceFiles,
@@ -212,6 +212,7 @@ import {
 } from "./runtime-logs/index.ts";
 import {
   nativeWorkerSupportSource,
+  provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
   type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
@@ -288,6 +289,7 @@ export {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
@@ -368,6 +370,7 @@ export {
 } from "./runtime-logs/index.ts";
 export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
+  provisionsDedicatedOpenClaw,
   type NativeWorkerSupport,
   type NativeWorkerSupportSource,
 } from "./native-worker-support.ts";
@@ -1318,13 +1321,34 @@ function requireDedicatedNativeSupport(
   }
 }
 
-/** Whether the Sandbox Driver can provision dedicated native OpenClaw: all three facets. */
-function provisionsDedicatedOpenClaw(sandbox: SandboxDriver | undefined): boolean {
-  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
-  return (
-    sandbox?.provisionHarness !== undefined &&
-    requiredFacets.every((facet) => sandbox.facets.includes(facet))
-  );
+/**
+ * Whether Agent save and deploy admission accept OpenClaw in this execution mode on this
+ * Installation shape. It runs admission's own checks, so the Installation capability built from
+ * it cannot disagree with them (#2670).
+ */
+function admitsOpenClawExecutionMode(
+  sandbox: SandboxDriver | undefined,
+  executionMode: HarnessExecutionMode,
+  nativeWorkers: NativeWorkerSupportSource | undefined,
+): boolean {
+  try {
+    requireSandboxExecutionMode(sandbox, executionMode);
+    requireDedicatedNativeSupport(
+      { id: "openclaw", version: "capability", mode: executionMode },
+      sandbox,
+      nativeWorkers,
+    );
+    return true;
+  } catch (error) {
+    if (
+      error instanceof ConfigurationHarnessError ||
+      error instanceof NativeWorkerSupportError ||
+      error instanceof DedicatedOpenClawSandboxError
+    ) {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function validRepositorySelector(value: unknown): value is string {
@@ -1643,13 +1667,20 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    // nativeWorkers promises that dedicated native OpenClaw can be admitted, so it is reported
-    // only when admission's Sandbox Driver check passes too (finding 1608).
-    const { nativeWorkers: _unchecked, ...declared } = this.installation.capabilities ?? {};
-    const nativeWorkers = this.dedicatedOpenClawSupport();
+    // openclaw lists the execution modes admission accepts for OpenClaw; an empty list means
+    // none (#2670). nativeWorkers promises that dedicated native OpenClaw can be admitted, so it
+    // is reported only when that mode is listed (finding 1608).
+    const {
+      nativeWorkers: _unchecked,
+      openclaw: _derived,
+      ...declared
+    } = this.installation.capabilities ?? {};
+    const openclawModes = this.openClawExecutionModes();
+    const nativeWorkers = openclawModes.includes("dedicated") ? this.nativeWorkers : undefined;
     const capabilities = {
       ...declared,
       ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
+      openclaw: { executionModes: openclawModes },
       ...(this.selections.has("credential_gateway")
         ? {
             credentialSources: {
@@ -1681,21 +1712,23 @@ export class OpenClawController {
     });
   }
 
-  /** Native worker support, when dedicated native OpenClaw admission can pass. */
-  private dedicatedOpenClawSupport(): NativeWorkerSupportSource | undefined {
-    if (this.nativeWorkers === undefined) {
-      return undefined;
-    }
+  /**
+   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime admit at Agent
+   * save and deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
+   */
+  private openClawExecutionModes(): HarnessExecutionMode[] {
     let sandbox: SandboxDriver | undefined;
     try {
       sandbox = this.sandboxDriver();
     } catch (error) {
       if (error instanceof DependencyUnavailableError) {
-        return undefined;
+        return [];
       }
       throw error;
     }
-    return provisionsDedicatedOpenClaw(sandbox) ? this.nativeWorkers : undefined;
+    return HARNESS_EXECUTION_MODES.filter((mode) =>
+      admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers),
+    );
   }
 
   async getInstallationDeploymentInventory(

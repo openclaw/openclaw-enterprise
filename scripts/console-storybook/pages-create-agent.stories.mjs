@@ -55,6 +55,7 @@ export const CreateProvisioningSecrets = {
   name: "Provisioning with saved Secrets",
 };
 export const CreateDeploymentPending = story("createDeploymentPending");
+export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentFailed = story("createDeploymentFailed");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
@@ -77,6 +78,14 @@ export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded Open
 export const CreateOpenclawWithoutNativeWorkers = {
   ...story("createOpenclawWithoutNativeWorkers"),
   name: "OpenClaw without native worker support",
+};
+export const CreateOpenclawNoExecutionMode = {
+  ...story("createOpenclawNoExecutionMode"),
+  name: "OpenClaw with no usable execution mode",
+};
+export const CreateOpenclawSandboxDedicated = {
+  ...story("createOpenclawSandboxDedicated"),
+  name: "OpenClaw on a Sandbox Driver installation",
 };
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),

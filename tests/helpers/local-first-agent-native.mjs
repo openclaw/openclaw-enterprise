@@ -7,6 +7,109 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const proofPrefix = "OCE_NATIVE_FIRST_AGENT_PROOF ";
 export const nativeFirstAgentProofTimeout = 10 * 60_000;
 
+const workStatuses = ["queued", "running", "succeeded", "failed"];
+const provisioningPhases = ["admitted", "configuration", "transport", "handoff"];
+// A narrow subset of deploymentProgressForWork's public codes; never print arbitrary peer text.
+const deploymentProgressCodes = new Set([
+  "REVISION_INCOMPLETE",
+  "REVISION_UNSCHEDULABLE",
+  "WORKSPACE_NODE_PENDING",
+  "WORKSPACE_NODE_BINDING_PENDING",
+  "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
+  "LEASE_EXPIRED",
+]);
+
+const hasIdentifier = (value) => typeof value === "string" && value.length > 0;
+const observedStatus = (status) => (workStatuses.includes(status) ? status : "unknown");
+const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const isResourceId = (value, prefix) =>
+  typeof value === "string" &&
+  value.startsWith(`${prefix}_`) &&
+  uuidV4.test(value.slice(prefix.length + 1));
+
+export function nativeProvisioningPath(namespaceId, provisioning) {
+  const workId = provisioning?.workId;
+  assert.ok(
+    isResourceId(namespaceId, "ns") &&
+      typeof workId === "string" &&
+      /^[A-Za-z0-9._~:@/-]{1,200}$/.test(workId) &&
+      workId !== "." &&
+      workId !== "..",
+    "Guided native provisioning returned an invalid binding",
+  );
+  const path = `/namespaces/${namespaceId}/agents/provision/${encodeURIComponent(workId)}`;
+  assert.ok(provisioning.url === path, "Guided native provisioning returned an invalid binding");
+  return path;
+}
+
+function observedProvisioning(provisioning) {
+  return {
+    status: observedStatus(provisioning?.status),
+    phase: provisioningPhases.includes(provisioning?.phase) ? provisioning.phase : "unknown",
+    attemptCount:
+      Number.isSafeInteger(provisioning?.attemptCount) && provisioning.attemptCount >= 0
+        ? provisioning.attemptCount
+        : "unknown",
+    agentIdPresent: hasIdentifier(provisioning?.agentId),
+    configurationIdPresent: hasIdentifier(provisioning?.configurationId),
+    revisionIdPresent: hasIdentifier(provisioning?.revisionId),
+  };
+}
+
+export async function failNativeProvisioningDeadline({
+  request,
+  provisioningPath,
+  provisioned,
+  namespaceId,
+  signal,
+}) {
+  const observation = { provisioning: observedProvisioning(provisioned) };
+  if (observation.provisioning.agentIdPresent && observation.provisioning.revisionIdPresent) {
+    observation.deployment = "unavailable";
+    try {
+      assert.ok(
+        isResourceId(provisioned.agentId, "agt") &&
+          isResourceId(provisioned.revisionId, "rev") &&
+          nativeProvisioningPath(namespaceId, provisioned) === provisioningPath,
+        "Guided native provisioning returned an invalid binding",
+      );
+      const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+      const deployment = await request(
+        "GET",
+        `/namespaces/${namespaceId}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,
+        undefined,
+        diagnosticSignal,
+      );
+      if (
+        deployment?.namespaceId === namespaceId &&
+        deployment.agentId === provisioned.agentId &&
+        deployment.deploymentId === provisioned.revisionId
+      ) {
+        const code = deployment.progress?.lastAttempt?.code;
+        observation.deployment = {
+          status: observedStatus(deployment.status),
+          lastAttemptCode: deploymentProgressCodes.has(code) ? code : "unknown",
+        };
+        if (
+          ["queued", "running"].includes(provisioned.status) &&
+          ["succeeded", "failed"].includes(deployment.status)
+        ) {
+          observation.provisioningAfterDeployment = "unavailable";
+          const after = await request("GET", provisioningPath, undefined, diagnosticSignal);
+          if (nativeProvisioningPath(namespaceId, after) === provisioningPath) {
+            observation.provisioningAfterDeployment = observedProvisioning(after);
+          }
+        }
+      }
+    } catch {
+      // Diagnostic failures cannot replace the deadline failure or reveal peer errors.
+    }
+  }
+  assert.fail(
+    `Guided native provisioning did not become ready before the deadline: ${JSON.stringify(observation)}`,
+  );
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({

@@ -3231,6 +3231,17 @@ test(
       code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
       message: "Agent provisioning could not complete.",
     });
+
+    // The retry stays queued in the database the file's later tests share; cancel it so no
+    // later worker picks it up (finding 1616).
+    const cleanupClaim = await claimProvisioningWork(fixture.pool, workId);
+    const cancelled = await fixture.state.transact((unit) =>
+      unit.provisioning.cancel(cleanupClaim, {
+        code: "PROVISIONING_CANCELLED",
+        message: "Secret Driver outage test completed after its first attempt",
+      }),
+    );
+    assert.equal(cancelled.status, "cancelled");
   },
 );
 

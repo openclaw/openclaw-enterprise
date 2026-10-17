@@ -112,9 +112,11 @@ import {
   ConfigurationHarnessError,
   configurationSettingMessage,
   CredentialWithdrawalRefusedError,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
   DependencyUnavailableError,
   imageReferenceProblem,
   keyedSettingPath,
+  provisionsDedicatedOpenClaw,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
   ResourceConflictError,
@@ -1853,6 +1855,21 @@ function validateCodexSeccompProfile(value: unknown): string {
   return profile;
 }
 
+// The API server's quota refusal, `exceeded quota: <name>, requested: <resource>=<quantity>[,...],
+// used: ..., limited: ...`, lists only the resources over their limit.
+const QUOTA_REFUSAL = /\bexceeded quota: [^\s,]+, requested: ([^\s,]+(?:,[^\s,]+)*), used: /u;
+
+// True when a Pod creation refusal says a ResourceQuota has no Pods left.
+function podQuotaRefusal(message: unknown): boolean {
+  const requested = typeof message === "string" ? QUOTA_REFUSAL.exec(message)?.[1] : undefined;
+  return (
+    requested?.split(",").some((entry) => {
+      const resource = entry.split("=", 1)[0];
+      return resource === "pods" || resource === "count/pods";
+    }) ?? false
+  );
+}
+
 function observedPodMatchingSelector(
   item: unknown,
   namespace: string,
@@ -2742,14 +2759,8 @@ function requireNativeWorkerSandbox(
   if (harness.id !== "openclaw" || harness.mode !== "dedicated") {
     return;
   }
-  const requiredFacets = ["networking", "filesystem", "process"] as const;
-  if (
-    sandboxDriver?.provisionHarness === undefined ||
-    requiredFacets.some((facet) => !sandboxDriver.facets.includes(facet))
-  ) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
-    );
+  if (!provisionsDedicatedOpenClaw(sandboxDriver)) {
+    throw new ConfigurationFailure(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
   }
 }
 
@@ -5394,8 +5405,25 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
-    // A known pending reason is reported with the observation; otherwise a Pod
-    // the scheduler cannot place explains the wait (D224).
+    // A known pending reason is reported with the observation; otherwise a full
+    // Namespace Pod quota (finding 1617) or a Pod the scheduler cannot place explains
+    // the wait (D224).
+    // A Harness that a SandboxDriver provisions has no Harness Deployment.
+    const workloadDeployments = this.runtimeStatusContainers(revision)
+      .filter((role) => role === "gateway" || sandboxDriver?.provisionHarness === undefined)
+      .map((role) =>
+        role === "gateway"
+          ? { name: gatewayName, namespace: gatewayNamespace, ownership: gatewayOwnership }
+          : { name: revisionName, namespace, ownership: revisionOwnership },
+      );
+    const observedPendingReason = async (): Promise<ComputePendingReason | undefined> => {
+      if (await this.safePodQuotaObservation(workloadDeployments)) {
+        return "NAMESPACE_POD_QUOTA_EXCEEDED";
+      }
+      return (await this.safeUnschedulableObservation(revision, namespace))
+        ? "WORKLOAD_UNSCHEDULABLE"
+        : undefined;
+    };
     const incomplete = async (pendingReason?: ComputePendingReason): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
         revision,
@@ -5403,11 +5431,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         workspaceSetup !== undefined,
       );
       const reason =
-        pendingReason ??
-        (runtimeFailure === undefined &&
-        (await this.safeUnschedulableObservation(revision, namespace))
-          ? "WORKLOAD_UNSCHEDULABLE"
-          : undefined);
+        pendingReason ?? (runtimeFailure === undefined ? await observedPendingReason() : undefined);
       return {
         ...result,
         ...(runtimeFailure === undefined ? {} : { runtimeFailure }),
@@ -9403,6 +9427,51 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       return false;
     }
+  }
+
+  // True when one of this revision's Deployments cannot create a Pod because a
+  // ResourceQuota on its Namespace has no Pods left. The Deployment controller copies
+  // the ReplicaSet's ReplicaFailure condition (reason FailedCreate, the quota refusal as
+  // its message) onto the Deployment, so this reads only Deployments, never ReplicaSets.
+  // The message is the first refusal since the last successful create, so a Pod quota
+  // refusal followed by another quota's refusal still reads as a full Pod quota. Like
+  // failure evidence, an unavailable observation reports nothing.
+  private async safePodQuotaObservation(
+    deployments: readonly {
+      readonly name: string;
+      readonly namespace: KubernetesNamespaceAddress;
+      readonly ownership: Ownership;
+    }[],
+  ): Promise<boolean> {
+    const ownerSignal = currentComputeAbortSignal();
+    for (const { name, namespace, ownership } of deployments) {
+      let conditions: unknown;
+      try {
+        conditions = (await this.getOwned("Deployment", name, namespace, ownership))?.status
+          ?.conditions;
+      } catch {
+        if (ownerSignal?.aborted) {
+          throw ownerSignal.reason;
+        }
+        // One unreadable Deployment does not hide the other's refusal.
+        continue;
+      }
+      if (
+        Array.isArray(conditions) &&
+        conditions.some((item) => {
+          const condition = asRecord(item);
+          return (
+            condition?.type === "ReplicaFailure" &&
+            condition.status === "True" &&
+            condition.reason === "FailedCreate" &&
+            podQuotaRefusal(condition.message)
+          );
+        })
+      ) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async pluginRuntimeStatus(

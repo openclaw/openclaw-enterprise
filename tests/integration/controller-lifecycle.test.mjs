@@ -1676,10 +1676,10 @@ test("IAM decision reasons must be strings before returning Installation data", 
   for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
     await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
       transform = (decision) => ({ ...decision, reason });
-      // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
+      // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
       assert.deepEqual(await controller.getInstallation("principal-admin"), {
         ...installation,
-        capabilities: {},
+        capabilities: { openclaw: { executionModes: ["embedded"] } },
       });
     });
   }

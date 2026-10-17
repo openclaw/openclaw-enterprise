@@ -651,6 +651,11 @@ test("Gateway password access saves the generated reference without changing adm
     id: "OPENCLAW_GATEWAY_PASSWORD",
   };
   assert.deepEqual(JSON.parse(await page.getByLabel("Configuration JSON").inputValue()), expected);
+  // The editor replaces the pressed button and takes focus (finding 1620).
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();

@@ -2055,7 +2055,7 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   // The disabled option explains itself instead of claiming Dedicated is supported.
   const harnessHint = page.locator("#agent-harness-hint");
-  assert.match(await harnessHint.textContent(), /Embedded execution only; choose Codex/);
+  assert.match(await harnessHint.textContent(), /Embedded execution works only without a Sandbox/);
   assert.doesNotMatch(await harnessHint.textContent(), /supports Dedicated/);
   const modeHint = page.locator("#execution-mode-hint");
   assert.match(await modeHint.textContent(), /Dedicated OpenClaw is unavailable/);
@@ -2116,6 +2116,12 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Template edits", { ready: true });
   const { page, artifacts } = await newPage(t, fixture);
+  // This Installation admits only Dedicated OpenClaw (#2670). A server that reports native worker
+  // support but not the OpenClaw execution modes leaves both modes selectable, which is how this
+  // test reaches both templates.
+  await routeInstallationWithoutProvisioning(page, fixture, {
+    nativeWorkers: { support: "custom-image" },
+  });
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();

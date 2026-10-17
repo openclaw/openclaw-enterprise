@@ -1602,6 +1602,24 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createDeploymentPodQuotaFull: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment waits on a full Pod quota",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    },
+    description:
+      "The first deployment cannot create its Pods because the Namespace's Pod quota is full, so the provisioning line names the quota instead of a bare wait.",
+    steps: [
+      "Click Create Agent and wait for the provisioning line to name the full Pod quota.",
+      "Open the Agent's version; confirm the deployment record shows the same reason.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",
@@ -1871,11 +1889,42 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw uses Embedded execution; Dedicated is disabled with an explanation.",
+      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
     steps: [
       "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
       "Select Codex and confirm Dedicated remains available.",
     ],
+  },
+  createOpenclawNoExecutionMode: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw with no usable execution mode",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that cannot provision dedicated OpenClaw, so it admits no OpenClaw execution mode: the Sandbox Driver refuses Embedded and cannot run Dedicated. Both modes are disabled, an alert explains why, and Create Agent stays disabled before any Configuration or Agent is saved.",
+    steps: [
+      "Confirm both execution modes are disabled for OpenClaw and Create Agent is disabled.",
+      "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSandboxDedicated: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw on a Sandbox Driver installation",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that provisions dedicated OpenClaw. It refuses Embedded execution, so selecting OpenClaw preselects Dedicated and disables Embedded.",
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
@@ -2701,7 +2750,7 @@ export const scenarios = {
       "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
     steps: [
       "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
-      "Choose Embedded execution, then create the Agent again.",
+      "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
   createUnknown: {
@@ -2840,6 +2889,7 @@ export const scenarios = {
     description:
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
+      "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
       "Change a draft setting, then choose Save Configuration.",
       "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
       "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
@@ -3715,7 +3765,23 @@ export const scenarios = {
       },
     ],
     actions: [click("Deploy new version")],
-    description: "A rejected deployment reports failure and re-enables the action.",
+    description:
+      "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
+  },
+  deployInProgress: {
+    group: "Pages/Agent detail",
+    name: "Deployment in progress",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        hold: true,
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
   deployRefusedSetting: {
     group: "Pages/Agent detail",

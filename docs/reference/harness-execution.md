@@ -277,9 +277,11 @@ Compute, which retains ownership, identity, gateway, and routing while the Drive
 provisions the dedicated Harness. Dedicated native OpenClaw requires this and
 all three [facets](drivers/sandbox.md#containment-facets) (`networking`,
 `filesystem`, `process`). Without a qualifying SandboxDriver, `GET /installation`
-omits `capabilities.nativeWorkers`, the Console withholds Dedicated OpenClaw, and
-deploy and a new provisioning request answer `409 RESOURCE_CONFLICT` naming the
-missing Driver. Queued provisioning work waits for the Driver as for an outage.
+omits `capabilities.nativeWorkers`, and deploy and new provisioning requests answer
+`409 RESOURCE_CONFLICT` naming the missing Driver. `GET /installation` always
+reports `capabilities.openclaw.executionModes`, the OpenClaw modes admission
+accepts; the Console refuses OpenClaw before any write when the selected mode is
+not listed. Queued provisioning work waits for the Driver as for an outage.
 There is no command-level `exec` facet or per-tool sandbox admission.
 
 The bundled [OpenShell implementation](drivers/openshell-sandbox.md) supports
