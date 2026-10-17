@@ -3598,6 +3598,7 @@ test("Agent sharing before deployment rejects stale Configuration and previews s
     false,
   );
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await waitForLiveControls(page, ["share-runtime-role"]);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
@@ -3723,11 +3724,7 @@ test("Back refreshes sharing when a failed role catalog recovers", async (t) => 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Catalog recovery", { ready: true });
   const values = nativeRolesGateway(nativeValues("catalog-recovery"), fixture.origin);
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Catalog recovery Agent",
-    values,
-  );
+  const agent = await fixture.createAgent(namespace.id, "Catalog recovery Agent", values);
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
