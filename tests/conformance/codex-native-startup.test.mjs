@@ -790,6 +790,20 @@ test("Codex runtime retries a transient startup model probe failure once", async
       ],
       ["a network wait then a completed turn with no reply", [started, networkWait(), completed]],
       [
+        "a network wait then a blank reply",
+        [
+          started,
+          networkWait(),
+          { type: "item.completed", item: { type: "agent_message", text: "  " } },
+          completed,
+        ],
+      ],
+      [
+        // A made-up shape: one turn reported complete twice is not an answer.
+        "a network wait then a turn completed twice",
+        [started, networkWait(), assistant, completed, completed],
+      ],
+      [
         "a network wait then a reply after the turn",
         [started, networkWait(), completed, assistant],
       ],
@@ -797,6 +811,12 @@ test("Codex runtime retries a transient startup model probe failure once", async
         "a network wait then a reply from a failed process",
         [started, networkWait(), assistant, completed],
         { status: 1 },
+      ],
+      [
+        // Held as the network wait, not as the kill that ended the process.
+        "a network wait then a reply from a terminated process",
+        [started, networkWait(), assistant, completed],
+        { status: null, signal: "SIGTERM" },
       ],
       [
         "a network wait then a reply from a probe that overflowed its output",

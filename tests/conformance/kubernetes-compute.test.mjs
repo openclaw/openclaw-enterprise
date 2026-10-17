@@ -2352,6 +2352,21 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
   state.unreadableKind = undefined;
   assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  // One unreadable quota does not hide another quota's full Pods: the Harness Deployment,
+  // read first, names a quota that cannot be read, and the Gateway's quota is full.
+  clients.core.readNamespacedResourceQuota = (request) =>
+    request.name === "broken-quota"
+      ? Promise.reject(Object.assign(new Error("forbidden"), { statusCode: 403 }))
+      : readQuota(request);
+  setConditions(gatewayName, podRefusal);
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      failure(refusal("pods=1", "pods=2", "pods=2", "broken-quota")),
+    ]),
+    quota,
+  );
+  setConditions(gatewayName, []);
+  clients.core.readNamespacedResourceQuota = readQuota;
   // A held runtime failure leads instead of any pending reason.
   state.gatewayRuntimeFailure = {
     component: "gateway",
@@ -2378,6 +2393,29 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(await driver.safePodQuotaObservation([foreign]), false);
   setConditions(gatewayName, []);
   assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), false);
+  // The owner's cancellation during the Deployment or quota read ends the pass instead of
+  // reading as no quota.
+  const readDeployment = clients.apps.readNamespacedDeployment;
+  const cancellation = new Error("revision pass cancelled");
+  setConditions(gatewayName, podRefusal);
+  for (const [api, method] of [
+    [clients.apps, "readNamespacedDeployment"],
+    [clients.core, "readNamespacedResourceQuota"],
+  ]) {
+    const owner = new AbortController();
+    api[method] = async () => {
+      owner.abort(cancellation);
+      throw Object.assign(new Error("forbidden"), { statusCode: 403 });
+    };
+    await assert.rejects(
+      withComputeAbortSignal(owner.signal, () => driver.safePodQuotaObservation([gateway])),
+      (error) => error === cancellation,
+      method,
+    );
+    clients.apps.readNamespacedDeployment = readDeployment;
+    clients.core.readNamespacedResourceQuota = readQuota;
+  }
+  setConditions(gatewayName, []);
   // A quota of the same name in another Namespace (a split-plane Gateway's) is its own quota.
   const otherNamespace = `${namespace}-gateways`;
   const elsewhere = read("Deployment", gatewayName);
@@ -2405,6 +2443,11 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   state.unschedulableRole = undefined;
   markReady(agentName);
   markReady(gatewayName);
+  // A known pending reason leads: ready workloads waiting for their node keep that reason
+  // beside a stale quota refusal (a made-up shape).
+  setConditions(agentName, [failure(refusal("pods=1"))]);
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  setConditions(agentName, []);
   state.connected = true;
   const ready = await prepare();
   assert.equal(ready.ready, true);
