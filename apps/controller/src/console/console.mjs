@@ -618,9 +618,10 @@ function showStillChecking() {
 // the shown page's own: the navigation and header change together with the body, never around
 // it (finding 1515). Its selector names the destination's Namespace, but a Namespace recovery
 // block appears only if the shown page had one (finding 1527). Returns null when no page is shown.
-// keepFocus: focus in the shown page, which falls to the body once the page goes inert, or on
-// its heading (which the console focused, say for a load this one replaces) moves to the held
-// heading instead (findings 1626, 1636).
+// keepFocus: focus in the shown page, which falls to the body once the page goes inert, on its
+// heading (which the console focused, say for a load this one replaces), or in the sidebar, whose
+// pressed link the pending shell replaces, moves to the held heading instead (findings 1626,
+// 1636, 1653).
 function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
@@ -628,7 +629,10 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   }
   const focused = document.activeElement;
   const focusHeld =
-    keepFocus && (view.contains(focused) || focused === app.querySelector(".content h1"));
+    keepFocus &&
+    (view.contains(focused) ||
+      focused === app.querySelector(".content h1") ||
+      app.querySelector(".sidebar")?.contains(focused) === true);
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
@@ -658,6 +662,40 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
     app.querySelector(".content h1").focus({ preventScroll: true });
   }
   return shell;
+}
+
+// The control focused in the shown page, which a refocus recheck blurs when it holds the page
+// inert (finding 1654). restore() gives focus back once the page remounts, with an input's caret,
+// unless the reader has moved focus since. A deployment link the remount replaced gives it to
+// the cell's pending deployment instead, as Back does.
+function focusInShownView() {
+  const view = app.querySelector('.content [aria-live="polite"]');
+  const focused = view?.contains(document.activeElement) ? document.activeElement : null;
+  if (!focused) {
+    return null;
+  }
+  const selection =
+    typeof focused.selectionStart === "number"
+      ? [focused.selectionStart, focused.selectionEnd]
+      : null;
+  const href = focused.href ?? null;
+  return {
+    restore(remounted) {
+      if (!document.hasFocus() || document.activeElement !== document.body) {
+        return;
+      }
+      const target = remounted.contains(focused)
+        ? focused
+        : href &&
+          Array.from(remounted.querySelectorAll("[data-return-focus-href]")).find(
+            (item) => item.dataset.returnFocusHref === href,
+          );
+      target?.focus({ preventScroll: true });
+      if (target === focused && selection) {
+        focused.setSelectionRange(...selection);
+      }
+    },
+  };
 }
 
 // Mounts a retained view that revalidated unchanged, active at once.
@@ -1049,7 +1087,10 @@ async function loadPage({
   // On a navigation, focus that was in the held page waits on its heading until the destination
   // takes it: the Agent's heading for an Agent page loading behind it (the new version an
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
-  // list (finding 1636). A refocus recheck leaves focus alone.
+  // list (finding 1636). So does focus on the sidebar link that started it (finding 1653). A
+  // refocus recheck never moves focus to the heading: the control it blurs takes focus back if
+  // the page remounts unchanged, as on an Agent page (finding 1654).
+  const refocused = resumingView ? focusInShownView() : null;
   let shell =
     knownPrivateState && !openingAgent
       ? holdShownView(current, { busyCue: !resumingView, keepFocus: !resumingView })
@@ -1508,6 +1549,7 @@ async function loadPage({
       navigateAgentTab = retainedState.tabNavigation;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
+      refocused?.restore(shell.view);
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.

@@ -214,6 +214,11 @@ export function assertReadableConfiguration(resource) {
   }
 }
 
+// A row's deployment while it is read. The text follows the 250 ms rule, so a read that lands
+// sooner, as most do on a return to a retained list, never paints it (finding 1656).
+const readingDeployment = () =>
+  element("span", { className: "delayed-status" }, "Reading deployment…");
+
 export function renderAgentList(context) {
   const { view, items } = context;
   const search = element("input", {
@@ -366,7 +371,7 @@ export function renderAgentList(context) {
     for (const item of matches) {
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
-      const deployment = element("td", { className: "agent-deployment" }, "Reading deployment…");
+      const deployment = element("td", { className: "agent-deployment" }, readingDeployment());
       cells.set(deployment, item);
       showDeployment(item, deployment);
       body.append(
@@ -404,18 +409,22 @@ export function renderAgentList(context) {
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }
   // A retained list is mounted without rereading its rows' deployments, so what they showed is
-  // not presented as current: each row reads its deployment again from "Reading deployment…".
-  // Back from a deployment can focus the loading text. Keep its address only to match that
-  // return: until the read settles, the previous revision must not be an active link.
+  // not presented as current: each row reads its deployment again from "Reading deployment…",
+  // blank for its first 250 ms. Back from a deployment can focus the pending cell. Keep its
+  // address only to match that return: until the read settles, the previous revision must not
+  // be an active link.
   context.onResume?.(() => {
     deployments.clear();
     for (const [deployment, item] of cells) {
       const shown = deployment.querySelector("a");
-      const reading = "Reading deployment…";
       deployment.replaceChildren(
         shown
-          ? element("span", { tabindex: "-1", "data-return-focus-href": shown.href }, reading)
-          : reading,
+          ? element(
+              "span",
+              { tabindex: "-1", "data-return-focus-href": shown.href },
+              readingDeployment(),
+            )
+          : readingDeployment(),
       );
       showDeployment(item, deployment);
     }

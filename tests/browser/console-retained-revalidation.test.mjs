@@ -140,8 +140,13 @@ async function signedOutPage(t) {
 
 // Signs in to a loaded Agents list (`agentNames`: one name or a list). Unless `running`, the
 // page clock is installed and paused once the list loads, so timers run only when a test runs
-// it, and every page shown is recorded.
-async function openList(t, name, agentNames, { deploy = false, running = false } = {}) {
+// it, and every page shown is recorded. `beforeLogin(page, namespace)` can route the page's reads.
+async function openList(
+  t,
+  name,
+  agentNames,
+  { deploy = false, running = false, beforeLogin = null } = {},
+) {
   const names = [agentNames].flat();
   const { fixture, page } = await signedOutPage(t);
   const namespace = await fixture.createNamespace(name, { ready: true });
@@ -156,6 +161,7 @@ async function openList(t, name, agentNames, { deploy = false, running = false }
     await page.clock.install();
   }
   const listUrl = `/console/agents?namespace=${namespace.id}`;
+  await beforeLogin?.(page, namespace);
   await login(page, fixture, listUrl);
   await listShown(page, names[0]);
   // The list reads each row's latest deployment after it settles; let those finish, so the
@@ -977,6 +983,136 @@ for (const focusTarget of [
         : link;
     assert.equal(await isFocused(expected), true);
     detail.release();
+  });
+}
+
+// Records the focused node in every frame until a link in the shown page has focus, numbering
+// nodes so a replaced one counts as new: "BODY" marks a frame with focus on the body.
+function trackFocusUntilPageLink() {
+  const document = globalThis.document;
+  const ids = new WeakMap();
+  let next = 0;
+  const trail = [];
+  globalThis.focusTrail = trail;
+  globalThis.focusFrames = 0;
+  const sample = () => {
+    globalThis.focusFrames += 1;
+    const node = document.activeElement;
+    if (node && node !== document.body && !ids.has(node)) {
+      ids.set(node, ++next);
+    }
+    const entry =
+      !node || node === document.body
+        ? "BODY"
+        : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+    if (trail.at(-1) !== entry) {
+      trail.push(entry);
+    }
+    if (!node?.matches('.content [aria-live="polite"] a')) {
+      globalThis.requestAnimationFrame(sample);
+    }
+  };
+  sample();
+}
+
+// The sidebar's Agents link, pressed on an Agent page, held that page inert until the list
+// revalidated. The shell rebuilt around it replaced the pressed link, so keyboard focus fell to
+// the body for the whole hold (2-12 frames, about 0.9 s on a slow link) before the Agent's link
+// took it (finding 1653); #2712 kept it only for Back. The held page's heading now keeps it.
+for (const how of ["Enter", "a click"]) {
+  test(`The sidebar's Agents link pressed with ${how} on an Agent page keeps keyboard focus`, async (t) => {
+    const { namespace, agent, page } = await openList(t, `Sidebar ${how}`, "Sidebar Agent", {
+      deploy: true,
+      running: true,
+    });
+    const agentLink = page.locator(settledView).getByRole("link", { name: agent.name });
+    await agentLink.focus();
+    await agentLink.press("Enter");
+    await agentShown(page);
+    const sidebar = page.getByRole("link", { name: "Agents", exact: true });
+    await sidebar.focus();
+    await page.evaluate(trackFocusUntilPageLink);
+    // The list's recheck takes a while, as on a slow link.
+    const recheck = await holdOnce(t, page, agentsRead(namespace));
+    await (how === "Enter" ? sidebar.press("Enter") : sidebar.click());
+    await recheck.requested;
+    // Hold the list for a dozen sampled frames.
+    const held = await page.evaluate(() => globalThis.focusFrames);
+    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+    recheck.release();
+    await agentLink.waitFor();
+    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
+    const trail = await page.evaluate(() => globalThis.focusTrail);
+    assert.equal(await isFocused(agentLink), true, trail.join(" | "));
+    // The pressed link, the held page's heading, then the Agent's link in the list.
+    assert.deepEqual(
+      trail.map((entry) => entry.replace(/#\d+/, "")),
+      ["A: ◇Agents", `H1: ${agent.name}`, `A: ${agent.name}`],
+      trail.join(" | "),
+    );
+  });
+}
+
+// A refocus recheck of the Agents list holds it inert, which blurs the focused control, and the
+// list remounted unchanged with focus on the body: a keyboard reader lost their place each time
+// they came back to the tab (finding 1654). The control now takes focus back, as on an Agent
+// page, and the search box keeps its caret. A deployment link, which the remount replaces until
+// its reread lands, gives focus to that pending cell, as Back does. Focus never visits the
+// heading (#2712 review).
+for (const target of ["an Agent link", "the search box", "a deployment link"]) {
+  test(`A refocus recheck of the Agents list gives focus back to ${target}`, async (t) => {
+    const deployment = target === "a deployment link";
+    const { agent, page } = await openList(t, `Refocus ${target}`, "Refocus Agent", {
+      deploy: deployment,
+      running: true,
+      // The fixture runs no worker: serve each record as a finished deployment reads.
+      beforeLogin: (page, namespace) =>
+        page.route(`**/namespaces/${namespace.id}/agents/*/deployments/*`, (route) =>
+          route.fulfill({
+            json: {
+              data: { namespaceId: namespace.id, status: "succeeded", error: null, warnings: [] },
+              meta: { requestId: "req_test_refocus" },
+            },
+          }),
+        ),
+    });
+    const search = target === "the search box";
+    const cell = page.locator(settledView).locator(".agent-deployment");
+    const control = search
+      ? page.locator(settledView).getByRole("searchbox", { name: "Search Agents" })
+      : deployment
+        ? cell.getByRole("link")
+        : page.locator(settledView).getByRole("link", { name: agent.name });
+    await tagView(page, "refocused");
+    if (search) {
+      await control.fill("Refocus");
+      await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+      await control.evaluate((input) => input.setSelectionRange(2, 4));
+    } else {
+      await control.focus();
+    }
+    const focusedIn = (locator) =>
+      locator.evaluate((node) => node.contains(globalThis.document.activeElement));
+    const heading = page.getByRole("heading", { level: 1, name: "Agents" });
+    const session = await holdOnce(t, page);
+    await refocus(page);
+    await session.requested;
+    await page.locator(heldView).waitFor();
+    session.release();
+    await page.locator(settledView).waitFor();
+    assert.equal(await viewTag(page), "refocused", "the list remounted unchanged");
+    assert.equal(await isFocused(heading), false, "focus stays off the heading");
+    if (deployment) {
+      assert.equal(await focusedIn(cell), true, "focus waits in the pending deployment");
+      await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+    }
+    assert.equal(await isFocused(control), true, "focus is back on the control");
+    if (search) {
+      assert.deepEqual(
+        await control.evaluate((input) => [input.selectionStart, input.selectionEnd]),
+        [2, 4],
+      );
+    }
   });
 }
 
