@@ -56,6 +56,28 @@ function observedProvisioning(provisioning) {
   };
 }
 
+// Kubernetes reports non-terminating Pods for both roles of this dedicated revision.
+// Zero means none in that observation, not that the Harness was never created.
+function observedPodReadiness(runtime, revisionId) {
+  if (runtime?.revisionId !== revisionId || !Array.isArray(runtime.pods)) {
+    return "unavailable";
+  }
+  const summary = { gateway: { count: "zero" }, agent: { count: "zero" } };
+  for (const pod of runtime.pods) {
+    const { role, phase, ready } = pod ?? {};
+    if (
+      (role !== "gateway" && role !== "agent") ||
+      !["Pending", "Running", "Succeeded", "Failed", "Unknown"].includes(phase) ||
+      typeof ready !== "boolean"
+    ) {
+      return "unavailable";
+    }
+    summary[role] =
+      summary[role].count === "zero" ? { count: "one", phase, ready } : { count: "multiple" };
+  }
+  return summary;
+}
+
 export async function failNativeProvisioningDeadline({
   request,
   provisioningPath,
@@ -74,12 +96,8 @@ export async function failNativeProvisioningDeadline({
         "Guided native provisioning returned an invalid binding",
       );
       const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
-      const deployment = await request(
-        "GET",
-        `/namespaces/${namespaceId}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,
-        undefined,
-        diagnosticSignal,
-      );
+      const deploymentPath = `/namespaces/${namespaceId}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`;
+      const deployment = await request("GET", deploymentPath, undefined, diagnosticSignal);
       if (
         deployment?.namespaceId === namespaceId &&
         deployment.agentId === provisioned.agentId &&
@@ -99,6 +117,20 @@ export async function failNativeProvisioningDeadline({
           if (nativeProvisioningPath(namespaceId, after) === provisioningPath) {
             observation.provisioningAfterDeployment = observedProvisioning(after);
           }
+        } else if (
+          provisioned.phase === "handoff" &&
+          ["queued", "running"].includes(provisioned.status) &&
+          ["queued", "running"].includes(deployment.status) &&
+          code === "REVISION_INCOMPLETE"
+        ) {
+          observation.runtimeAfterDeadline = "unavailable";
+          const runtime = await request(
+            "GET",
+            `${deploymentPath}/runtime`,
+            undefined,
+            diagnosticSignal,
+          );
+          observation.runtimeAfterDeadline = observedPodReadiness(runtime, provisioned.revisionId);
         }
       }
     } catch {

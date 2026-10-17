@@ -401,6 +401,101 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
 });
 
+test("the missed native handoff deadline reports only Pod readiness for its exact revision", async () => {
+  const namespaceId = `ns_${randomUUID()}`;
+  const agentId = `agt_${randomUUID()}`;
+  const revisionId = `rev_${randomUUID()}`;
+  const provisioningPath = `/namespaces/${namespaceId}/agents/provision/work`;
+  const deploymentPath = `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
+  const provisioned = {
+    workId: "work",
+    url: provisioningPath,
+    phase: "handoff",
+    status: "queued",
+    agentId,
+    revisionId,
+  };
+  const deployment = {
+    namespaceId,
+    agentId,
+    deploymentId: revisionId,
+    status: "running",
+    progress: { lastAttempt: { code: "REVISION_INCOMPLETE" } },
+  };
+
+  async function observe(responses, expectedPaths) {
+    const calls = [];
+    const request = async (method, path, body, signal) => {
+      calls.push({ method, path, body, signal });
+      return responses[calls.length - 1];
+    };
+    let observation;
+    await assert.rejects(
+      failNativeProvisioningDeadline({
+        request,
+        provisioned,
+        namespaceId,
+        provisioningPath,
+        signal: AbortSignal.timeout(30_000),
+      }),
+      (error) => {
+        const message = error.message;
+        assert.doesNotMatch(message, /private-sentinel|ns_|agt_|rev_/);
+        const [, json] = message.match(/did not become ready before the deadline: (.*)$/) ?? [];
+        assert.ok(json);
+        observation = JSON.parse(json);
+        return true;
+      },
+    );
+    const signal = calls[0]?.signal;
+    assert.ok(signal instanceof AbortSignal);
+    for (const call of calls) {
+      assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
+      assert.equal(call.method, "GET");
+      assert.equal(call.body, undefined);
+    }
+    assert.deepEqual(
+      calls.map(({ path }) => path),
+      expectedPaths,
+    );
+    return observation;
+  }
+
+  const gateway = { role: "gateway", phase: "Running", ready: false, name: "private-sentinel" };
+  const agent = {
+    role: "agent",
+    phase: "Running",
+    ready: true,
+    events: [{ message: "private-sentinel" }],
+  };
+  const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`];
+  async function sample(pods, revision = revisionId) {
+    const observation = await observe([deployment, { revisionId: revision, pods }], runtimePaths);
+    return observation.runtimeAfterDeadline;
+  }
+  // A dedicated Harness may not exist yet while its Gateway starts. Neither sample is acceptance.
+  assert.deepEqual(await sample([gateway]), {
+    gateway: { count: "one", phase: "Running", ready: false },
+    agent: { count: "zero" },
+  });
+  const oneReady = { count: "one", phase: "Running", ready: true };
+  assert.deepEqual(await sample([{ ...gateway, ready: true }, agent]), {
+    gateway: oneReady,
+    agent: oneReady,
+  });
+  assert.equal(await sample([{ ...agent, role: "private-sentinel" }]), "unavailable");
+  assert.equal(await sample([{ ...gateway, phase: "private-sentinel" }]), "unavailable");
+  assert.equal(await sample([gateway], "another-revision"), "unavailable");
+
+  await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
+  const late = { ...provisioned, status: "succeeded" };
+  const observation = await observe(
+    [{ ...deployment, status: "succeeded" }, late],
+    [deploymentPath, provisioningPath],
+  );
+  assert.equal(observation.provisioningAfterDeployment.status, "succeeded");
+});
+
 test(
   "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
   {
