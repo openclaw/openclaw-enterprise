@@ -4787,12 +4787,10 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       // The collector validates turn/completed and can return command output without a start or
       // completion. Ignore that output only if it explicitly belongs to another thread or turn.
       const { threadId, turn } = items.find(({ method }) => method === "turn/completed").params;
+      const couldMatchId = (id, expected) => typeof id !== "string" || id === "" || id === expected;
       return items.some(({ method, params }) => {
         if (method === "item/commandExecution/outputDelta") {
-          return (
-            (!params?.threadId || params.threadId === threadId) &&
-            (!params?.turnId || params.turnId === turn.id)
-          );
+          return couldMatchId(params?.threadId, threadId) && couldMatchId(params?.turnId, turn.id);
         }
         return (
           method === "item/commandExecution/requestApproval" ||
