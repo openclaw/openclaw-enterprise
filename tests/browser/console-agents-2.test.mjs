@@ -25,6 +25,7 @@ import {
   settledFetches,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForCondition,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -727,7 +728,8 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
 
 // Show the Pod quota reason while the deployment reports it. If the reason changes or the
 // reader loses access, show generic progress again. A cancelled poll or a temporary outage
-// does not establish either change (findings 1617, 1637).
+// does not establish either change (findings 1617, 1637). The page clock drives the one-second
+// polls, so the four modes don't wait for them in real time.
 test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
@@ -754,13 +756,15 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       ...extra,
     });
     const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-    await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-      route.fulfill({
+    let submitted = false;
+    await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+      submitted = true;
+      return route.fulfill({
         status: 202,
         contentType: "application/json",
         body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
-      }),
-    );
+      });
+    });
     // The job starts, creates its Agent, hands off its first deployment, which waits on the
     // quota for two reads and then on the runtime, and the job then fails.
     const reads = [
@@ -795,6 +799,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           ];
     const deploymentReads = [];
     const deploymentRequests = [];
+    const stalledRead = Promise.withResolvers();
     page.on("request", (request) => {
       if (new URL(request.url()).pathname.includes("/deployments/")) {
         deploymentRequests.push(new URL(request.url()).pathname);
@@ -808,6 +813,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         const lastAttempt = attempts[Math.min(deploymentReads.length - 1, attempts.length - 1)];
         if (lastAttempt === "stalled") {
           // Outlast the next poll, which cancels this read.
+          stalledRead.resolve();
           await new Promise((resolve) => setTimeout(resolve, 1_500));
           await route.abort().catch(() => {});
           return;
@@ -857,6 +863,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       },
     );
 
+    await trackSettledFetches(page);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start without Preset" }).click();
@@ -877,7 +884,29 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         }
       }).observe(globalThis.document.body, { childList: true, subtree: true });
     });
+    await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(1_000);
     await page.getByRole("button", { name: "Create Agent" }).click();
+    // Each poll waits one second, spent on an optional deployment read. Advance the clock only
+    // once the page has handled this poll's job read and its deployment read, so it waits on the
+    // poll timer alone. The stalled read is still pending when the clock moves, so the next poll
+    // cancels it. Job reads 3 to 5 hand off the deployment.
+    for (let poll = 0; poll < reads.length; poll += 1) {
+      await waitForCondition(() => submitted && read === poll, `job read ${poll} in ${mode}`);
+      const deploymentRead = poll - 2;
+      if (deploymentRead > 0) {
+        await waitForCondition(
+          () => deploymentReads.length === deploymentRead,
+          `deployment read ${deploymentRead} in ${mode}`,
+        );
+      }
+      if (deploymentRead > 0 && attempts[deploymentRead - 1] === "stalled") {
+        await stalledRead.promise;
+      } else {
+        await waitForIdleFetches(page);
+      }
+      await page.clock.runFor(1_000);
+    }
     await page.getByText("Provisioning failed.", { exact: true }).waitFor();
     assert.equal(read, reads.length);
     // Only a running job that handed off its deployment reads it, once per job read.
