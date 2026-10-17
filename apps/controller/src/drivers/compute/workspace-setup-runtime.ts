@@ -166,7 +166,8 @@ function main() {
     ...(setup.defaultsId === undefined ? {} : { defaultsId: setup.defaultsId }) };
   const marker = readRegular(markerPath, 4096);
   if (marker !== undefined) {
-    const saved = JSON.parse(marker);
+    let saved;
+    try { saved = JSON.parse(marker); } catch { fail(); }
     if (JSON.stringify(saved) !== JSON.stringify(identity)) fail();
   } else {
     if (setup.completed) fail();

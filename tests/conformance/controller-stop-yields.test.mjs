@@ -302,7 +302,7 @@ test("a deployment whose workspace setup Kubernetes is retrying says so in its p
         at: at.toISOString(),
         code: "WORKSPACE_SETUP_RETRYING",
         message:
-          "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, check this version's logs.",
+          "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
       },
       nextAttemptAt: availableAt.toISOString(),
     },

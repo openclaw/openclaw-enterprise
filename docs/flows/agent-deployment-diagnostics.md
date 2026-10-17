@@ -112,7 +112,7 @@ Agent's active one has no Sandbox, such as a stopped Agent's.
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
 the requested revision ID, valid timestamps, and at most 32 bounded checks. A
-component, check or code outside `packages/contracts/src/runtime-failure.ts`
+component, check or code outside `packages/contracts/src/runtime-failure.mjs`
 reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
 without messages. Stored deployment status, startup evidence, plugin warnings
 and Agent state stay unchanged.

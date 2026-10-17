@@ -209,10 +209,10 @@ controller clock skew cannot move it. Exceeding it fails the operation with
 `CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
 credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
-CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
-until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
+CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
+version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
-and a refused workspace setup (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
+and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as

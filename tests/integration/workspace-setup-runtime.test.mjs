@@ -118,7 +118,8 @@ test("workspace setup exits 2 for a refusal and 1 for a failure a restart may cl
   const f = fixture(t);
   const setup = { ...identity, completed: false, files: { "USER.md": "profile" } };
   assert.equal(WORKSPACE_SETUP_REFUSED_EXIT_STATUS, 2);
-  // The runtime it sets up with is not there (yet): not a refusal of this workspace.
+  // The runtime it sets up with is missing: not a refusal of this workspace, so it keeps the
+  // retrying wait.
   failed(f.run(setup, { OPENCLAW_EXECUTABLE: join(f.root, "absent-runtime.mjs") }), 1);
   assert.equal(existsSync(f.workspace), false);
   // Native setup itself failed, here in a stand-in OpenClaw with the pinned release and
@@ -144,6 +145,10 @@ test("workspace setup exits 2 for a refusal and 1 for a failure a restart may cl
   writeFileSync(join(templates, "USER.md"), "changed");
   failed(f.run(setup, standIn));
   // A completed setup whose workspace lost its record fails the same way on every restart.
+  failed(f.run({ ...identity, completed: true }));
+  // So does a setup record the workspace has since overwritten with something other than JSON.
+  mkdirSync(f.workspace, { recursive: true });
+  writeFileSync(join(f.workspace, ".oce-workspace-setup.json"), "not a setup record");
   failed(f.run({ ...identity, completed: true }));
 });
 

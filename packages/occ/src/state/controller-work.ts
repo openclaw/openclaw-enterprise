@@ -84,7 +84,7 @@ export function deploymentProgressForWork(
     case "WORKSPACE_SETUP_RETRYING":
       code = attempt.code;
       message =
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, check this version's logs.";
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.";
       break;
     case "WORKSPACE_NODE_BINDING_PENDING":
       code = attempt.code;
@@ -405,7 +405,7 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
 
 /**
  * Validates failure data before it is recorded, and again when it is read back. A runtime
- * failure value outside the vocabulary in packages/contracts/src/runtime-failure.ts is recorded,
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.mjs is recorded,
  * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
  */
 export function validateFailureData(

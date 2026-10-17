@@ -1386,7 +1386,7 @@ revisionTest(
     assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
       code: "WORKSPACE_SETUP_RETRYING",
       message:
-        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, check this version's logs.",
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
