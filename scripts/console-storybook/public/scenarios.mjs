@@ -2996,7 +2996,7 @@ export const scenarios = {
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
       "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
-      "Change a draft setting, then choose Save Configuration.",
+      "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
       "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
       "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
