@@ -121,7 +121,7 @@ async function slackAgent(t, name) {
       },
     },
   );
-  return { fixture, namespace, agent };
+  return { fixture, namespace, agent, app, bot };
 }
 
 const configurationPath = ({ namespace, agent }) =>
@@ -1044,10 +1044,19 @@ for (const c of declinedCarryCases) {
 // (finding 1511). Only the stale-generation refusal, marked by its /expectedGeneration detail,
 // offers Reload draft now. The API answer is replayed here in the exact shape the controller
 // returns for a reservation (proved in postgres-agent-provisioning.test.mjs).
+// A Kubernetes resourceVersion conflict answers the catch-all "already exists" sentence instead,
+// which names nothing to fix, so each save shows its own conflict text (finding 1639).
+const GENERIC_CONFLICT = "The requested platform resource already exists.";
+const SAVED_STATE_CONFLICT =
+  "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
+// Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
+const UNSAVED_SECRETS_GATE =
+  "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
 const reservedSaveCases = [
   {
     name: "Channels",
     tab: "channels",
+    genericText: SAVED_STATE_CONFLICT,
     async act(page) {
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Edit Slack" });
@@ -1058,6 +1067,7 @@ const reservedSaveCases = [
   {
     name: "Configuration editor",
     tab: "configuration",
+    genericText: SAVED_STATE_CONFLICT,
     async act(page) {
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
@@ -1069,6 +1079,7 @@ const reservedSaveCases = [
   {
     name: "channel Secrets",
     tab: "credentials",
+    genericText: "Credential metadata conflicts with the saved Agent state or selected Secrets.",
     async act(page, c) {
       await selectNewSlackSecrets(page, c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
@@ -1076,14 +1087,18 @@ const reservedSaveCases = [
   },
 ];
 
-for (const c of reservedSaveCases) {
-  test(`a ${c.name} save refused for provisioning shows the refusal, not Reload draft`, async (t) => {
+for (const [c, generic] of reservedSaveCases.flatMap((c) => [
+  [c, false],
+  [c, true],
+])) {
+  test(`a ${c.name} save refused ${generic ? "with the catch-all conflict" : "for provisioning"} shows ${generic ? "its own conflict text" : "the refusal"}, not Reload draft`, async (t) => {
     const context = await slackAgent(t, `Reserved ${c.name}`);
     const { fixture, namespace, agent } = context;
     context.secondApp = await fixture.createSecret(namespace.id, "Second app token", "xapp-2");
     context.secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
-    const refusal =
-      "The Configuration is reserved for provisioning and is not available for this operation.";
+    const refusal = generic
+      ? GENERIC_CONFLICT
+      : "The Configuration is reserved for provisioning and is not available for this operation.";
     let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
@@ -1110,12 +1125,22 @@ for (const c of reservedSaveCases) {
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
     const requests = apiRequests(page, fixture.origin);
     await c.act(page, context);
-    await page.getByText(refusal).first().waitFor();
+    await page
+      .getByText(generic ? c.genericText : refusal)
+      .first()
+      .waitFor();
+    assert.equal(await page.getByText(GENERIC_CONFLICT).count(), 0);
     if (c.tab === "credentials") {
       // The refused write did not bind these Secrets. Keep both choices in the rebuilt form.
       await waitForInputValue(page.getByLabel("Slack app token"), context.secondApp.name);
       await waitForInputValue(page.getByLabel("Slack bot token"), context.secondBot.name);
       assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
+      // Deploy would deliver the saved bindings, not the choices shown (finding 1640).
+      await page.getByText(UNSAVED_SECRETS_GATE).waitFor();
+      assert.equal(
+        await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+        true,
+      );
     }
     assert.equal(writes, 1);
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
@@ -1125,6 +1150,33 @@ for (const c of reservedSaveCases) {
     );
   });
 }
+
+// Deploy delivers the saved bindings, so a channel Secret choice that is shown but not saved
+// blocks it until it is saved or the saved Secret is chosen again (finding 1640).
+test("an unsaved channel Secret choice blocks Deploy new version until it is saved", async (t) => {
+  const context = await slackAgent(t, "Unsaved Secrets");
+  const { fixture, namespace, agent, bot } = context;
+  const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+  const page = await openTab(t, fixture, namespace, agent, "credentials");
+  await page.getByRole("heading", { name: "Unsaved Secrets" }).waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  await selectSecret(page, "Slack bot token", secondBot);
+  await page.getByText(UNSAVED_SECRETS_GATE).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  // Choosing the saved Secret again leaves nothing unsaved.
+  await selectSecret(page, "Slack bot token", bot);
+  await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
+  await selectSecret(page, "Slack bot token", secondBot);
+  await page.getByText(UNSAVED_SECRETS_GATE).waitFor();
+  await page.getByRole("button", { name: "Save channel Secrets" }).click();
+  await page
+    .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+    .waitFor();
+  await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+  assert.equal(await page.getByText(UNSAVED_SECRETS_GATE).count(), 0);
+});
 
 // Reload draft after a Configuration conflict dropped the JSON editor's edits (finding 1512).
 // They are now merged over the reread document key by key: the other browser's change stays,
@@ -1500,6 +1552,8 @@ test("a Configuration save that lands late does not move the cards below the edi
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
 
+// The reader who moved on keeps focus, so no focused control names "Configuration saved.": the
+// status announces itself instead, by taking its text after it is shown (finding 1641).
 test("a late Configuration save leaves focus on the Agents link when the reader moved there", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1520,16 +1574,38 @@ test("a late Configuration save leaves focus on the Agents link when the reader 
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await saved.requested;
   await page.getByRole("link", { name: "← Agents", exact: true }).focus();
+  // The texts each status showed, sampled after every rendered frame.
+  await page.evaluate(() => {
+    const shown = new Map();
+    globalThis.shownStatusTexts = shown;
+    const sample = () => {
+      let saved = false;
+      for (const status of globalThis.document.querySelectorAll('[role="status"]')) {
+        const texts = shown.get(status) ?? [];
+        if (texts.at(-1) !== status.textContent) {
+          texts.push(status.textContent);
+        }
+        shown.set(status, texts);
+        saved ||= status.textContent === "Configuration saved.";
+      }
+      if (!saved) {
+        globalThis.requestAnimationFrame(() => setTimeout(sample));
+      }
+    };
+    sample();
+  });
   saved.release();
 
   await edit.waitFor();
-  assert.equal(
-    await edit.evaluate(
-      (control) =>
-        control.ownerDocument.getElementById(control.getAttribute("aria-describedby"))?.textContent,
-    ),
-    "Configuration saved.",
+  // The status was shown empty first, so its text arrived as a change.
+  const texts = await page.waitForFunction(
+    () =>
+      [...globalThis.shownStatusTexts].find(
+        ([status, shown]) => status.isConnected && shown.at(-1) === "Configuration saved.",
+      )?.[1],
   );
+  assert.deepEqual(await texts.jsonValue(), ["", "Configuration saved."]);
+  assert.equal(await edit.getAttribute("aria-describedby"), null);
   assert.equal(await focusedText(page), "← Agents");
 });
 

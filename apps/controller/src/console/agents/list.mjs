@@ -57,12 +57,12 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-async function latestReadableRevision(context, path) {
+async function latestReadableRevision(context, path, options) {
   let cursor = null;
   do {
     const page = await context.request(
       cursor ? `${path}?cursor=${encodeURIComponent(cursor)}` : path,
-      { includeMeta: true },
+      { ...options, includeMeta: true },
     );
     if (page.data.length > 0) {
       return page.data[0];
@@ -122,6 +122,28 @@ export const PROVISIONING_REFUSAL_CODES = Object.freeze([
   "CHANNEL_CREDENTIAL_UNAVAILABLE",
 ]);
 
+// The API's 503 answers that name no reason: the catch-all outage, and a commit whose outcome
+// the API itself could not confirm.
+const UNNAMED_DEPENDENCY_FAILURES = new Set([
+  "A required platform dependency is unavailable.",
+  "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+]);
+
+// The server's own sentence for a 503 that refused the request before admission: one of
+// PROVISIONING_REFUSAL_CODES with a named reason. POST /agents/{id}/deploy sends these codes
+// only before its revision commits too: channel credential validation runs before its
+// transaction, and the only named DEPENDENCY_UNAVAILABLE answers, the Secret and credential
+// source driver-ownership refusals, roll it back (finding 1638). Any other 503, including an
+// unnamed one, leaves the outcome unknown and returns undefined.
+export function preAdmissionRefusal(error) {
+  return error.status === 503 &&
+    PROVISIONING_REFUSAL_CODES.includes(error.code) &&
+    error.serverMessage !== undefined &&
+    !UNNAMED_DEPENDENCY_FAILURES.has(error.serverMessage)
+    ? error.serverMessage
+    : undefined;
+}
+
 // A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
 // shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
 // about whether a resource exists.
@@ -162,8 +184,15 @@ export function isStaleGeneration(error) {
 
 // For a refused Configuration write, show the reason the API gave this caller (for
 // example, reserved for provisioning). Never infer that a reload will fix it from the prose.
+// The catch-all conflict names nothing (a Kubernetes resourceVersion conflict answers it), so
+// the caller's own conflict text applies instead (finding 1639).
 export function configurationConflictMessage(error, submitted) {
-  if (submitted && error.status === 409 && error.code === "RESOURCE_CONFLICT") {
+  if (
+    submitted &&
+    error.status === 409 &&
+    error.code === "RESOURCE_CONFLICT" &&
+    error.serverMessage !== GENERIC_CONFLICT
+  ) {
     return error.serverMessage ?? "The Configuration could not be saved in its current state.";
   }
 }
@@ -217,7 +246,83 @@ export function renderAgentList(context) {
       : []),
     rows,
   );
+  // Each row's latest deployment, read after the list paints. A return to a retained list
+  // revalidates only the list's own reads, so these never hold its reveal (finding 1644); the
+  // retained rows read them again in place instead.
+  const cells = new Map(); // The shown rows' deployment cells, each with its Agent.
+  function readDeployment(item) {
+    const agentPath = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}`;
+    return latestReadableRevision(context, `${agentPath}/revisions`, { revalidate: false }).then(
+      async (latest) => {
+        if (!latest) {
+          return null;
+        }
+        const status = await context.request(
+          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+          { revalidate: false },
+        );
+        return { revision: latest, status };
+      },
+    );
+  }
+  // Fills a row's deployment cell. Focus in the cell moves to its new link, or to the row's Agent
+  // link when it has none.
+  function fillDeployment(deployment, ...content) {
+    const focused = deployment.contains(deployment.ownerDocument.activeElement);
+    deployment.replaceChildren(...content);
+    if (focused) {
+      (deployment.querySelector("a") ?? deployment.closest("tr")?.querySelector("a"))?.focus({
+        preventScroll: true,
+      });
+    }
+  }
+  function showDeployment(item, deployment) {
+    if (!deployments.has(item.id)) {
+      deployments.set(item.id, readDeployment(item));
+    }
+    void deployments
+      .get(item.id)
+      .then((result) => {
+        if (!context.isCurrent()) {
+          return;
+        }
+        if (result === null) {
+          fillDeployment(deployment, "No visible deployments");
+          return;
+        }
+        const neutral = neutralDeploymentOutcome(result.status);
+        const failure =
+          !neutral && result.status.status === "failed"
+            ? (result.status.error?.message ?? "Deployment failed.")
+            : null;
+        // A long failure fits one line; its title and the Agent page give the whole text.
+        fillDeployment(
+          deployment,
+          link(
+            `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
+            `agents/${item.id}?revision=${result.revision.id}`,
+            context,
+          ),
+          element(
+            "span",
+            {
+              className: "resource-id agent-deployment-note",
+              ...(failure ? { title: failure } : {}),
+            },
+            failure ??
+              (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
+          ),
+        );
+      })
+      .catch((error) => {
+        fillDeployment(
+          deployment,
+          error.status === 403 ? "Deployment access denied" : "Deployment unavailable",
+        );
+      });
+  }
   function render() {
+    cells.clear();
     const query = search.value.trim().toLowerCase();
     const matches = items
       .filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query))
@@ -262,62 +367,8 @@ export function renderAgentList(context) {
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
       const deployment = element("td", { className: "agent-deployment" }, "Reading deployment…");
-      if (!deployments.has(item.id)) {
-        deployments.set(
-          item.id,
-          latestReadableRevision(
-            context,
-            `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/revisions`,
-          ).then(async (latest) => {
-            if (!latest) {
-              return null;
-            }
-            const status = await context.request(
-              `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}/deployments/${encodeURIComponent(latest.id)}`,
-            );
-            return { revision: latest, status };
-          }),
-        );
-      }
-      void deployments
-        .get(item.id)
-        .then((result) => {
-          if (!context.isCurrent()) {
-            return;
-          }
-          if (result === null) {
-            deployment.textContent = "No visible deployments";
-            return;
-          }
-          deployment.replaceChildren(
-            link(
-              `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
-              `agents/${item.id}?revision=${result.revision.id}`,
-              context,
-            ),
-          );
-          const neutral = neutralDeploymentOutcome(result.status);
-          const failure =
-            !neutral && result.status.status === "failed"
-              ? (result.status.error?.message ?? "Deployment failed.")
-              : null;
-          // A long failure fits one line; its title and the Agent page give the whole text.
-          deployment.append(
-            element(
-              "span",
-              {
-                className: "resource-id agent-deployment-note",
-                ...(failure ? { title: failure } : {}),
-              },
-              failure ??
-                (neutral ? `${NEUTRAL_DEPLOYMENT_NOTES[neutral]}.` : "Serving health unverified"),
-            ),
-          );
-        })
-        .catch((error) => {
-          deployment.textContent =
-            error.status === 403 ? "Deployment access denied" : "Deployment unavailable";
-        });
+      cells.set(deployment, item);
+      showDeployment(item, deployment);
       body.append(
         element(
           "tr",
@@ -352,6 +403,23 @@ export function renderAgentList(context) {
     table.append(body);
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }
+  // A retained list is mounted without rereading its rows' deployments, so what they showed is
+  // not presented as current: each row reads its deployment again from "Reading deployment…".
+  // Back from a deployment can focus the loading text. Keep its address only to match that
+  // return: until the read settles, the previous revision must not be an active link.
+  context.onResume?.(() => {
+    deployments.clear();
+    for (const [deployment, item] of cells) {
+      const shown = deployment.querySelector("a");
+      const reading = "Reading deployment…";
+      deployment.replaceChildren(
+        shown
+          ? element("span", { tabindex: "-1", "data-return-focus-href": shown.href }, reading)
+          : reading,
+      );
+      showDeployment(item, deployment);
+    }
+  });
   search.addEventListener("input", render);
   render();
 }

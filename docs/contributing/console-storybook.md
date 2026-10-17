@@ -79,9 +79,11 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
-**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
-survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
+**Return while deployments load** shows the rechecked Agents list first. Watch
+“Reading deployment…” become “Deployment access denied,” without the old result reappearing.
+
+In **Return to loaded pages**, **Return to Agent panels**, and **Slow rechecks**,
+Back preserves search, expanded panels, and Credentials. Refresh reloads.
 
 ## Agent flows and UI gaps
 
@@ -202,9 +204,9 @@ editor's access or recovery controls.
 
 ### Choose and switch revision Secrets
 
-In **Components / Credentials / Slack tokens stored**, inspect references, cancel
-creation, then switch app tokens; the bot binding stays. The API-key switch offers
-another model Secret.
+In **Slack token switch**, Deploy stays disabled until you save the change or
+reselect the saved Secret. **Secret choices after a conflict** shows the same
+recovery when the save is refused.
 
 **Secret list denied** retains IDs. **Slack grant denied** requires recovery.
 In **Issued service accounts unavailable**, switch authentication methods:
@@ -265,19 +267,18 @@ admitted revision** shows the frozen snapshot.
 
 ### Update
 
-In **New version in progress**, v7 deploys while v6 remains current. **Current
-version during deployment** shows v6 with v7 activity. Compare queued, failed,
-activated, and unavailable states. Resize **First version**: wrapped lines align
-under each step, not its number.
+Compare **New version in progress** (v7 deploying) with **Current version during
+deployment** (v6 current). Check queued, failed, activated, and unavailable states.
+In **First version**, wrapped lines align under each step, not its number.
 
-In **Deployment outcome unknown**, press Enter on **Deploy new version**.
-“Deploying…” clears, “Outcome unknown” takes focus, and Deploy stays disabled.
+Press Enter on **Deploy new version**. Focus moves to “Deploying…”, then:
 
-From **New version failed** or **Failed deployment logs from draft**, open v7
-Logs, check output or access denial, then go Back. In **Runtime status and logs
-for v7**, check source, instance, debug, fields, Follow, and filters. At 390px,
-the selected tab and log rows stay visible through direct links and Back/Forward.
-These are fixture responses, not live reads.
+- **Deployment refused before admission:** back to Deploy, enabled and described by the refusal.
+- **Deployment outcome unknown:** to “Outcome unknown.” Deploy stays disabled; inspect the saved state before retrying.
+
+Open v7 Logs from **New version failed**, then go Back. At 390px, the selected
+tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md)
+to check Follow, Download, and permission changes. These stories use simulated responses.
 
 Unreadable Configuration does not hide version metadata. Check the [draft and
 revision banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)

@@ -8,6 +8,13 @@ const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const runtimeLogsPage = {
+  group: "Pages/Agent detail",
+  path: `${candidateVersion}&tab=logs`,
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+};
+const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
@@ -1635,7 +1642,19 @@ export const scenarios = {
     name: "Initial deployment waits on a full Pod quota",
     path: create,
     actions: readyForm,
-    rules: [{ pathIncludes: "/deployments/", hold: true, once: true }],
+    // Each rule skips the first read so the quota message appears before the interruption.
+    rules: [
+      { pathIncludes: "/deployments/", skip: 1, hold: true, once: true },
+      {
+        pathIncludes: "/deployments/",
+        skip: 1,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+        once: true,
+      },
+      { pathIncludes: "/deployments/", skip: 1, status: 404, code: "NOT_FOUND" },
+    ],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -1643,10 +1662,10 @@ export const scenarios = {
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
     },
     description:
-      "The first deployment detail request stalls. Provisioning keeps polling, and the next detail response explains that the Namespace Pod quota is full.",
+      "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
     steps: [
-      "Click Create Agent. The provisioning line stays visible through the stalled detail request, then names the full Pod quota.",
-      "Open the Agent's version; confirm the deployment record shows the same reason.",
+      "Click Create Agent. Watch the Pod quota message stay in place while the next read stalls and another gets a 503.",
+      "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
     ],
   },
   createDeploymentFailed: {
@@ -3403,6 +3422,26 @@ export const scenarios = {
     description:
       "Deployment reads show loading beside the current pointer, then show the visible result.",
   },
+  agentsReturnWhileDeploymentsLoad: {
+    group: "Pages/Agents",
+    name: "Return while deployments load",
+    deployed: true,
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Back reveals the rechecked Agents list before a slow deployment read finishes. The previous result does not stand in for the pending one.",
+    steps: [
+      "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
+      "The list is usable while Latest deployment says “Reading deployment…”, with no link to the previous revision. It changes to “Deployment access denied”; the Agent is still visible.",
+    ],
+  },
   agentsDeploymentError: {
     group: "Pages/Agents",
     name: "Latest deployment unavailable",
@@ -3726,6 +3765,59 @@ export const scenarios = {
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
     ],
   },
+  runtimeLogAccessLost: {
+    ...runtimeLogsPage,
+    name: "Log access lost after output appears",
+    rules: [{ ...refuseLogRead, skip: 1, once: true }],
+    description:
+      "The first page loads. The next log read is refused, then the fixture restores access. The Console remembers the refusal until sign-out.",
+    steps: [
+      "With log rows visible, select Follow. At the next poll the rows and their source caption disappear, Follow stops, and Download is disabled. The Pod card stays: status access did not change.",
+      "Without resetting the story, log out and sign in with invented values. Open Research assistant, then Logs: the rows return. Reset the story to try Download instead of Follow.",
+    ],
+  },
+  runtimeLogDownloadRefused: {
+    ...runtimeLogsPage,
+    name: "Download refused while an earlier log page is in flight",
+    rules: [
+      { suffix: "/runtime/logs", queryParam: "cursor", delayMs: 8000, once: true },
+      { ...refuseLogRead, queryParam: "download" },
+    ],
+    description:
+      "A follow poll starts after two seconds. The fixture holds its successful response for eight more seconds; a Download during that interval is refused immediately.",
+    steps: [
+      "With rows visible, select Follow, wait about three seconds, then select Download. No file downloads; the rows clear and the controls become unavailable.",
+      "Wait for the earlier page to arrive. The access message stays, no rows come back, and Follow does not restart. Reset the story to repeat.",
+    ],
+  },
+  runtimeStatusAccessLost: {
+    ...runtimeLogsPage,
+    name: "Pod status access lost while logs remain readable",
+    rules: [{ suffix: "/runtime", skip: 1, status: 403, code: "FORBIDDEN" }],
+    description:
+      "The first status and log reads succeed. At the next status poll, about ten seconds later, the Pod and its observation time are replaced by the status access message.",
+    steps: [
+      "Leave Follow off until the Pod disappears. The log rows stay, and the Console does not read another log page just because the status request was refused.",
+      "Select Follow. Reading logs still works without the old Pod selection; it does not restore the Pod card.",
+    ],
+  },
+  runtimeStatusAccessRestored: {
+    ...runtimeLogsPage,
+    name: "Pod status access restored on Back",
+    rules: [
+      {
+        suffix: "/permissions",
+        once: true,
+        data: { update: true, deploy: true, operate: false, delete: true },
+      },
+      { suffix: "/runtime", once: true, status: 403, code: "FORBIDDEN" },
+    ],
+    description:
+      "At first the Agent permission response says operate is not granted: logs load, but status is refused. On the next visit the permission response grants operate.",
+    steps: [
+      "Wait for both the status access message and the log rows. Open Namespaces, then use browser Back; the Console asks for status once more and shows the Pod.",
+    ],
+  },
   runtimeLogsReaderDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs downloaded by a log reader",
@@ -3869,6 +3961,28 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description:
       "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
+  },
+  deployRefusedBeforeAdmission: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused before admission",
+    path: draft,
+    rules: [
+      {
+        method: "POST",
+        suffix: "/deploy",
+        delayMs: 1_000,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+      },
+    ],
+    description:
+      "The Controller refuses this deployment because the Configuration binds a Secret from a different Secret Driver.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "Read the refusal. Focus returns to Deploy new version, enabled and described by that message. No second request is sent.",
+    ],
   },
   deployOutcomeUnknown: {
     group: "Pages/Agent detail",
@@ -4619,7 +4733,11 @@ export const scenarios = {
     slack: true,
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+      "A different app Secret is selected but not saved. Deploy would use the saved Secret, not the one shown in the picker.",
+    steps: [
+      "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
+      "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
+    ],
   },
   credentialsSaveProvisioningReserved: {
     group: "Components/Credentials",
@@ -4632,7 +4750,26 @@ export const scenarios = {
       "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
     steps: [
       "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
-      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+      "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
+    ],
+  },
+  credentialsSaveConflict: {
+    group: "Components/Credentials",
+    name: "Secret choices after a conflict",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        ...reservedConfigurationWrite,
+        message: "The requested platform resource already exists.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "A save meets a generic conflict. The Console explains that the Secret choices conflict with saved state, without claiming a duplicate or a stale generation.",
+    steps: [
+      "Press Save channel Secrets. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
+      "Choose the saved Slack app token again. Deploy becomes available; no deployment or second save is needed.",
     ],
   },
   credentialsSlackCarried: {

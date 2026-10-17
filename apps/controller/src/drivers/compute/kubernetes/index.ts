@@ -84,6 +84,7 @@ import type {
   NamespaceEnsureResult,
   SandboxDriver,
   SandboxHarnessEndpoint,
+  SandboxHarnessStatus,
   SandboxEnvironmentVariable,
   SandboxNamespaceContext,
   SandboxResourceRef,
@@ -5751,7 +5752,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         context,
         harnessAuth,
         namespace,
-        sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex"
+        // A provider-owned Harness gets the transport token's verifier only: Codex
+        // authenticates its app-server with it, and both Codex and the dedicated
+        // OpenClaw worker serve a held startup failure to the token holder.
+        sandboxDriver?.implementation === "openshell" &&
+          (revision.harness.id === "codex" || revision.harness.id === "openclaw")
           ? "verifier"
           : "secret",
       ),
@@ -6123,7 +6128,45 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
           return incomplete();
         }
+        // The provider-owned Harness's own view of its startup, read through the
+        // provider with the Agent transport token. `failed` carries a held startup
+        // failure (a failed model probe), validated like a Compute-owned status port.
+        const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
+          this.prepareRevisionStage("sandbox_provision", async () =>
+            sandboxDriver.harnessStatus!({
+              ...sandboxContext,
+              revision,
+              requirements,
+              transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                this.sandboxTransportTokenText(revision),
+              ),
+            }),
+          );
+        const heldProviderHarnessFailure = (
+          harness: SandboxHarnessStatus,
+        ): ComputeReadiness | undefined => {
+          if (harness.state !== "failed") {
+            return undefined;
+          }
+          const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
+          // `failed` without evidence is as invalid as malformed evidence.
+          if (runtimeFailure === undefined) {
+            throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
+          }
+          return { ...result, runtimeFailure };
+        };
         if (!(await this.workspaceNodeReady(revision, namespace))) {
+          if (nativeRuntime !== undefined && sandboxDriver.harnessStatus !== undefined) {
+            // A dedicated OpenClaw worker holding a failed model check never connects
+            // its node, and nothing else reports the hold: read it through the
+            // provider and fail the revision with its code instead of waiting for
+            // the deadline (finding 1642). A worker that is still starting, or one
+            // that has started its node, serves nothing there.
+            const held = heldProviderHarnessFailure(await observeProviderHarness());
+            if (held !== undefined) {
+              return held;
+            }
+          }
           // The provider's Harness Pod and the Gateway are ready, so only the node's
           // connection is outstanding: say so, as the Compute-owned Harness path does
           // (D222). A Gateway still rolling out keeps the unnamed wait.
@@ -6162,23 +6205,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // readiness probe, require the Harness transport to answer, and fail on
           // the Harness's held startup failure (a failed model probe) instead of
           // activating a revision whose Codex never started.
-          const harness = await this.prepareRevisionStage("sandbox_provision", async () =>
-            sandboxDriver.harnessStatus!({
-              ...sandboxContext,
-              revision,
-              requirements,
-              transportToken: await this.prepareRevisionStage("harness_auth", () =>
-                this.sandboxTransportTokenText(revision),
-              ),
-            }),
-          );
-          if (harness.state === "failed") {
-            const runtimeFailure = this.runtimeFailureEvidence(harness.runtimeFailure);
-            // `failed` without evidence is as invalid as malformed evidence.
-            if (runtimeFailure === undefined) {
-              throw new DependencyUnavailableError("Runtime failure status returned invalid data.");
-            }
-            return { ...result, runtimeFailure };
+          const harness = await observeProviderHarness();
+          const held = heldProviderHarnessFailure(harness);
+          if (held !== undefined) {
+            return held;
           }
           if (harness.state !== "serving") {
             return incomplete();
@@ -6579,7 +6609,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
     const activatedHarnessAuth =
-      sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex"
+      sandboxDriver?.implementation === "openshell" &&
+      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
         ? {
             ...harnessAuth,
             environment: [
@@ -14271,6 +14302,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             name: "OPENCLAW_NATIVE_INFERENCE_CONFIG",
             value: nativeRuntime.configuration,
           });
+          if (useRuntimeWorkspace) {
+            // A provider-owned worker serves a held model-check failure on this
+            // port, through the provider's bearer-passthrough exposure, as the
+            // provider-owned Codex Harness does (finding 1642).
+            variables.push({ name: "APP_SERVER_PORT", value: String(AGENT_TRANSPORT_PORT) });
+          }
         }
       }
     }

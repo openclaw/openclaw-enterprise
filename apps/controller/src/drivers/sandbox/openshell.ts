@@ -583,7 +583,10 @@ function revisionUuid(revisionId: string): string {
   return match[1]!;
 }
 
-function codexTransportVerifier(requirements: HarnessWorkloadRequirements): void {
+// An exposed Harness port (the Codex app-server, or the port a dedicated OpenClaw
+// worker serves a held startup failure on) is authenticated by the transport
+// token's verifier only; the raw token never enters the Sandbox.
+function harnessTransportVerifier(requirements: HarnessWorkloadRequirements): void {
   const verifier = requirements.environment.filter(
     (entry) => entry.name === APP_TOKEN_SHA_ENVIRONMENT,
   );
@@ -594,15 +597,26 @@ function codexTransportVerifier(requirements: HarnessWorkloadRequirements): void
   ) {
     throw new SandboxRevisionUnsupportedError(
       "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-      "OpenShell dedicated Codex requires one literal APP_TOKEN_SHA verifier.",
+      "OpenShell dedicated Harness exposure requires one literal APP_TOKEN_SHA verifier.",
     );
   }
   if (requirements.environment.some((entry) => entry.name === "APP_SERVER_TOKEN")) {
     throw new SandboxRevisionUnsupportedError(
       "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-      "OpenShell dedicated Codex cannot receive APP_SERVER_TOKEN.",
+      "OpenShell dedicated Harness exposure cannot receive APP_SERVER_TOKEN.",
     );
   }
+}
+
+// Native OpenClaw exposes its Harness port only when Compute asks for one: a worker
+// provisioned before that request keeps its outbound-only Sandbox.
+function exposesHarnessPort(requirements: HarnessWorkloadRequirements, codex: boolean): boolean {
+  return (
+    codex ||
+    requirements.environment.some(
+      (entry) => entry.name === APP_SERVER_PORT_ENVIRONMENT && !("valueFrom" in entry),
+    )
+  );
 }
 
 interface HarnessRuntimeFiles {
@@ -2577,8 +2591,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    if (codex) {
-      codexTransportVerifier(context.requirements);
+    const exposed = exposesHarnessPort(context.requirements, codex);
+    if (exposed) {
+      harnessTransportVerifier(context.requirements);
     }
     const runtimeFiles = harnessRuntimeFiles(context.requirements, codex ? "codex" : "openclaw");
     const runtimeCredentialMaterial = await harnessRuntimeCredentials(context);
@@ -2592,7 +2607,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       runtimeCredentialMaterial.credentials,
       runtimeCredentialMaterial.credentialExpirationTimes,
     );
-    const serviceExposures = codex
+    const serviceExposures = exposed
       ? [
           {
             service: "",
@@ -2674,7 +2689,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "OpenShell returned a different Sandbox name than requested.",
           );
         }
-        if (codex) {
+        if (exposed) {
           validateHarnessServiceUrl(created.serviceUrls[""]);
         } else if (Object.keys(created.serviceUrls).length !== 0) {
           throw new OpenShellSandboxConfigurationFailure(
@@ -2708,7 +2723,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         `OpenShell Sandbox ${sandbox.resourceName} has stopped; remove the stale Sandbox before retrying.`,
       );
     }
-    if (codex) {
+    if (exposed) {
+      // The spec match above already proves the live Sandbox was created with this
+      // exposure, so a missing service is an anomaly, not an older Sandbox.
       const service = await client.getService(workspace, sandbox.resourceName, "", context.signal);
       if (
         service === undefined ||
@@ -2800,6 +2817,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   async harnessEndpoint(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint> {
+    if (context.revision.harness.id !== "codex") {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell exposes a provider-owned Harness endpoint only for dedicated Codex revisions.",
+      );
+    }
     const { service } = await this.exactHarnessService(context, "resolve a Harness endpoint");
     return Object.freeze({
       url: harnessWebSocketUrl(service.advertisedUrl),
@@ -2809,11 +2832,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   /**
-   * Observes the Codex Harness through its bearer-passthrough exposure, as the Agent Gateway
-   * reaches it. A Harness holding a startup failure (for example a failed model probe) serves
-   * that failure on the app-server port in place of Codex; a serving Codex app-server completes
-   * the authenticated WebSocket handshake. Anything else, including OpenShell's own `502` while
-   * nothing listens, is still starting.
+   * Observes the Harness through its bearer-passthrough exposure, as the Agent Gateway reaches a
+   * Codex Harness. A Harness holding a startup failure (for example a failed model probe) serves
+   * that failure on the exposed port in place of Codex, or in place of the dedicated OpenClaw
+   * worker's node; a serving Codex app-server completes the authenticated WebSocket handshake.
+   * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     const { client, service } = await this.exactHarnessService(context, "observe a Harness");
@@ -2837,6 +2860,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       : Object.freeze({ state: "starting" });
   }
 
+  /**
+   * The exact bearer-passthrough exposure of the revision's Harness: Codex always has one, a
+   * dedicated OpenClaw worker has one because Compute asked for it. Anything else fails closed.
+   */
   private async exactHarnessService(
     context: SandboxHarnessContext,
     operation: string,
@@ -2845,10 +2872,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     readonly service: NonNullable<Awaited<ReturnType<OpenShellGatewayClient["getService"]>>>;
   }> {
     this.requireOperatorWorkspaceMode(operation);
-    if (context.revision.harness.mode !== "dedicated" || context.revision.harness.id !== "codex") {
+    const codex = context.revision.harness.id === "codex";
+    if (
+      context.revision.harness.mode !== "dedicated" ||
+      (!codex && context.revision.harness.id !== "openclaw")
+    ) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell exposes a provider-owned Harness endpoint only for dedicated Codex revisions.",
+        "OpenShell exposes a provider-owned Harness only for dedicated Codex or OpenClaw revisions.",
       );
     }
     if (context.revision.sandboxDriverId !== this.id) {
@@ -2870,7 +2901,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       !["SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH", 2].includes(service.authorizationMode)
     ) {
       throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell did not expose the exact Codex bearer-passthrough service.",
+        codex
+          ? "OpenShell did not expose the exact Codex bearer-passthrough service."
+          : "OpenShell did not expose the exact OpenClaw worker bearer-passthrough service.",
       );
     }
     return { client, service };

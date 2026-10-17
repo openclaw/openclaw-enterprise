@@ -1551,9 +1551,10 @@ export interface SandboxDriver extends Driver {
    */
   harnessEndpoint?(context: SandboxHarnessContext): Promise<SandboxHarnessEndpoint>;
   /**
-   * Observes the provider-owned Harness through the endpoint `harnessEndpoint` returns, with the
-   * Agent transport token. Compute treats only `serving` as ready and fails the revision with a
-   * valid held `runtimeFailure`. `serving` requires an authenticated transport handshake.
+   * Observes the provider-owned Harness through its exposed port, with the Agent transport
+   * token. Compute fails the revision with a valid held `runtimeFailure`. For a Codex Harness it
+   * treats only `serving` as ready, which requires an authenticated transport handshake; for a
+   * dedicated OpenClaw worker it reads this only while the worker's node has not connected.
    */
   harnessStatus?(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus>;
   /**

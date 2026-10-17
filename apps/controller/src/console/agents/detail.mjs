@@ -33,6 +33,7 @@ import {
   NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
   neutralDeploymentOutcome,
+  preAdmissionRefusal,
 } from "./list.mjs";
 import {
   createChannelSecretsPanel,
@@ -51,9 +52,30 @@ async function readRevisionPage(request, path, cursor = null) {
   return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
 }
 
+// Empties a status just inserted with `text` and writes it again once screen readers have seen
+// it empty, so they announce it as a change. A timer, unlike a frame, also runs in a hidden tab.
+function announceAfterShown(status, text) {
+  status.textContent = "";
+  setTimeout(() => {
+    status.textContent = text;
+  }, 100);
+}
+
+// A 503 the deploy request answered before admission: no version was created, so Deploy stays
+// available. Create Agent treats the same codes the same way (finding 1638).
+function deployRefusedBeforeAdmission(error) {
+  return (
+    error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC" || preAdmissionRefusal(error) !== undefined
+  );
+}
+
 function deployFailureText(error, submitted) {
   if (error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC") {
     return "Deployment refused: the cluster denied OCC access to this Agent's connection credentials. Ask a platform operator to grant the documented tenant RoleBindings, then deploy again.";
+  }
+  const refusal = submitted ? preAdmissionRefusal(error) : undefined;
+  if (refusal !== undefined) {
+    return refusal;
   }
   if (error.status === 409 && error.code === "NAMESPACE_NOT_READY") {
     return NAMESPACE_NOT_READY_MESSAGE;
@@ -2420,10 +2442,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             context.onExpired();
             return;
           }
-          // The cluster refused the credential check before admission: no version was created.
-          const clusterRbac = error.code === "RUNTIME_CREDENTIALS_CLUSTER_RBAC";
           deployFeedback.textContent = deployFailureText(error, submitted);
-          if (!submitted || clusterRbac || [400, 403, 404, 409, 429].includes(error.status)) {
+          if (
+            !submitted ||
+            deployRefusedBeforeAdmission(error) ||
+            [400, 403, 404, 409, 429].includes(error.status)
+          ) {
             deployPending = false;
           } else {
             // The request ended, not necessarily the deployment. Keep Deploy disabled and let
@@ -2673,7 +2697,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ? [...content.querySelectorAll('[role="status"]')].find((node) => node.textContent === saved)
       : null;
     let control = named ?? tabControls.get(selectedTab);
-    if (status && named) {
+    // Disabling Save or replacing its editor can leave focus on the body. Restore it then, but
+    // don't take it back from a control the reader reached while saving.
+    const focusMoved = Boolean(document.activeElement) && document.activeElement !== document.body;
+    if (status && focusMoved) {
+      // No control we focus names the status then, so it announces itself: a live region speaks
+      // when its text changes after it is shown, not when it is inserted with it (finding 1641).
+      announceAfterShown(status, saved);
+    } else if (status && named) {
       // A status inserted with its text is rarely announced; the focused control names it.
       status.id = "draft-save-status";
       control.setAttribute("aria-describedby", status.id);
@@ -2683,9 +2714,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       status.tabIndex = -1;
       control = status;
     }
-    // Disabling Save or replacing its editor can leave focus on the body. Restore it
-    // then, but don't take it back from a control the reader reached while saving.
-    if (!document.activeElement || document.activeElement === document.body) {
+    if (!focusMoved) {
       control.focus();
     }
   }

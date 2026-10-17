@@ -123,32 +123,33 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-`loadPage` starts a request generation with `GET /api/auth/session`. Opening an Agent
-from the list immediately shows **Loading agent details…** and **Back to Agents**.
-Access checks finish before the Agent’s name, actions, and overview appear together.
-Other ways into an Agent keep the shown page until then; a fresh load shows loading after 400 ms.
-Once shown, loading stays at least 300 ms (`loadingMinimumMs`); the Agent's scroll and focus follow.
-Going back cancels the read and returns to the list; a second press does
-nothing. A refocus during that read keeps this page. Other first visits and
-Refresh show loading after 250 ms. A held page keeps its own navigation and header.
-A page held for another page keeps its Namespace selector disabled.
-A return to a retained view or a refocus keeps the shown page inert and says
-**Still checking…** after one second. The Console retains up to 16 views by route,
-Namespace, and session owner, excluding passwords and discovery
-state. An interrupted return keeps its view; an interrupted Refresh discards it.
+`loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
+immediately shows **Loading agent details…** and **Back to Agents**. Its name,
+actions, and overview appear together after access checks. Back cancels the read;
+a second Back does nothing, and refocusing does not interrupt it. Other routes to
+an Agent keep the current page, or show loading after 400 ms on a fresh load.
+Once visible, loading stays at least 300 ms (`loadingMinimumMs`).
 
-`apps/controller/src/console/api-client.mjs:createApiClient` keeps its composed
-abort signal through JSON and text body consumption. After headers arrive,
-cancellation retains the signal's reason and socket failures reach the caller's
-interrupted-read recovery. Only JSON syntax failures become invalid-response
-errors; a failed body never causes an automatic replay.
+Other first visits and Refresh show loading after 250 ms. A return or refocus
+keeps the current page inert, with its own header and disabled Namespace selector;
+after one second it says **Still checking…**. The Console retains up to 16 views
+by route, Namespace, and session owner, excluding passwords and discovery state.
+An interrupted return preserves the view; an interrupted Refresh discards it.
 
-Completed views retain DOM, handlers, and draft callbacks. On return, `loadPage`
-checks GET dependencies and user identity. A match remounts the view with expanded
-debug details. Changed data or the first readable Namespace for a view without a
-selection rebuilds it; Refresh always rebuilds.
-Pending or failed reads, password input, and mutations prevent reuse; read-only
-catalog and diagnostic POSTs do not.
+`apps/controller/src/console/api-client.mjs:createApiClient` keeps the abort signal
+through the response body. Cancellation preserves its reason; a socket failure is an interrupted read,
+not invalid JSON. Neither replays the request.
+
+On return, `loadPage` checks the user and retained GET dependencies. A match
+restores the DOM, handlers, drafts, and expanded debug details. Changed data,
+a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
+reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
+
+**Back to Agents:** session, Namespace, permission, and collection checks gate the
+list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
+sets visible deployment cells to **Reading deployment…** before paint, then shows
+each fresh result or refusal. Back from a deployment focuses its loading text,
+not a link to the old revision. Leaving during these reads makes the next return rebuild the list.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -373,9 +374,9 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
 - 2026-10-16 22:40: Hold loading 300 ms; open recovery links in view; reread status on a log refusal. (ui-jank-code-12)
 - 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
 - 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
-- 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

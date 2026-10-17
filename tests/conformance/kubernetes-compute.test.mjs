@@ -1588,6 +1588,121 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.equal(harness.spec.selector["app.kubernetes.io/name"], `agent-${suffix}-inactive`);
 });
 
+// Finding 1642: a native worker under a Sandbox provider holds a failed model check and never
+// connects its node. Compute hands the provider the bearer-passthrough exposure (APP_SERVER_PORT
+// with the APP_TOKEN_SHA verifier, never the token) and, while the node is pending, reads the
+// held failure through the provider to fail the revision with its code.
+test("Kubernetes native Sandbox provisioning fails a revision on the worker's held model-check failure", async () => {
+  const heldFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-17T08:30:00.000Z",
+    code: "AUTHENTICATION_FAILED",
+  };
+  const provisions = [];
+  const observations = [];
+  let answer = { state: "starting" };
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus(context) {
+      observations.push(context);
+      return answer;
+    },
+  };
+  const { revision, state, namespace, gatewayName, markReady, prepare } =
+    dedicatedFirstDeployFixture({
+      sandboxDriver,
+      revision: {
+        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        sandboxDriverId: sandboxDriver.id,
+        configuration: admitLoggingConfiguration(
+          createHarnessConfiguration("openclaw", "gpt-5"),
+          "info",
+        ),
+        plugins: undefined,
+      },
+    });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  const environment = provisions[0].requirements.environment;
+  const named = (name) => environment.filter((entry) => entry.name === name);
+  assert.deepEqual(named("APP_SERVER_PORT"), [{ name: "APP_SERVER_PORT", value: "18790" }]);
+  assert.equal(named("APP_TOKEN_SHA").length, 1);
+  assert.match(named("APP_TOKEN_SHA")[0].value, /^[a-f0-9]{64}$/);
+  assert.deepEqual(named("APP_SERVER_TOKEN"), [], "the provider never receives the raw token");
+  // Nothing is observed before the provider's Pod is Ready.
+  assert.equal((await prepare()).pendingReason, undefined);
+  assert.deepEqual(observations, []);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  // A worker that is still starting keeps the named wait; the read carries the transport
+  // token the worker's verifier hashes.
+  const nodePending = await prepare();
+  assert.equal(nodePending.ready, false);
+  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(nodePending.runtimeFailure, undefined);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].revision, revision);
+  assert.equal(
+    createHash("sha256").update(observations[0].transportToken, "utf8").digest("hex"),
+    named("APP_TOKEN_SHA")[0].value,
+  );
+  assert.deepEqual(observations[0].requirements.labels, provisions[0].requirements.labels);
+  // The held failure fails the revision with its code; a provider cause is dropped, since
+  // only MODEL_PROBE_FAILED keeps one.
+  answer = {
+    state: "failed",
+    runtimeFailure: { ...heldFailure, cause: { kind: "PROVIDER_TEXT", detail: "key sk-123" } },
+  };
+  const held = await prepare();
+  assert.equal(held.ready, false);
+  assert.equal(held.pendingReason, undefined);
+  assert.deepEqual(held.runtimeFailure, heldFailure);
+  assert.equal(observations.length, 2);
+  // Malformed or missing evidence is as invalid as for a Compute-owned status port.
+  for (const runtimeFailure of [
+    undefined,
+    "AUTHENTICATION_FAILED",
+    { ...heldFailure, code: "not a code" },
+    { ...heldFailure, checkedAt: "yesterday" },
+  ]) {
+    answer = { state: "failed", runtimeFailure };
+    await assert.rejects(prepare(), /Runtime failure status returned invalid data/);
+  }
+  // Once the node has connected the worker is past its checks: nothing more is read.
+  answer = { state: "starting" };
+  state.connected = true;
+  observations.length = 0;
+  assert.equal((await prepare()).ready, true);
+  assert.deepEqual(observations, []);
+});
+
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
 // model and subagents.model. An openai source's provider block is dropped, so no selection
 // may be left on it.
@@ -11040,8 +11155,13 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(JSON.parse(body).runtimeFailure?.code, failureCode);
         assert.deepEqual(JSON.parse(body).runtimeFailure?.cause, cause);
         assert.deepEqual(probeLog.cause, cause);
-        // The log line keeps the provider's HTTP status from its error, never the text.
-        assert.equal(probeLog.providerStatus, cause?.kind === "PROBE_STATUS" ? 404 : undefined);
+        // The log line keeps the provider's HTTP status from its error, never the text;
+        // the upfront rejection names its 401 and only a closed-vocabulary code.
+        assert.equal(
+          probeLog.providerStatus,
+          upfront ? 401 : cause?.kind === "PROBE_STATUS" ? 404 : undefined,
+        );
+        assert.equal(probeLog.providerCode, undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();

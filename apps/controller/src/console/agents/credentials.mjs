@@ -212,6 +212,8 @@ export function createChannelSecretsPanel({
     reloadRequired: false,
     // Unsaved Secret choices the form reopens with, and what a save conflict carries.
     draftSeed: null,
+    // The form shows a Secret choice the saved bindings do not have (finding 1640).
+    unsavedSecrets: false,
     carried: null,
     carriedNote: "",
   };
@@ -297,6 +299,7 @@ export function createChannelSecretsPanel({
       !state.outcomeUnknown &&
       !state.reloadRequired &&
       !state.saveGrantWarning &&
+      !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
   }
@@ -325,6 +328,9 @@ export function createChannelSecretsPanel({
     if (missing.length) {
       return `Complete these in Credentials before deploying: ${missing.join(", ")}.`;
     }
+    if (state.unsavedSecrets) {
+      return "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
+    }
     return "Ready to deploy.";
   }
 
@@ -332,6 +338,7 @@ export function createChannelSecretsPanel({
   const shown = {};
 
   function renderChannelForm(error) {
+    state.unsavedSecrets = false;
     if (!slackEnabled(state.values)) {
       return null;
     }
@@ -389,6 +396,7 @@ export function createChannelSecretsPanel({
           error.textContent = state.saveGrantWarning;
           status.textContent = "";
           updateControls();
+          onChange();
         },
         createSecretName: () => `${state.agent.name} ${binding.secretName}`,
         createDialogTitle: `Create ${binding.label} Secret`,
@@ -405,6 +413,13 @@ export function createChannelSecretsPanel({
       return picker.field;
     }
     const updateControls = () => {
+      // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
+      // an unsaved authentication source does.
+      state.unsavedSecrets = SLACK_SECRET_BINDINGS.some(
+        (binding) =>
+          secretIdForBinding(draft.secretBindings[binding.key]) !==
+          secretIdForBinding(state.configuration.secretBindings?.[binding.key]),
+      );
       const changedSecrets = Object.values(draft.changedSecrets);
       const pendingSecrets = pendingSecretGrants();
       const missing = SLACK_SECRET_BINDINGS.filter(

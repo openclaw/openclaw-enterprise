@@ -248,7 +248,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   assert.equal(await focusedText(page), stale);
 
   // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
-  // focus.
+  // focus. The API's catch-all outage names no refusal (finding 1638).
   await page.reload();
   await page.getByText(/generation 2/).waitFor();
   const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
@@ -258,7 +258,10 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deploy unavailable" },
+        error: {
+          code: "DEPENDENCY_UNAVAILABLE",
+          message: "A required platform dependency is unavailable.",
+        },
       }),
     },
   });
@@ -1062,6 +1065,20 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(await deploy.isDisabled(), true);
     await page.getByRole("button", { name: "Credentials", exact: true }).click();
     await page.getByRole("button", { name: "Reload draft", exact: true }).click();
+    if (changed === "generation") {
+      // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
+      // (finding 1640).
+      await page
+        .getByText(
+          "Save the channel Secret choices, or choose the saved Secrets again, before deploying.",
+          {
+            exact: true,
+          },
+        )
+        .waitFor();
+      assert.equal(await deploy.isDisabled(), true);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    }
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await deploy.isEnabled(), true);
   });

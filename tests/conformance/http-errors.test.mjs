@@ -949,9 +949,11 @@ for (const [name, error, expected] of cases) {
 }
 
 // Create Agent shows the reason of a 503 from POST /agents/provision only for the codes that
-// request sends before its own admission (finding 1635). Every other 503 code, and every code
-// this table does not map (it may answer 503), is listed here with where it comes from, so a new
-// one fails this test until someone decides which it is.
+// request sends before its own admission (finding 1635), and Deploy on the Agent page does the
+// same for POST /agents/{id}/deploy, which sends them only before its revision commits (finding
+// 1638). Every other 503 code, and every code this table does not map (it may answer 503), is
+// listed here with where it comes from, so a new one fails this test until someone decides which
+// it is.
 const NOT_PROVISIONING_REFUSALS = [
   // Discovery and runtime log reads, never a provisioning request.
   "CHANNEL_DIRECTORY_INVALID_RESPONSE",
@@ -964,7 +966,8 @@ const NOT_PROVISIONING_REFUSALS = [
   "RUNTIME_LOGS_CLUSTER_RBAC",
   "RUNTIME_LOGS_SANDBOX_NOT_FOUND",
   "RUNTIME_LOGS_UNAVAILABLE",
-  // The runtime credential routes, deploy and the provisioning worker, after admission.
+  // The runtime credential routes, deploy and the provisioning worker, after admission. Deploy
+  // meets it before its revision commits and names it with its own text.
   "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
   // Raised by other routes themselves, outside this mapping.
   "INSTALLATION_EXISTS",
@@ -974,7 +977,7 @@ const NOT_PROVISIONING_REFUSALS = [
   "UNKNOWN_OUTCOME",
 ];
 
-test("every API error code that may answer 503 is classified for Create Agent's provisioning refusals", () => {
+test("every API error code that may answer 503 is classified for Create Agent's and Deploy's pre-admission refusals", () => {
   const statuses = new Map(cases.map(([, , expected]) => [expected.code, expected.status]));
   const unclassified = ERROR_CODES.filter((code) => (statuses.get(code) ?? 503) === 503);
   assert.deepEqual(
