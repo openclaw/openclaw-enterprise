@@ -3571,7 +3571,7 @@ function probeCodexAuthentication(timeout) {
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
     // message is never a recovered stream notice, so no recovered stream error lands here.
     // Codex reconnects after a network wait on its own, so a network wait inside the turn
-    // of an attempt that still exits answered recovered like a stream notice.
+    // of an attempt that exits 0 with an answer counts as recovered, like a stream notice.
     let transientFailure;
     let unrecoveredTransientFailure = false;
     for (const event of events) {
@@ -3580,7 +3580,7 @@ function probeCodexAuthentication(timeout) {
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
       if (failure?.transient === true) {
         transientFailure ??= failure;
-        if (event.message !== CODEX_NETWORK_WAIT || !turnStarted) unrecoveredTransientFailure = true;
+        if (event.type !== "error" || event.message !== CODEX_NETWORK_WAIT || !turnStarted) unrecoveredTransientFailure = true;
         continue;
       }
       if (event.type === "error") {

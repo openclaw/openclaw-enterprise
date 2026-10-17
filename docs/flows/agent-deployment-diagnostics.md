@@ -133,8 +133,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   model provider is transient: each attempt waits out its 30-second limit, so
   `error-event-attempt2` follows about a minute after the check starts. Codex
   reports a refused port, an unresolvable host and a rejected TLS certificate
-  the same way, so a permanent mistake such as a wrong endpoint URL or a
-  blocked egress route is also retried once before it is held. If Codex
+  the same way, so a permanent mistake such as a wrong endpoint host or port
+  or a blocked egress route is also retried once before it is held. If Codex
   reconnects and the model answers in the same attempt, the check passes.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox

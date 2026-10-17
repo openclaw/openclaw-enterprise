@@ -773,6 +773,18 @@ test("Codex runtime retries a transient startup model probe failure once", async
         "turn-failed",
       ],
       [
+        // A made-up shape: only an error event's own text is a network wait.
+        "a failed turn naming the network wait beside a transient error",
+        [
+          started,
+          { ...failedTurn("unexpected status 503"), message: networkWait().message },
+          assistant,
+          completed,
+        ],
+        undefined,
+        "turn-failed",
+      ],
+      [
         "a network wait and a transient error",
         [started, errorEvent("unexpected status 503"), networkWait(), assistant, completed],
       ],
