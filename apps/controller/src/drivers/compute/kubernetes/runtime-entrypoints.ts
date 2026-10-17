@@ -2082,8 +2082,10 @@ function probeOpenClawAuthenticationFailure() {
 // than the key. Who answered is read from the response's header names only, never
 // their values, and never names the provider (the log omits it): "provider"
 // (OpenAI's x-request-id plus an openai-* or x-openai-* header; Anthropic's
-// request-id plus x-should-retry), "relay" (an x-openshell-* header, the OpenShell
-// supervisor's own answers) or "unknown".
+// request-id plus x-should-retry), "relay" (an x-openshell-* header; reserved for
+// the OpenShell supervisor's own answers, which today are 403/502, never 401, and
+// which wins over the provider markers because a stamped 401 still came via the
+// relay) or "unknown".
 const UPFRONT_ENDPOINTS = {
   openai: ["https://api.openai.com/v1", { "openai-responses": "/responses", "openai-completions": "/chat/completions" }, (key) => ({ authorization: "Bearer " + key })],
   anthropic: ["https://api.anthropic.com", { "anthropic-messages": "/v1/messages" }, (key) => !key.startsWith("sk-ant-oat") && { "x-api-key": key, "anthropic-version": "2023-06-01" }],
@@ -2110,6 +2112,7 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     env: { U: base + path, H: JSON.stringify({ ...headers, "content-type": "application/json" }), NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE },
     stdio: "ignore", timeout: 10000, killSignal: "SIGKILL",
   }).status;
+  if (!Number.isInteger(status)) return false;
   const rejection = status % 10;
   const source = UPFRONT_RESPONSE_SOURCES[status - rejection];
   if (!(rejection >= 3 && rejection <= 6) || source === undefined) return false;

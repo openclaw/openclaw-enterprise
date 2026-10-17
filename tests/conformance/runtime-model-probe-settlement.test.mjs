@@ -346,7 +346,7 @@ test("the upfront credential check runs only where OpenClaw would send the same 
     "https://api.anthropic.com/v1/messages",
   );
   // Only the provider's 401 (exit 3-6 plus a known source 0, 10 or 20) is a rejection.
-  for (const status of [0, 1, 2, 7, 9, 10, 12, 17, 27, 30, 33, 43, -3, null]) {
+  for (const status of [0, 1, 2, 7, 9, 10, 12, 17, 27, 30, 33, 43, -3, 3.5, "13", null]) {
     assert.equal(upfrontCheck("openai", undefined, "fixture-key", status).rejected, false, status);
   }
   for (const [status, providerCode, providerSource] of [
@@ -491,5 +491,10 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
     answer = status;
     assert.equal(await run(url), 0, `HTTP ${status}`);
   }
+  // The relay's own denial (403 stamped with X-OpenShell-Policy) is never a 401 rejection.
+  answer = 403;
+  answerHeaders = { "x-openshell-policy": "fixture-policy" };
+  assert.equal(await run(url), 0, "a relay denial");
+  answerHeaders = {};
   assert.equal(await run("http://127.0.0.1:1/v1/responses"), 0, "an unreachable endpoint");
 });

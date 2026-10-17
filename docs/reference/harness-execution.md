@@ -176,7 +176,7 @@ published only after retries end.
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw
 probe status `auth` (401/403 or invalid key), 401 to OpenClaw's first, empty
 request to a default OpenAI or Anthropic endpoint, or a Codex `turn.failed`
-event or access-token login error reporting 401 or 403. OpenClaw's record adds
+event or access-token login error reporting 401 or 403. The upfront 401 adds
 `providerCode` (`invalid_api_key`, `missing_api_key`, `insufficient_permissions`)
 and `providerSource` (`provider`, `relay`, `unknown`; header names only). A CPU-starved OpenClaw
 probe reports `MODEL_PROBE_CPU_STARVED`. Timeouts, provider server errors,

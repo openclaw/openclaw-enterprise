@@ -995,7 +995,7 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, probeStatus })
         return {
           execFile() {},
           // The upfront credential check: the exit status is a 401's source (0
-          // unknown, 10 openai, 20 relay) plus its class (3 unclassified, 4
+          // unknown, 10 provider, 20 relay) plus its class (3 unclassified, 4
           // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions). The
           // full probe, when reached, reports `probeStatus` for the model.
           spawnSync(command, args) {
