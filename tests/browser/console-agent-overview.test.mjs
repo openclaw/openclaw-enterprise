@@ -841,23 +841,27 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
     .getByRole("link", { name: "Open Configuration" });
   await open.waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-  // A modified click (open in a new tab) is left to the browser; this page does not take it.
-  const taken = await open.evaluate((link) => {
-    let prevented;
-    globalThis.addEventListener(
-      "click",
-      (event) => {
-        prevented = event.defaultPrevented;
-        event.preventDefault();
+  // A modified or middle click (open in a new tab or window) is left to the browser.
+  const taken = await open.evaluate((link) =>
+    [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }].map(
+      (modifier) => {
+        let prevented;
+        globalThis.addEventListener(
+          "click",
+          (event) => {
+            prevented = event.defaultPrevented;
+            event.preventDefault();
+          },
+          { once: true },
+        );
+        link.dispatchEvent(
+          new globalThis.MouseEvent("click", { bubbles: true, cancelable: true, ...modifier }),
+        );
+        return prevented;
       },
-      { once: true },
-    );
-    link.dispatchEvent(
-      new globalThis.MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
-    );
-    return prevented;
-  });
-  assert.equal(taken, false);
+    ),
+  );
+  assert.deepEqual(taken, [false, false, false, false, false]);
   // Click and read the position in one task: an instant scroll has already landed.
   const top = await open.evaluate((link) => {
     link.click();

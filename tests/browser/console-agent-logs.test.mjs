@@ -1880,7 +1880,8 @@ for (const { name, revoked, podsKept, staleFails = false } of [
     await page.getByRole("button", { name: "Follow" }).click();
     const statusPath = `/deployments/${logs.revisionId}/runtime`;
     const statusReads = () => requests.filter(({ path }) => path.endsWith(statusPath)).length;
-    // The next status poll is answered with the grants it was authorized under, then held.
+    // The next status poll is answered with the grants it was authorized under (or, in the
+    // failing case, refused without reaching the server), then held.
     const stale = await holdRequests(t, page, `**${statusPath}`, {
       once: true,
       ...(staleFails
@@ -1888,7 +1889,13 @@ for (const { name, revoked, podsKept, staleFails = false } of [
             fulfill: {
               status: 504,
               contentType: "application/json",
-              body: JSON.stringify({ error: { code: "TIMEOUT", message: "Timed out." } }),
+              body: JSON.stringify({
+                error: {
+                  code: "RUNTIME_LOGS_TIMEOUT",
+                  message: "The runtime status or log read timed out.",
+                },
+                meta: { requestId: "req_test_stale_status" },
+              }),
             },
           }
         : { afterServer: true }),

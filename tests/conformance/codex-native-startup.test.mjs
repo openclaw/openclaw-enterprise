@@ -572,6 +572,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
       ),
       "error-event",
     ],
+    // The 4xx guard's bounds; a compatible endpoint may print the status.
     [
       "a provider 400 with its status that says overloaded",
       failedWith(
@@ -606,6 +607,11 @@ test("Codex runtime retries a transient startup model probe failure once", async
     [
       "a dropped stream naming a 403 without its status",
       erroredWith("stream disconnected before completion: upstream answered 403"),
+      "error-event",
+    ],
+    [
+      "a dropped stream naming the API key in any case",
+      erroredWith("stream disconnected before completion: Incorrect API key provided"),
       "error-event",
     ],
   ];
@@ -808,6 +814,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
     {
       // Only a detail token is marked as retried; a cause with no detail keeps none.
       name: "a wrapper error after a transient failure holds a cause with no detail",
+      // A non-string stdout makes the wrapper throw.
       native: [login(), killed, probe([], { stdout: 1 })],
       retryAfterMs: 1000,
       expect: probeFailure({ kind: "WRAPPER_ERROR" }),
