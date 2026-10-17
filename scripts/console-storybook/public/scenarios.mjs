@@ -11,6 +11,15 @@ const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
+const reservedConfigurationWrite = {
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+  method: "PATCH",
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The Configuration is reserved for provisioning and is not available for this operation.",
+};
+
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -4213,16 +4222,7 @@ export const scenarios = {
     name: "Save refused during provisioning",
     path: `${draft}&tab=channels`,
     slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Configuration is reserved for provisioning and is not available for this operation.",
-      },
-    ],
+    rules: [reservedConfigurationWrite],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
       "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
@@ -4398,6 +4398,20 @@ export const scenarios = {
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
       "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSaveProvisioningReserved: {
+    group: "Components/Credentials",
+    name: "Secret choices after a refused save",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
+    steps: [
+      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+    ],
   },
   credentialsSlackCarried: {
     group: "Components/Credentials",
