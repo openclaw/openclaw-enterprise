@@ -532,6 +532,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     role: "alert",
     hidden: true,
   });
+  const selectedModeUnavailable = () =>
+    !nativeWorkersUnavailable.hidden || !openclawModeUnavailable.hidden;
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
@@ -1707,7 +1709,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       openclawModeUnavailable.textContent = modeRefusal;
     }
     openclawModeUnavailable.hidden = !modeRefusal;
-    runtimeModeSummary.textContent = ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
+    const modeUnavailable = selectedModeUnavailable();
+    runtimeModeSummary.textContent = modeUnavailable
+      ? " · Execution mode unavailable"
+      : ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = sandboxDriverOutage
@@ -1721,11 +1726,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
               : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
-      const nextStatus = shouldProvision()
-        ? "Dedicated Agents are provisioned and deployed when created."
-        : mode.value === "embedded"
-          ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
-          : "This installation creates draft Agents for later deployment.";
+      let nextStatus = "";
+      if (!modeUnavailable) {
+        nextStatus = shouldProvision()
+          ? "Dedicated Agents are provisioned and deployed when created."
+          : mode.value === "embedded"
+            ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
+            : "This installation creates draft Agents for later deployment.";
+      }
       if (capabilityStatus.textContent !== nextStatus) {
         capabilityStatus.textContent = nextStatus;
       }
@@ -1861,8 +1869,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pending ||
       outcomeUnknown ||
       !capabilityDiscoveryDone ||
-      !nativeWorkersUnavailable.hidden ||
-      !openclawModeUnavailable.hidden ||
+      selectedModeUnavailable() ||
       credentialSourceRefused() ||
       Boolean(provisioningAttempt);
     checkCredentialRegistration.hidden = !credentialRegistration;
@@ -2126,8 +2133,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       provisioningAttempt ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilityDiscoveryDone ||
-      !nativeWorkersUnavailable.hidden ||
-      !openclawModeUnavailable.hidden ||
+      selectedModeUnavailable() ||
       credentialSourceRefused() ||
       !form.reportValidity()
     ) {

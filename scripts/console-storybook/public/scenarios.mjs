@@ -1907,9 +1907,9 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation selects a Sandbox Driver that cannot provision dedicated OpenClaw, so it admits no OpenClaw execution mode: the Sandbox Driver refuses Embedded and cannot run Dedicated. Both modes are disabled, an alert explains why, and Create Agent stays disabled before any Configuration or Agent is saved.",
+      "This Sandbox Driver refuses Embedded OpenClaw and cannot provision Dedicated OpenClaw. The form explains why neither mode is available, disables Create Agent, and does not promise to save a draft.",
     steps: [
-      "Confirm both execution modes are disabled for OpenClaw and Create Agent is disabled.",
+      "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
       "Select Codex and confirm the alert clears and Dedicated remains available.",
     ],
   },
