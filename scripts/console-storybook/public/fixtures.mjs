@@ -1731,7 +1731,9 @@ export function installFixture(scenario, evidence) {
           return response(
             scenario.emptySecrets
               ? []
-              : [...secrets.values()].map((secret) => structuredClone(secret)),
+              : [...secrets.values()]
+                  .filter(({ id }) => id !== scenario.unreadableSecretId)
+                  .map((secret) => structuredClone(secret)),
           );
         }
         if (method === "POST") {
@@ -1747,7 +1749,7 @@ export function installFixture(scenario, evidence) {
       if (resource.startsWith("secrets/")) {
         const id = resource.split("/")[1];
         const secret = secrets.get(id);
-        if (!secret) {
+        if (!secret || id === scenario.unreadableSecretId) {
           return error(404);
         }
         if (method === "GET") {

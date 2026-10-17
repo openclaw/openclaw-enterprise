@@ -4719,6 +4719,19 @@ export const scenarios = {
       "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
     ],
   },
+  credentialsDiscardSecretChoice: {
+    group: "Components/Credentials",
+    name: "Discard an unsaved Secret choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    unreadableSecretId: "sec_demo_slack_bot_token",
+    description:
+      "The saved Slack bot token is not readable. After choosing a different Secret, you can discard that unsaved choice without finding the original in the picker.",
+    steps: [
+      "Slack bot token shows “Bound Secret”. Choose “Slack backup token (simulated)”; Deploy is disabled until you save or reload.",
+      "Choose Reset story to reopen the saved configuration, as a page reload would. The bot token again shows “Bound Secret” and Deploy is available. Do not deploy.",
+    ],
+  },
   credentialsSaveProvisioningReserved: {
     group: "Components/Credentials",
     name: "Secret choices after a refused save",

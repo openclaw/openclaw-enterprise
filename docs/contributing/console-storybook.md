@@ -202,9 +202,8 @@ editor's access or recovery controls.
 
 ### Choose and switch revision Secrets
 
-In **Slack token switch**, Deploy stays disabled until you save the change or
-reselect the saved Secret. **Secret choices after a conflict** shows the same
-recovery when the save is refused.
+**Slack token switch** blocks Deploy until you save or reselect the saved Secret.
+In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to discard unsaved edits.
 
 **Secret list denied** retains IDs. **Slack grant denied** requires recovery.
 In **Issued service accounts unavailable**, switch authentication methods:
