@@ -248,7 +248,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   assert.equal(await focusedText(page), stale);
 
   // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
-  // focus.
+  // focus. The API's catch-all outage names no refusal (finding 1638).
   await page.reload();
   await page.getByText(/generation 2/).waitFor();
   const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
@@ -258,7 +258,10 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deploy unavailable" },
+        error: {
+          code: "DEPENDENCY_UNAVAILABLE",
+          message: "A required platform dependency is unavailable.",
+        },
       }),
     },
   });

@@ -853,6 +853,76 @@ for (const back of ["Browser Back", "Back to Agents"]) {
   });
 }
 
+// Back to the Agents list while an Agent page loaded, or once it had, held that page inert until
+// the list revalidated, and keyboard focus fell to the body for the whole hold (50-310 ms, about
+// 1.2 s on a slow link) before the Agent's link took it (finding 1636). The held page's heading
+// now keeps it until then.
+for (const shown of ["is loading", "has loaded"]) {
+  test(`Back to the Agents list while an Agent page ${shown} keeps keyboard focus`, async (t) => {
+    const { namespace, agent, page } = await openList(t, "Focus back", "Focus Back Agent", {
+      deploy: true,
+      running: true,
+    });
+    let opening = null;
+    if (shown === "is loading") {
+      // Every read of the Agent is held, so its opening panel stays.
+      opening = await openPendingAgent(t, page, namespace, agent, {});
+      await page.getByRole("heading", { level: 1, name: "Agent details" }).waitFor();
+    } else {
+      const link = page.locator(settledView).getByRole("link", { name: agent.name });
+      await link.focus();
+      await link.press("Enter");
+      await agentShown(page);
+    }
+    assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
+    // Every frame from Back until the Agent's link has focus: the focused node, numbered so a
+    // replaced heading counts as a new one.
+    await page.evaluate(() => {
+      const ids = new WeakMap();
+      let next = 0;
+      const trail = [];
+      globalThis.focusTrail = trail;
+      const sample = () => {
+        const node = globalThis.document.activeElement;
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (trail.at(-1) !== entry) {
+          trail.push(entry);
+        }
+        if (node?.tagName !== "A") {
+          globalThis.requestAnimationFrame(sample);
+        }
+      };
+      sample();
+    });
+    // The list's recheck takes a while, as on a slow link.
+    const recheck = await holdOnce(t, page, agentsRead(namespace));
+    await page.goBack();
+    await recheck.requested;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    recheck.release();
+    const link = page.locator(settledView).getByRole("link", { name: agent.name });
+    await link.waitFor();
+    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
+    const trail = await page.evaluate(() => globalThis.focusTrail);
+    assert.equal(await isFocused(link), true, trail.join(" | "));
+    const heading = shown === "is loading" ? "Agent details" : agent.name;
+    // The Agent page's heading, the held page's heading under the same name, then the link.
+    assert.deepEqual(
+      trail.map((entry) => entry.replace(/#\d+/, "")),
+      [`H1: ${heading}`, `H1: ${heading}`, `A: ${agent.name}`],
+      trail.join(" | "),
+    );
+    assert.equal(new Set(trail.map((entry) => entry.split(":")[0])).size, 3, trail.join(" | "));
+    opening?.read.release();
+  });
+}
+
 for (const focusTarget of [
   "the Agent link",
   "newer sidebar focus",

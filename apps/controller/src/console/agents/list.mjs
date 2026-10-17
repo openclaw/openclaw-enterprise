@@ -122,6 +122,27 @@ export const PROVISIONING_REFUSAL_CODES = Object.freeze([
   "CHANNEL_CREDENTIAL_UNAVAILABLE",
 ]);
 
+// The API's 503 answers that name no reason: the catch-all outage, and a commit whose outcome
+// the API itself could not confirm.
+const UNNAMED_DEPENDENCY_FAILURES = new Set([
+  "A required platform dependency is unavailable.",
+  "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+]);
+
+// The server's own sentence for a 503 that refused the request before admission: one of
+// PROVISIONING_REFUSAL_CODES with a named reason. POST /agents/{id}/deploy sends these codes
+// only before its revision commits too: channel credential validation runs before its
+// transaction, and a named dependency outage rolls it back (finding 1638). Any other 503,
+// including an unnamed one, leaves the outcome unknown and returns undefined.
+export function preAdmissionRefusal(error) {
+  return error.status === 503 &&
+    PROVISIONING_REFUSAL_CODES.includes(error.code) &&
+    error.serverMessage !== undefined &&
+    !UNNAMED_DEPENDENCY_FAILURES.has(error.serverMessage)
+    ? error.serverMessage
+    : undefined;
+}
+
 // A refused save names the grants it needs, as Stop, Delete and occ do (finding 1530). Each save
 // shows one fixed text for every 403, so it says nothing the server did not: no IDs, and nothing
 // about whether a resource exists.

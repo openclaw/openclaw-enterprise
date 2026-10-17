@@ -15,7 +15,7 @@ import {
   link,
   message,
   namespacePath,
-  PROVISIONING_REFUSAL_CODES,
+  preAdmissionRefusal,
   rejectionMessage,
 } from "./list.mjs";
 
@@ -137,13 +137,6 @@ function provisioningStatusText(status) {
   }
 }
 
-// The API's 503 answers that name no reason: the catch-all outage, and a commit whose outcome
-// the API itself could not confirm.
-const UNNAMED_DEPENDENCY_FAILURES = new Set([
-  "A required platform dependency is unavailable.",
-  "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
-]);
-
 // The server's own sentence for a refused request, unless it is a catch-all answer (finding
 // 1609). Among 5xx answers only a 503 whose code the API sends before admission refuses the
 // request (finding 1635); any other 5xx, including a 503 without such a code, leaves its
@@ -156,11 +149,7 @@ function namedRefusal(error) {
   if (error.status === 409) {
     return message === GENERIC_CONFLICT ? undefined : message;
   }
-  return error.status === 503 &&
-    PROVISIONING_REFUSAL_CODES.includes(error.code) &&
-    !UNNAMED_DEPENDENCY_FAILURES.has(message)
-    ? message
-    : undefined;
+  return preAdmissionRefusal(error);
 }
 
 function wait(ms) {

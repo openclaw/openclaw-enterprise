@@ -1500,6 +1500,8 @@ test("a Configuration save that lands late does not move the cards below the edi
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
 
+// The reader who moved on keeps focus, so no focused control names "Configuration saved.": the
+// status announces itself instead, by taking its text after it is shown (finding 1641).
 test("a late Configuration save leaves focus on the Agents link when the reader moved there", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1520,16 +1522,34 @@ test("a late Configuration save leaves focus on the Agents link when the reader 
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await saved.requested;
   await page.getByRole("link", { name: "← Agents", exact: true }).focus();
+  // The texts each status showed, sampled after every rendered frame.
+  await page.evaluate(() => {
+    const shown = new Map();
+    globalThis.shownStatusTexts = shown;
+    const sample = () => {
+      for (const status of globalThis.document.querySelectorAll('[role="status"]')) {
+        const texts = shown.get(status) ?? [];
+        if (texts.at(-1) !== status.textContent) {
+          texts.push(status.textContent);
+        }
+        shown.set(status, texts);
+      }
+      globalThis.requestAnimationFrame(() => setTimeout(sample));
+    };
+    sample();
+  });
   saved.release();
 
   await edit.waitFor();
-  assert.equal(
-    await edit.evaluate(
-      (control) =>
-        control.ownerDocument.getElementById(control.getAttribute("aria-describedby"))?.textContent,
-    ),
-    "Configuration saved.",
+  // The status was shown empty first, so its text arrived as a change.
+  const texts = await page.waitForFunction(
+    () =>
+      [...globalThis.shownStatusTexts].find(
+        ([status, shown]) => status.isConnected && shown.at(-1) === "Configuration saved.",
+      )?.[1],
   );
+  assert.deepEqual(await texts.jsonValue(), ["", "Configuration saved."]);
+  assert.equal(await edit.getAttribute("aria-describedby"), null);
   assert.equal(await focusedText(page), "← Agents");
 });
 
