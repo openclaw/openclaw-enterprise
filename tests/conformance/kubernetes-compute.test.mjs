@@ -1217,6 +1217,9 @@ function dedicatedFirstDeployFixture({
         ...(role === "gateway" && state.gatewayWorkspaceNodeFailure !== undefined
           ? { workspaceNodeFailure: state.gatewayWorkspaceNodeFailure }
           : {}),
+        ...(role === "gateway" && state.gatewayRuntimeFailure !== undefined
+          ? { runtimeFailure: state.gatewayRuntimeFailure }
+          : {}),
       };
     }
     return {
@@ -2200,8 +2203,18 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
 // bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
 // ReplicaFailure condition onto the Deployment, which the driver reads.
 test("a pending dedicated deploy names a full Namespace Pod quota", async () => {
-  const { state, gatewayName, agentName, read, save, prepare, markReady } =
-    dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  const {
+    state,
+    driver,
+    revision,
+    namespace,
+    gatewayName,
+    agentName,
+    read,
+    save,
+    prepare,
+    markReady,
+  } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
   assert.equal((await prepare()).pendingReason, undefined);
   const setConditions = (name, conditions) => {
     const object = read("Deployment", name);
@@ -2254,6 +2267,32 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   ]) {
     assert.equal(await pendingReasonWith(agentName, conditions), undefined, inspect(conditions));
   }
+  // A held runtime failure leads instead of any pending reason.
+  state.gatewayRuntimeFailure = {
+    component: "gateway",
+    check: "peer-bridge-record",
+    checkedAt: "2026-09-19T11:59:00.000Z",
+    code: "UNAVAILABLE",
+  };
+  setConditions(agentName, [failure(refusal("pods=1"))]);
+  const failed = await prepare();
+  assert.equal(failed.pendingReason, undefined);
+  assert.equal(failed.runtimeFailure?.code, "UNAVAILABLE");
+  setConditions(agentName, []);
+  state.gatewayRuntimeFailure = undefined;
+  // One unreadable Deployment does not hide the other's refusal.
+  setConditions(gatewayName, [failure(refusal("pods=1"))]);
+  const target = { name: namespace, plane: "execution" };
+  const gateway = {
+    name: gatewayName,
+    namespace: target,
+    ownership: { namespaceId: tenant.id, agentId: revision.agentId },
+  };
+  const foreign = { name: agentName, namespace: target, ownership: { namespaceId: "other" } };
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), true);
+  assert.equal(await driver.safePodQuotaObservation([foreign]), false);
+  setConditions(gatewayName, []);
+  assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), false);
   // A full quota names the wait before a Pod the scheduler cannot place.
   state.unschedulableRole = "gateway";
   assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);

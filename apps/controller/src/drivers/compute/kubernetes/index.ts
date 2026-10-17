@@ -5408,11 +5408,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // A known pending reason is reported with the observation; otherwise a full
     // Namespace Pod quota (finding 1617) or a Pod the scheduler cannot place explains
     // the wait (D224).
-    const workloadDeployments = this.runtimeStatusContainers(revision).map((role) =>
-      role === "gateway"
-        ? { name: gatewayName, namespace: gatewayNamespace, ownership: gatewayOwnership }
-        : { name: revisionName, namespace, ownership: revisionOwnership },
-    );
+    // A Harness that a SandboxDriver provisions has no Harness Deployment.
+    const workloadDeployments = this.runtimeStatusContainers(revision)
+      .filter((role) => role === "gateway" || sandboxDriver?.provisionHarness === undefined)
+      .map((role) =>
+        role === "gateway"
+          ? { name: gatewayName, namespace: gatewayNamespace, ownership: gatewayOwnership }
+          : { name: revisionName, namespace, ownership: revisionOwnership },
+      );
     const observedPendingReason = async (): Promise<ComputePendingReason | undefined> => {
       if (await this.safePodQuotaObservation(workloadDeployments)) {
         return "NAMESPACE_POD_QUOTA_EXCEEDED";
@@ -9430,7 +9433,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
   // ResourceQuota on its Namespace has no Pods left. The Deployment controller copies
   // the ReplicaSet's ReplicaFailure condition (reason FailedCreate, the quota refusal as
   // its message) onto the Deployment, so this reads only Deployments, never ReplicaSets.
-  // Like failure evidence, an unavailable observation reports nothing.
+  // The message is the first refusal since the last successful create, so a Pod quota
+  // refusal followed by another quota's refusal still reads as a full Pod quota. Like
+  // failure evidence, an unavailable observation reports nothing.
   private async safePodQuotaObservation(
     deployments: readonly {
       readonly name: string;
@@ -9439,32 +9444,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }[],
   ): Promise<boolean> {
     const ownerSignal = currentComputeAbortSignal();
-    try {
-      for (const { name, namespace, ownership } of deployments) {
-        const deployment = await this.getOwned("Deployment", name, namespace, ownership);
-        const conditions = deployment?.status?.conditions;
-        if (
-          Array.isArray(conditions) &&
-          conditions.some((item) => {
-            const condition = asRecord(item);
-            return (
-              condition?.type === "ReplicaFailure" &&
-              condition.status === "True" &&
-              condition.reason === "FailedCreate" &&
-              podQuotaRefusal(condition.message)
-            );
-          })
-        ) {
-          return true;
+    for (const { name, namespace, ownership } of deployments) {
+      let conditions: unknown;
+      try {
+        conditions = (await this.getOwned("Deployment", name, namespace, ownership))?.status
+          ?.conditions;
+      } catch {
+        if (ownerSignal?.aborted) {
+          throw ownerSignal.reason;
         }
+        // One unreadable Deployment does not hide the other's refusal.
+        continue;
       }
-      return false;
-    } catch {
-      if (ownerSignal?.aborted) {
-        throw ownerSignal.reason;
+      if (
+        Array.isArray(conditions) &&
+        conditions.some((item) => {
+          const condition = asRecord(item);
+          return (
+            condition?.type === "ReplicaFailure" &&
+            condition.status === "True" &&
+            condition.reason === "FailedCreate" &&
+            podQuotaRefusal(condition.message)
+          );
+        })
+      ) {
+        return true;
       }
-      return false;
     }
+    return false;
   }
 
   private async pluginRuntimeStatus(
