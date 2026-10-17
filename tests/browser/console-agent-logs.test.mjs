@@ -1145,7 +1145,64 @@ test("a rate-limited Refresh logs keeps the loaded lines and says when to try ag
   assert.equal(await log.locator(".log-row").count(), 1);
   await log.getByText("output before the rate limit").waitFor();
 
+  // A second Refresh while one reads queues another. When that one is rate limited, the status
+  // still names the lines shown, not "Reading output…".
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let doubleReads = 0;
+  const doubleRefresh = async (route) => {
+    doubleReads += 1;
+    if (doubleReads === 1) {
+      await held;
+      return route.fallback();
+    }
+    return route.fulfill(rateLimitedResponse(2));
+  };
+  await page.route("**/runtime/logs?*", doubleRefresh);
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await waitForCondition(() => doubleReads === 1, "the first refresh is held");
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  release();
+  await waitForCondition(() => doubleReads === 2, "the queued refresh reads");
+  await waitForIdleFetches(page);
+  assert.match(await logError.textContent(), /Try again in 2 seconds\./u);
+  assert.equal(await outputStatus.textContent(), shownStatus);
+  assert.equal(await log.locator(".log-row").count(), 1);
+  await page.unroute("**/runtime/logs?*", doubleRefresh);
+
+  // Following lines whose cursor was rejected cannot be read on from, so the new view clears them
+  // first, even when it is rate limited: the next read would repeat them.
+  let followReads = 0;
+  const rejectCursor = (route) => {
+    followReads += 1;
+    return route.fulfill(
+      followReads === 1
+        ? {
+            status: 400,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "RUNTIME_LOGS_CURSOR_INVALID", message: "Start a new view." },
+              meta: { requestId: rateLimitRequestId },
+            }),
+          }
+        : rateLimitedResponse(5),
+    );
+  };
+  await page.route("**/runtime/logs?*", rejectCursor);
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await waitForCondition(() => followReads === 2, "the rejected cursor starts a new view");
+  await waitForIdleFetches(page);
+  assert.equal(await log.locator(".log-row").count(), 0);
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  await page.unroute("**/runtime/logs?*", rejectCursor);
+
   // A read for another selection still clears the lines first: they belong to the old one.
+  await page.getByRole("button", { name: "Refresh logs" }).click();
+  await waitForIdleFetches(page);
+  await log.getByText("output before the rate limit").waitFor();
   answer = rateLimitedResponse(3);
   await page.getByLabel("Include debug").check();
   await waitForIdleFetches(page);

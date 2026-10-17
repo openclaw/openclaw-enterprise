@@ -259,8 +259,10 @@ export function renderAgentLogs(
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
-  // The log query (source, Pod, instance, level floor) whose lines the pane shows.
+  // The log query (source, Pod, instance, level floor) whose lines the pane shows, and the
+  // status line its first page set.
   let shownSelection = null;
+  let shownStatus = "";
   // Updates a manual read's "Try again in N seconds" once that wait has passed.
   let retryHintTimer;
   // Set when a read is refused after this view showed output; Back rebuilds such a view.
@@ -729,9 +731,15 @@ export function renderAgentLogs(
     const selection = query.toString();
     // Refreshing the lines shown keeps them until the new page arrives, so a failed or
     // rate-limited refresh leaves them in place (finding 1715). A refusal still clears them in
-    // showLogReadError, and another selection clears them here: they belong to the old one.
-    const keepShown = restart && selection === shownSelection;
-    const shownStatus = logStatus.textContent;
+    // showLogReadError, and another selection clears them here: they belong to the old one. So
+    // do lines without a cursor (rejected, say): nothing could read on from them.
+    const keepShown = restart && cursor !== null && selection === shownSelection;
+    // A refresh that ends without a page puts back the status line of the lines still shown.
+    const restoreShownStatus = () => {
+      if (keepShown && selection === shownSelection) {
+        logStatus.textContent = shownStatus;
+      }
+    };
     if (restart) {
       if (!keepShown) {
         cursor = null;
@@ -748,6 +756,7 @@ export function renderAgentLogs(
     try {
       const page = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
+        restoreShownStatus();
         return;
       }
       showLogError(null);
@@ -776,9 +785,11 @@ export function renderAgentLogs(
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
+        shownStatus = logStatus.textContent;
       }
     } catch (error) {
       if (!current() || (restartPending && ![401, 403].includes(error.status))) {
+        restoreShownStatus();
         return;
       }
       if (error.status === 401) {
@@ -793,7 +804,8 @@ export function renderAgentLogs(
         return;
       }
       if (restart) {
-        logStatus.textContent = keepShown ? shownStatus : "";
+        logStatus.textContent = "";
+        restoreShownStatus();
       }
       showLogReadError(error, source, { manualRead: !following });
       if (error.status === 501) {
