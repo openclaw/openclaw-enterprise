@@ -52,7 +52,7 @@
     "tests/conformance/kubernetes-runtime-credentials.test.mjs": 1800,
     "tests/conformance/kubernetes-secret-driver.test.mjs": 10400,
     "tests/conformance/module-boundaries.test.mjs": 17100,
-    "tests/conformance/module-policy.test.mjs": 33500,
+    "tests/conformance/module-policy.test.mjs": 9700,
     "tests/conformance/native-admin-upgrade-reset.test.mjs": 1500,
     "tests/conformance/native-admin-websocket-relay.test.mjs": 1100,
     "tests/conformance/node-enrollment-client.test.mjs": 2900,

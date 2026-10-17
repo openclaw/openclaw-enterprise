@@ -291,6 +291,124 @@ test("OpenShell probe observes its command after the turn ends, or preserves the
   }
 });
 
+test("OpenShell probe waits for a command that outlives its turn up to the fixture's bound", async (t) => {
+  // Finding 1630: Codex hands a long command back to the model, which can reply and end the
+  // turn while the command still runs. The in-Pod client waits for that command's completion
+  // event up to the fixture's bound, and reports the command's timing when the bound expires.
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const server = createServer();
+  const peer = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+  const directory = await fixture(t);
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
+      "shift",
+      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      'exec "$@"',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const threadId = "probe-thread";
+  const turnId = "probe-turn";
+  const nonce = "probe-command";
+  // The command completes this long after the turn: past the former fixed 5 s wait would make
+  // the test slow, so the bounds below scale it down. The client sees only message order and time.
+  const lateMs = 800;
+  peer.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const { method, id } = JSON.parse(data);
+      const send = (message) => socket.send(JSON.stringify(message));
+      if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (method === "initialize") {
+        return send({ id, result: {} });
+      }
+      if (method === "thread/start") {
+        return send({
+          id,
+          result: { thread: { id: threadId }, sandbox: { type: "dangerFullAccess" } },
+        });
+      }
+      const turn = { id: turnId, status: "inProgress" };
+      send({ id, result: { turn } });
+      const item = { id: "probe", type: "commandExecution", command: nonce, status: "inProgress" };
+      send({ method: "item/started", params: { threadId, turnId, item } });
+      send({
+        method: "item/commandExecution/outputDelta",
+        params: { threadId, turnId, itemId: item.id, delta: "TOOL_EXIT=" },
+      });
+      send({
+        method: "turn/completed",
+        params: { threadId, turn: { ...turn, status: "completed" } },
+      });
+      setTimeout(() => {
+        const terminal = {
+          ...item,
+          status: "failed",
+          exitCode: 28,
+          aggregatedOutput: "TOOL_EXIT=28",
+        };
+        if (socket.readyState === socket.OPEN) {
+          send({ method: "item/completed", params: { threadId, turnId, item: terminal } });
+        }
+      }, lateMs);
+    });
+  });
+  const probe = (codexCommandGraceMs) => {
+    const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+      codexCommandGraceMs,
+    });
+    return observeSandboxProbe({
+      nonce,
+      traceSecrets: [],
+      requestTurn: () =>
+        requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" }),
+    });
+  };
+
+  // Within the bound, the late completion settles the probe with the command's own result.
+  const started = Date.now();
+  const { run } = await probe(lateMs * 4);
+  assert.equal(run.exitCode, 28, "keep the late command's actual result");
+  // The wait ends on the completion event, not at the bound.
+  assert.ok(Date.now() - started < lateMs * 4, "settle on the completion event");
+
+  // Past the bound, the outcome stays unknown and the failure says how long the command ran.
+  const error = await probe(lateMs / 4).then(
+    () => assert.fail("a command that outlives the bound must leave the outcome unknown"),
+    (failure) => failure,
+  );
+  assert.match(error.message, /Codex command outcome is unknown/);
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const summary = JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.message)[1]);
+  assert.equal(summary.commandGraceMs, lateMs / 4);
+  assert.ok(summary.sinceTurnEndMs >= lateMs / 4);
+  assert.equal(summary.pendingCommands.length, 1);
+  assert.equal(summary.pendingCommands[0].outputDeltas, 1);
+  assert.equal(summary.pendingCommands[0].outputBytes, "TOOL_EXIT=".length);
+  assert.ok(summary.pendingCommands[0].startedBeforeTurnEndMs >= 0);
+  assert.ok(summary.pendingCommands[0].runningMs >= lateMs / 4);
+
+  for (const codexCommandGraceMs of [0, 1.5, 60_001, "5000"]) {
+    assert.throws(
+      () => createOpenShellKubernetesFixture({ codexCommandGraceMs }),
+      /codexCommandGraceMs must be a positive number/,
+    );
+  }
+});
+
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {
   const configuration = createOpenShellInstallationConfiguration({
     authentication: {},

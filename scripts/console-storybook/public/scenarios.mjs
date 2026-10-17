@@ -11,6 +11,15 @@ const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
+const reservedConfigurationWrite = {
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+  method: "PATCH",
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The Configuration is reserved for provisioning and is not available for this operation.",
+};
+
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -681,6 +690,25 @@ export const scenarios = {
       "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
       "Open Documentation assistant again and switch to another window and back during its read: Loading agent details and Back to Agents stay. Double-click Back to Agents: the list opens once and the console stays.",
       "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
+    ],
+  },
+  navigationAgentReadRetry: {
+    group: "Pages/Navigation",
+    name: "Retry opening an Agent",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000002",
+        delayMs: 900,
+        status: 503,
+        once: true,
+      },
+    ],
+    description:
+      "The first read of Documentation assistant returns a simulated 503. The page stays on Agent details so you can retry or go back to the list.",
+    steps: [
+      "Open Documentation assistant. Loading agent details is replaced by Could not load agent details; the page heading stays Agent details.",
+      "Choose Try again. Documentation assistant opens without a page reload, and Back returns to the list.",
     ],
   },
   navigationRetained: {
@@ -2025,6 +2053,38 @@ export const scenarios = {
     repositoryDescriptionsPending: true,
     description:
       "Repository choices are usable while descriptions load. Descriptions appear without changing selections or moving focus.",
+  },
+  createRepositoriesHiddenCharacters: {
+    group: "Pages/Create Agent",
+    name: "Repository descriptions with hidden characters",
+    path: create,
+    actions: repositoryForm,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        description: "Release notes \u202etxt.exe, zero\u200bwidth and \u2066isolate\u2069 end",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "example/handbook",
+        description: "Guías del equipo · Ελληνικά · Русский · עברית",
+        allowedProfiles: ["git-read"],
+      },
+      {
+        repositoryRef: "team",
+        displayName: "example/team",
+        description:
+          "Team \u{1f468}\u200d\u{1f469}\u200d\u{1f467} \u{1f3f3}\ufe0f\u200d\u{1f308} " +
+          "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} " +
+          "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u0915\u094d\u200d\u0937, " +
+          "stray \u200d\u200djoiners",
+        allowedProfiles: ["git-read"],
+      },
+    ],
+    description:
+      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and the England, Scotland and Wales flags, display intact. Other scripts display as written.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
@@ -4364,19 +4424,10 @@ export const scenarios = {
     name: "Save refused during provisioning",
     path: `${draft}&tab=channels`,
     slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Configuration is reserved for provisioning and is not available for this operation.",
-      },
-    ],
+    rules: [reservedConfigurationWrite],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
-      "The API refuses the write because the Configuration is reserved for provisioning. That 409 has no stale-generation detail, so the editor stays open with the refusal instead of offering a Reload draft that would meet it again.",
+      "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
   },
   channelSaveRejected: {
     group: "Components/Channels",
@@ -4549,6 +4600,20 @@ export const scenarios = {
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
       "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSaveProvisioningReserved: {
+    group: "Components/Credentials",
+    name: "Secret choices after a refused save",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
+    steps: [
+      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+    ],
   },
   credentialsSlackCarried: {
     group: "Components/Credentials",

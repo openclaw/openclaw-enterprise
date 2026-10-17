@@ -99,6 +99,13 @@ const modelBaseUrl = (
 ).replace(/\/$/u, "");
 const modelEndpoint = new URL(modelBaseUrl);
 const modelPort = Number(modelEndpoint.port || 443);
+// Codex hands a long command back to the model, which may reply and end the turn before the
+// command ends. The tool upstream probe bounds its curl, and every turn waits for a command
+// still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
+// a fixed 5 s wait). The grace is sized for that probe only; longer commands elsewhere in this
+// suite can still outlive it and report an unknown outcome.
+const toolProbeCurlMaxSeconds = 8;
+const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -170,6 +177,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexCommandGraceMs,
 });
 const {
   kubectl,
@@ -4720,9 +4728,39 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
   if (modelSourceType === "codex-pat") {
+    // Which numbered commands ran and how long each took, by label only: a missing command 7
+    // then shows whether the model skipped it, rewrote it, or ran it after the turn's reply.
+    const commandLabel = (command) =>
+      [
+        [workspaceCommand, "write"],
+        [approvedPathCommand, "read"],
+        [readonlyCommand, "readonly"],
+        [escapedCommand, "escape"],
+        [approvedCommand, "openclaw"],
+        [deniedCommand, "acme"],
+      ].find(([item]) => item === command)?.[1] ??
+      (/chatgpt_base_url|features list|backend-api/.test(String(command))
+        ? "codex-rewritten"
+        : "other");
+    const commandSummary = {
+      started: result.items.filter(
+        ({ method, params }) =>
+          method === "item/started" && params?.item?.type === "commandExecution",
+      ).length,
+      completed: completedCommands.map((command) => ({
+        label: commandLabel(command),
+        status: command.status,
+        exitCode: command.exitCode,
+        durationMs: command.durationMs ?? null,
+      })),
+      approvalRequests: result.items.filter(
+        ({ method }) => method === "item/commandExecution/requestApproval",
+      ).length,
+      replyHasNonce: new RegExp(nonce).test(result.assistant),
+    };
     assert.ok(
       deniedConfigRequest,
-      "the real Codex binary must attempt the unapproved backend path.",
+      `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(commandSummary)}.`,
     );
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
@@ -4875,7 +4913,7 @@ async function runSandboxProbe(topology, nonce, script, harnessPod = topology.ha
     const code = value(`${name}_EXIT`);
     return code === null ? null : Number(code);
   };
-  return { result, value, exitCode };
+  return { result, run, value, exitCode };
 }
 
 /**
@@ -5533,20 +5571,23 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
     const script = [
       "#!/bin/bash",
       ...sandboxProbeFunction,
-      `probe TOOL curl -sS -o ${body} -w '%{http_code}' --max-time 20 ` +
-        `-H "Authorization: Bearer $${toolA.environmentName}" ${toolA.url}`,
+      `probe TOOL curl -sS -o ${body} -w '%{http_code} %{time_total}' --connect-timeout 3 ` +
+        `--max-time ${toolProbeCurlMaxSeconds} -H "Authorization: Bearer $${toolA.environmentName}" ${toolA.url}`,
       `printf 'TOOL_PLACEHOLDER=%s\\n' "$(grep -o '"placeholder":[a-z]*' ${body} ` +
         `2>/dev/null | cut -d: -f2)"`,
       `printf 'TOOL_DIGEST=%s\\n' "$(grep -o '"digest":"[0-9a-f]*"' ${body} ` +
         `2>/dev/null | cut -d'"' -f4)"`,
       "",
     ].join("\n");
-    const { value, exitCode } = await runSandboxProbe(topology, nonce, script, harnessPod);
+    const { run, value, exitCode } = await runSandboxProbe(topology, nonce, script, harnessPod);
+    const [httpStatus = null, curlSeconds = null] = (value("TOOL_OUT") ?? "").split(" ");
     // The echo answers 200 even without an Authorization header, so delivery is proved by the
     // digest of what it received, compared here and never printed.
     return {
-      httpStatus: value("TOOL_OUT"),
+      httpStatus: httpStatus || null,
       exitCode: exitCode("TOOL"),
+      curlSeconds: curlSeconds === null ? null : Number(curlSeconds),
+      commandMs: Number.isSafeInteger(run.durationMs) ? run.durationMs : null,
       placeholder: value("TOOL_PLACEHOLDER") || null,
       tokenDelivered: value("TOOL_DIGEST") === toolA.digest,
     };
@@ -5578,6 +5619,8 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
     await selectPods("token-echo-outage");
     await waitForEndpoints(false);
     outage = await probe("outage");
+    // Print it now: if the recovery fails, this is the only record of the outage probe.
+    process.stderr.write(`OpenShell integration: tool upstream down ${JSON.stringify(outage)}.\n`);
   } catch (error) {
     failure = error;
   }
@@ -5596,13 +5639,24 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
   process.stderr.write(
     `OpenShell integration: tool upstream outage ${JSON.stringify(observed)}.\n`,
   );
-  // OpenShell closes the client connection without a response when it cannot reach the
-  // upstream (curl exit 52), so the tool fails at once instead of waiting out its timeout.
-  assert.deepEqual(
-    { httpStatus: outage.httpStatus, exitCode: outage.exitCode },
-    { httpStatus: "000", exitCode: 52 },
-    "OpenShell must end a request to an unreachable upstream without a response.",
+  // OpenShell usually closes the client connection without a response when it cannot reach
+  // the upstream (curl exit 52). If it holds the connection instead, curl gives up at its own
+  // --max-time bound (exit 28). A timeout well before that bound, such as the 3 s connect
+  // timeout to the proxy itself, is not an upstream outage. Any other result, a response
+  // included, means the outage was not observed.
+  assert.equal(outage.httpStatus, "000", "a request to an unreachable upstream gets no response.");
+  const held = outage.exitCode === 28 && outage.curlSeconds >= toolProbeCurlMaxSeconds - 0.5;
+  assert.ok(
+    outage.exitCode === 52 || held,
+    "OpenShell must end or hold a request to an unreachable upstream, not answer it " +
+      `(curl exit ${outage.exitCode} after ${outage.curlSeconds} s).`,
   );
+  if (held) {
+    process.stderr.write(
+      "OpenShell integration: OpenShell held the request to the unreachable upstream until " +
+        "curl's bound instead of closing it.\n",
+    );
+  }
   assert.equal(outage.tokenDelivered, false, "no token may arrive while the upstream is down.");
   // Once the upstream is back, the same running Harness gets tool A's own token again.
   assert.deepEqual(

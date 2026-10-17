@@ -753,6 +753,8 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const requests = apiRequests(page, fixture.origin);
     let denyGrant = true;
     let rejectNextConfigurationPatch = false;
+    const reservation =
+      "The Configuration is reserved for provisioning and is not available for this operation.";
     await page.route(
       `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
       async (route, request) => {
@@ -762,7 +764,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
             status: 409,
             contentType: "application/json",
             body: JSON.stringify({
-              error: { code: "CONFLICT", message: "simulated stale configuration" },
+              error: { code: "RESOURCE_CONFLICT", message: reservation },
               meta: { requestId: "req_00000000-0000-4000-8000-000000000834" },
             }),
           });
@@ -810,12 +812,25 @@ describe("Agent channels", { concurrency: 3 }, () => {
     rejectNextConfigurationPatch = true;
     await selectSecret(page, "Slack app token", secondAppSecret);
     await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+    requests.length = 0;
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    // This write was refused; only the earlier saved binding has an outstanding access grant.
+    const outcome = page.locator(".channel-secrets [role=alert]");
+    await outcome.filter({ hasText: reservation }).waitFor({ timeout: 5_000 });
+    const message = await outcome.innerText();
+    assert.match(message, /Access to a previously saved Secret is still unconfirmed/);
+    assert.doesNotMatch(message, /Configuration saved/i);
+    await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(secondAppSecret));
+    assert.deepEqual(
+      requests.filter((request) => request.method !== "GET").map((request) => request.method),
+      ["PATCH"],
+    );
+    assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
     await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
+    // Saving again here is an explicit user action with the still-selected second app token.
     requests.length = 0;
-    await selectSecret(page, "Slack app token", secondAppSecret);
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
     await page
       .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
