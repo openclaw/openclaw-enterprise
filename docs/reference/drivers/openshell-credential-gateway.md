@@ -119,7 +119,7 @@ The Harness stores only an opaque `personal_access_token`. Readiness requires
 native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
-`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS Responses endpoints must end in `/v1`, optionally after a prefix such as `/api`. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
+`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints must end in `/v1`, optionally after a prefix such as `/api`. Codex requires Responses; dedicated native OpenClaw uses the API selected in its explicit model catalog. Every native model endpoint must match the bound source endpoint, including its path. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
 
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
@@ -252,7 +252,8 @@ it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
 `SANDBOX_GATEWAY_UNAUTHORIZED`.
 
 For API-key Codex, Compute selects a named provider with the source endpoint and
-HTTPS Responses transport. Native OpenClaw requires the default OpenAI endpoint.
+HTTPS Responses transport. Native OpenClaw retains its configured OpenAI-compatible
+endpoint and API selector, with every catalog model bound to that source endpoint.
 The Harness receives an `openshell:resolve:env:` placeholder as `OPENAI_API_KEY`
 for API keys or `CODEX_ACCESS_TOKEN` for Codex PATs. Codex stores it through native
 login; OpenClaw reads it through node-local model configuration. The supervisor

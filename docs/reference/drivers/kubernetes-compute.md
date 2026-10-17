@@ -251,8 +251,9 @@ Harness configuration selects the Agent's execution topology:
   profile mandatory, so sessions use the enrolled Harness without a Cloud Worker
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
-  token-limit, input, reasoning, and cost metadata at the approved
-  `https://api.openai.com/v1` endpoint.
+  token-limit, input, reasoning, and cost metadata. OpenAI-compatible provider
+  endpoints retain their configured HTTPS base URL, on port 443 with a path ending
+  in `/v1`; URLs with credentials, queries, fragments, or wildcards are rejected.
 
 Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
 the worker stops predecessors before starting the new Harness. This permits RWO

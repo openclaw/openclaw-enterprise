@@ -182,6 +182,16 @@ source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
 native OpenClaw provisioning. The native case uses the pinned runtime and
 production Drivers without the k3d helper's compatibility bridge.
 
+To exercise an OpenAI-compatible service, set
+`OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
+`baseUrl`, `api` (`openai-responses` or `openai-completions`), and a `models` array
+with explicit native model metadata. The first model ID selects the native Agent's
+model; it can differ from the Codex starter model. Supply that service's key as
+`OPENAI_API_KEY`, while retaining the separate `CODEX_ACCESS_TOKEN` for Codex.
+The native source is bound to the catalog's base URL. The same provisioning,
+model-and-exec, and retained-session redeployment assertions run with this input;
+changing only the embedded QA preset does not exercise this path.
+
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session
 worktree. After a normal redeployment, the case checks replacement Sandbox and

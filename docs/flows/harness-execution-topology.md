@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-23
-last_updated_session: authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7
+last_updated_session: agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68
 ---
 
 # Harness Execution Topology Flow
@@ -139,10 +139,16 @@ Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute own
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
-projects admitted OpenAI models and an environment SecretRef into canonical
-`models.providers.openai`.
+projects admitted OpenAI-compatible models and an environment SecretRef into canonical
+`models.providers.openai`. Each model retains its normalized HTTPS endpoint on
+port 443, including nested `/v1` prefixes. The first model supplies the provider
+default. Invalid URLs fail admission. For an OpenShell-bound native revision,
+`apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
+requires every model endpoint to match the immutable source endpoint before
+provider attachment.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`.
+writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`. It creates
+a private temporary child beneath `TMPDIR`, preserving the shared directory's permissions.
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` pins default/main workspace to its data mount; file transfer uses that root absent an endpoint override. Node-local snapshots provide models/credentials and authorized workspaces, without an inference file, grant catalog or retired `nativeInferenceConfig`.
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
@@ -301,6 +307,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
+
+- 2026-10-17 15:09: Preserve compatible native model endpoints and private worker temporary state. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - bcdb0b10f)
 
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
