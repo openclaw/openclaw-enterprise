@@ -278,10 +278,10 @@ provisions the dedicated Harness. Dedicated native OpenClaw requires this and
 all three [facets](drivers/sandbox.md#containment-facets) (`networking`,
 `filesystem`, `process`). Without a qualifying SandboxDriver, `GET /installation`
 omits `capabilities.nativeWorkers`, and deploy and new provisioning requests answer
-`409 RESOURCE_CONFLICT` naming the missing Driver. Its
-`capabilities.openclaw.executionModes` lists the OpenClaw modes admission accepts
-(Embedded only without a SandboxDriver); the Console offers only those and refuses
-OpenClaw before any write when the list is empty. Queued provisioning work waits for the Driver as for an outage.
+`409 RESOURCE_CONFLICT` naming the missing Driver. `GET /installation` always
+reports `capabilities.openclaw.executionModes`, the OpenClaw modes admission
+accepts; the Console refuses OpenClaw before any write when the selected mode is
+not listed. Queued provisioning work waits for the Driver as for an outage.
 There is no command-level `exec` facet or per-tool sandbox admission.
 
 The bundled [OpenShell implementation](drivers/openshell-sandbox.md) supports

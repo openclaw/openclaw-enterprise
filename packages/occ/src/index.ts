@@ -1713,8 +1713,8 @@ export class OpenClawController {
   }
 
   /**
-   * The OpenClaw execution modes Agent save and deploy admission accept. A selected Sandbox Driver
-   * that is unavailable admits none until it returns.
+   * The OpenClaw execution modes this Installation's Sandbox Driver and runtime admit at Agent
+   * save and deploy. A selected Sandbox Driver that is unavailable admits none until it returns.
    */
   private openClawExecutionModes(): HarnessExecutionMode[] {
     let sandbox: SandboxDriver | undefined;

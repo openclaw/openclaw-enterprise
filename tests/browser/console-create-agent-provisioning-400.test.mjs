@@ -23,7 +23,9 @@ import {
   enterManualModel,
   nativeSandboxDriver,
   openAdvancedSettings,
+  routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -641,10 +643,21 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   assert.equal(await mode.inputValue(), "embedded");
-  assert.match(
+  assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
-    /Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it/,
+    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
   );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution.",
+  );
+  // Anthropic hides Codex, so the hint names only the condition for Embedded OpenClaw.
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver.",
+  );
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
@@ -726,20 +739,16 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
   await page.locator(".launch-runtime:not([open]) > summary").click();
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  // The hints agree with the alert: no OpenClaw mode is usable here, for either provider.
+  const noModeHarnessHint =
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
   assert.equal(
     await page.locator("#execution-mode-hint").textContent(),
-    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
+    "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex.",
   );
-  assert.equal(
-    await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution.",
-  );
-  // Anthropic hides Codex, so the hint names only the condition for Embedded OpenClaw.
+  assert.equal(await page.locator("#agent-harness-hint").textContent(), noModeHarnessHint);
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
-  assert.equal(
-    await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver.",
-  );
+  assert.equal(await page.locator("#agent-harness-hint").textContent(), noModeHarnessHint);
 
   // A saved Dedicated OpenClaw Preset opens as saved and is blocked. No OpenClaw mode is usable,
   // so the alert says that rather than suggesting Embedded; Codex is the way forward.
@@ -927,7 +936,98 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
   );
+  // Anthropic runs only Embedded OpenClaw, so it is refused here too, with its own way out.
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  const anthropicAlert = page
+    .getByRole("alert")
+    .filter({ hasText: /^Anthropic uses Embedded OpenClaw/ });
+  await anthropicAlert.waitFor();
+  assert.equal(
+    await anthropicAlert.textContent(),
+    "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution.",
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
   assert.deepEqual(writesSinceFill(), []);
+});
+
+test("OpenClaw chosen before the Installation answers switches to the mode it admits", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { sandboxDriver: nativeSandboxDriver() });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Early OpenClaw", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
+    method: "GET",
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await installation.requested;
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  const mode = page.getByLabel("Execution mode");
+  // Before the answer the form keeps its Embedded default.
+  assert.equal(await mode.inputValue(), "embedded");
+  installation.release();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  assert.equal(await mode.inputValue(), "dedicated");
+  assert.equal(
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /OpenClaw is unavailable/ })
+      .count(),
+    0,
+  );
+});
+
+test("Operator-managed Preset credentials name the Preset when the Installation refuses Embedded OpenClaw", async (t) => {
+  // The fixed runtime binding needs Embedded OpenClaw. The Installation answer is routed: an SSH
+  // Compute Driver selects no Sandbox Driver.
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset modes", {
+    filesystemConfiguration: true,
+  });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Operator-managed credentials",
+      template: {
+        agent: {
+          name: "Runtime Agent",
+          executionMode: "embedded",
+          harnessAuth: { method: "runtime" },
+        },
+        configuration: { values: nativeValues("runtime-preset-modes") },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  for (const [executionModes, text] of [
+    [
+      [],
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+    ],
+    [
+      ["dedicated"],
+      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+    ],
+  ]) {
+    const { page } = await newPage(t, fixture, { browser });
+    await routeInstallationWithoutProvisioning(page, fixture, { openclaw: { executionModes } });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: /operator-managed credentials/ });
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), text, JSON.stringify(executionModes));
+    assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+    assert.equal(
+      await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+      true,
+    );
+  }
 });
 
 test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {

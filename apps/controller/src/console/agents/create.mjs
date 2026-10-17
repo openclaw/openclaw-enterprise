@@ -1102,7 +1102,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // not report them; that keeps the earlier check, Dedicated from nativeWorkers only (#2670).
   let openclawExecutionModes;
   // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
-  let modeDefaulted = agent.executionMode === undefined;
+  let modeDefaulted =
+    agent.executionMode === undefined && !Object.hasOwn(draft.inputs ?? {}, "mode");
   const openclawModeUsable = (value) =>
     openclawExecutionModes?.has(value) ?? (value === "embedded" || nativeWorkersAvailable);
   const defaultOpenClawMode = () =>
@@ -1649,7 +1650,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
     const modeRefusal = noOpenClawMode
-      ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
+      ? binding?.method === "runtime"
+        ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset."
+        : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
       : openclawEmbeddedRefused && mode.value === "embedded"
         ? binding?.method === "runtime"
           ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
@@ -1664,13 +1667,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     runtimeModeSummary.textContent = ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
-      modeHint.textContent = nativeRefused
-        ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
-        : embeddedRefused && dedicatedRefused
-          ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Dedicated execution."
-          : embeddedRefused
-            ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
-            : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
+      modeHint.textContent =
+        embeddedRefused && dedicatedRefused
+          ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
+          : nativeRefused
+            ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
+            : embeddedRefused
+              ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
+              : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
       const nextStatus = shouldProvision()
@@ -1690,12 +1694,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     harnessHint.textContent =
       harness.disabled && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
-        : nativeRefused && nativeProvider.value === "anthropic"
-          ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
-          : nativeRefused
-            ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
-            : embeddedRefused && dedicatedRefused
-              ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
+        : embeddedRefused && dedicatedRefused
+          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
+          : nativeRefused && nativeProvider.value === "anthropic"
+            ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
+            : nativeRefused
+              ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
               : embeddedRefused
                 ? "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver."
                 : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
