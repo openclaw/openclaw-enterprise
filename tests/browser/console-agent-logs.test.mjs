@@ -371,6 +371,24 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
   assert.equal(await page.getByRole("button", { name: "Logs", exact: true }).count(), 0);
 });
 
+test("log timestamps distinguish the repeated hour when daylight saving time ends", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [
+    { time: "2026-11-01T05:30:00Z", raw: "before the clocks went back" },
+    { time: "2026-11-01T06:30:00Z", raw: "after the clocks went back" },
+  ];
+  const { page } = await newPage(t, fixture, {
+    context: { locale: "en-US", timezoneId: "America/New_York" },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  const timestamp = (hasText) =>
+    log.locator(".log-row", { hasText }).locator(".log-time").innerText();
+  assert.match(await timestamp("before the clocks went back"), /1:30:00\s+AM\s+GMT-4$/u);
+  assert.match(await timestamp("after the clocks went back"), /1:30:00\s+AM\s+GMT-5$/u);
+});
+
 test("invisible and bidirectional characters in log text show as visible escapes", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.events = [
