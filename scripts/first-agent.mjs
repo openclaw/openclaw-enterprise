@@ -658,6 +658,10 @@ function assertManagedConfiguration(configuration, record, expected) {
 }
 
 function assertManagedRevision(revision, record, expected, priorRevisionId) {
+  const frozen = structuredClone(expected);
+  if (record.sandboxDriver === "openshell" && record.harness === "codex") {
+    frozen.values.agents.defaults.workspace = "/sandbox/enterprise";
+  }
   const { logging, diagnostics, ...values } = revision.configuration ?? {};
   const level = logging?.level;
   if (
@@ -666,7 +670,7 @@ function assertManagedRevision(revision, record, expected, priorRevisionId) {
     revision.configurationId !== record.configurationId ||
     revision.configurationKind !== expected.kind ||
     revision.configurationGeneration !== record.configurationGeneration ||
-    !firstAgentRevisionValuesMatch(values, expected.values, record, revision.id, priorRevisionId) ||
+    !firstAgentRevisionValuesMatch(values, frozen.values, record, revision.id, priorRevisionId) ||
     !["debug", "info", "warn", "error"].includes(level) ||
     !isDeepStrictEqual(logging, { level, consoleLevel: level, consoleStyle: "json" }) ||
     !isDeepStrictEqual(diagnostics, { otel: { logs: false } }) ||

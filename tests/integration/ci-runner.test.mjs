@@ -2143,6 +2143,234 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
   assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
 });
 
+test("the redactor removes secrets inside escaped JSON and keys from filtered log lines", async () => {
+  const { failureSecrets, newestMatchingLogLines, redactFailureDetail, redactLogLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  // A JSON document embedded in a log string escapes its quotes, once or more (finding 1551).
+  // Synthetic values only; none is in the env or has a known token shape.
+  for (const [line, expected] of [
+    [
+      String.raw`body {\"password\":\"plainvalue123\"} end`,
+      String.raw`body {\"password\":\"[redacted]\"} end`,
+    ],
+    [
+      String.raw`{\"client_secret\":\"syntheticClientValue0123\",\"realm\":\"occ\"}`,
+      String.raw`{\"client_secret\":\"[redacted]\",\"realm\":\"occ\"}`,
+    ],
+    [
+      String.raw`{\\\"api_key\\\":\\\"syntheticApiValue456\\\"}`,
+      String.raw`{\\\"api_key\\\":\\\"[redacted]\\\"}`,
+    ],
+    [
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"syntheticDeepValue789\\\\\\\"}`,
+      String.raw`{\\\\\\\"token\\\\\\\":\\\\\\\"[redacted]\\\\\\\"}`,
+    ],
+    // Unescaped forms keep their behaviour, and a backslash inside a value is redacted with it.
+    [`{"password":"plainvalue123"}`, `{"password":"[redacted]"}`],
+    [String.raw`password=synthetic\value tail`, "password=[redacted] tail"],
+    // Prose that names a keyword without assigning it is untouched.
+    ["SyntaxError: Unexpected token in JSON at position 3", null],
+    ["SyntaxError: Unexpected token '}'", null],
+  ]) {
+    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line);
+  }
+  assert.doesNotMatch(
+    redactFailureDetail(
+      { message: String.raw`config {\"password\":\"plainvalue123\"}` },
+      secrets,
+      "/repo",
+    ).message,
+    /plainvalue123/,
+  );
+
+  // A private key's body line that matches the filter is masked before the filter keeps it.
+  const logs = [
+    "worker start",
+    "-----BEGIN RSA PRIVATE KEY-----",
+    "MIIEsyntheticWorkerBodyLineAAAA",
+    "syntheticBodyLineTwoBBBBBBBB",
+    "-----END RSA PRIVATE KEY-----",
+    "worker turn failed: ECONNRESET",
+    "debug noise",
+  ].join("\n");
+  const shown = newestMatchingLogLines(logs, secrets, {
+    pattern: /worker|turn/iu,
+    exclude: /noise/u,
+    budget: 1_000,
+    lineChars: 400,
+  });
+  assert.equal(shown, "worker start\nworker turn failed: ECONNRESET");
+  // Newest lines win the budget, and each kept line is clipped after redaction.
+  assert.equal(
+    newestMatchingLogLines("turn one\nturn two\nturn three", secrets, {
+      pattern: /turn/u,
+      budget: 20,
+      lineChars: 400,
+    }),
+    "turn two\nturn three",
+  );
+  assert.equal(
+    newestMatchingLogLines(`turn password=${"x".repeat(50)}`, secrets, {
+      pattern: /turn/u,
+      budget: 1_000,
+      lineChars: 20,
+    }),
+    "turn password=[redac... [truncated]",
+  );
+});
+
+test("secret redaction preserves JSON quoting, not pieces of the quoted value", async () => {
+  const { redactLogLine, redactFailureDetail } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const redacted = "[redacted]";
+  // Serialize actual values instead of guessing how many backslashes the log contains.
+  for (const value of [
+    'first "middle", last',
+    "first, last",
+    "first last",
+    "last\\",
+    "",
+    "é\n🎈",
+  ]) {
+    let input = JSON.stringify({ password: value, phase: "after" });
+    let expected = JSON.stringify({ password: redacted, phase: "after" });
+    for (let depth = 0; depth < 4; depth++) {
+      assert.equal(redactLogLine(input, [], 2_000), expected);
+      assert.equal(redactFailureDetail({ message: input }, [], "/repo").message, expected);
+      input = JSON.stringify(input);
+      expected = JSON.stringify(expected);
+    }
+  }
+  // Logs can end mid-value. Neither a space nor an escaped quote ends the secret.
+  assert.equal(
+    redactLogLine('password="first part, still private', [], 200),
+    'password="[redacted]',
+  );
+  // A failure message need not be JSON. A newline inside an open password is still private.
+  assert.equal(
+    redactLogLine('password="first part\nprivate tail" expected status 503', [], 200),
+    'password="[redacted]" expected status 503',
+  );
+});
+
+test("a quoted auth header keeps the failure text after it", async () => {
+  const { failureSecrets, redactFailure, redactLogLine } =
+    await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  const assertion = "\nexpected status 503, got 200\ndecisive: gateway refused the turn";
+  // Synthetic values. The auth-scheme value used to take the closing quote, so the quoted
+  // value then ran to the end of the text and took the assertion with it (finding 1556).
+  for (const [header, expected] of [
+    ['{"authorization":"Bearer syntheticBearer0123"}', '{"authorization":"[redacted]"}'],
+    [
+      "headers: { authorization: 'Bearer syntheticBearer0123' }",
+      "headers: { authorization: '[redacted]' }",
+    ],
+    ['{"token":"Token syntheticToken0123"}', '{"token":"[redacted]"}'],
+    [
+      String.raw`{\"authorization\":\"Basic c3ludGhldGljOnZhbHVl\"}`,
+      String.raw`{\"authorization\":\"[redacted]\"}`,
+    ],
+    ["map[Authorization:[Basic c3ludGhldGljOnZhbHVl]]", "map[Authorization:[redacted]]"],
+    // A sibling field after the closing quote is not part of the value.
+    [
+      '{"authorization":"Bearer syntheticBearer0123","status":503}',
+      '{"authorization":"[redacted]","status":503}',
+    ],
+    [
+      "headers: { authorization: 'Bearer syntheticBearer0123', status: 503 }",
+      "headers: { authorization: '[redacted]', status: 503 }",
+    ],
+    // Logs can escape or repeat delimiters inside the value. Keep only the actual closing ones.
+    [String.raw`got Bearer synthetic0\"private-tail`, "got [redacted]"],
+    ["map[Authorization:[Basic synthetic0))private-tail]]", "map[Authorization:[redacted]]"],
+    // A quote that opens the value is kept with it.
+    [`curl -H "Authorization: Bearer 'synthetic0'"`, `curl -H "Authorization: '[redacted]'"`],
+    ['Authorization: Bearer "synthetic0"', 'Authorization: "[redacted]"'],
+    [String.raw`Basic c3ludGhldGlj\/dmFsdWU=`, "[redacted]"],
+  ]) {
+    assert.equal(
+      redactLogLine(`request ${header}${assertion}`, secrets, 1_000),
+      `request ${expected}${assertion}`,
+    );
+    assert.equal(
+      redactFailure({ message: `request ${header}${assertion}` }, secrets, "/repo").message,
+      `request ${expected}${assertion}`,
+    );
+  }
+});
+
+test("the redactor removes structured, multi-word and short secret values", async () => {
+  const { failureSecrets, redactLogLine } = await import("../../scripts/ci/failure-redaction.mjs");
+  const secrets = failureSecrets([{}]);
+  // Synthetic values only (finding 1559).
+  for (const [line, expected] of [
+    // An object or array after a credential key, to its close on the same line.
+    [
+      '{"credentials":{"key":"syntheticNested0"},"after":"keep"}',
+      '{"credentials":[redacted],"after":"keep"}',
+    ],
+    [
+      '{"tokens":["syntheticA0","syntheticB0"],"after":"keep"}',
+      '{"tokens":[redacted],"after":"keep"}',
+    ],
+    [
+      JSON.stringify(
+        { credentials: { label: 'a "quote" and } private tail' }, after: "keep" },
+        null,
+        2,
+      ),
+      '{\n  "credentials": [redacted],\n  "after": "keep"\n}',
+    ],
+    ["tokens: [{value: '] private tail'}] status=503", "tokens: [redacted] status=503"],
+    ["secret: { nested: { value: 'synthetic0' } } tail", "secret: [redacted] tail"],
+    ["token: {unclosed synthetic0\nprivate tail", "token: [redacted]"],
+    ["token: [{wrong close]private tail", "token: [redacted]"],
+    // A bracket inside a string does not close the value, and text glued to the close
+    // belongs to it.
+    ['{"credentials":{"password":"ab}synthetic0"}}', '{"credentials":[redacted]}'],
+    ['{"token":{"inner":"a]synthetic0"},"after":1}', '{"token":[redacted],"after":1}'],
+    ["token: [a]synthetic0 tail", "token: [redacted] tail"],
+    // A passphrase in prose or YAML, and an Authorization header, take every word.
+    ["password: synthetic words here\nnext line", "password: [redacted]\nnext line"],
+    ["passphrase: synthetic words, then more", "passphrase: [redacted], then more"],
+    ['{"error":"bad password: synthetic words"}', '{"error":"bad password: [redacted]"}'],
+    ["Authorization: Bearer syn", "Authorization: [redacted]"],
+    // "=" stays one word, as in logfmt and query strings.
+    ["password=synthetic0 next=keep", "password=[redacted] next=keep"],
+    // A key inside the phrase starts its own assignment, so its quoted value is redacted.
+    [
+      'password: synthetic0 token="synthetic1" tail',
+      'password: [redacted] token="[redacted]" tail',
+    ],
+    [
+      "Authorization: Bearer s api_key='synthetic1'",
+      "Authorization: [redacted] api_key='[redacted]'",
+    ],
+    // Short scheme values with a digit, and keys the list did not have.
+    ["sent Bearer s0 upstream", "sent [redacted] upstream"],
+    ["sent Basic ab)synthetic0] upstream", "sent [redacted]] upstream"],
+    [
+      "https://blob.example/x?sv=1&sig=syntheticSig0&se=2",
+      "https://blob.example/x?sv=1&sig=[redacted]&se=2",
+    ],
+    ["pwd=synthetic0", "pwd=[redacted]"],
+    ["passphrase=synthetic0", "passphrase=[redacted]"],
+    ["accessKey=synthetic0", "accessKey=[redacted]"],
+    ["signature: synthetic0", "signature: [redacted]"],
+    // Ordinary diagnostics that name a keyword without a value stay readable.
+    ["Bearer token expired", null],
+    ["token expired", null],
+    ["secretName: occ-gateway-password", null],
+    ["tokenCount: 3", null],
+    ["design=compact", null],
+    ["SyntaxError: Unexpected token '}'", null],
+  ]) {
+    assert.equal(redactLogLine(line, secrets, 1_000), expected ?? line, line);
+  }
+});
+
 test("run keeps a failed file's whole messages, stacks and output in the diagnostics report", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
@@ -2158,7 +2386,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      '  assert.fail(`${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
+      '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
     ].join("\n"),
@@ -2198,14 +2426,15 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
-  assert.doesNotMatch(failed.error.message, /decisive line/);
+  assert.match(failed.error.message, /password="\[redacted\]" phase=after/);
+  assert.doesNotMatch(failed.error.message, /private-tail|decisive line/);
   assert.equal(failed.error.stack, undefined);
   assert.match(
     result.stderr,
     /run-tests: whole failure messages, stacks and output tails are in .*state\/details\.json\.diagnostics\.json \(artifact diagnostics-<prefix>-details-attempt-(?:\d+|<N>)\)/,
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
-  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|passing output/);
+  assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -3472,6 +3701,106 @@ test("run shares slots only between audited parallel files and runs the rest alo
     invalidSummary.issues.map((entry) => entry.code),
     ["invalid-env"],
   );
+});
+
+test("run starts shared files longest first from the measured table, unmeasured first", async (t) => {
+  const root = await fixture(t);
+  const files = ["short", "long", "new", "middle"].map(
+    (name) => `tests/integration/${name}.test.mjs`,
+  );
+  for (const path of files) {
+    await writeFile(join(root, path), 'import test from "node:test";\ntest("case", () => {});\n');
+  }
+  // Rows for files outside the lane are ignored.
+  await writeJson(join(root, "durations.json"), {
+    version: 1,
+    files: {
+      "tests/integration/short.test.mjs": 10,
+      "tests/integration/long.test.mjs": 50_000,
+      "tests/integration/middle.test.mjs": 20,
+      "tests/integration/gone.test.mjs": 90_000,
+    },
+  });
+  const manifest = (fileDurations) => ({
+    version: 1,
+    ...(fileDurations === undefined ? {} : { fileDurations }),
+    lanes: {
+      shared: { fileConcurrency: 2, parallelFiles: files, files: files.map((path) => ({ path })) },
+    },
+    groups: { ci: ["shared"] },
+  });
+  const starts = async (name, fileDurations) => {
+    await writeJson(join(root, `${name}.json`), manifest(fileDurations));
+    const result = run(
+      root,
+      ["run", "shared", "--manifest", `${name}.json`, "--root", root].concat([
+        "--state",
+        `state/${name}.jsonl`,
+        "--results",
+        `results/${name}.json`,
+      ]),
+      { CI_RUNNER_FILE_CONCURRENCY: "2" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(join(root, `results/${name}.json`), "utf8"));
+    return {
+      stderr: result.stderr,
+      ...Object.fromEntries(
+        summary.files.map((file) => [
+          file.path.split("/").at(-1).replace(".test.mjs", ""),
+          file.startOffsetMs,
+        ]),
+      ),
+    };
+  };
+
+  // Two slots: the unmeasured and the longest file start together; the next freed slot
+  // takes the middle file, the last one the shortest.
+  const measured = await starts("measured", "./durations.json");
+  assert.ok(measured.new < measured.middle && measured.long < measured.middle);
+  assert.ok(measured.middle <= measured.short);
+  assert.match(measured.stderr, /longest first \(3 of 4 shared files measured\)/);
+
+  // Without a table, shared files start in parallelFiles order.
+  const listed = await starts("listed");
+  assert.ok(listed.short < listed.new && listed.long < listed.new);
+  assert.ok(listed.new <= listed.middle);
+  assert.doesNotMatch(listed.stderr, /longest first/);
+});
+
+test("audit rejects an unusable file duration table", async (t) => {
+  const root = await fixture(t);
+  await writeFile(join(root, "tests/integration/one.test.mjs"), "import 'node:test';\n");
+  await writeJson(join(root, "durations.json"), {
+    version: 1,
+    files: { "tests/integration/one.test.mjs": -1, "tests/integration/two.test.mjs": 1.5 },
+  });
+  const audit = async (fileDurations) => {
+    await writeJson(join(root, "manifest.json"), {
+      version: 1,
+      fileDurations,
+      lanes: { one: { files: [{ path: "tests/integration/one.test.mjs" }] } },
+      groups: { ci: ["one"] },
+    });
+    const result = run(root, ["audit", "--manifest", "manifest.json", "--root", root]);
+    assert.equal(result.status, 1, result.stdout);
+    return JSON.parse(result.stdout).issues.map((entry) => entry.message);
+  };
+
+  assert.deepEqual(await audit("./durations.json"), [
+    "fileDurations tests/integration/one.test.mjs must be a whole number of milliseconds",
+    "fileDurations tests/integration/two.test.mjs must be a whole number of milliseconds",
+  ]);
+  assert.deepEqual(await audit("./missing.json"), [
+    "fileDurations ./missing.json is not readable JSON",
+  ]);
+  for (const reference of ["../durations.json", "./../durations.json", "durations.json", 5]) {
+    assert.deepEqual(await audit(reference), ["fileDurations must be a ./relative .json path"]);
+  }
+  await writeJson(join(root, "durations.json"), { version: 2, files: {} });
+  assert.deepEqual(await audit("./durations.json"), [
+    "fileDurations ./durations.json must be version 1 with a files object",
+  ]);
 });
 
 test("audit requires current discovered test files and rejects duplicate ownership", async (t) => {

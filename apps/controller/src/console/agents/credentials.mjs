@@ -1,8 +1,7 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
-import { namespacePath } from "./list.mjs";
-import { ensureSecretOperateBinding } from "./secret-access.mjs";
+import { configurationConflictMessage, isStaleGeneration, namespacePath } from "./list.mjs";
+import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
-import { isStaleGeneration } from "./list.mjs";
 
 export const SLACK_SECRET_BINDINGS = [
   { key: "SLACK_APP_TOKEN", label: "Slack app token", secretName: "Slack app token" },
@@ -93,7 +92,9 @@ function credentialError(error, mutation = false) {
   if (error.status === 403) {
     text = "Access denied. You do not have permission for this credential operation.";
   } else if (error.status === 409) {
-    text = "Credential metadata conflicts with the saved Agent state or selected Secrets.";
+    text =
+      configurationConflictMessage(error, mutation) ??
+      "Credential metadata conflicts with the saved Agent state or selected Secrets.";
   } else if (error.status === 400) {
     text = "Check the selected Secrets and reload this Agent.";
   } else if (error.status === 429) {
@@ -203,7 +204,7 @@ export function createChannelSecretsPanel({
     values,
     saving: false,
     saveError: null,
-    saveErrorBeforeWrite: false,
+    saveErrorStep: null,
     saveMessage: "",
     saveGrantWarning: "",
     pendingSecretGrants: {},
@@ -211,6 +212,8 @@ export function createChannelSecretsPanel({
     reloadRequired: false,
     // Unsaved Secret choices the form reopens with, and what a save conflict carries.
     draftSeed: null,
+    // The form shows a Secret choice the saved bindings do not have (finding 1640).
+    unsavedSecrets: false,
     carried: null,
     carriedNote: "",
   };
@@ -218,13 +221,19 @@ export function createChannelSecretsPanel({
   const section = element("section", { className: "agent-card channel-secrets" });
 
   function saveErrorText() {
-    if (state.saveErrorBeforeWrite) {
-      return (
-        "Could not check the saved Configuration. Try again before saving channel Secrets." +
-        (state.saveError.requestId ? ` Request ID: ${state.saveError.requestId}` : "")
-      );
+    const { saveError, saveErrorStep, saveGrantWarning } = state;
+    if (saveErrorStep === "grant" && saveGrantWarning) {
+      return saveGrantWarning;
     }
-    return state.saveGrantWarning || credentialError(state.saveError, true);
+    const message =
+      saveErrorStep === "preflight"
+        ? "Could not check the saved Configuration. Try again before saving channel Secrets." +
+          (saveError.requestId ? ` Request ID: ${saveError.requestId}` : "")
+        : credentialError(saveError, true);
+    // Report this failed save first. A grant can still be outstanding from an earlier save.
+    return saveGrantWarning
+      ? `${message} Access to a previously saved Secret is still unconfirmed.`
+      : message;
   }
 
   function canEnterChannelCredentials() {
@@ -290,6 +299,7 @@ export function createChannelSecretsPanel({
       !state.outcomeUnknown &&
       !state.reloadRequired &&
       !state.saveGrantWarning &&
+      !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
   }
@@ -318,6 +328,12 @@ export function createChannelSecretsPanel({
     if (missing.length) {
       return `Complete these in Credentials before deploying: ${missing.join(", ")}.`;
     }
+    if (state.unsavedSecrets) {
+      // A member who cannot read a saved Secret cannot pick it again: the picker offers the
+      // unreadable binding only while the draft still holds it (finding 1649). A page reload
+      // drops unsaved choices for every reader, with the page's other unsaved edits.
+      return "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
+    }
     return "Ready to deploy.";
   }
 
@@ -325,6 +341,7 @@ export function createChannelSecretsPanel({
   const shown = {};
 
   function renderChannelForm(error) {
+    state.unsavedSecrets = false;
     if (!slackEnabled(state.values)) {
       return null;
     }
@@ -348,7 +365,7 @@ export function createChannelSecretsPanel({
       changedSecrets: {},
       ...structuredClone(state.draftSeed ?? {}),
     };
-    // Seeded choices show once: after a conflict, or in the panel Reload draft rebuilt.
+    // Reopen the form with its unsaved choices after a refused write or a draft reload.
     state.draftSeed = null;
     const pickers = [];
     const status = element(
@@ -382,6 +399,7 @@ export function createChannelSecretsPanel({
           error.textContent = state.saveGrantWarning;
           status.textContent = "";
           updateControls();
+          onChange();
         },
         createSecretName: () => `${state.agent.name} ${binding.secretName}`,
         createDialogTitle: `Create ${binding.label} Secret`,
@@ -398,6 +416,13 @@ export function createChannelSecretsPanel({
       return picker.field;
     }
     const updateControls = () => {
+      // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
+      // an unsaved authentication source does.
+      state.unsavedSecrets = SLACK_SECRET_BINDINGS.some(
+        (binding) =>
+          secretIdForBinding(draft.secretBindings[binding.key]) !==
+          secretIdForBinding(state.configuration.secretBindings?.[binding.key]),
+      );
       const changedSecrets = Object.values(draft.changedSecrets);
       const pendingSecrets = pendingSecretGrants();
       const missing = SLACK_SECRET_BINDINGS.filter(
@@ -441,7 +466,7 @@ export function createChannelSecretsPanel({
       }
       state.saving = true;
       state.saveError = null;
-      state.saveErrorBeforeWrite = false;
+      state.saveErrorStep = null;
       state.saveMessage = "";
       state.carriedNote = "";
       state.saveGrantWarning = "";
@@ -501,7 +526,7 @@ export function createChannelSecretsPanel({
         onConfigurationChange?.(state.configuration);
         const grantTargets = secretGrantTargets(draft.secretBindings, draft.changedSecrets);
         for (const secret of grantTargets) {
-          await ensureSecretOperateBinding(context, state.agent, secret);
+          await ensureCredentialOperateBinding(context, state.agent, secret);
           markSecretGrantConfirmed(secret);
         }
         if (!context.isCurrent()) {
@@ -524,8 +549,21 @@ export function createChannelSecretsPanel({
           carryChoices();
           return;
         }
+        if (
+          mutationStarted &&
+          !configurationSaved &&
+          cause.status === 409 &&
+          cause.code === "RESOURCE_CONFLICT"
+        ) {
+          // The write was refused. Keep the choices in this form, without requesting a reload.
+          state.draftSeed = draft;
+        }
         state.saveError = cause;
-        state.saveErrorBeforeWrite = !mutationStarted;
+        state.saveErrorStep = configurationSaved
+          ? "grant"
+          : mutationStarted
+            ? "configuration"
+            : "preflight";
         state.saveMessage = "";
         state.outcomeUnknown =
           mutationStarted && !configurationSaved && !isDefinitiveRejection(cause);

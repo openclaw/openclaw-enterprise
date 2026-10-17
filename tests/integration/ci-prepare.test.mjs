@@ -2229,8 +2229,8 @@ if (args[0] === "pull") {
       OCC_TEST_OPENAI_MODEL: "gpt-test",
     };
     const openShellModelEnv = {
+      ...baseModelEnv,
       CODEX_ACCESS_TOKEN: "synthetic-codex-pat",
-      OCC_TEST_OPENAI_MODEL: "gpt-test",
     };
     const k3dImages = {
       OCC_TEST_KUBERNETES_GATEWAY_IMAGE: immutableImage,

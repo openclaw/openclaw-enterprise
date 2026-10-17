@@ -51,6 +51,7 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
+  SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
   TransientDependencyError,
@@ -165,7 +166,9 @@ const REVISION_ACCESS_WITHDRAWAL_RECHECK_MS = 1000;
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
+  NAMESPACE_POD_QUOTA_EXCEEDED: "NAMESPACE_POD_QUOTA_EXCEEDED",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
@@ -511,6 +514,47 @@ function credentialWithdrawalRecoveryDelayMs(recovery: number): number {
   );
 }
 
+/**
+ * Native Harness exposures the worker withdraws outside a preparation pass: a revision already
+ * active when the worker starts, deployed by a controller that kept the exposure for the
+ * Sandbox's lifetime (finding 1669), and a candidate that failed for good while its Sandbox
+ * stays for diagnosis (finding 1672). Attempts: at once, then 30 s, 1, 2 and 4 min later; the
+ * fifth failure is logged by code and the revision left until the next start.
+ */
+const MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS = 5;
+const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
+
+interface PendingHarnessExposureWithdrawal {
+  readonly revision: Readonly<AgentRevision>;
+  attempts: number;
+  dueAt: number;
+}
+
+/** The code a failed exposure withdrawal is logged with; never the provider's text. */
+function harnessExposureWithdrawalCode(error: unknown): string {
+  if (error instanceof TransientDependencyError) {
+    return error.code;
+  }
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/u.test(code)
+    ? code
+    : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
+}
+
+/** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */
+function holdsNativeHarnessExposure(
+  revision: Readonly<AgentRevision>,
+  compute: Pick<ComputeDriver, "id" | "implementation">,
+): boolean {
+  return (
+    revision.harness.mode === "dedicated" &&
+    revision.harness.id === "openclaw" &&
+    revision.sandboxDriverId !== undefined &&
+    revision.compute.id === compute.id &&
+    revision.compute.implementation === compute.implementation
+  );
+}
+
 /** A revision's first pending withdrawal, preferring one that does not await a replay. */
 function firstPendingCredentialWithdrawal(
   withdrawals: readonly Readonly<CredentialWithdrawal>[],
@@ -851,7 +895,9 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // invalid-key rejection; MODEL_PROBE_CPU_STARVED ran out of a CPU budget sized
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
-// approver configuration. Unknown codes stay pending until the deadline.
+// approver configuration. Kubernetes Compute reports a workspace setup refusal
+// that every init container restart repeats (finding 1677). Unknown codes stay
+// pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
   MODEL_PROBE_CPU_STARVED: "RUNTIME_CPU_STARVED",
@@ -860,6 +906,7 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   LOGIN_FAILED: "RUNTIME_LOGIN_FAILED",
   UNAVAILABLE: "RUNTIME_STARTUP_FAILED",
   INCOMPATIBLE_RESPONSE: "RUNTIME_STARTUP_FAILED",
+  WORKSPACE_SETUP_REFUSED: "WORKSPACE_SETUP_REFUSED",
 });
 
 function heldRuntimeFailureCode(code: string): string | undefined {
@@ -933,6 +980,11 @@ export class ControllerWorker {
   private readonly maxAttempts: number;
   private readonly convergenceTimeoutMs: number;
   private readonly maintenanceIntervalMs: number | undefined;
+  // Keyed by revision ID; undefined until the start-time listing has run.
+  private readonly harnessExposureWithdrawals = new Map<string, PendingHarnessExposureWithdrawal>();
+  private harnessExposureListed = false;
+  private harnessExposureListingFailures = 0;
+  private claimedLastPass = false;
   private readonly repoDriver: RepoDriver | undefined;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
@@ -1194,7 +1246,14 @@ export class ControllerWorker {
       try {
         const recovery = await this.queue.recoverStale();
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
+        // A sweep step asks the Sandbox gateway, up to its deadline: it runs on passes that
+        // follow an empty claim, so queued work is not delayed by a gateway that does not
+        // answer.
+        if (!this.claimedLastPass) {
+          await this.withdrawPendingHarnessExposure();
+        }
         const claim = await this.queue.claim();
+        this.claimedLastPass = claim !== undefined;
         if (claim !== undefined) {
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
@@ -2144,6 +2203,9 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
+      // The Sandbox gateway refused the controller's identity, so the Driver could not confirm
+      // the revision's Sandbox gone: retrying cannot help until an operator restores the role,
+      // so the stop fails with that code instead of recording the Sandbox stopped (finding 1676).
       result =
         error instanceof ComputeStopYieldedError
           ? {
@@ -2151,7 +2213,9 @@ export class ControllerWorker {
               code: "AGENT_STOP_YIELDED",
               ...(stopping === undefined ? {} : { revision: stopping }),
             }
-          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          : error instanceof SandboxGatewayUnauthorizedError
+            ? { outcome: "permanent", code: error.code }
+            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
   }
@@ -2357,7 +2421,11 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676).
+      result =
+        error instanceof SandboxGatewayUnauthorizedError
+          ? { outcome: "permanent", code: error.code }
+          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentDeletion(claim, result);
   }
@@ -2435,7 +2503,7 @@ export class ControllerWorker {
           result.outcome === "permanent" ||
           (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
         if (result.decision !== undefined) {
-          await this.appendAgentDeletionDenial(unit, claim, result);
+          await this.appendAgentDenial(unit, claim, result, "deletion");
         } else if (terminalFailure) {
           await this.appendAgentDeletionOutcome(unit, claim, result);
         }
@@ -2495,32 +2563,6 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentDeletionDenial(
-    unit: PlatformUnitOfWork,
-    claim: ClaimedWork,
-    result: AgentDeletionDispatchResult,
-  ): Promise<void> {
-    if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent deletion authorization context is unavailable.");
-    }
-    await unit.audit.append({
-      id: `aud_${randomUUID()}`,
-      installationId: this.installation.id,
-      namespaceId: claim.namespaceId,
-      occurredAt: new Date().toISOString(),
-      kind: "authorization_denial",
-      actorId: claim.actorId,
-      source: "occ",
-      action: "openclaw.agents.delete",
-      resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
-      iamDriverId: this.iamDriverId,
-      ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
-      ...(result.decision === undefined ? {} : { decisionReason: result.decision.reason }),
-      reasonCode: result.code,
-      outcome: "denied",
-    });
-  }
-
   private async finalizeAgentStop(
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
@@ -2549,7 +2591,7 @@ export class ControllerWorker {
         result.outcome === "permanent" ||
         (result.outcome === "retry" && claim.attemptCount >= this.maxAttempts);
       if (result.decision !== undefined) {
-        await this.appendAgentStopDenial(unit, claim, result);
+        await this.appendAgentDenial(unit, claim, result, "stop");
       } else if (result.outcome === "success" || terminalFailure) {
         await this.appendAgentStopOutcome(unit, claim, result);
       }
@@ -2627,13 +2669,14 @@ export class ControllerWorker {
     });
   }
 
-  private async appendAgentStopDenial(
+  private async appendAgentDenial(
     unit: PlatformUnitOfWork,
     claim: ClaimedWork,
-    result: AgentStopDispatchResult,
+    result: DispatchResult,
+    operation: "deletion" | "stop",
   ): Promise<void> {
     if (this.installation === undefined || claim.agentId === undefined) {
-      throw new Error("The worker Agent stop authorization context is unavailable.");
+      throw new Error(`The worker Agent ${operation} authorization context is unavailable.`);
     }
     await unit.audit.append({
       id: `aud_${randomUUID()}`,
@@ -2643,7 +2686,7 @@ export class ControllerWorker {
       kind: "authorization_denial",
       actorId: claim.actorId,
       source: "occ",
-      action: "openclaw.agents.stop",
+      action: operation === "deletion" ? "openclaw.agents.delete" : "openclaw.agents.stop",
       resource: { kind: "agent", id: claim.agentId, namespaceId: claim.namespaceId },
       iamDriverId: this.iamDriverId,
       ...(result.authorization === undefined ? {} : { authorization: result.authorization }),
@@ -2805,14 +2848,18 @@ export class ControllerWorker {
       // including one IAM failed to authorize, so no earlier denial stays its last reason. A
       // Compute refusal that retrying cannot change (a configuration that cannot reach the
       // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
-      // mismatch does; a replay tries again.
-      const code =
-        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
+      // mismatch does; a replay tries again. So does a Sandbox gateway that refuses the
+      // controller's identity (finding 1676): retrying cannot restore the Workspace role, and
+      // the reason names the fix instead of a generic failure.
+      const refused =
+        error instanceof CredentialWithdrawalRefusedError ||
+        error instanceof SandboxGatewayUnauthorizedError;
+      const code = refused ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
       result = {
-        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        outcome: refused ? "permanent" : "retry",
         code,
         attempts: [
           ...attempts,
@@ -2989,6 +3036,181 @@ export class ControllerWorker {
       return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_REASSIGNED", attempts: settled };
     }
     return { ...result, attempts: settled };
+  }
+
+  /**
+   * One bounded step of the native Harness exposure sweep per loop pass, before the claim, as
+   * stale-claim recovery runs. The first pass lists the revisions (one read, no claim): every
+   * active revision whose Sandbox Driver may hold the exposure, and every newer candidate whose
+   * deployment failed for good; the Kubernetes Driver declares no maintenance interval, so no
+   * pass would reach them otherwise. Each later pass withdraws for at most one due revision,
+   * so a provider that does not answer costs one bounded call per pass. The withdrawal is
+   * idempotent and churns nothing: a revision without the exposure is confirmed and dropped.
+   */
+  private async withdrawPendingHarnessExposure(): Promise<void> {
+    const compute = this.compute;
+    if (compute.withdrawHarnessExposure === undefined || this.stopping) {
+      return;
+    }
+    // Listed once per start, with bounded retries; candidates handed over by terminal
+    // failures share the map and are withdrawn whether or not the listing succeeded.
+    if (
+      !this.harnessExposureListed &&
+      this.harnessExposureListingFailures < MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS
+    ) {
+      let listed: Map<string, PendingHarnessExposureWithdrawal> | undefined;
+      try {
+        listed = await this.listHarnessExposureWithdrawals();
+      } catch {
+        if (this.stopping || this.abort.signal.aborted) {
+          return;
+        }
+        this.harnessExposureListingFailures += 1;
+        this.emit({
+          event: "worker.harness-exposure-sweep-failed",
+          code: "WORKER_UNAVAILABLE",
+          attempt: this.harnessExposureListingFailures,
+        });
+      }
+      if (listed !== undefined) {
+        this.harnessExposureListed = true;
+        for (const [revisionId, candidate] of listed) {
+          if (!this.harnessExposureWithdrawals.has(revisionId)) {
+            this.harnessExposureWithdrawals.set(revisionId, candidate);
+          }
+        }
+        if (this.harnessExposureWithdrawals.size > 0) {
+          this.emit({
+            event: "worker.harness-exposure-sweep",
+            pending: this.harnessExposureWithdrawals.size,
+          });
+        }
+      }
+    }
+    const now = Date.now();
+    const pending = [...this.harnessExposureWithdrawals.values()].find(
+      (candidate) => candidate.dueAt <= now,
+    );
+    if (pending === undefined) {
+      return;
+    }
+    const { revision } = pending;
+    const fields = {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      revisionId: revision.id,
+    };
+    try {
+      await withComputeAbortSignal(this.abort.signal, () =>
+        compute.withdrawHarnessExposure!(revision, this.abort.signal),
+      );
+    } catch (error) {
+      if (this.stopping || this.abort.signal.aborted) {
+        return;
+      }
+      pending.attempts += 1;
+      const permanent = pending.attempts >= MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS;
+      if (permanent) {
+        this.harnessExposureWithdrawals.delete(revision.id);
+      } else {
+        pending.dueAt =
+          Date.now() + HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS * 2 ** (pending.attempts - 1);
+      }
+      this.emit({
+        event: "worker.harness-exposure-withdrawal-failed",
+        ...fields,
+        code: harnessExposureWithdrawalCode(error),
+        attempt: pending.attempts,
+        outcome: permanent ? "permanent" : "retry",
+      });
+      return;
+    }
+    this.harnessExposureWithdrawals.delete(revision.id);
+    this.emit({ event: "worker.harness-exposure-withdrawn", ...fields });
+  }
+
+  /**
+   * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
+   * Compute's status read used, which nothing reads any more and which the Gateway's node
+   * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
+   * restart lists it again from its failed deployment (as a non-active revision). An active
+   * revision is left alone: its exposure went with its readiness. The failure is already
+   * committed, so a read that fails here only defers the withdrawal to the next start.
+   */
+  private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
+    if (
+      this.compute.withdrawHarnessExposure === undefined ||
+      claim.agentId === undefined ||
+      claim.revisionId === undefined
+    ) {
+      return;
+    }
+    const { agent, revision } = await this.state.read(async (view) => ({
+      agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
+      revision: await view.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      ),
+    }));
+    if (
+      revision === undefined ||
+      agent?.activeRevisionId === revision.id ||
+      !holdsNativeHarnessExposure(revision, this.compute)
+    ) {
+      return;
+    }
+    if (!this.harnessExposureWithdrawals.has(revision.id)) {
+      this.harnessExposureWithdrawals.set(revision.id, { revision, attempts: 0, dueAt: 0 });
+    }
+  }
+
+  private async listHarnessExposureWithdrawals(): Promise<
+    Map<string, PendingHarnessExposureWithdrawal>
+  > {
+    const listed = await this.state.read(async (view) => {
+      const found: {
+        readonly activeRevisionId: string | undefined;
+        readonly revisions: readonly Readonly<AgentRevision>[];
+      }[] = [];
+      for (const namespace of await view.namespaces.listNamespaces()) {
+        // A Namespace fails only from `provisioning` (no Agent ran in it), and `deleting`
+        // releases the provider Workspace with every Sandbox in it.
+        if (namespace.status !== "ready") {
+          continue;
+        }
+        for (const agent of await view.agents.listAgents(namespace.id)) {
+          const revisions = await view.revisions.listRevisions(namespace.id, agent.id);
+          const active = revisions.find(({ id }) => id === agent.activeRevisionId);
+          // Older revisions were retired when the active one activated; a newer candidate
+          // that failed keeps its Sandbox until the next activation retires it.
+          const candidates = revisions.filter(
+            (revision) =>
+              holdsNativeHarnessExposure(revision, this.compute) &&
+              (active === undefined ||
+                revision.id === active.id ||
+                revision.revision > active.revision),
+          );
+          if (candidates.length > 0) {
+            found.push({ activeRevisionId: agent.activeRevisionId, revisions: candidates });
+          }
+        }
+      }
+      return found;
+    });
+    const pending = new Map<string, PendingHarnessExposureWithdrawal>();
+    for (const { activeRevisionId, revisions } of listed) {
+      for (const revision of revisions) {
+        if (revision.id !== activeRevisionId) {
+          const deployment = await this.queue.findWork(`agent_revision:${revision.id}:reconcile`);
+          if (deployment?.state !== "failed_permanent") {
+            continue;
+          }
+        }
+        pending.set(revision.id, { revision, attempts: 0, dueAt: 0 });
+      }
+    }
+    return pending;
   }
 
   /**
@@ -3834,6 +4056,7 @@ export class ControllerWorker {
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
           error instanceof SandboxRevisionUnsupportedError ||
+          error instanceof SandboxGatewayUnauthorizedError ||
           error instanceof CredentialSourceRevisionError ||
           error instanceof ActivationFailedError
         ) {
@@ -4494,7 +4717,8 @@ export class ControllerWorker {
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
     // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause.
+    // failure ends the deployment at once with a code naming its cause. The kubelet
+    // does restart a refused workspace setup, but it refuses the same way each time.
     const heldFailureCode =
       runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
     let resolved: RevisionDispatchResult;
@@ -4583,6 +4807,8 @@ export class ControllerWorker {
         : await this.refusedStopRecheckMs(claim, resolved.refusedStopMs ?? 0);
     let activated: Readonly<AgentRevision> | undefined;
     let stoppedCandidate: Readonly<AgentRevision> | undefined;
+    // Set when the pointer commit lost a race: the pass then commits a retry, not `resolved`.
+    let activeRevisionChanged = false;
     let committedOutcome: WorkOutcome =
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
@@ -4624,6 +4850,7 @@ export class ControllerWorker {
         ) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          activeRevisionChanged = true;
           return;
         }
         if (current.desiredRuntimeState !== "running") {
@@ -4639,6 +4866,7 @@ export class ControllerWorker {
         if (activeAgent === undefined) {
           await queue.retry(claim, { code: "ACTIVE_REVISION_CHANGED" });
           committedOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+          activeRevisionChanged = true;
           return;
         }
         activated = resolved.revision;
@@ -4720,6 +4948,17 @@ export class ControllerWorker {
     }
     const compute = this.compute;
     this.passOutcome = committedOutcome;
+    if (
+      committedOutcome === "permanent" &&
+      !activeRevisionChanged &&
+      isCandidateDeployment(claim)
+    ) {
+      try {
+        await this.scheduleFailedCandidateExposureWithdrawal(claim);
+      } catch {
+        // The failure is committed; the next start lists the candidate from its deployment.
+      }
+    }
     if (activated !== undefined) {
       try {
         const current = await this.state.read((view) =>
@@ -4777,15 +5016,20 @@ export class ControllerWorker {
     } else {
       stopYields = this.stopYields.count(claim.idempotencyKey);
     }
+    // A lost pointer race reports the retry this pass committed, not the resolved success
+    // (finding 1611).
+    const reported = activeRevisionChanged
+      ? { outcome: "retry" as const, code: "ACTIVE_REVISION_CHANGED" }
+      : resolved;
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: claim.revisionId,
-      result: resolved.outcome,
-      outcome: resolved.outcome,
-      code: resolved.code,
+      result: reported.outcome,
+      outcome: reported.outcome,
+      code: reported.code,
       ...failureLogFields,
       ...this.deployTimingFields(claim),
       ...stopYieldsField(stopYields),
@@ -5298,6 +5542,19 @@ export class ControllerWorker {
     this.passOutcome = result.outcome;
     if (!completed) {
       this.passOutcome = claim.attemptCount >= this.maxAttempts ? "permanent" : "retry";
+      // Like the pointer commit's lost race, this pass committed a retry (finding 1611).
+      this.emit({
+        event: "worker.completed",
+        ...workLogFields(claim),
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId,
+        revisionId: claim.revisionId,
+        result: "retry",
+        outcome: "retry",
+        code: "ACTIVE_REVISION_CHANGED",
+        ...this.deployTimingFields(claim),
+        ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
+      });
       return;
     }
     // Original admission time survives queue waits and retries. Maintenance and

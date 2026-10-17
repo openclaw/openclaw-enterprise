@@ -364,6 +364,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
   const directory = await socketDirectory(t, "repository-options-auth-");
   const socket = join(directory, "control.sock");
   let lookups = 0;
+  let description = "a".repeat(187) + "😀".repeat(163);
   // The independent socket peer observes actual metadata requests; IAM and Driver policy are real.
   const server = createServer((request, response) => {
     lookups++;
@@ -375,7 +376,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
           providerInstanceId: f.registry.providerInstanceId,
           appId: f.registry.appId,
           githubInstallationId: f.registry.githubInstallationId,
-          descriptions: [{ repositoryRef: "project", repositoryId: "789", description: "Project" }],
+          descriptions: [{ repositoryRef: "project", repositoryId: "789", description }],
           pending: false,
         }),
       );
@@ -406,9 +407,19 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
   for (const path of [createPath, updatePath]) {
     const allowed = await observed.request("GET", path);
     assert.equal(allowed.status, 200, JSON.stringify(allowed));
-    assert.equal(allowed.data[0].description, "Project");
+    assert.equal(allowed.data[0].description, description);
   }
   assert.equal(lookups, 2);
+  // Both the Unix client and OCC use the API schema's Unicode character bound.
+  description = "😀".repeat(512);
+  const longest = await observed.request("GET", createPath);
+  assert.equal(longest.status, 200, JSON.stringify(longest));
+  assert.equal(longest.data[0].description, description);
+  description += "😀";
+  const oversized = await observed.request("GET", createPath);
+  assert.equal(oversized.status, 200, JSON.stringify(oversized));
+  assert.equal(Object.hasOwn(oversized.data[0], "description"), false);
+  const authorizedLookups = lookups;
 
   for (const action of ["create", "update"]) {
     f.iamState.restrictions.push({
@@ -424,7 +435,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
     assert.equal(denied.status, 403, JSON.stringify(denied));
     assert.equal(denied.error.code, "FORBIDDEN");
   }
-  assert.equal(lookups, 2);
+  assert.equal(lookups, authorizedLookups);
 });
 
 test("Repository options preserve an empty successful discovery", async (t) => {
@@ -469,6 +480,16 @@ test("Repository options refuse Driver display text with C0 controls or DEL", as
       }
     }
   }
+  override = { description: "😀".repeat(512) };
+  assert.equal(
+    (await controller.listRepositoryOptions(f.actorId, f.namespace.id)).options[0].description,
+    override.description,
+  );
+  override = { description: "😀".repeat(513) };
+  await assert.rejects(
+    controller.listRepositoryOptions(f.actorId, f.namespace.id),
+    /returned invalid repository options/,
+  );
 });
 
 test("Repository discovery supports a dedicated-only Compute Driver without admitting unsupported Harnesses", async (t) => {
@@ -900,9 +921,8 @@ test("Repository admission retains unknown Harness and execution-mode rejection"
   for (const { harness, executionMode, status, code, message, atSave } of [
     // An unsupported runtime identity is Configuration content, not a missing resource.
     { harness: "unknown", executionMode: "embedded", status: 400, code: "INVALID_REQUEST" },
-    // Kubernetes delivers repository credentials to no dedicated OpenClaw runtime, so Agent
-    // save refuses the pair (finding 1117); deployment would refuse it first because the
-    // pinned runtime lacks native worker support.
+    // Kubernetes cannot deliver repository credentials to dedicated OpenClaw, so Agent save
+    // refuses this Harness/mode pair before deployment admission.
     {
       harness: "openclaw",
       executionMode: "dedicated",

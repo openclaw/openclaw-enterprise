@@ -137,11 +137,12 @@ jobs:
       # rose and fell with the lane's; from 10-13 13:00Z files nobody changed
       # took 20-30 % longer there while 32vcpu lanes stayed flat).
       # Repository Credentials Platform stays on 16vcpu: on 32vcpu its image
-      # import and its long case took as long. Keycloak OIDC stays on 8vcpu,
-      # the runner it soaked on before joining CI Required. The other lanes
-      # use blacksmith 16vcpu, which exposes 4 CPUs to the job (8vcpu exposes
-      # 2) and rarely waits for a runner (on 10-08/09, 15 % of 8vcpu jobs
-      # waited over a minute, none on 16vcpu). A label no runner serves
+      # import and its long case took as long. The other lanes, Keycloak OIDC
+      # included, use blacksmith 16vcpu, which exposes 4 CPUs to the job
+      # (8vcpu exposes 2) and rarely waits for a runner (on 10-08/09, 15 % of
+      # 8vcpu jobs waited over a minute, none on 16vcpu). Keycloak OIDC moved
+      # off 8vcpu on 10-17: over 37 runs it waited 67 s for a runner at p90,
+      # while no 16vcpu job in 376 waited over 13 s. A label no runner serves
       # leaves the job queued, so use only labels already in use here.
       - id: matrix
         name: Build lane matrix
@@ -166,12 +167,11 @@ jobs:
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
-              {"lane": "k3d-fixture-oauth", "title": "k3d OAuth Bootstrap", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-container", "title": "Repository Credentials", "profile": "images", "timeout": 40, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "repository-credentials-platform", "title": "Repository Credentials Platform", "profile": "k3d", "timeout": 60, "runner": "blacksmith-16vcpu-ubuntu-2404"},
-              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-8vcpu-ubuntu-2404"}
+              {"lane": "keycloak-oidc", "title": "Keycloak OIDC", "profile": "postgres", "timeout": 25, "runner": "blacksmith-16vcpu-ubuntu-2404"}
             ]
         run: |
           table=$(jq -ce 'if type == "array" and length > 0 then . else error("invalid lane table") end' <<<"$LANE_TABLE")

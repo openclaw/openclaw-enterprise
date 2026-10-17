@@ -320,10 +320,6 @@ export const HarnessAuthBindingSchema = Type.Union([
     { additionalProperties: false },
   ),
   Type.Object(
-    { method: Type.Literal("oauth"), source: SecretReference },
-    { additionalProperties: false },
-  ),
-  Type.Object(
     { method: Type.Literal("credential_source"), sourceId: CredentialSourceId },
     { additionalProperties: false },
   ),
@@ -468,7 +464,7 @@ const PluginDiscoveryAccessToken = Type.String({
 export const DiscoverAgentPluginsBody = Type.Union([
   Type.Object(
     {
-      oauthLogin: SecretReference,
+      credentialSource: CredentialSourceReference,
       cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
       q: Type.Optional(Type.String({ maxLength: 1024 })),
     },
@@ -501,7 +497,10 @@ export const DiscoverAgentPluginsBody = Type.Union([
 
 export const DiscoverAgentPluginDetailsBody = Type.Union([
   Type.Object(
-    { oauthLogin: SecretReference, pluginId: Type.String({ minLength: 1, maxLength: 256 }) },
+    {
+      credentialSource: CredentialSourceReference,
+      pluginId: Type.String({ minLength: 1, maxLength: 256 }),
+    },
     { additionalProperties: false },
   ),
   Type.Object(
@@ -523,7 +522,7 @@ export const DiscoverAgentPluginDetailsBody = Type.Union([
 
 export const DiscoverSavedAgentPluginsBody = Type.Object(
   {
-    oauthLogin: Type.Optional(SecretReference),
+    credentialSource: Type.Optional(CredentialSourceReference),
     cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
     q: Type.Optional(Type.String({ maxLength: 1024 })),
   },
@@ -533,7 +532,7 @@ export const DiscoverSavedAgentPluginsBody = Type.Object(
 export const DiscoverSavedAgentPluginDetailsBody = Type.Object(
   {
     pluginId: Type.String({ minLength: 1, maxLength: 256 }),
-    oauthLogin: Type.Optional(SecretReference),
+    credentialSource: Type.Optional(CredentialSourceReference),
   },
   { additionalProperties: false },
 );
@@ -749,7 +748,7 @@ export const ProvisionAgentBody = Type.Object(
     harnessAuth: Type.Optional(
       Type.Union([HarnessAuthBindingSchema, Type.Null()], {
         description:
-          "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it.",
+          "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission.",
       }),
     ),
     executionMode: Type.Optional(HarnessExecutionModeSchema),

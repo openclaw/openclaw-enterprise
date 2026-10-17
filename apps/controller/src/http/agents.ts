@@ -74,6 +74,7 @@ function clientAgentProvisioning(
     revisionId: provisioning.revisionId,
     url: provisioning.url ?? agentProvisioningUrl(namespaceId, provisioning.workId),
     error: provisioning.error,
+    progress: provisioning.progress,
   };
 }
 

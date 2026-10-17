@@ -80,12 +80,6 @@ func (app *application) agentRevision(
 				"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision",
 				probe.latest, active, active,
 			)
-		case "older":
-			noticef(
-				notices,
-				"notice: reading revision %s, older than the active revision %s, because it still has Pods; pass --revision %s for the active revision",
-				probe.latest, active, active,
-			)
 		default:
 			noticef(
 				notices,
@@ -156,12 +150,12 @@ func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, acti
 		return newerRevision{latest: latest, number: number}
 	}
 	// Revision lists are permission-filtered: a different ID can be older.
-	// Preserve Pod selection, but only redirect for Podless Harness status
-	// when the active revision's exact metadata proves the candidate newer.
+	// A Pod candidate is read unless exact active metadata proves it older;
+	// a Podless Harness candidate only when that metadata proves it newer.
 	order, _ := revisionOrder(client, namespace, agentID, active, number)
 	return newerRevision{
 		latest: latest, number: number, order: order,
-		hasRuntime:  hasPods || order == "newer",
+		hasRuntime:  (hasPods && order != "older") || order == "newer",
 		description: description,
 	}
 }

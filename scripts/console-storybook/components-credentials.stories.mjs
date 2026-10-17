@@ -13,9 +13,21 @@ export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
   name: "Slack token switch",
 };
+export const DiscardSecretChoice = {
+  ...story("credentialsDiscardSecretChoice"),
+  name: "Discard an unsaved Secret choice",
+};
 export const CredentialsSlackCarried = {
   ...story("credentialsSlackCarried"),
   name: "Slack token choice carried through a conflict",
+};
+export const CredentialsSaveProvisioningReserved = {
+  ...story("credentialsSaveProvisioningReserved"),
+  name: "Secret choices after a refused save",
+};
+export const CredentialsSaveConflict = {
+  ...story("credentialsSaveConflict"),
+  name: "Secret choices after a conflict",
 };
 export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),

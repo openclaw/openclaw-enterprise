@@ -23,11 +23,11 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 
 ## Kubernetes HTTP fixture
 
-Install Docker, k3d and `kubectl`. The CI preparer creates an owned cluster with
-enforcing NetworkPolicies, fixture/controller images and migrated limited-role
-PostgreSQL databases. It preserves the default kubeconfig and unrelated resources.
-Use the following procedure for each required fixture lane: `k3d-fixture-configuration`,
-`k3d-fixture-state`, `k3d-fixture-plugins` and `k3d-fixture-oauth`.
+Install Docker, k3d and `kubectl`. Use Kubernetes 1.35 or later. The CI preparer
+creates an owned cluster with enforcing NetworkPolicies, fixture/controller images
+and migrated limited-role PostgreSQL databases. It preserves the default kubeconfig and unrelated resources.
+Run these fixture lanes: `k3d-fixture-configuration`,
+`k3d-fixture-state` and `k3d-fixture-plugins`.
 
 ```sh
 (
@@ -43,12 +43,18 @@ Use the following procedure for each required fixture lane: `k3d-fixture-configu
 )
 ```
 
-All selected cases must pass without skips. The lanes check API/worker and
-Driver lifecycle, RBAC, storage, revision replacement, OAuth bootstrap and enforced
-network isolation. OAuth responses and credentials are synthetic. Enabled Slack
+All selected cases must pass without skips. The lanes check API/worker lifecycle,
+RBAC, storage, revision replacement and enforced network isolation. Enabled Slack
 provisioning uses the actual controller proxy with simulated provider/runtime
 responses; it proves policy and Secret delivery, not native Slack connectivity.
 See [CI image preparation](ci.md#setting-overrides).
+
+External OAuth credentials use OpenShell rather than Kubernetes bootstrap Jobs or a
+native OAuth store. The [OpenShell OAuth proof](openshell-oauth.md) exercises real
+Gateway refresh and operator-mTLS access-token reads with a controlled issuer.
+The credentialed [OpenShell runtime lane](openshell.md) covers provider delivery,
+Codex exposure, model execution, and withdrawal. Neither lane runs in ordinary
+credential-free CI; a green fixture result does not prove live OAuth refresh.
 
 An imported immutable `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` extends the API/worker
 case through runtime Secret and private-state deletion without a model turn.

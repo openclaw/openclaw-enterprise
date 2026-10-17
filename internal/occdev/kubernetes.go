@@ -393,10 +393,11 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"address": openShellGatewayAddress,
 			"port":    8080,
 		}
-		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
+		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id":            openShellCredentialGatewayID,
-			"configuration": map[string]any{"binaries": openShellCodexBinaries()},
+			"id": openShellCredentialGatewayID,
+			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
+			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -442,7 +443,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 	}
 }
 
-func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
+func openShellInstallationConfiguration(s *developmentState, workspaceResources []any, harnessResources map[string]any) map[string]any {
 	gatewayNamespace := openShellGatewayNamespace
 	if s.DeploymentMode == "k3d" {
 		gatewayNamespace = s.PlatformNamespace
@@ -454,7 +455,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// OpenShell v0.1.3-pre.2 exposes the route before the canonical
+			// OpenShell v0.1.4 exposes the route before the canonical
 			// process listens. Keep the first Gateway from consuming it early.
 			"startupDelayMs": 30000,
 			"gateway": map[string]any{
@@ -483,6 +484,10 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			},
 			"kubernetes": map[string]any{
 				"runtimeClassName": openShellRuntimeClass,
+				"userNamespaces":   false,
+				// Provider-owned Harness Pods need the same budget as Compute-owned
+				// Harnesses; otherwise the namespace's smaller default applies.
+				"agentResources":   harnessResources,
 				"serviceAccount":   map[string]string{"mode": "gatewayConfigured"},
 				"sandboxDataMount": map[string]any{"subPath": "workspace", "mountPath": "/sandbox/enterprise", "readOnly": false},
 			},

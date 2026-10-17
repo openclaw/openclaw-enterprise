@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { DependencyUnavailableError } from "../../packages/occ/src/index.ts";
+import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  DependencyUnavailableError,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
 import { supervisorPeerLabels } from "../fixtures/kubernetes-provider-readiness.mjs";
 import {
@@ -28,18 +32,17 @@ const expectedRevision = ({ revision }) => ({
 });
 
 // Advance only the prerequisite Gateway. Each scenario gets fresh API and Sandbox state.
-async function endpointWithGateway() {
-  const fixture = providerEndpointFixture();
-  await fixture.prepare();
+async function endpointWithGateway(fixture = providerEndpointFixture(), context) {
+  await fixture.prepare(undefined, context);
   fixture.setGatewayServing();
   fixture.setSetupAvailable(true);
   return fixture;
 }
 
-async function preparedEndpoint() {
-  const fixture = await endpointWithGateway();
+async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
+  await endpointWithGateway(fixture, context);
   fixture.observePods([fixture.pod("ready")]);
-  assert.deepEqual(await fixture.prepare(), {
+  assert.deepEqual(await fixture.prepare(undefined, context), {
     ...expectedRevision(fixture),
     ready: true,
   });
@@ -125,8 +128,47 @@ test("provider Harness endpoint preparation re-observes the same revision across
 });
 
 test("provider Harness endpoint writes transport and runtime requirements", async () => {
-  const fixture = await preparedEndpoint();
+  let endpointWorkspaceRoot = providerWorkspaceRoot;
+  const providerHome = "/private/provider-home";
+  const providerHookDirectory = `${providerHome}/.oce-native-hooks`;
+  const fixture = providerEndpointFixture({
+    harnessEndpoint: async () => ({ url: providerUrl, workspaceRoot: endpointWorkspaceRoot }),
+  });
   const { driver, revision, provisions } = fixture;
+  // Keep the admitted private workspace intact while the separate Gateway uses
+  // its own writable path. The main entry takes precedence over defaults.
+  revision.configuration = admitLoggingConfiguration(
+    {
+      ...revision.configuration,
+      agents: {
+        defaults: { ...revision.configuration.agents.defaults, workspace: providerWorkspaceRoot },
+        entries: { Main: { workspace: providerWorkspaceRoot } },
+      },
+    },
+    "info",
+  );
+  const admittedAgents = structuredClone(revision.configuration.agents);
+  fixture.sandbox.harnessHome = providerHome;
+  let workspaceValidated = false;
+  fixture.sandbox.validateWorkspaceSetup = (harness, configuration) => {
+    assert.equal(harness.id, revision.harness.id);
+    assert.equal(configuration.agents.defaults.model, "codex/gpt-5");
+    workspaceValidated = true;
+  };
+  driver.validateWorkspaceSetup(revision.harness, revision.configuration, fixture.sandbox.id);
+  assert.equal(workspaceValidated, true);
+  workspaceValidated = false;
+  const context = {
+    ...authContext(revision),
+    workspaceSetup: {
+      id: "provider-workspace-setup",
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      files: { "USER.md": "private provider workspace profile" },
+      completed: false,
+    },
+  };
+  await preparedEndpoint(fixture, context);
   const { requirements } = provisions[0];
   assert.deepEqual(requirements.labels, fixture.labels);
   assert.deepEqual(
@@ -163,6 +205,27 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
     gatewayContainer.env.find(({ name }) => name === "OPENCLAW_REMOTE_WORKSPACE_ROOT").value,
     providerWorkspaceRoot,
   );
+  assert.equal(
+    gatewayContainer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
+    "/home/node/workspace",
+  );
+  const gatewayDocument = () => {
+    const configurationName = fixture
+      .gateway()
+      .spec.template.spec.volumes.find(({ name }) => name === "openclaw-configuration")
+      .configMap.name;
+    return JSON.parse(
+      fixture.read("ConfigMap", configurationName, fixture.gatewayNamespace).data["openclaw.json"],
+    );
+  };
+  assert.equal(gatewayDocument().agents.defaults.workspace, "/home/node/workspace");
+  assert.equal(gatewayDocument().agents.entries.Main.workspace, "/home/node/workspace");
+  assert.deepEqual(revision.configuration.agents, admittedAgents);
+  assert.deepEqual(provisions[0].revision.configuration.agents, admittedAgents);
+  const renderedHookDirectory = () =>
+    gatewayDocument().plugins.entries.codex.config.appServer.nativeHookRelay.credentialDirectory;
+  assert.equal(renderedHookDirectory(), providerHookDirectory);
+  assert.equal(workspaceValidated, true);
   assert.deepEqual(gatewayPod.hostAliases, [
     { ip: "10.43.0.50", hostnames: ["tenant--sandbox.openshell.localhost"] },
   ]);
@@ -186,6 +249,34 @@ test("provider Harness endpoint writes transport and runtime requirements", asyn
     kind: "codex",
     selections: {},
   });
+  await fixture.activate(undefined, context);
+  assert.equal(renderedHookDirectory(), providerHookDirectory);
+  // The endpoint must keep private relay material outside its file-transfer workspace.
+  for (const invalidWorkspace of [
+    providerHome,
+    providerHookDirectory,
+    `${providerHookDirectory}/files`,
+    "/",
+  ]) {
+    endpointWorkspaceRoot = invalidWorkspace;
+    for (const lifecycle of ["prepare", "activate"]) {
+      await assert.rejects(
+        fixture[lifecycle](undefined, context),
+        /native hook credential directory/,
+      );
+      assert.equal(renderedHookDirectory(), providerHookDirectory);
+    }
+  }
+  const privateSetup = {
+    id: context.workspaceSetup.id,
+    secretKeyRef: { name: driver.workspaceSetupSecretName(revision.agentId), key: "setup.json" },
+  };
+  assert.deepEqual(requirements.workspaceSetup, privateSetup);
+  assert.deepEqual(fixture.endpoints.at(-1).requirements.workspaceSetup, privateSetup);
+  assert.equal(
+    JSON.stringify(fixture.endpoints).includes(context.workspaceSetup.files["USER.md"]),
+    false,
+  );
 });
 
 test("provider Harness endpoint admits only exact node and provider peers", async () => {
@@ -532,18 +623,28 @@ for (const scenario of transportScenarios) {
   });
 }
 
-test("provider Harness unreachable transport is diagnosed as Sandbox provisioning failure", async () => {
+test("provider Harness unreachable transport is a transient Sandbox provisioning failure", async () => {
   const fixture = await endpointWithGateway();
   const { driver } = fixture;
   fixture.observePods([fixture.pod("ready")]);
-  // An unreachable Harness transport is a Sandbox provisioning failure in diagnostics.
+  // An unreachable Harness transport is no evidence about the Harness: the pass fails in the
+  // Sandbox provisioning stage as a transient dependency the worker rechecks until the
+  // deadline without spending attempts (finding 1658).
+  const transport = new DependencyUnavailableError("OpenShell service is unreachable.");
   fixture.sandbox.harnessStatus = async () => {
-    throw new DependencyUnavailableError("OpenShell service is unreachable.");
+    throw transport;
   };
   const unreachable = await fixture.prepare().then(
     () => assert.fail("an unreachable Harness must not prepare"),
     (error) => error,
   );
-  assert.ok(unreachable instanceof DependencyUnavailableError, String(unreachable));
-  assert.equal(driver.describePrepareRevisionFailure(unreachable).stage, "sandbox_provision");
+  assert.ok(unreachable instanceof TransientDependencyError, String(unreachable));
+  assert.equal(unreachable.dependency, "sandbox_gateway");
+  assert.equal(unreachable.cause, transport);
+  assert.deepEqual(driver.describePrepareRevisionFailure(unreachable), {
+    code: "SANDBOX_GATEWAY_UNAVAILABLE",
+    stage: "sandbox_provision",
+    errorClass: "TransientDependencyError",
+    message: "The Sandbox provider did not answer the Harness status read.",
+  });
 });

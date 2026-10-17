@@ -2,7 +2,12 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
-import { failureSecrets, redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
+import {
+  failureSecrets,
+  maskPrivateKeyLines,
+  newestMatchingLogLines,
+  redactLogLine,
+} from "../../scripts/ci/failure-redaction.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -23,6 +28,7 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertExposedCodexInitializes,
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
@@ -31,6 +37,14 @@ import {
   openShellGatewayName,
   openshellHash as hash,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import {
+  diagnosticDeadlineMs,
+  diagnosticDeadlinePassed,
+  diagnosticRequestTimeout,
+  retryKubectlRead,
+  withinDiagnosticDeadline,
+} from "../helpers/kubernetes-real.mjs";
+import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
@@ -61,7 +75,7 @@ const openShellSupervisorImage = process.env.OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE
 const openShellHelmPath = process.env.OCC_TEST_OPENSHELL_HELM;
 const openShellHelmChart = process.env.OCC_TEST_OPENSHELL_HELM_CHART;
 const openShellWorkspaceHelmChart = process.env.OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART;
-const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.3-pre.2";
+const openShellChartVersion = process.env.OCC_TEST_OPENSHELL_CHART_VERSION ?? "0.1.4";
 const openShellRuntimeClass = process.env.OCC_TEST_OPENSHELL_RUNTIME_CLASS ?? "openshell-sandbox";
 const providerModel = (process.env.OCC_TEST_OPENAI_MODEL ?? defaultAgentModel).replace(
   /^(?:openai|codex)\//,
@@ -85,6 +99,14 @@ const modelBaseUrl = (
 ).replace(/\/$/u, "");
 const modelEndpoint = new URL(modelBaseUrl);
 const modelPort = Number(modelEndpoint.port || 443);
+// Codex hands a long command back to the model, which may reply and end the turn before the
+// command ends. The tool upstream probe bounds its curl, and every turn waits for a command
+// still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
+// a fixed 5 s wait). The grace is sized for that probe only; longer commands elsewhere in this
+// suite can still outlive it and report an unknown outcome.
+const toolProbeCurlMaxSeconds = 8;
+const toolAEchoPath = "/echo-a";
+const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const selected =
   process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1" ||
   [
@@ -156,6 +178,7 @@ const fixture = createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion,
+  codexCommandGraceMs,
 });
 const {
   kubectl,
@@ -743,7 +766,13 @@ async function writeWorkerCompletionDiagnostics(options) {
     persisted,
     events: summarizeWorkerEvents(options.events, options.revisionId),
   };
-  process.stderr.write(`OpenShell worker completion diagnostic: ${JSON.stringify(diagnostic)}\n`);
+  // The reporter cuts the line at 1,000 characters, so the events there run newest first.
+  process.stderr.write(
+    `OpenShell worker completion diagnostic: ${JSON.stringify({
+      ...diagnostic,
+      events: [...diagnostic.events].reverse(),
+    })}\n`,
+  );
   return diagnostic;
 }
 
@@ -1738,6 +1767,9 @@ function createIntegrationSandboxDriverFactory(
       configureAgent(configuration, harness) {
         return configurationDriver.configureAgent(configuration, harness);
       },
+      validateWorkspaceSetup(harness, configuration) {
+        return configurationDriver.validateWorkspaceSetup(harness, configuration);
+      },
       harnessResource(context) {
         return configurationDriver.harnessResource(context);
       },
@@ -1859,6 +1891,19 @@ function createIntegrationSandboxDriverFactory(
                 context,
               ).harnessStatus(context);
             },
+            // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
+            async withdrawHarnessExposure(context) {
+              const endpoint = await endpointForNamespace(context, {
+                sandboxServiceAccountName: agentSandboxServiceAccount(context),
+                exact: context.requirements.workloadIdentity !== undefined,
+              });
+              await delegate(
+                context.requirements,
+                context.namespace.name,
+                endpoint,
+                context,
+              ).withdrawHarnessExposure(context);
+            },
             // Compute admits the workspace-node connection only from the revision's
             // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
             async workspaceNodePeerLabels(context) {
@@ -1951,6 +1996,15 @@ function createIntegrationSandboxDriverFactory(
     const state = gatewayState.get(namespaceName);
     assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
     return clientForEndpoint(state.endpoint);
+  };
+  // After the Namespace gateway Pod is replaced, its port-forward has ended. A new one keeps the
+  // gateway's Sandbox ServiceAccount; Backend clients resolve the endpoint at call time.
+  createDriver.restartGatewayForward = async (namespaceName) => {
+    const prior = gatewayState.get(namespaceName);
+    assert.ok(prior, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
+    await stopGatewayForward(namespaceName, prior);
+    const forward = await startOpenShellGatewayPortForward(namespaceName);
+    gatewayState.set(namespaceName, { ...prior, endpoint: forward.url, forward });
   };
   createDriver.disposeGatewayForwards = disposeGatewayForwards;
   createDriver.provisioningFailures = provisioningFailures;
@@ -2417,7 +2471,7 @@ async function prepareProductionInstallation(
     tokenEcho === undefined
       ? undefined
       : [
-          await registerToolSource(request, namespaceId, tokenEcho, "TOOL_A_TOKEN", "/echo-a"),
+          await registerToolSource(request, namespaceId, tokenEcho, "TOOL_A_TOKEN", toolAEchoPath),
           await registerToolSource(request, namespaceId, tokenEcho, "TOOL_B_TOKEN", "/echo-b"),
         ];
   const untrustedTlsSource =
@@ -2456,6 +2510,11 @@ async function prepareProductionInstallation(
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
+    // Console creation includes initial files. Keep this normal setup path in the
+    // real Sandbox proof so credential-only fixtures cannot hide delivery gaps.
+    ...(harnessId === "codex"
+      ? { initialWorkspaceFiles: { "AGENTS.md": "# Initialized OpenShell workspace\n" } }
+      : {}),
     // The list holds every bound source; harnessAuth names the model source within it.
     credentialSources: [
       { sourceId: modelSource.data.id },
@@ -2545,36 +2604,49 @@ async function prepareProductionInstallation(
         GATEWAY_API_KEY: workspaceGateway.apiKey,
       },
     ]);
-    for (const namespace of new Set([placement, gatewayPlacement])) {
-      try {
-        for (const pod of await resources("pods", namespace)) {
-          for (const container of pod.spec.containers) {
-            if (!["agent", "gateway", "supervisor"].includes(container.name)) {
-              continue;
-            }
-            const logs = await kubectl(
-              "logs",
-              pod.metadata.name,
-              "--namespace",
-              namespace,
-              "--container",
-              container.name,
-              "--tail=80",
-            ).catch(() => "Pod logs unavailable");
-            const lines = logs
-              .split("\n")
-              .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
-              .slice(-12);
-            for (const line of lines) {
-              process.stderr.write(
-                `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
-              );
+    const startupDiagnostic = async () => {
+      for (const namespace of new Set([placement, gatewayPlacement])) {
+        try {
+          for (const pod of await diagnosticResources("pods", namespace)) {
+            for (const container of pod.spec.containers) {
+              if (!["agent", "gateway", "supervisor"].includes(container.name)) {
+                continue;
+              }
+              const logs = await diagnosticKubectl(
+                "logs",
+                pod.metadata.name,
+                "--namespace",
+                namespace,
+                "--container",
+                container.name,
+                "--tail=80",
+              ).catch(() => "Pod logs unavailable");
+              const lines = maskPrivateKeyLines(logs.split("\n"))
+                .filter((line) => /error|fail|denied|refus|startup|NET:/iu.test(line))
+                .slice(-12);
+              for (const line of lines) {
+                if (diagnosticDeadlinePassed()) {
+                  return false;
+                }
+                process.stderr.write(
+                  `OpenShell startup ${pod.metadata.name}/${container.name}: ${redactLogLine(line, secrets, 800)}\n`,
+                );
+              }
             }
           }
+        } catch {
+          if (diagnosticDeadlinePassed()) {
+            return false;
+          }
+          process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
         }
-      } catch {
-        process.stderr.write("OpenShell startup Pod diagnostics unavailable\n");
       }
+      return false;
+    };
+    if (await withinDiagnosticDeadline(startupDiagnostic, { timedOut: true })) {
+      process.stderr.write(
+        `OpenShell startup Pod diagnostics timed out after ${diagnosticDeadlineMs / 1_000} s\n`,
+      );
     }
     const provisioningFailure = createSandboxDriver.provisioningFailures.get(deployed.data.id);
     if (provisioningFailure !== undefined) {
@@ -2594,6 +2666,14 @@ async function prepareProductionInstallation(
   });
 
   const sandbox = await waitForSandbox(placement, deployed.data);
+  if (harnessId === "codex") {
+    const initialFile = await request(
+      "GET",
+      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
+    );
+    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
+  }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
   process.stderr.write(
     "OpenShell integration: provider Harness ready; checking ownership and mounts.\n",
@@ -2699,10 +2779,11 @@ async function prepareProductionInstallation(
     sourceRoleId: sourceRole.data.id,
     controllerUrl,
     credentials: adminCredentials,
-    ...(toolSources === undefined ? {} : { toolSources }),
+    ...(toolSources === undefined ? {} : { toolSources, tokenEcho }),
     ...(untrustedTls === undefined ? {} : { untrustedTls, untrustedTlsSource }),
     ...(refreshSources === undefined ? {} : { refreshSources, keycloak }),
     gatewayClient: () => createSandboxDriver.gatewayClientForNamespace(placement),
+    restartGatewayForward: () => createSandboxDriver.restartGatewayForward(placement),
     observerPool,
     pauseWorker,
     resumeWorker: startWorker,
@@ -2738,8 +2819,13 @@ async function startTokenEcho(context, issuerJwks) {
   context.after(() =>
     kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),
   );
+  // Read the receiver's count through Pod loopback, even when its Service has no ready endpoint.
+  const receiptPort = 8081;
   const program = [
-    'const { createHash, createPublicKey, verify } = require("node:crypto");',
+    'const { createHash, createPublicKey, randomUUID, verify } = require("node:crypto");',
+    'const http = require("node:http");',
+    "const receipt = { instance: randomUUID(), requests: 0 };",
+    `http.createServer((_, res) => res.end(JSON.stringify(receipt))).listen(${receiptPort}, "127.0.0.1");`,
     "const keys = JSON.parse(process.env.OCE_ISSUER_JWKS ?? '{\"keys\":[]}').keys;",
     "const jwt = (authorization) => {",
     "  const match = /^Bearer ([\\w-]+)\\.([\\w-]+)\\.([\\w-]+)$/.exec(authorization);",
@@ -2758,7 +2844,8 @@ async function startTokenEcho(context, issuerJwks) {
     "    return { valid: false };",
     "  }",
     "};",
-    'require("node:http").createServer((request, response) => {',
+    "http.createServer((request, response) => {",
+    `  if (request.url === ${JSON.stringify(toolAEchoPath)}) receipt.requests++;`,
     '  const authorization = request.headers.authorization ?? "";',
     '  response.setHeader("content-type", "application/json");',
     "  response.end(JSON.stringify({",
@@ -2805,7 +2892,29 @@ async function startTokenEcho(context, issuerJwks) {
     "pod/token-echo",
     "--timeout=180s",
   );
-  return { host: `token-echo.${namespace}.svc.cluster.local`, port: 8080 };
+  async function readToolAReceipt() {
+    const output = await kubectl(
+      "exec",
+      "pod/token-echo",
+      "--namespace",
+      namespace,
+      "--",
+      "node",
+      "-e",
+      `fetch("http://127.0.0.1:${receiptPort}", { signal: AbortSignal.timeout(5000) })` +
+        ".then((response) => response.text()).then((text) => process.stdout.write(text))",
+    );
+    const { instance, requests } = JSON.parse(output);
+    assert.ok(typeof instance === "string" && instance.length > 0);
+    assert.ok(Number.isSafeInteger(requests) && requests >= 0);
+    return { instance, requests };
+  }
+  return {
+    namespace,
+    host: `token-echo.${namespace}.svc.cluster.local`,
+    port: 8080,
+    readToolAReceipt,
+  };
 }
 
 const untrustedCaName = "OCE untrusted upstream CA";
@@ -2895,6 +3004,7 @@ async function startUntrustedTlsObserver(context) {
   );
   const service = await resource("service", "untrusted-tls", namespace);
   return {
+    namespace,
     host,
     port: 443,
     address: service.spec.clusterIP,
@@ -4169,20 +4279,30 @@ const turnDiagnosticNoise =
   /identity scope grant elevated connection identity=occ-workspace-files|authenticated user (?:connected|disconnected) .*user=occ-workspace-files/u;
 
 function turnDiagnosticLines(logs, pattern, budget, secrets) {
-  const kept = [];
-  let length = 0;
-  for (const line of logs.split("\n").reverse()) {
-    if (!pattern.test(line) || turnDiagnosticNoise.test(line)) {
-      continue;
-    }
-    const shown = redactLogLine(line, secrets, turnDiagnosticLineChars);
-    if (length + shown.length + 1 > budget) {
-      break;
-    }
-    kept.push(shown);
-    length += shown.length + 1;
-  }
-  return kept.reverse().join("\n");
+  return newestMatchingLogLines(logs, secrets, {
+    pattern,
+    exclude: turnDiagnosticNoise,
+    budget,
+    lineChars: turnDiagnosticLineChars,
+  });
+}
+
+// Failure diagnostics read with a request timeout, so a stalled API server or log stream
+// cannot hold them (finding 1550). A read retries a dropped transport once: kubectl reports
+// its own request timeout as a transient failure, and each attempt may take the whole timeout.
+function diagnosticKubectl(...args) {
+  return retryKubectlRead(() => kubectl(diagnosticRequestTimeout, ...args), { attempts: 2 });
+}
+
+async function diagnosticResource(kind, name, namespace) {
+  return JSON.parse(
+    await diagnosticKubectl("get", kind, name, "--namespace", namespace, "-o", "json"),
+  );
+}
+
+async function diagnosticResources(kind, namespace) {
+  return JSON.parse(await diagnosticKubectl("get", kind, "--namespace", namespace, "-o", "json"))
+    .items;
 }
 
 // The network supervisor serving this Harness shares its boundary pair, as in the L7 denial
@@ -4196,7 +4316,7 @@ async function openShellSupervisorPod(topology) {
   if (!boundaryPair) {
     throw new Error("the Harness has no openshell.ai/boundary-pair label");
   }
-  const supervisors = (await resources("pods", topology.placement)).filter(
+  const supervisors = (await diagnosticResources("pods", topology.placement)).filter(
     (pod) =>
       pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
       pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
@@ -4220,7 +4340,14 @@ function turnFailureSecrets(topology, gatewayPassword) {
 
 // `budgets` lets a caller that adds its own sections keep the whole message under 16 KiB.
 // Without a Harness Pod (a replacement that never started one) only the Gateway is read.
-async function gatewayTurnFailureDiagnostic(
+function gatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets) {
+  return withinDiagnosticDeadline(
+    () => readGatewayTurnFailureDiagnostic(topology, gatewayPassword, budgets),
+    { timedOut: `\nGateway turn diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+  );
+}
+
+async function readGatewayTurnFailureDiagnostic(
   topology,
   gatewayPassword,
   { gateway = 5_000, harness = 4_000, supervisor = 4_000 } = {},
@@ -4279,7 +4406,7 @@ async function gatewayTurnFailureDiagnostic(
       continue;
     }
     try {
-      const logs = await kubectl(
+      const logs = await diagnosticKubectl(
         "logs",
         source.name,
         "--namespace",
@@ -4297,7 +4424,11 @@ async function gatewayTurnFailureDiagnostic(
     if (topology.harnessPod === undefined) {
       throw missingHarness;
     }
-    const pod = await resource("pod", topology.harnessPod.metadata.name, topology.placement);
+    const pod = await diagnosticResource(
+      "pod",
+      topology.harnessPod.metadata.name,
+      topology.placement,
+    );
     const containers = (pod.status?.containerStatuses ?? []).map((status) => ({
       name: status.name,
       state: status.state,
@@ -4530,6 +4661,34 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     providerWorkspace,
     "the OpenShell Harness and Agent Gateway must use the same workspace root.",
   );
+  const harnessHome = topology.harnessPod.spec.containers
+    .flatMap(({ env = [] }) => env)
+    .find(({ name }) => name === "HOME")?.value;
+  // Read only the path from the configuration the real Gateway consumes, never credentials.
+  const hookDirectory = JSON.parse(
+    await kubectl(
+      "exec",
+      topology.gatewayPod.metadata.name,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--container",
+      "gateway",
+      "--",
+      "node",
+      "-e",
+      [
+        'const fs = require("node:fs");',
+        'const config = JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));',
+        "process.stdout.write(JSON.stringify(config.plugins?.entries?.codex?.config?.appServer?.nativeHookRelay?.credentialDirectory ?? null));",
+      ].join("\n"),
+    ),
+  );
+  assert.equal(
+    hookDirectory,
+    `${harnessHome}/.oce-native-hooks`,
+    "the Gateway must deliver native hook credentials into the Harness launcher's private directory.",
+  );
+  assert.equal(hookDirectory.startsWith(`${providerWorkspace}/`), false);
   const writablePath = `${providerWorkspace}/${nonce}.txt`;
   // OpenShell serves provider-profile files only when they are opened; access(2) reports them
   // missing. Reading proves the projected config is readable, and a write open is refused.
@@ -4558,9 +4717,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(4) touch ${escapedPath}; ` +
       `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
       `(6) curl -fsSI --max-time 10 https://acme.com; ` +
-      (modelSourceType === "codex-pat" ? `(7) ${deniedConfigCommand}. ` : "") +
       `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
-      (modelSourceType === "codex-pat" ? "Command 7 must also fail. " : "") +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
       `if and only if those outcomes occurred.`,
@@ -4574,9 +4731,6 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   );
   const deniedCommand = completedCommands.find(({ command }) =>
     String(command).includes("acme.com"),
-  );
-  const deniedConfigRequest = completedCommands.find(({ command }) =>
-    String(command).includes(deniedBackend),
   );
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
@@ -4611,13 +4765,77 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
   if (modelSourceType === "codex-pat") {
+    // The backend probe gets its own turn: as a seventh command in the turn above, the model
+    // sometimes ended its turn after the sixth and never started it (finding 1682).
+    const backendNonce = `openshell-backend-${randomUUID()}`;
+    const requestBackendTurn = () =>
+      requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: topology.gatewayPod.metadata.name,
+        providerModel,
+        prompt:
+          `Use the shell exec tool from ${providerWorkspace} to run exactly this one command, ` +
+          `which is expected to fail: ${deniedConfigCommand}. ` +
+          `Then reply with exactly ${backendNonce}.`,
+      });
+    const startedCommands = (turn) =>
+      turn.items.filter(
+        ({ method, params }) =>
+          method === "item/started" && params?.item?.type === "commandExecution",
+      ).length;
+    const commandActivity = (turn) =>
+      turn.items.filter(
+        ({ method, params }) =>
+          method === "item/commandExecution/requestApproval" ||
+          ((method === "item/started" || method === "item/completed") &&
+            params?.item?.type === "commandExecution"),
+      ).length;
+    let backendTurn = await requestBackendTurn();
+    const skippedTurns = [];
+    // Ask once more only when the turn showed no command activity at all. A rewritten,
+    // declined, approval-gated or unsettled command is still judged below.
+    if (commandActivity(backendTurn) === 0) {
+      skippedTurns.push({
+        items: backendTurn.items.length,
+        replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+      });
+      backendTurn = await requestBackendTurn();
+    }
+    const backendCommands = backendTurn.items
+      .filter(({ method }) => method === "item/completed")
+      .map(({ params }) => params?.item)
+      .filter(({ type }) => type === "commandExecution");
+    const deniedConfigRequest = backendCommands.find(({ command }) =>
+      String(command).includes(deniedBackend),
+    );
+    // How the turn went, by label only: a missing request then shows whether the model
+    // skipped it, rewrote it, or asked for approval instead.
+    const commandSummary = {
+      skippedTurns,
+      started: startedCommands(backendTurn),
+      completed: backendCommands.map((command) => ({
+        label:
+          command === deniedConfigRequest
+            ? "codex-backend"
+            : /chatgpt_base_url|features list|backend-api/.test(String(command.command))
+              ? "codex-rewritten"
+              : "other",
+        status: command.status,
+        exitCode: command.exitCode,
+        durationMs: command.durationMs ?? null,
+      })),
+      approvalRequests: backendTurn.items.filter(
+        ({ method }) => method === "item/commandExecution/requestApproval",
+      ).length,
+      replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
+    };
     assert.ok(
       deniedConfigRequest,
-      "the real Codex binary must attempt the unapproved backend path.",
+      `the real Codex binary must attempt the unapproved backend path: ${JSON.stringify(commandSummary)}.`,
     );
     assert.ok(
       Number.isSafeInteger(deniedConfigRequest.exitCode),
-      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${result.items.some(
+      `the forbidden backend request must execute (status=${deniedConfigRequest.status}, approvalRequested=${backendTurn.items.some(
         ({ method, params }) =>
           method === "item/commandExecution/requestApproval" &&
           params?.itemId === deniedConfigRequest.id,
@@ -4658,6 +4876,7 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       },
       30_000,
     );
+    assert.match(backendTurn.assistant, new RegExp(backendNonce));
   }
   assert.match(result.assistant, new RegExp(nonce));
   assert.match(result.assistant, /WORKSPACE_WRITABLE/);
@@ -4666,6 +4885,107 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.match(result.assistant, /ESCAPE_DENIED/);
   assert.match(result.assistant, /OPENCLAW_ALLOWED/);
   assert.match(result.assistant, /ACME_DENIED/);
+}
+
+// Prints NAME_EXIT and NAME_OUT for one probe command; stderr is dropped.
+const sandboxProbeFunction = [
+  'probe() { local name=$1; shift; local out; out=$("$@" 2>/dev/null); local code=$?;',
+  '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
+];
+
+/**
+ * Writes a probe script into the shared workspace and has Codex run it, so each command is a
+ * Sandbox process behind OpenShell's proxy and the model never composes a credentialed command.
+ * Returns the turn and readers for the script's NAME=value output lines.
+ */
+async function runSandboxProbe(topology, nonce, script, harnessPod = topology.harnessPod) {
+  const scriptPath = `/sandbox/enterprise/${nonce}.sh`;
+  await kubectl(
+    "exec",
+    harnessPod.metadata.name,
+    "--namespace",
+    topology.placement,
+    "--container",
+    "agent",
+    "--",
+    "sh",
+    "-c",
+    `printf '%s' '${Buffer.from(script).toString("base64")}' | base64 -d > ${scriptPath} && ` +
+      `chmod 0644 ${scriptPath}`,
+  );
+  // Every credential the suite holds is checked on each turn, before any of it is printed.
+  const secrets = [
+    modelCredential,
+    ...(topology.toolSources ?? []).map(({ token }) => token),
+    topology.untrustedTlsSource?.token,
+  ].filter(Boolean);
+  const traceSecrets = failureSecrets([
+    process.env,
+    Object.fromEntries(secrets.map((value, index) => [`PROBE_CREDENTIAL_${index}`, value])),
+  ]);
+  const { result, run, traces } = await observeSandboxProbe({
+    nonce,
+    traceSecrets,
+    async requestTurn(attempt) {
+      if (attempt > 1) {
+        await delay(20_000);
+      }
+      const turn = await requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: await currentGatewayPod(topology),
+        providerModel,
+        prompt:
+          `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
+          `Then reply with exactly ${nonce}.`,
+      });
+      const serialized = JSON.stringify(turn);
+      assert.equal(
+        secrets.some((value) => serialized.includes(value)),
+        false,
+        "a probe turn must not expose a credential.",
+      );
+      return turn;
+    },
+  });
+  if (run === undefined) {
+    process.stderr.write(
+      `OpenShell integration: turns that skipped the probe:\n${traces.join("\n")}\n`,
+    );
+    // Codex logs why a tool call did not run, such as a dropped model stream. Lines that could
+    // carry a credential or placeholder are dropped.
+    const logs = await kubectl(
+      "logs",
+      harnessPod.metadata.name,
+      "--namespace",
+      topology.placement,
+      "--container",
+      "agent",
+      "--tail=400",
+    ).catch((error) => `logs unavailable: ${error.message}`);
+    const relevant = String(logs)
+      .split("\n")
+      .filter((line) => /error|retry|retrying|disconnect|stream|tool|exec/i.test(line))
+      .filter((line) => !/bearer|eyJ|openshell:resolve/i.test(line))
+      .filter((line) => secrets.every((value) => !line.includes(value)))
+      .slice(-30);
+    process.stderr.write(
+      `OpenShell integration: Harness log after a skipped probe:\n${relevant.join("\n")}\n`,
+    );
+  }
+  assert.ok(run, `No probe command was observed in three turns.\n${traces.join("\n")}`);
+  if (traces.length > 0) {
+    process.stderr.write(
+      `OpenShell integration: the probe ran after these turns without a probe command:\n${traces.join("\n")}\n`,
+    );
+  }
+  assert.match(result.assistant, new RegExp(nonce));
+  const output = String(run.aggregatedOutput ?? "");
+  const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
+  const exitCode = (name) => {
+    const code = value(`${name}_EXIT`);
+    return code === null ? null : Number(code);
+  };
+  return { result, run, value, exitCode };
 }
 
 /**
@@ -4694,9 +5014,7 @@ async function assertCredentialRouteEnforcement(topology) {
         ]),
     'printf "PLACEHOLDER_FOUND=%s\\n" "$([ -n "$model" ] && echo yes || echo no)"',
     `printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$${modelCredentialVariable}" ] && echo yes || echo no)"`,
-    // Prints NAME_EXIT and NAME_OUT for one probe; stderr is dropped.
-    'probe() { local name=$1; shift; local out; out=$("$@" 2>/dev/null); local code=$?;',
-    '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
+    ...sandboxProbeFunction,
     // The model placeholder sent to a tool host that curl may reach.
     `probe FOREIGN curl -sS -o "$body" -w '%{http_code}' --max-time 20 ` +
       `-H "Authorization: Bearer $model" ${toolA.url}`,
@@ -4734,43 +5052,8 @@ async function assertCredentialRouteEnforcement(topology) {
       `sed -n 's/^< HTTP\\/[^ ]* \\([0-9]*\\).*/\\1/p' | head -1)"`,
     "",
   ].join("\n");
-  const scriptPath = `/sandbox/enterprise/${nonce}.sh`;
-  await kubectl(
-    "exec",
-    topology.harnessPod.metadata.name,
-    "--namespace",
-    topology.placement,
-    "--container",
-    "agent",
-    "--",
-    "sh",
-    "-c",
-    `printf '%s' '${Buffer.from(script).toString("base64")}' | base64 -d > ${scriptPath} && ` +
-      `chmod 0644 ${scriptPath}`,
-  );
   const tlsEventsBefore = (await untrustedTls.events()).length;
-  const result = await requestCodexTurnFromGatewayPod({
-    namespace: topology.gatewayPlacement,
-    gatewayPod: await currentGatewayPod(topology),
-    providerModel,
-    prompt:
-      `Use the shell exec tool to run exactly this one command: bash ${scriptPath}. ` +
-      `Then reply with exactly ${nonce}.`,
-  });
-  assert.equal(JSON.stringify(result).includes(modelCredential), false);
-  assert.equal(JSON.stringify(result).includes(untrustedTlsSource.token), false);
-  assert.match(result.assistant, new RegExp(nonce));
-  const run = result.items
-    .filter(({ method }) => method === "item/completed")
-    .map(({ params }) => params?.item)
-    .find((item) => item?.type === "commandExecution" && String(item.command).includes(scriptPath));
-  assert.ok(run, "the Harness must run the route probe script");
-  const output = String(run.aggregatedOutput ?? "");
-  const value = (name) => new RegExp(`^${name}=(.*)$`, "m").exec(output)?.[1]?.trim() ?? null;
-  const exitCode = (name) => {
-    const code = value(`${name}_EXIT`);
-    return code === null ? null : Number(code);
-  };
+  const { value, exitCode } = await runSandboxProbe(topology, nonce, script);
   // Pod-level NetworkPolicy governs connections made outside the Sandbox's network namespace,
   // such as the supervisor's. The provider-fenced profile grants the Pod no public egress.
   const podNetwork = JSON.parse(
@@ -4805,20 +5088,22 @@ async function assertCredentialRouteEnforcement(topology) {
   // Classify what the foreign host received by the echo's placeholder flag and header length,
   // so a substituted model key is recognized without hashing or printing it. Only OpenShell's
   // own endpoint-mismatch refusal counts as refused: a transport failure or another error could
-  // follow a forwarded credential, so it proves nothing and fails the check.
+  // follow a forwarded credential, so it proves nothing and fails the check. curl prints 200 even
+  // when the body then fails to arrive, so a 200 counts only with a clean exit, and an empty
+  // header only when the echo reported length 0.
   const foreignReceived = (() => {
     const length = Number(value("FOREIGN_LENGTH"));
     const status = value("FOREIGN_OUT");
     if (status === "403" && value("FOREIGN_REFUSAL") === "credential_endpoint_mismatch") {
       return "refused";
     }
-    if (status !== "200") {
+    if (status !== "200" || exitCode("FOREIGN") !== 0) {
       return `unverified-${status}`;
     }
     if (value("FOREIGN_PLACEHOLDER") === "true") {
       return "placeholder";
     }
-    if (length === 0) {
+    if (value("FOREIGN_LENGTH") === "0") {
       return "empty";
     }
     if (length === `Bearer ${modelCredential}`.length) {
@@ -4833,6 +5118,7 @@ async function assertCredentialRouteEnforcement(topology) {
     },
     foreignDestination: {
       httpStatus: value("FOREIGN_OUT"),
+      exitCode: exitCode("FOREIGN"),
       received: foreignReceived,
     },
     modelHostFromCurl: {
@@ -4922,6 +5208,8 @@ async function assertCredentialRouteEnforcement(topology) {
 }
 
 const untrustedModelDnsFile = "oce-untrusted-model.server";
+// The address the model host currently resolves to through the override, if any.
+let modelDnsOverride;
 
 /**
  * Points cluster DNS for the model host at `address`, or restores it when `address` is undefined,
@@ -4930,6 +5218,10 @@ const untrustedModelDnsFile = "oce-untrusted-model.server";
  * imports *.server files from the optional coredns-custom ConfigMap.
  */
 async function setModelProviderDns(topology, address) {
+  // Record the override before changing DNS, so a restore after a failed change still waits
+  // for the address that change may have applied.
+  const replaced = modelDnsOverride;
+  modelDnsOverride = address ?? replaced;
   const directory = await mkdtemp(join(tmpdir(), "openshell-model-dns-"));
   try {
     if (address === undefined) {
@@ -4984,7 +5276,7 @@ async function setModelProviderDns(topology, address) {
     '  () => process.stdout.write(""));',
   ].join("\n");
   await waitFor(
-    `${modelEndpoint.hostname} to resolve ${address === undefined ? "publicly" : "to the observer"}`,
+    `${modelEndpoint.hostname} to resolve ${address === undefined ? "publicly" : `to ${address}`}`,
     async () => {
       const resolvers = (await resources("pods", "kube-system")).filter(
         (pod) =>
@@ -5005,12 +5297,13 @@ async function setModelProviderDns(topology, address) {
         lookup,
       ).catch(() => "");
       if (address === undefined) {
-        return resolved !== "" && resolved !== topology.untrustedTls.address ? true : undefined;
+        return resolved !== "" && resolved !== replaced ? true : undefined;
       }
       return resolved === address ? true : undefined;
     },
     180_000,
   );
+  modelDnsOverride = address;
 }
 
 /**
@@ -5123,7 +5416,7 @@ const untrustedTurnObservationChars = 1_000;
 
 // A failure diagnostic redacts the Gateway password when it can read it, and runs without it.
 async function diagnosticGatewayPassword(topology) {
-  const passwordSecret = await resource(
+  const passwordSecret = await diagnosticResource(
     "secret",
     `gateway-password-${hash(topology.agent.id)}`,
     topology.gatewayPlacement,
@@ -5191,13 +5484,13 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
   let harnessPod;
   let gatewayPod;
   try {
-    const agentPods = (await resources("pods", topology.placement)).filter(
+    const agentPods = (await diagnosticResources("pods", topology.placement)).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
         pod.metadata.labels?.["openclaw.dev/agent"] === revision.agentId &&
         pod.metadata.labels?.["openclaw.dev/revision"] === revision.id,
     );
-    const gatewayPods = (await resources("pods", topology.gatewayPlacement)).filter(
+    const gatewayPods = (await diagnosticResources("pods", topology.gatewayPlacement)).filter(
       (pod) =>
         pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
         pod.metadata.labels?.["openclaw.dev/agent"] === revision.agentId,
@@ -5233,6 +5526,494 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
     { gateway: 4_000, harness: 3_000, supervisor: 4_000 },
   );
   return `\n${sections.join("\n")}${diagnostic}`;
+}
+
+/**
+ * Makes the model provider unreachable: cluster DNS sends the model host to a Service with no
+ * endpoints, so OpenShell's connection to it is refused. The turn must fail without exposing
+ * the key, and the same running Harness must complete a turn once the provider is back.
+ */
+async function assertModelProviderOutageFailsClosed(topology) {
+  if (isIP(modelEndpoint.hostname) !== 0) {
+    process.stderr.write(
+      "OpenShell integration: model provider outage not tested; the model endpoint is an address.\n",
+    );
+    return;
+  }
+  const { request, namespaceId, untrustedTls } = topology;
+  const agentPath = `/namespaces/${namespaceId}/agents/${topology.agent.id}`;
+  const current = await request("GET", agentPath);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const revisionId = current.data.activeRevisionId;
+  // `kubectl create service clusterip` selects app=<name>, which no Pod carries.
+  await kubectl(
+    "create",
+    "service",
+    "clusterip",
+    "model-outage",
+    "--namespace",
+    untrustedTls.namespace,
+    ...[...new Set([443, modelPort])].map((port) => `--tcp=${port}:${port}`),
+  );
+  const outage = await resource("service", "model-outage", untrustedTls.namespace);
+  let rejected = false;
+  let observation;
+  let failure;
+  try {
+    await setModelProviderDns(topology, outage.spec.clusterIP);
+    try {
+      observation = JSON.stringify(
+        await requestCodexTurnFromGatewayPod({
+          namespace: topology.gatewayPlacement,
+          gatewayPod: await currentGatewayPod(topology),
+          providerModel,
+          prompt: `Reply with exactly OCC-OPENSHELL-OUTAGE-${randomUUID()}.`,
+        }),
+      );
+    } catch (error) {
+      rejected = true;
+      observation = error instanceof Error ? error.message : String(error);
+    }
+  } catch (error) {
+    failure = error;
+  }
+  // Restore DNS before any assertion; keep the first error if both steps fail.
+  try {
+    await setModelProviderDns(topology, undefined);
+    await kubectl(
+      "delete",
+      "service",
+      "model-outage",
+      "--namespace",
+      untrustedTls.namespace,
+      "--ignore-not-found",
+    );
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    throw failure;
+  }
+  const nonce = `OCC-OPENSHELL-RECOVERED-${randomUUID()}`;
+  const recovered = await requestCodexTurnFromGatewayPod({
+    namespace: topology.gatewayPlacement,
+    gatewayPod: await currentGatewayPod(topology),
+    providerModel,
+    prompt: `Reply with exactly ${nonce}.`,
+  });
+  const after = await request("GET", agentPath);
+  const observed = {
+    turnRejected: rejected,
+    recoveredTurn: new RegExp(nonce).test(recovered.assistant),
+    sameRevision: after.data.activeRevisionId === revisionId,
+  };
+  process.stderr.write(
+    `OpenShell integration: model provider outage ${JSON.stringify(observed)}.\n`,
+  );
+  assert.equal(
+    String(observation).includes(modelCredential),
+    false,
+    "a failed model turn must not expose the model key",
+  );
+  assert.equal(JSON.stringify(recovered).includes(modelCredential), false);
+  assert.equal(rejected, true, "a model turn must fail while the provider is unreachable.");
+  // The outage is the provider's, not the Harness's: the same revision serves the next turn.
+  assert.equal(observed.recoveredTurn, true, "the running Harness must recover with the provider.");
+  assert.equal(observed.sameRevision, true, "recovery must not need a redeploy.");
+}
+
+/**
+ * Takes a tool source's upstream away: its Service selects no Pod, so OpenShell's connection is
+ * refused or stalls. The echo must see no request during the outage, then see the recovered
+ * request with the substituted token from the same running Harness.
+ */
+async function assertToolUpstreamOutageFailsClosed(topology) {
+  const { request, namespaceId, toolSources, tokenEcho } = topology;
+  const [toolA] = toolSources;
+  const agentId = topology.agent.id;
+  const current = await request("GET", `/namespaces/${namespaceId}/agents/${agentId}`);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const harnessPod = await waitForProviderHarnessPod(topology.placement, {
+    id: current.data.activeRevisionId,
+    agentId,
+  });
+  const probe = async (label) => {
+    const nonce = `openshell-tool-${label}-${randomUUID()}`;
+    const body = `/tmp/${nonce}.json`;
+    const script = [
+      "#!/bin/bash",
+      ...sandboxProbeFunction,
+      `probe TOOL curl -sS -o ${body} -w '%{http_code} %{time_total}' --connect-timeout 3 ` +
+        `--max-time ${toolProbeCurlMaxSeconds} -H "Authorization: Bearer $${toolA.environmentName}" ${toolA.url}`,
+      `printf 'TOOL_PLACEHOLDER=%s\\n' "$(grep -o '"placeholder":[a-z]*' ${body} ` +
+        `2>/dev/null | cut -d: -f2)"`,
+      `printf 'TOOL_DIGEST=%s\\n' "$(grep -o '"digest":"[0-9a-f]*"' ${body} ` +
+        `2>/dev/null | cut -d'"' -f4)"`,
+      "",
+    ].join("\n");
+    const { run, value, exitCode } = await runSandboxProbe(topology, nonce, script, harnessPod);
+    const [httpStatus = null, curlSeconds = null] = (value("TOOL_OUT") ?? "").split(" ");
+    // The echo answers 200 even without an Authorization header, so delivery is proved by the
+    // digest of what it received, compared here and never printed.
+    return {
+      httpStatus: httpStatus || null,
+      exitCode: exitCode("TOOL"),
+      curlSeconds: curlSeconds === null ? null : Number(curlSeconds),
+      commandMs: Number.isSafeInteger(run.durationMs) ? run.durationMs : null,
+      placeholder: value("TOOL_PLACEHOLDER") || null,
+      responseMatchedToken: value("TOOL_DIGEST") === toolA.digest,
+    };
+  };
+  const selectPods = (app) =>
+    kubectl(
+      "patch",
+      "service",
+      "token-echo",
+      "--namespace",
+      tokenEcho.namespace,
+      "--type=merge",
+      "--patch",
+      JSON.stringify({ spec: { selector: { app } } }),
+    );
+  const waitForEndpoints = (ready) =>
+    waitFor(`token-echo endpoints ${ready ? "ready" : "removed"}`, async () => {
+      const slices = (await resources("endpointslices", tokenEcho.namespace)).filter(
+        (slice) => slice.metadata.labels?.["kubernetes.io/service-name"] === "token-echo",
+      );
+      const serving = slices.some((slice) =>
+        (slice.endpoints ?? []).some((endpoint) => endpoint.conditions?.ready === true),
+      );
+      return serving === ready ? true : undefined;
+    });
+  const receiptBefore = await tokenEcho.readToolAReceipt();
+  let outage;
+  let receiptWhileDown;
+  let failure;
+  try {
+    await selectPods("token-echo-outage");
+    await waitForEndpoints(false);
+    outage = await probe("outage");
+    receiptWhileDown = await tokenEcho.readToolAReceipt();
+    // Print it now: if the recovery fails, this is the only record of the outage probe.
+    process.stderr.write(`OpenShell integration: tool upstream down ${JSON.stringify(outage)}.\n`);
+  } catch (error) {
+    failure = error;
+  }
+  // Restore the upstream even if the probe or receipt read failed; keep the first error.
+  try {
+    await selectPods("token-echo");
+    await waitForEndpoints(true);
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    throw failure;
+  }
+  const recovered = await probe("recovered");
+  const receiptAfter = await tokenEcho.readToolAReceipt();
+  const observed = { outage, recovered };
+  process.stderr.write(
+    `OpenShell integration: tool upstream outage ${JSON.stringify(observed)}.\n`,
+  );
+  // OpenShell usually closes the client connection without a response when it cannot reach
+  // the upstream (curl exit 52). If it holds the connection instead, curl gives up at its own
+  // --max-time bound (exit 28). A timeout well before that bound, such as the 3 s connect
+  // timeout to the proxy itself, is not an upstream outage. Any other result, a response
+  // included, means the outage was not observed.
+  assert.equal(outage.httpStatus, "000", "a request to an unreachable upstream gets no response.");
+  const held = outage.exitCode === 28 && outage.curlSeconds >= toolProbeCurlMaxSeconds - 0.5;
+  assert.ok(
+    outage.exitCode === 52 || held,
+    "OpenShell must end or hold a request to an unreachable upstream, not answer it " +
+      `(curl exit ${outage.exitCode} after ${outage.curlSeconds} s).`,
+  );
+  // Curl reports the response, not whether the request arrived. Compare the receiver's count
+  // before restoration, then require the same process to count exactly one request by recovery.
+  assert.deepEqual(
+    receiptWhileDown,
+    receiptBefore,
+    "the echo must see no request during the outage",
+  );
+  assert.equal(outage.responseMatchedToken, false);
+  if (held) {
+    process.stderr.write(
+      "OpenShell integration: OpenShell held the request to the unreachable upstream until " +
+        "curl's bound instead of closing it.\n",
+    );
+  }
+  // Once the upstream is back, the same running Harness gets tool A's own token again.
+  assert.deepEqual(
+    { httpStatus: recovered.httpStatus, exitCode: recovered.exitCode },
+    { httpStatus: "200", exitCode: 0 },
+  );
+  assert.equal(recovered.placeholder, "false", "the upstream must not receive the placeholder.");
+  assert.equal(recovered.responseMatchedToken, true, "the upstream must receive tool A's token.");
+  assert.deepEqual(receiptAfter, { ...receiptBefore, requests: receiptBefore.requests + 1 });
+}
+
+/**
+ * Stops the Namespace's OpenShell gateway and restarts it. While it is down, the running Agent
+ * cannot serve a turn, because the Agent Gateway reaches Codex through OpenShell's service
+ * exposure. OCC must not report a usable source, register a source, or activate a revision.
+ * Once the gateway is back, the held deployment must activate and serve a turn.
+ */
+async function assertOpenShellGatewayOutage(topology) {
+  const { request, namespaceId, placement, observerPool, tokenEcho } = topology;
+  const agentPath = `/namespaces/${namespaceId}/agents/${topology.agent.id}`;
+  const sourcePath = `/namespaces/${namespaceId}/credential-sources/${topology.agent.harnessAuth.sourceId}`;
+  const before = await request("GET", agentPath);
+  assert.equal(before.status, 200, JSON.stringify(before.error));
+  const activeRevisionId = before.data.activeRevisionId;
+  const statefulSets = (await resources("statefulsets", placement)).filter(
+    (statefulSet) => statefulSet.metadata.labels?.["app.kubernetes.io/name"] === "openshell",
+  );
+  assert.equal(statefulSets.length, 1, "the Namespace must run one OpenShell gateway.");
+  const [statefulSet] = statefulSets;
+  const gatewayPods = async () =>
+    (await resources("pods", placement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["app.kubernetes.io/name"] === "openshell" &&
+        pod.metadata.labels?.["app.kubernetes.io/instance"] ===
+          statefulSet.metadata.labels?.["app.kubernetes.io/instance"],
+    );
+  const scale = (replicas) =>
+    kubectl(
+      "scale",
+      "statefulset",
+      statefulSet.metadata.name,
+      "--namespace",
+      placement,
+      `--replicas=${replicas}`,
+    );
+  const registrationName = `openshell-outage-${randomUUID()}`;
+  const observed = {};
+  let outageSecretId;
+  let redeployed;
+  let failure;
+  await scale(0);
+  try {
+    await waitFor(
+      "the OpenShell gateway Pod to stop",
+      async () => ((await gatewayPods()).length === 0 ? true : undefined),
+      180_000,
+    );
+    let downTurn;
+    try {
+      downTurn = await requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod: await currentGatewayPod(topology),
+        providerModel,
+        prompt: `Reply with exactly OCC-OPENSHELL-GATEWAY-DOWN-${randomUUID()}.`,
+      });
+    } catch (error) {
+      assert.equal(String(error?.message).includes(modelCredential), false);
+    }
+    observed.runningAgentTurn = downTurn === undefined ? "failed" : "completed";
+    // Checked outside the try, so a turn that completed and leaked the key cannot read as failed.
+    assert.equal(JSON.stringify(downTurn ?? {}).includes(modelCredential), false);
+    const source = await request("GET", sourcePath);
+    observed.sourceRead = {
+      httpStatus: source.status,
+      state: source.data?.status?.state ?? null,
+    };
+    const secret = await request("POST", `/namespaces/${namespaceId}/secrets`, {
+      name: `openshell-outage-token-${randomUUID()}`,
+      value: `oce-outage-${randomUUID()}`,
+    });
+    assert.equal(secret.status, 201, JSON.stringify(secret.error));
+    outageSecretId = secret.data.id;
+    const registered = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
+      name: registrationName,
+      type: "bearer-token",
+      config: {
+        host: tokenEcho.host,
+        port: String(tokenEcho.port),
+        path: "/echo-outage",
+        env_var: "TOOL_OUTAGE_TOKEN",
+      },
+      secrets: { token: secret.data.ref },
+    });
+    observed.registration = {
+      httpStatus: registered.status,
+      code: registered.error?.code ?? null,
+    };
+    redeployed = await request("POST", `${agentPath}/deploy`);
+    assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+    // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
+    // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
+    // tried the revision against the stopped gateway and did not activate it.
+    const work = await waitFor(
+      `deployment ${redeployed.data.id} to fail an attempt while the gateway is down`,
+      async () => {
+        const { rows } = await observerPool.query(
+          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+          [`agent_revision:${redeployed.data.id}:reconcile`],
+        );
+        return rows[0]?.state === "queued" && rows[0].attempt_count >= 1 ? rows[0] : undefined;
+      },
+      180_000,
+    );
+    const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
+    const during = await request("GET", agentPath);
+    observed.redeployDuringOutage = {
+      status: deployment.data?.status ?? null,
+      work,
+      activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
+      gatewayStopped: (await gatewayPods()).length === 0,
+    };
+  } catch (error) {
+    failure = error;
+  }
+  // Restart the gateway before any assertion; keep the first error if both steps fail.
+  try {
+    await scale(1);
+    await waitForOpenShellGateway(placement);
+    await topology.restartGatewayForward();
+  } catch (error) {
+    failure ??= error;
+  }
+  if (failure !== undefined) {
+    process.stderr.write(
+      `OpenShell integration: gateway outage observed before failure ${JSON.stringify(observed)}.\n`,
+    );
+    throw failure;
+  }
+  let activated = false;
+  try {
+    await waitFor(
+      `deployment ${redeployed.data.id} to activate after the gateway outage`,
+      async () => {
+        const agent = await request("GET", agentPath);
+        if (agent.data?.activeRevisionId === redeployed.data.id) {
+          return true;
+        }
+        const status = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
+        return status.data?.status === "failed" ? true : undefined;
+      },
+      360_000,
+    );
+    activated = (await request("GET", agentPath)).data?.activeRevisionId === redeployed.data.id;
+  } catch (error) {
+    failure = error;
+  }
+  const work = await observerPool.query(
+    "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+    [`agent_revision:${redeployed.data.id}:reconcile`],
+  );
+  const source = await request("GET", sourcePath);
+  const listed = await request("GET", `/namespaces/${namespaceId}/credential-sources`);
+  observed.recovery = {
+    redeployActivated: activated,
+    work: work.rows[0] ?? null,
+    sourceState: source.data?.status?.state ?? null,
+    registrationRecord:
+      listed.data?.find(({ name }) => name === registrationName)?.state ?? "absent",
+  };
+  if (activated) {
+    const nonce = `OCC-OPENSHELL-GATEWAY-BACK-${randomUUID()}`;
+    await waitForProviderHarnessPod(placement, {
+      id: redeployed.data.id,
+      agentId: topology.agent.id,
+    });
+    const turn = await requestCodexTurnFromGatewayPod({
+      namespace: topology.gatewayPlacement,
+      gatewayPod: await currentGatewayPod(topology),
+      providerModel,
+      prompt: `Reply with exactly ${nonce}.`,
+    });
+    assert.equal(JSON.stringify(turn).includes(modelCredential), false);
+    observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
+  }
+  // The gateway mints OAuth2 tokens itself. Its first refresh sweep after a restart runs before
+  // it has loaded its operator namespace allowlist, so a source due then fails with
+  // refresh_configuration_invalid, which OpenShell retries only after an hour. A forced mint,
+  // the operator's documented recovery, must restore the token at once.
+  // TODO(NVIDIA/OpenShell#4526): once OpenShell retries that failure promptly, require
+  // each source to recover without the rotation.
+  const refreshSources = [
+    ...(topology.refreshSources?.bound ?? []),
+    ...(topology.refreshSources === undefined ? [] : [topology.refreshSources.unbound]),
+  ];
+  observed.recovery.refresh = [];
+  for (const refreshSource of refreshSources) {
+    const refreshPath = `/namespaces/${namespaceId}/credential-sources/${refreshSource.id}`;
+    const settled = await waitFor(
+      `${refreshSource.type} refresh state after the gateway outage`,
+      async () => {
+        const read = await request("GET", refreshPath);
+        const refresh = read.data?.status?.refresh;
+        return refresh !== undefined && refresh.state !== "pending" ? refresh : undefined;
+      },
+      120_000,
+    );
+    let rotated = null;
+    if (settled.state !== "ready") {
+      const rotation = await request("POST", `${refreshPath}/rotate`);
+      rotated = {
+        httpStatus: rotation.status,
+        state: rotation.data?.status?.refresh?.state ?? null,
+      };
+    }
+    observed.recovery.refresh.push({
+      type: refreshSource.type,
+      afterRestart: `${settled.state}:${settled.failureCode ?? "-"}`,
+      rotated,
+    });
+  }
+  // A registration whose gateway call failed may stay listed as `deleting`; deleting it again
+  // removes it once the gateway answers and the creation fence has passed.
+  const leftover = listed.data?.find(({ name }) => name === registrationName);
+  if (leftover !== undefined) {
+    await waitFor(
+      `outage registration ${leftover.id} deletion`,
+      async () => {
+        const deleted = await request(
+          "DELETE",
+          `/namespaces/${namespaceId}/credential-sources/${leftover.id}`,
+        );
+        return [204, 404].includes(deleted.status) ? true : undefined;
+      },
+      180_000,
+    );
+  }
+  process.stderr.write(`OpenShell integration: gateway outage ${JSON.stringify(observed)}.\n`);
+  if (failure !== undefined) {
+    throw failure;
+  }
+  // While the gateway is down the source cannot be confirmed, and nothing new is admitted.
+  assert.equal(observed.runningAgentTurn, "failed");
+  assert.deepEqual(observed.sourceRead, { httpStatus: 200, state: "failed" });
+  assert.deepEqual(observed.registration, { httpStatus: 503, code: "DEPENDENCY_UNAVAILABLE" });
+  assert.equal(observed.redeployDuringOutage.gatewayStopped, true);
+  assert.equal(observed.redeployDuringOutage.status, "queued");
+  assert.equal(observed.redeployDuringOutage.activeRevisionUnchanged, true);
+  // Once the gateway is back, the held deployment proceeds without operator action.
+  assert.equal(observed.recovery.redeployActivated, true, JSON.stringify(observed.recovery));
+  assert.equal(observed.recovery.sourceState, "ready");
+  assert.equal(observed.recovery.turn, true, "the new revision must serve a model turn.");
+  for (const { type, afterRestart, rotated } of observed.recovery.refresh) {
+    assert.ok(
+      ["ready:-", "failed:refresh_configuration_invalid"].includes(afterRestart),
+      `${type} reported an unexpected refresh state after the gateway restart: ${afterRestart}`,
+    );
+    if (rotated !== null) {
+      assert.deepEqual(rotated, { httpStatus: 200, state: "ready" }, `${type} rotation`);
+    }
+  }
+  // Once the outage registration is gone, its Secret is unbound and can be deleted.
+  if (outageSecretId !== undefined) {
+    await waitFor(
+      `outage Secret ${outageSecretId} deletion`,
+      async () => {
+        const removed = await request(
+          "DELETE",
+          `/namespaces/${namespaceId}/secrets/${outageSecretId}`,
+        );
+        return [204, 404].includes(removed.status) ? true : undefined;
+      },
+      120_000,
+    );
+  }
 }
 
 async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) {
@@ -5272,21 +6053,43 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
   );
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
   assert.notEqual(redeployed.data.id, topology.revision.id);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const deploymentPath = `${agentPath}/deployments/${redeployed.data.id}`;
   try {
     await waitFor(`replacement OpenShell revision ${redeployed.data.id} activation`, async () => {
-      const observed = await topology.request(
-        "GET",
-        `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`,
-      );
+      const observed = await topology.request("GET", agentPath);
       assert.equal(observed.status, 200, JSON.stringify(observed.error));
-      return observed.data.activeRevisionId === redeployed.data.id ? observed.data : undefined;
+      if (observed.data.activeRevisionId === redeployed.data.id) {
+        return observed.data;
+      }
+      // Finding 1532: a Harness holding a failed startup model probe fails the deployment for
+      // good on its first attempt. Stop then: the error names the probe's classified cause, and
+      // the diagnostic is captured near the failure, not after 240 s of Gateway reconnect noise.
+      const deployment = await topology.request("GET", deploymentPath);
+      // A temporary failure to read that diagnostic is not a failed replacement. Keep the
+      // original activation deadline; only the Agent naming this revision can satisfy the wait.
+      const { status } = deployment;
+      if (status === 408 || status === 429 || (status >= 500 && status < 600)) {
+        return undefined;
+      }
+      assert.equal(status, 200, JSON.stringify(deployment.error));
+      assert.notEqual(
+        deployment.data.status,
+        "failed",
+        `Replacement OpenShell revision ${redeployed.data.id} failed: ${JSON.stringify(deployment.data)}`,
+      );
+      return undefined;
     });
   } catch (error) {
     const worker = await topology.diagnoseRevision(redeployed.data.id);
-    // A diagnostic that fails itself must not replace the timeout it explains.
-    const detail = await replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
-      (diagnosticError) =>
-        `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
+    const detail = await withinDiagnosticDeadline(
+      () =>
+        replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
+          (diagnosticError) =>
+            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+        ),
+      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
     );
     // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
     if (error instanceof Error) {
@@ -5441,7 +6244,7 @@ test(
   "OpenShell enforces provider delivery and authenticated Codex exposure",
   {
     ...requiresOpenShellK3d,
-    ...(demoStatePath === undefined ? { timeout: 1_800_000 } : {}),
+    ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
   },
   async (context) => {
     if (demoStatePath !== undefined) {
@@ -5520,8 +6323,10 @@ test(
           `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
         );
       }
+      // Retry only endpoint availability above. Preserve the first protocol failure on this route.
+      await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
       process.stderr.write(
-        "OpenShell integration: create-time route reached protected Harness; starting real shell turns through the Agent Gateway.\n",
+        "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
       );
       await requestGatewayTurns(context, topology, "codex");
       process.stderr.write(
@@ -5541,7 +6346,19 @@ test(
       );
       await assertModelRouteRefusesUntrustedUpstream(topology);
       process.stderr.write(
-        "OpenShell integration: untrusted model upstream refused; testing OAuth2 refresh credential sources.\n",
+        "OpenShell integration: untrusted model upstream refused; testing a tool upstream outage.\n",
+      );
+      await assertToolUpstreamOutageFailsClosed(topology);
+      process.stderr.write(
+        "OpenShell integration: tool upstream outage verified; testing a model provider outage.\n",
+      );
+      await assertModelProviderOutageFailsClosed(topology);
+      process.stderr.write(
+        "OpenShell integration: model provider outage verified; testing an OpenShell gateway outage.\n",
+      );
+      await assertOpenShellGatewayOutage(topology);
+      process.stderr.write(
+        "OpenShell integration: gateway outage verified; testing OAuth2 refresh credential sources.\n",
       );
       await assertRefreshCredentialSources(topology);
       process.stderr.write(

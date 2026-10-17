@@ -402,7 +402,7 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     credentialSourceId: string,
   ): Promise<Readonly<CredentialSource> | undefined>;
   deleteCredentialSource(namespaceId: string, credentialSourceId: string): Promise<boolean>;
-  /** True while an Agent draft, active revision, or pending deployment references the source. */
+  /** True while an Agent draft, revision, deployment, or queued/running provisioning references the source. */
   hasReferences(namespaceId: string, credentialSourceId: string): Promise<boolean>;
   /**
    * What keeps the source from being deleted: `reference` while an Agent draft, active
@@ -558,7 +558,9 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
         Object.keys(value).length === 5 &&
         isNonEmptyString(value.credentialGatewayId) &&
         isNonEmptyString(value.sourceType) &&
-        (value.loginMode === "api_key" || value.loginMode === "codex_pat")
+        (value.loginMode === "api_key" ||
+          value.loginMode === "codex_pat" ||
+          value.loginMode === "chatgptAuthTokens")
       );
     }
     const binding = normalizeHarnessAuthBinding({ method: value.method, source: value.source });

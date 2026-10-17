@@ -45,7 +45,10 @@ export const CurrentVersionDuringDeployment = story("currentVersionDuringDeploym
 export const DeploymentFailed = story("deploymentFailed");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
+export const DeploymentFailsWhileWatching = story("deploymentFailsWhileWatching");
+export const DeploymentModelProbeRetried = story("deploymentModelProbeRetried");
 export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
+export const DeploymentModelProbeFailedDeployOnly = story("deploymentModelProbeFailedDeployOnly");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
@@ -59,7 +62,12 @@ export const RuntimeLogsSlowFirstStatus = story("runtimeLogsSlowFirstStatus");
 export const RuntimeLogsSlowTabClick = story("runtimeLogsSlowTabClick");
 export const RuntimeLogsStartupWarnings = story("runtimeLogsStartupWarnings");
 export const RuntimeLogsFilteredDownload = story("runtimeLogsFilteredDownload");
+export const RuntimeLogsRateLimited = story("runtimeLogsRateLimited");
 export const RuntimeLogsDenied = story("runtimeLogsDenied");
+export const RuntimeLogAccessLost = story("runtimeLogAccessLost");
+export const RuntimeLogDownloadRefused = story("runtimeLogDownloadRefused");
+export const RuntimeStatusAccessLost = story("runtimeStatusAccessLost");
+export const RuntimeStatusAccessRestored = story("runtimeStatusAccessRestored");
 export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
@@ -72,9 +80,22 @@ export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration"
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
+export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
+export const DeployRefusedBeforeAdmission = {
+  ...story("deployRefusedBeforeAdmission"),
+  name: "Deployment refused before admission",
+};
+export const DeployOutcomeUnknown = {
+  ...story("deployOutcomeUnknown"),
+  name: "Deployment outcome unknown",
+};
 export const DeployRefusedSetting = {
   ...story("deployRefusedSetting"),
   name: "Deployment refused by a Configuration setting",
+};
+export const DeployOpensVersion = {
+  ...story("deployOpensVersion"),
+  name: "Deployment opens the new version",
 };
 export const DeployAgentPrincipalDenied = {
   ...story("deployAgentPrincipalDenied"),

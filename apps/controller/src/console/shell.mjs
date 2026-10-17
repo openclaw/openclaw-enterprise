@@ -575,6 +575,29 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The shown shell's control, outside its page view, that matches one from an earlier
+    // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
+    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // phone width its navigation drawer starts closed too, so every control from the open drawer
+    // gives way to the drawer's toggle (finding 1680).
+    matchingControl(node) {
+      const shell = app.querySelector(":scope > .shell");
+      if (!shell) {
+        return null;
+      }
+      if (
+        mobileLayout.matches &&
+        node.closest(".sidebar") &&
+        !shell.classList.contains("drawer-open")
+      ) {
+        return shell.querySelector(".mobile-toggle");
+      }
+      if (node.closest(".account")) {
+        return shell.querySelector(".account-toggle");
+      }
+      // The sidebar, toggle and header precede the page view, so their match is found first.
+      return sameControl(node, shell);
+    },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;
